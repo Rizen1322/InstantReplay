@@ -1,0 +1,134 @@
+using System.Runtime.InteropServices;
+
+namespace InstantReplay.Core.Interop;
+
+internal static partial class NativeMethods
+{
+    // ---------------- user32 ----------------
+    [LibraryImport("user32.dll")] internal static partial IntPtr GetForegroundWindow();
+    [LibraryImport("user32.dll")] internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [LibraryImport("user32.dll")] internal static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial IntPtr SetWindowsHookExW(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+    [LibraryImport("user32.dll")] internal static partial IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool UnhookWindowsHookEx(IntPtr hhk);
+    [LibraryImport("user32.dll")] internal static partial short GetAsyncKeyState(int vKey);
+    [LibraryImport("user32.dll")]
+    internal static partial int GetMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+    [LibraryImport("user32.dll")] internal static partial IntPtr DispatchMessageW(ref MSG lpMsg);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool TranslateMessage(ref MSG lpMsg);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool PostThreadMessageW(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial int GetWindowLongW(IntPtr hWnd, int nIndex);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial int SetWindowLongW(IntPtr hWnd, int nIndex, int dwNewLong);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptX; public int ptY; }
+
+    internal delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    internal const int WH_KEYBOARD_LL = 13;
+    internal const int WM_KEYDOWN = 0x0100, WM_SYSKEYDOWN = 0x0104, WM_QUIT = 0x0012;
+    internal const uint MONITOR_DEFAULTTOPRIMARY = 1;
+
+    internal const int GWL_EXSTYLE = -20;
+    internal const int WS_EX_TOOLWINDOW = 0x00000080, WS_EX_NOACTIVATE = 0x08000000,
+                       WS_EX_TRANSPARENT = 0x00000020, WS_EX_LAYERED = 0x00080000, WS_EX_TOPMOST = 0x00000008;
+    internal static readonly IntPtr HWND_TOPMOST = new(-1);
+    internal const uint SWP_NOMOVE = 0x0002, SWP_NOSIZE = 0x0001, SWP_NOACTIVATE = 0x0010, SWP_SHOWWINDOW = 0x0040;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
+
+    // ---------------- субклассинг окна (минимальный размер через WM_GETMINMAXINFO) ----------------
+    internal const int GWLP_WNDPROC = -4;
+    internal const uint WM_GETMINMAXINFO = 0x0024;
+
+    internal delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct POINT { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MINMAXINFO
+    {
+        public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize;
+    }
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    internal static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    internal static extern IntPtr SetWindowLongPtrW(IntPtr hWnd, int nIndex, WndProcDelegate newProc);
+    [DllImport("user32.dll")]
+    internal static extern IntPtr CallWindowProcW(IntPtr prevProc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    internal static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    // ---------------- GPU-приоритет процесса (как «GPU priority» у OBS) ----------------
+    // Под 100% загрузкой GPU игрой наши Blt/Copy/NVENC-команды иначе стоят в общей
+    // очереди планировщика — кадры записи опаздывают и дропаются.
+    internal const int D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH = 4;
+
+    [DllImport("gdi32.dll")]
+    internal static extern int D3DKMTSetProcessSchedulingPriorityClass(IntPtr hProcess, int priorityClass);
+    [DllImport("kernel32.dll")]
+    internal static extern IntPtr GetCurrentProcess();
+
+    // ---------------- winmm (разрешение системного таймера) ----------------
+    // Без timeBeginPeriod(1) Thread.Sleep квантуется по 15.6 мс — аудио-микшер и
+    // конвейер записи получают рваный темп (так же делают OBS/ShadowPlay).
+    [LibraryImport("winmm.dll")] internal static partial uint timeBeginPeriod(uint uPeriod);
+    [LibraryImport("winmm.dll")] internal static partial uint timeEndPeriod(uint uPeriod);
+
+    // ---------------- display (текущий режим экрана: разрешение + герцовка) ----------------
+    internal const int ENUM_CURRENT_SETTINGS = -1;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct DEVMODEW
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public ushort dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX, dmPositionY;
+        public uint dmDisplayOrientation, dmDisplayFixedOutput;
+        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public ushort dmLogPixels;
+        public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+        public uint dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern bool EnumDisplaySettingsW(string? lpszDeviceName, int iModeNum, ref DEVMODEW lpDevMode);
+
+    // ---------------- dwmapi ----------------
+    // ГЛАВНЫЙ фикс белой рамки уведомления: DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE
+    internal const int DWMWA_BORDER_COLOR = 34;
+    internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    internal const uint DWMWA_COLOR_NONE = 0xFFFFFFFE;
+    internal const int DWMWCP_ROUND = 2;
+
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref uint value, int size);
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    // ---------------- combase (WinRT activation) ----------------
+    [LibraryImport("combase.dll", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int WindowsCreateString(string src, int len, out IntPtr hstring);
+    [LibraryImport("combase.dll")]
+    internal static partial int WindowsDeleteString(IntPtr hstring);
+    [LibraryImport("combase.dll")]
+    internal static partial int RoGetActivationFactory(IntPtr activatableClassId, ref Guid iid, out IntPtr factory);
+
+    // ---------------- d3d11 (WinRT Direct3D interop) ----------------
+    [LibraryImport("d3d11.dll")]
+    internal static partial int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);
+}

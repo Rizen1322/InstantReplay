@@ -1,0 +1,113 @@
+<Window x:Class="InstantReplaySetup.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Установка Instant Replay"
+        Width="700" Height="480" ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent">
+
+    <Border Background="{StaticResource Bg}" CornerRadius="12"
+            BorderBrush="{StaticResource Stroke}" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="52"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Титлбар -->
+            <Grid MouseLeftButtonDown="TitleBar_Drag" Background="Transparent">
+                <StackPanel Orientation="Horizontal" Margin="18,0" VerticalAlignment="Center">
+                    <!-- Логотип: тёмный квадрат + зелёный play -->
+                    <Border Width="26" Height="26" CornerRadius="6" Background="#111318">
+                        <Path Fill="{StaticResource Accent}" Data="M 9,6 L 20,13 L 9,20 Z"/>
+                    </Border>
+                    <TextBlock Text="Instant Replay" Foreground="{StaticResource Fg}"
+                               FontSize="14" FontWeight="SemiBold" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TitleMode" Text="· установка" Foreground="{StaticResource FgDim}"
+                               FontSize="13" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0">
+                    <Button x:Name="MuteBtn" Style="{StaticResource GhostButton}" Padding="10,6"
+                            Click="Mute_Click" Content="🔊" FontSize="13" Margin="0,0,6,0"/>
+                    <Button Style="{StaticResource GhostButton}" Padding="12,6" Content="✕"
+                            FontSize="13" Click="Close_Click"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Страница 1: параметры -->
+            <Grid x:Name="PageOptions" Grid.Row="1" Margin="34,10,34,26">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Text="Установка Instant Replay" Foreground="{StaticResource Fg}"
+                           FontSize="26" FontWeight="Bold"/>
+                <TextBlock Grid.Row="1" x:Name="SubTitle"
+                           Text="Мгновенные повторы вашего геймплея — как ShadowPlay, только своё."
+                           Foreground="{StaticResource FgDim}" FontSize="13" Margin="0,6,0,18"/>
+
+                <Border Grid.Row="2" Background="{StaticResource Card}" CornerRadius="8"
+                        BorderBrush="{StaticResource Stroke}" BorderThickness="1" Padding="18">
+                    <StackPanel>
+                        <TextBlock Text="Папка установки" Foreground="{StaticResource Fg}" FontSize="13" FontWeight="SemiBold"/>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Background="#17181D" CornerRadius="6" Padding="10,7">
+                                <TextBox x:Name="PathBox" Background="Transparent" BorderThickness="0"
+                                         Foreground="{StaticResource Fg}" FontSize="13" CaretBrush="{StaticResource Accent}"/>
+                            </Border>
+                            <Button Grid.Column="1" Content="Обзор…" Style="{StaticResource GhostButton}"
+                                    Margin="8,0,0,0" Padding="14,7" Click="Browse_Click"/>
+                        </Grid>
+
+                        <CheckBox x:Name="DesktopShortcut" Content="Ярлык на рабочем столе" IsChecked="True" Margin="0,16,0,0"/>
+                        <CheckBox x:Name="Autostart" Content="Запускать вместе с Windows (свёрнуто в трей)"/>
+                        <CheckBox x:Name="LaunchAfter" Content="Запустить Instant Replay после установки" IsChecked="True"/>
+                    </StackPanel>
+                </Border>
+
+                <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <TextBlock x:Name="SizeText" Foreground="{StaticResource FgDim}" FontSize="12"
+                               VerticalAlignment="Center" Margin="0,0,16,0"/>
+                    <Button Content="Установить" Style="{StaticResource AccentButton}" MinWidth="150"
+                            Click="Install_Click"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Страница 2: прогресс -->
+            <Grid x:Name="PageProgress" Grid.Row="1" Margin="34,10,34,26" Visibility="Collapsed">
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock x:Name="ProgressTitle" Text="Установка…" Foreground="{StaticResource Fg}"
+                               FontSize="22" FontWeight="Bold" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="ProgressStatus" Text="" Foreground="{StaticResource FgDim}"
+                               FontSize="13" HorizontalAlignment="Center" Margin="0,8,0,22"/>
+                    <ProgressBar x:Name="Progress" Height="8" Maximum="100" Width="440"
+                                 Background="#17181D" Foreground="{StaticResource Accent}" BorderThickness="0"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Страница 3: готово -->
+            <Grid x:Name="PageDone" Grid.Row="1" Margin="34,10,34,26" Visibility="Collapsed">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <Border Width="64" Height="64" CornerRadius="32" Background="#233317" HorizontalAlignment="Center">
+                        <TextBlock Text="✓" FontSize="34" Foreground="{StaticResource Accent}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock x:Name="DoneTitle" Text="Готово!" Foreground="{StaticResource Fg}" FontSize="24"
+                               FontWeight="Bold" HorizontalAlignment="Center" Margin="0,14,0,4"/>
+                    <TextBlock x:Name="DoneText" Text="Instant Replay установлен." Foreground="{StaticResource FgDim}"
+                               FontSize="13" HorizontalAlignment="Center" Margin="0,0,0,22"/>
+                    <Button x:Name="DoneBtn" Content="Завершить" Style="{StaticResource AccentButton}"
+                            MinWidth="170" Click="Done_Click"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

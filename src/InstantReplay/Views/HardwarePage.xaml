@@ -1,0 +1,48 @@
+<Page
+    x:Class="InstantReplay.Views.HardwarePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    NavigationCacheMode="Required">
+
+    <ScrollViewer Padding="28,12,28,0">
+        <StackPanel Spacing="10" HorizontalAlignment="Stretch">
+
+            <TextBlock Text="Ваша система" Style="{StaticResource SectionHeader}" Margin="0,8,0,-2"/>
+
+            <ProgressRing x:Name="LoadingRing" IsActive="True" Width="32" Height="32"
+                          HorizontalAlignment="Left" Margin="4"/>
+
+            <StackPanel x:Name="InfoPanel" Visibility="Collapsed" Spacing="10">
+                <!-- Герой-карточка GPU -->
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel Orientation="Horizontal" Spacing="16">
+                        <Border Width="52" Height="52" CornerRadius="8"
+                                Background="{ThemeResource LayerFillColorAltBrush}">
+                            <FontIcon Glyph="&#xE950;" FontSize="24" Foreground="{StaticResource AccentGreenBrush}"/>
+                        </Border>
+                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                            <TextBlock x:Name="GpuName" FontSize="18" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="GpuVram" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel x:Name="InfoRows" Spacing="14"/>
+                </Grid>
+
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Обновить данные" Click="Refresh_Click"/>
+                    <Button x:Name="CheckDriverBtn" Content="Проверить драйвер NVIDIA" Click="CheckDriver_Click"/>
+                    <Button x:Name="DownloadDriverBtn" Content="Скачать обновление" Visibility="Collapsed"
+                            Style="{StaticResource AccentButtonStyle}" Click="DownloadDriver_Click"/>
+                    <Button x:Name="RunInstallerBtn" Content="Запустить установщик" Visibility="Collapsed"
+                            Style="{StaticResource AccentButtonStyle}" Click="RunInstaller_Click"/>
+                </StackPanel>
+                <TextBlock x:Name="DriverStatusText" Style="{StaticResource RowSub}"/>
+                <ProgressBar x:Name="DriverProgress" Maximum="100" Value="0" Visibility="Collapsed" MaxWidth="480"
+                             HorizontalAlignment="Left" Margin="0,2,0,16"/>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

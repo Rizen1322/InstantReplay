@@ -1,0 +1,140 @@
+<Page
+    x:Class="InstantReplay.Views.RecordingPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    NavigationCacheMode="Required">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Padding="28,12,28,0">
+            <StackPanel Spacing="10" HorizontalAlignment="Stretch">
+
+                <InfoBar x:Name="ActiveBar" Severity="Informational" IsClosable="False"
+                         Title="Запись активна"
+                         Message="Параметры захвата заблокированы, чтобы не прерывать запись. Выключи Instant Replay для изменения разрешения, FPS, кодека или аудиоустройств. Громкость можно менять на лету."/>
+
+                <TextBlock Text="Пресеты качества" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="Готовые связки настроек — один клик и всё настроено" Style="{StaticResource SectionSub}"/>
+
+                <StackPanel x:Name="PresetsPanel" Spacing="6"/>
+
+                <TextBlock Text="Длина Instant Replay" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="14">
+                        <StackPanel x:Name="LengthChips" Orientation="Horizontal" Spacing="8"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Своё значение:" Style="{StaticResource RowLabel}" Margin="0,0,10,0"/>
+                            <NumberBox x:Name="CustomLengthBox" Grid.Column="1" Minimum="5" Maximum="1800"
+                                       SpinButtonPlacementMode="Compact" MinWidth="120"
+                                       ValueChanged="Length_Changed"/>
+                            <TextBlock Grid.Column="2" Text="секунд" Style="{StaticResource RowLabel}" Margin="10,0,0,0"/>
+                            <TextBlock x:Name="RamEstimate" Grid.Column="3" HorizontalAlignment="Right"
+                                       VerticalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+
+                <TextBlock Text="Параметры видео" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="16">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Разрешение" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="ResolutionBox" Grid.Column="1" MinWidth="230">
+                                <ComboBoxItem Content="720p (1280×720)" Tag="720"/>
+                                <ComboBoxItem Content="1080p (1920×1080)" Tag="1080"/>
+                                <ComboBoxItem Content="1440p (2560×1440)" Tag="1440"/>
+                                <ComboBoxItem Content="4K (3840×2160)" Tag="2160"/>
+                            </ComboBox>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Частота кадров" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="FpsBox" Grid.Column="1" MinWidth="230">
+                                <ComboBoxItem Content="30 FPS" Tag="30"/>
+                                <ComboBoxItem Content="60 FPS" Tag="60"/>
+                                <ComboBoxItem Content="120 FPS" Tag="120"/>
+                                <ComboBoxItem Content="144 FPS" Tag="144"/>
+                            </ComboBox>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,24,0">
+                                <TextBlock Text="Битрейт" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="BitrateLabel" Text="35 Мбит/с" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <Slider x:Name="BitrateSlider" Grid.Column="1" Minimum="10" Maximum="80"
+                                    StepFrequency="1" TickFrequency="10" TickPlacement="None"
+                                    HorizontalAlignment="Right" MinWidth="230" VerticalAlignment="Center"
+                                    ValueChanged="Bitrate_Changed"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Кодек" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="CodecBox" Grid.Column="1" MinWidth="230"
+                                      SelectionChanged="Codec_Changed">
+                                <ComboBoxItem Content="H.264 (совместимый)" Tag="H264"/>
+                                <ComboBoxItem Content="HEVC / H.265 (меньше размер)" Tag="HEVC"/>
+                                <ComboBoxItem Content="AV1 (RTX 40+ / RX 7000+)" Tag="AV1"/>
+                            </ComboBox>
+                        </Grid>
+                        <InfoBar x:Name="CodecBar" Severity="Warning" IsClosable="False" IsOpen="False"
+                                 Title="Кодек недоступен"
+                                 Message="Этот GPU не умеет кодировать выбранным кодеком — запись не запустится. Выбери H.264 или HEVC."/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Монитор" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="MonitorBox" Grid.Column="1" MinWidth="280"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Записывать курсор мыши" Style="{StaticResource RowLabel}"/>
+                            <ToggleSwitch x:Name="CursorToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0"/>
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+
+                <InfoBar x:Name="HwBar" Severity="Success" IsClosable="False" IsOpen="True" Margin="0,6,0,10"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Нижняя панель действий -->
+        <Grid Grid.Row="1" Padding="28,10,28,14">
+            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+                <Button Content="Открыть папку записей" Click="OpenFolder_Click"/>
+                <Button x:Name="ApplyBtn" Content="Применить" Style="{StaticResource AccentButtonStyle}"
+                        MinWidth="110" Click="Apply_Click"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Page>
