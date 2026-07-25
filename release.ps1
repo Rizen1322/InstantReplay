@@ -41,7 +41,10 @@ $gh = Find-Gh
 if (-not $gh) { Fail "GitHub CLI не найден. Установи: winget install GitHub.cli" }
 
 # ---------- Текущая версия ----------
-$content = Get-Content $csproj -Raw
+# Читаем/пишем строго UTF-8: Get-Content/Set-Content в Windows PowerShell 5.1
+# работают в ANSI и превращают кириллицу в комментариях csproj в мусор.
+$utf8 = [Text.UTF8Encoding]::new($false)
+$content = [IO.File]::ReadAllText($csproj, $utf8)
 if ($content -notmatch '<Version>([\d]+)\.([\d]+)\.([\d]+)</Version>') {
     Fail "Не удалось прочитать <Version> из $csproj"
 }
@@ -86,7 +89,7 @@ $content = $content `
     -replace '<AssemblyVersion>[\d\.]+</AssemblyVersion>', "<AssemblyVersion>$assembly</AssemblyVersion>" `
     -replace '<FileVersion>[\d\.]+</FileVersion>', "<FileVersion>$assembly</FileVersion>" `
     -replace '<Version>[\d\.]+</Version>', "<Version>$new</Version>"
-Set-Content $csproj -Value $content -Encoding UTF8 -NoNewline
+[IO.File]::WriteAllText($csproj, $content, $utf8)
 Write-Host "   AssemblyVersion/FileVersion = $assembly, Version = $new"
 
 # ---------- Сборка ----------

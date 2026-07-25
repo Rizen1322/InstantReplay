@@ -60,10 +60,13 @@
                                 <TextBlock Text="Битрейт" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="BitrateLabel" Text="35 Мбит/с" Style="{StaticResource RowSub}"/>
                             </StackPanel>
+                            <!-- ValueChanged подключается в конструкторе, а НЕ здесь:
+                                 присвоение Minimum при разборе разметки поднимает Value
+                                 и вызывает обработчик раньше, чем созданы элементы ниже
+                                 по файлу — страница падала целиком. -->
                             <Slider x:Name="BitrateSlider" Grid.Column="1" Minimum="10" Maximum="80"
                                     StepFrequency="1" TickFrequency="10" TickPlacement="None"
-                                    HorizontalAlignment="Right" MinWidth="230" VerticalAlignment="Center"
-                                    ValueChanged="Bitrate_Changed"/>
+                                    HorizontalAlignment="Right" MinWidth="230" VerticalAlignment="Center"/>
                         </Grid>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -98,8 +101,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Своё значение:" Style="{StaticResource RowLabel}" Margin="0,0,10,0"/>
                             <NumberBox x:Name="CustomLengthBox" Grid.Column="1" Minimum="5" Maximum="1800"
-                                       SpinButtonPlacementMode="Compact" MinWidth="120"
-                                       ValueChanged="Length_Changed"/>
+                                       SpinButtonPlacementMode="Compact" MinWidth="120"/>
                             <TextBlock Grid.Column="2" Text="секунд" Style="{StaticResource RowLabel}" Margin="10,0,0,0"/>
                             <TextBlock x:Name="RamEstimate" Grid.Column="3" HorizontalAlignment="Right"
                                        VerticalAlignment="Center"

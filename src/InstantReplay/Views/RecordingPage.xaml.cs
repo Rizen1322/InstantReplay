@@ -38,6 +38,12 @@ public sealed partial class RecordingPage : Page
     public RecordingPage()
     {
         InitializeComponent();
+        // Только теперь, когда всё дерево построено, вешаем обработчики значений:
+        // из разметки они срабатывали бы прямо во время разбора (Minimum поднимает
+        // Value слайдера) и лезли к ещё не созданным элементам.
+        BitrateSlider.ValueChanged += Bitrate_Changed;
+        CustomLengthBox.ValueChanged += Length_Changed;
+
         BuildPresets();
         BuildChips();
         BuildMonitors();
