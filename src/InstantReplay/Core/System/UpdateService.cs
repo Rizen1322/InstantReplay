@@ -18,7 +18,14 @@ public sealed class UpdateService
         DefaultRequestHeaders = { { "User-Agent", "InstantReplay-Updater" } }
     };
 
-    public async Task<UpdateInfo?> CheckAsync(string repo)
+    /// <summary>
+    /// Официальный репозиторий проекта — единственный источник обновлений.
+    /// Намеренно константа, а не настройка: обновление подменяет исполняемые файлы,
+    /// и путь к ним не должен зависеть от того, что кто-то впишет в настройки.
+    /// </summary>
+    public const string Repo = "Rizen1322/InstantReplay";
+
+    public async Task<UpdateInfo?> CheckAsync(string repo = Repo)
     {
         if (string.IsNullOrWhiteSpace(repo) || !repo.Contains('/')) return null;
         try
@@ -113,18 +120,36 @@ public sealed class UpdateService
 
     /// <summary>
     /// Корень установки: ...\InstantReplay\app\InstantReplay.exe → ...\InstantReplay.
-    /// Установщик кладёт бинарники в подпапку app, поэтому поднимаемся на уровень выше.
+    /// null — приложение запущено не из установленной папки (сборка из dist,
+    /// распакованный архив): обновлять на месте нечего.
+    ///
+    /// Раньше в таком случае возвращалась сама папка exe, и установщик создавал
+    /// ВНУТРИ неё ещё одну подпапку app — появлялась вложенная копия, которая
+    /// никогда не обновлялась, а запись в реестре начинала указывать на неё.
     /// </summary>
-    public static string InstallRoot
+    public static string? InstallRoot
     {
         get
         {
+            // Установленная раскладка: <root>\app\InstantReplay.exe
             string exeDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-            var parent = Directory.GetParent(exeDir);
-            return string.Equals(Path.GetFileName(exeDir), "app", StringComparison.OrdinalIgnoreCase)
-                   && parent is not null
-                ? parent.FullName
-                : exeDir;
+            if (string.Equals(Path.GetFileName(exeDir), "app", StringComparison.OrdinalIgnoreCase)
+                && Directory.GetParent(exeDir) is { } parent)
+                return parent.FullName;
+
+            // Запуск не из установленной папки — берём путь установки из реестра,
+            // но только если он выглядит настоящим (есть app\InstantReplay.exe).
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Uninstall\InstantReplay");
+                if (key?.GetValue("InstallLocation") is string root && root.Length > 0
+                    && File.Exists(Path.Combine(root, "app", "InstantReplay.exe")))
+                    return root;
+            }
+            catch { }
+
+            return null;
         }
     }
 

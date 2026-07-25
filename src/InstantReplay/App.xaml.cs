@@ -197,7 +197,7 @@ public partial class App : Application
 
     private static async Task CheckUpdatesAsync()
     {
-        var info = await Services.Updates.CheckAsync(Services.Settings.Current.UpdateRepo);
+        var info = await Services.Updates.CheckAsync();
         if (info is null) return;
         Services.Notifications.Show(NotificationKind.Warning, Loc.T("update_found", info.Version));
     }
@@ -302,7 +302,9 @@ public partial class App : Application
 
     private sealed class RelayCmd(Action action) : System.Windows.Input.ICommand
     {
-        public event EventHandler? CanExecuteChanged;
+        // Команда всегда доступна, поэтому событие никого не уведомляет —
+        // пустые аксессоры вместо поля, чтобы не было предупреждения CS0067.
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
         public bool CanExecute(object? p) => true;
         public void Execute(object? p) => action();
     }

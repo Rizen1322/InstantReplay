@@ -17,35 +17,10 @@
                          Title="Запись активна"
                          Message="Параметры захвата заблокированы, чтобы не прерывать запись. Выключи Instant Replay для изменения разрешения, FPS, кодека или аудиоустройств. Громкость можно менять на лету."/>
 
-                <TextBlock Text="Пресеты качества" Style="{StaticResource SectionHeader}"/>
-                <TextBlock Text="Готовые связки настроек — один клик и всё настроено" Style="{StaticResource SectionSub}"/>
-
-                <StackPanel x:Name="PresetsPanel" Spacing="6"/>
-
-                <TextBlock Text="Длина Instant Replay" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
-                <Grid Style="{StaticResource SettingCard}">
-                    <StackPanel Spacing="14">
-                        <StackPanel x:Name="LengthChips" Orientation="Horizontal" Spacing="8"/>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Своё значение:" Style="{StaticResource RowLabel}" Margin="0,0,10,0"/>
-                            <NumberBox x:Name="CustomLengthBox" Grid.Column="1" Minimum="5" Maximum="1800"
-                                       SpinButtonPlacementMode="Compact" MinWidth="120"
-                                       ValueChanged="Length_Changed"/>
-                            <TextBlock Grid.Column="2" Text="секунд" Style="{StaticResource RowLabel}" Margin="10,0,0,0"/>
-                            <TextBlock x:Name="RamEstimate" Grid.Column="3" HorizontalAlignment="Right"
-                                       VerticalAlignment="Center"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                        </Grid>
-                    </StackPanel>
-                </Grid>
-
-                <TextBlock Text="Параметры видео" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <!-- Главное — сразу: разрешение, FPS, битрейт, кодек.
+                     Пресеты убраны под Expander ниже: ими пользуются один раз,
+                     а места занимали больше, чем сами настройки. -->
+                <TextBlock Text="Качество записи" Style="{StaticResource SectionHeader}"/>
                 <Grid Style="{StaticResource SettingCard}">
                     <StackPanel Spacing="16">
                         <Grid>
@@ -54,7 +29,8 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Разрешение" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="ResolutionBox" Grid.Column="1" MinWidth="230">
+                            <ComboBox x:Name="ResolutionBox" Grid.Column="1" MinWidth="230"
+                                      SelectionChanged="VideoSetting_Changed">
                                 <ComboBoxItem Content="720p (1280×720)" Tag="720"/>
                                 <ComboBoxItem Content="1080p (1920×1080)" Tag="1080"/>
                                 <ComboBoxItem Content="1440p (2560×1440)" Tag="1440"/>
@@ -67,7 +43,8 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Частота кадров" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="FpsBox" Grid.Column="1" MinWidth="230">
+                            <ComboBox x:Name="FpsBox" Grid.Column="1" MinWidth="230"
+                                      SelectionChanged="VideoSetting_Changed">
                                 <ComboBoxItem Content="30 FPS" Tag="30"/>
                                 <ComboBoxItem Content="60 FPS" Tag="60"/>
                                 <ComboBoxItem Content="120 FPS" Tag="120"/>
@@ -104,25 +81,84 @@
                         <InfoBar x:Name="CodecBar" Severity="Warning" IsClosable="False" IsOpen="False"
                                  Title="Кодек недоступен"
                                  Message="Этот GPU не умеет кодировать выбранным кодеком — запись не запустится. Выбери H.264 или HEVC."/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Длина буфера: второе по важности — прямо влияет на расход RAM -->
+                <TextBlock Text="Длина Instant Replay" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="14">
+                        <StackPanel x:Name="LengthChips" Orientation="Horizontal" Spacing="8"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Своё значение:" Style="{StaticResource RowLabel}" Margin="0,0,10,0"/>
+                            <NumberBox x:Name="CustomLengthBox" Grid.Column="1" Minimum="5" Maximum="1800"
+                                       SpinButtonPlacementMode="Compact" MinWidth="120"
+                                       ValueChanged="Length_Changed"/>
+                            <TextBlock Grid.Column="2" Text="секунд" Style="{StaticResource RowLabel}" Margin="10,0,0,0"/>
+                            <TextBlock x:Name="RamEstimate" Grid.Column="3" HorizontalAlignment="Right"
+                                       VerticalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Пресеты: свёрнуты, в заголовке — какой сейчас активен -->
+                <Expander x:Name="PresetsExpander" HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Stretch" Margin="0,16,0,0">
+                    <Expander.Header>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Пресеты качества" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="PresetSummary" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                        </Grid>
+                    </Expander.Header>
+                    <StackPanel x:Name="PresetsPanel" Spacing="6" Margin="0,4,0,4"/>
+                </Expander>
+
+                <!-- Редко меняемое: монитор и курсор -->
+                <Expander x:Name="SourceExpander" HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Stretch" Margin="0,4,0,0">
+                    <Expander.Header>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Источник захвата" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="SourceSummary" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                    </Expander.Header>
+                    <StackPanel Spacing="16" Margin="0,4,0,4">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Монитор" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="MonitorBox" Grid.Column="1" MinWidth="280"/>
+                            <ComboBox x:Name="MonitorBox" Grid.Column="1" MinWidth="280"
+                                      SelectionChanged="VideoSetting_Changed"/>
                         </Grid>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="Записывать курсор мыши" Style="{StaticResource RowLabel}"/>
+                            <StackPanel>
+                                <TextBlock Text="Записывать курсор мыши" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="CursorNote" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
                             <ToggleSwitch x:Name="CursorToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
                                           HorizontalAlignment="Right" MinWidth="0"/>
                         </Grid>
                     </StackPanel>
-                </Grid>
+                </Expander>
 
                 <InfoBar x:Name="HwBar" Severity="Success" IsClosable="False" IsOpen="True" Margin="0,6,0,10"/>
             </StackPanel>

@@ -65,6 +65,22 @@ public sealed partial class AudioPage : Page
         MicVolSlider.Value = s.MicVolume * 100;
         UpdateVolumeTexts();
         _loading = false;
+        UpdateDevicesSummary();
+    }
+
+    /// <summary>Сводка в заголовке свёрнутого блока устройств.</summary>
+    private void UpdateDevicesSummary()
+    {
+        string render = (RenderDeviceBox.SelectedItem as ComboBoxItem)?.Content as string ?? "По умолчанию";
+        string capture = (CaptureDeviceBox.SelectedItem as ComboBoxItem)?.Content as string ?? "По умолчанию";
+        string gate = NoiseToggle.IsOn ? " · шумоподавление вкл." : "";
+        DevicesSummary.Text = $"Вывод: {render} · Микрофон: {capture}{gate}";
+    }
+
+    private void Device_Changed(object sender, object e)
+    {
+        if (_loading) return;
+        UpdateDevicesSummary();
     }
 
     private void Apply_Click(object sender, RoutedEventArgs e)
@@ -72,14 +88,15 @@ public sealed partial class AudioPage : Page
         var s = Services.Settings.Current;
         s.CaptureGameAudio = GameAudioToggle.IsOn;
         s.CaptureMicrophone = MicToggle.IsOn;
-        if (Enum.TryParse(Tag(TrackModeBox), out AudioTrackMode tm)) s.TrackMode = tm;
-        string render = Tag(RenderDeviceBox);
+        if (Enum.TryParse(TagOf(TrackModeBox), out AudioTrackMode tm)) s.TrackMode = tm;
+        string render = TagOf(RenderDeviceBox);
         s.RenderDeviceId = render.Length == 0 ? null : render;
-        string capture = Tag(CaptureDeviceBox);
+        string capture = TagOf(CaptureDeviceBox);
         s.CaptureDeviceId = capture.Length == 0 ? null : capture;
         s.MicNoiseSuppression = NoiseToggle.IsOn;
         Services.Settings.Save("audio");
 
+        UpdateDevicesSummary();
         ApplyBtn.Content = "Применено ✓";
         _ = ResetApplyLabelAsync();
     }
@@ -102,6 +119,9 @@ public sealed partial class AudioPage : Page
 
     private void UpdateVolumeTexts()
     {
+        // Обработчик слайдера может сработать ещё во время разбора XAML, когда
+        // элементы ниже по разметке не созданы (см. такой же случай в RecordingPage)
+        if (GameVolText is null || MicVolText is null) return;
         GameVolText.Text = $"{(int)GameVolSlider.Value}%";
         MicVolText.Text = $"{(int)MicVolSlider.Value}%";
     }
@@ -124,6 +144,7 @@ public sealed partial class AudioPage : Page
         bool locked = st != EngineState.Stopped;
         ActiveBar.IsOpen = locked;
         UiUtil.SetEnabledRecursive(SourcesCard, !locked);
+        DevicesExpander.IsEnabled = !locked;
         ApplyBtn.IsEnabled = !locked;
     });
 
@@ -133,7 +154,7 @@ public sealed partial class AudioPage : Page
             if (item is ComboBoxItem c && (string?)c.Tag == tag) { box.SelectedItem = c; return; }
     }
 
-    private static string Tag(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+    private static string TagOf(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
 }

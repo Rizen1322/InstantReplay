@@ -13,7 +13,39 @@
         <ScrollViewer Padding="28,12,28,0">
             <StackPanel Spacing="10" HorizontalAlignment="Stretch">
 
-                <TextBlock Text="Папка записей" Style="{StaticResource SectionHeader}"/>
+                <!-- Статистика первой: главное на этой вкладке — сколько занято
+                     и близко ли автоочистка. Настройки ниже меняют редко. -->
+                <TextBlock Text="Статистика" Style="{StaticResource SectionHeader}"/>
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Spacing="2">
+                                <TextBlock x:Name="SavedCountText" Text="0" FontSize="24" FontWeight="SemiBold"/>
+                                <TextBlock Text="повторов сохранено" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="2">
+                                <TextBlock x:Name="UsedText" Text="0,0 ГБ" FontSize="24" FontWeight="SemiBold"/>
+                                <TextBlock Text="занято на диске" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Spacing="2">
+                                <TextBlock x:Name="FreeText" Text="—" FontSize="24" FontWeight="SemiBold"/>
+                                <TextBlock Text="свободно" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <StackPanel x:Name="UsagePanel" Spacing="4" Margin="0,6,0,0">
+                            <ProgressBar x:Name="UsageBar" Height="6" Minimum="0" Maximum="100"/>
+                            <TextBlock x:Name="UsageText" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+                <TextBlock Text="Папка записей" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
                 <Grid Style="{StaticResource SettingCard}">
                     <StackPanel Spacing="16">
                         <Grid>
@@ -83,36 +115,6 @@
                     </StackPanel>
                 </Grid>
 
-                <Grid Style="{StaticResource SettingCard}" Margin="0,6,0,10">
-                    <StackPanel Spacing="10">
-                        <TextBlock Text="Статистика" FontWeight="SemiBold"/>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Spacing="2">
-                                <TextBlock x:Name="SavedCountText" Text="0" FontSize="24" FontWeight="SemiBold"/>
-                                <TextBlock Text="повторов сохранено" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock x:Name="UsedText" Text="0,0 ГБ" FontSize="24" FontWeight="SemiBold"/>
-                                <TextBlock Text="занято на диске" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2" Spacing="2">
-                                <TextBlock x:Name="FreeText" Text="—" FontSize="24" FontWeight="SemiBold"/>
-                                <TextBlock Text="свободно" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                        </Grid>
-
-                        <!-- Заполнение лимита папки: видно, когда начнётся автоочистка -->
-                        <StackPanel x:Name="UsagePanel" Spacing="4" Margin="0,6,0,0">
-                            <ProgressBar x:Name="UsageBar" Height="6" Minimum="0" Maximum="100"/>
-                            <TextBlock x:Name="UsageText" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Grid>
             </StackPanel>
         </ScrollViewer>
 

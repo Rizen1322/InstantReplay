@@ -98,8 +98,9 @@ public sealed class AppSettings
     /// <summary>Автоматически включать Instant Replay при запуске приложения.</summary>
     public bool AutoStartReplayBuffer { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
-    /// <summary>GitHub-репозиторий для автообновления, формат "owner/repo".</summary>
-    public string UpdateRepo { get; set; } = "";
+    // Репозиторий обновлений больше не настройка, а константа UpdateService.Repo:
+    // релизы берутся только из официального репозитория проекта. Раньше пустое
+    // значение в сохранённом settings.json молча отключало проверку обновлений.
 
     [JsonIgnore]
     public long BitrateBps => BitrateMbps * 1_000_000L;

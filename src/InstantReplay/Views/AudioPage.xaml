@@ -17,72 +17,9 @@
                          Title="Запись активна"
                          Message="Параметры захвата заблокированы, чтобы не прерывать запись. Выключи Instant Replay для изменения разрешения, FPS, кодека или аудиоустройств. Громкость можно менять на лету."/>
 
-                <TextBlock Text="Источники звука" Style="{StaticResource SectionHeader}"/>
-                <Grid x:Name="SourcesCard" Style="{StaticResource SettingCard}">
-                    <StackPanel Spacing="16">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Звук игры (системный)" Style="{StaticResource RowLabel}"/>
-                            <ToggleSwitch x:Name="GameAudioToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
-                                          HorizontalAlignment="Right" MinWidth="0"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
-                            <ToggleSwitch x:Name="MicToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
-                                          HorizontalAlignment="Right" MinWidth="0"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Режим дорожек" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="TrackModeBox" Grid.Column="1" MinWidth="280">
-                                <ComboBoxItem Content="Одна дорожка (игра + микрофон)" Tag="Mixed"/>
-                                <ComboBoxItem Content="Две отдельные дорожки" Tag="Separate"/>
-                                <ComboBoxItem Content="Только игра" Tag="GameOnly"/>
-                                <ComboBoxItem Content="Только микрофон" Tag="MicOnly"/>
-                            </ComboBox>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Устройство вывода" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="RenderDeviceBox" Grid.Column="1" MinWidth="280"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Устройство микрофона" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="CaptureDeviceBox" Grid.Column="1" MinWidth="280"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Шумоподавление микрофона" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Убирает фоновый гул, но нагружает CPU" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <ToggleSwitch x:Name="NoiseToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
-                                          HorizontalAlignment="Right" MinWidth="0"/>
-                        </Grid>
-                    </StackPanel>
-                </Grid>
-
-                <TextBlock Text="Громкости" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <!-- Громкости наверху: единственное, что меняют на лету прямо во
+                     время записи. Устройства и режим дорожек задаются один раз. -->
+                <TextBlock Text="Громкости" Style="{StaticResource SectionHeader}"/>
                 <Grid Style="{StaticResource SettingCard}">
                     <StackPanel Spacing="14">
                         <Grid ColumnSpacing="16">
@@ -119,6 +56,86 @@
                                    Style="{StaticResource RowSub}"/>
                     </StackPanel>
                 </Grid>
+
+                <TextBlock Text="Источники звука" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <Grid x:Name="SourcesCard" Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="16">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Звук игры (системный)" Style="{StaticResource RowLabel}"/>
+                            <ToggleSwitch x:Name="GameAudioToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
+                            <ToggleSwitch x:Name="MicToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Режим дорожек" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="TrackModeBox" Grid.Column="1" MinWidth="280">
+                                <ComboBoxItem Content="Одна дорожка (игра + микрофон)" Tag="Mixed"/>
+                                <ComboBoxItem Content="Две отдельные дорожки" Tag="Separate"/>
+                                <ComboBoxItem Content="Только игра" Tag="GameOnly"/>
+                                <ComboBoxItem Content="Только микрофон" Tag="MicOnly"/>
+                            </ComboBox>
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Устройства и обработка: выбираются один раз, обычно «по умолчанию» -->
+                <Expander x:Name="DevicesExpander" HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Stretch" Margin="0,10,0,10">
+                    <Expander.Header>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Устройства и обработка" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="DevicesSummary" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                    </Expander.Header>
+                    <StackPanel Spacing="16" Margin="0,4,0,4">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Устройство вывода" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="RenderDeviceBox" Grid.Column="1" MinWidth="280"
+                                      SelectionChanged="Device_Changed"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Устройство микрофона" Style="{StaticResource RowLabel}"/>
+                            <ComboBox x:Name="CaptureDeviceBox" Grid.Column="1" MinWidth="280"
+                                      SelectionChanged="Device_Changed"/>
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Шумоподавление микрофона" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Убирает фоновый гул, но нагружает CPU" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <ToggleSwitch x:Name="NoiseToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0" Toggled="Device_Changed"/>
+                        </Grid>
+                    </StackPanel>
+                </Expander>
             </StackPanel>
         </ScrollViewer>
 

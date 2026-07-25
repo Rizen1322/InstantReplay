@@ -29,7 +29,6 @@ public sealed partial class AppPage : Page
         TrayStartToggle.IsOn = s.StartMinimizedToTray;
         AutoBufferToggle.IsOn = s.AutoStartReplayBuffer;
         UpdatesToggle.IsOn = s.CheckForUpdates;
-        RepoBox.Text = s.UpdateRepo;
 
         NotifyToggle.IsOn = s.ShowNotifications;
         SelectByTag(NotifyPosBox, s.NotificationPosition.ToString());
@@ -41,9 +40,7 @@ public sealed partial class AppPage : Page
         string ver = typeof(AppPage).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
         FooterText.Text = $"Instant Replay {ver}  ·  настройки: {Path.Combine(SettingsManager.Dir, "settings.json")}";
         VersionText.Text = $"Установленная версия: {ver}";
-        UpdateStatus.Text = string.IsNullOrWhiteSpace(s.UpdateRepo)
-            ? "Репозиторий не указан — проверка обновлений отключена"
-            : "Нажми «Проверить», чтобы узнать о новой версии";
+        UpdateStatus.Text = "Нажми «Проверить», чтобы узнать о новой версии";
 
         _loading = false;
     }
@@ -52,36 +49,15 @@ public sealed partial class AppPage : Page
 
     private UpdateInfo? _pendingUpdate;
 
-    private void Repo_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        string repo = RepoBox.Text.Trim();
-        if (repo == Services.Settings.Current.UpdateRepo) return;
-        Services.Settings.Current.UpdateRepo = repo;
-        Services.Settings.Save("system");
-        UpdateStatus.Text = string.IsNullOrWhiteSpace(repo)
-            ? "Репозиторий не указан — проверка обновлений отключена"
-            : "Нажми «Проверить», чтобы узнать о новой версии";
-    }
-
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
     {
-        string repo = RepoBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(repo))
-        {
-            ShowUpdateBar(InfoBarSeverity.Warning, "Не указан репозиторий",
-                "Впиши «владелец/репозиторий» в поле ниже — оттуда берутся релизы.");
-            return;
-        }
-        Repo_Changed(sender, e); // сохранить, если правили и сразу нажали
-
         CheckBtn.IsEnabled = false;
         UpdateStatus.Text = "Проверяю…";
         UpdatePanel.Visibility = Visibility.Collapsed;
         UpdateWarnBar.IsOpen = false;
         try
         {
-            _pendingUpdate = await Services.Updates.CheckAsync(repo);
+            _pendingUpdate = await Services.Updates.CheckAsync();
             if (_pendingUpdate is null)
             {
                 UpdateStatus.Text = $"Обновлений нет — установлена последняя версия " +
@@ -147,8 +123,22 @@ public sealed partial class AppPage : Page
 
             string installer = await Services.Updates.DownloadAsync(_pendingUpdate.DownloadUrl, progress);
 
+            // Обновлять «на месте» можно только установленную копию. Для сборки из
+            // dist/архива установщик поставил бы новую версию рядом, а запущенная
+            // так и осталась бы старой — с бесконечным предложением обновиться.
+            string? root = UpdateService.InstallRoot;
+            if (root is null)
+            {
+                ShowUpdateBar(InfoBarSeverity.Warning, "Это не установленная копия",
+                    "Приложение запущено не из папки установки, обновить на месте нельзя. " +
+                    "Запусти скачанный установщик вручную: " + installer);
+                InstallUpdateBtn.IsEnabled = true;
+                InstallUpdateBtn.Content = "Скачать и установить";
+                return;
+            }
+
             InstallUpdateBtn.Content = "Запускаю установщик…";
-            if (!UpdateService.LaunchInstaller(installer, UpdateService.InstallRoot))
+            if (!UpdateService.LaunchInstaller(installer, root))
             {
                 ShowUpdateBar(InfoBarSeverity.Error, "Не удалось запустить установщик",
                     "Запусти скачанный файл вручную: " + installer);
@@ -195,9 +185,9 @@ public sealed partial class AppPage : Page
         s.AutoStartReplayBuffer = AutoBufferToggle.IsOn;
         s.CheckForUpdates = UpdatesToggle.IsOn;
         s.ShowNotifications = NotifyToggle.IsOn;
-        if (Enum.TryParse(Tag(NotifyPosBox), out NotificationPosition np)) s.NotificationPosition = np;
+        if (Enum.TryParse(TagOf(NotifyPosBox), out NotificationPosition np)) s.NotificationPosition = np;
         s.OpenFolderAfterSave = OpenAfterToggle.IsOn;
-        if (Enum.TryParse(Tag(ThemeBox), out AppTheme th)) s.Theme = th;
+        if (Enum.TryParse(TagOf(ThemeBox), out AppTheme th)) s.Theme = th;
         Services.Settings.Save("system");
         (WindowTracker.Main as MainWindow)?.ApplyTheme();
     }
@@ -213,7 +203,7 @@ public sealed partial class AppPage : Page
     {
         if (_loading) return;
         var s = Services.Settings.Current;
-        if (!Enum.TryParse(Tag(SoundBox), out SaveSound sound)) return;
+        if (!Enum.TryParse(TagOf(SoundBox), out SaveSound sound)) return;
 
         if (sound == SaveSound.Custom)
         {
@@ -281,5 +271,5 @@ public sealed partial class AppPage : Page
             if (item is ComboBoxItem c && (string?)c.Tag == tag) { box.SelectedItem = c; return; }
     }
 
-    private static string Tag(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+    private static string TagOf(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
 }

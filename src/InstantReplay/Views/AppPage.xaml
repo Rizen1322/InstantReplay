@@ -157,19 +157,6 @@
                         <ToggleSwitch x:Name="UpdatesToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
                                       HorizontalAlignment="Right" MinWidth="0" Toggled="System_Changed"/>
                     </Grid>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="Репозиторий GitHub" Style="{StaticResource RowLabel}"/>
-                            <TextBlock Text="Формат «владелец/репозиторий» — откуда берутся релизы"
-                                       Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                        <TextBox x:Name="RepoBox" Grid.Column="1" MinWidth="280" VerticalAlignment="Center"
-                                 PlaceholderText="owner/repo" LostFocus="Repo_Changed"/>
-                    </Grid>
                 </StackPanel>
             </Grid>
 

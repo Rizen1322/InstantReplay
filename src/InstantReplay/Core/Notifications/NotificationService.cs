@@ -47,7 +47,6 @@ public sealed class NotificationService
     /// выключен, вернёт false и превью просто не покажется.
     /// </summary>
     public Capture.LiveFrameProvider? PreviewSource { get; set; }
-    private DesktopAcrylicController? _acrylic;
     private CancellationTokenSource? _hideCts;
 
     private const int WinWidth = 430, WinHeight = 76, Margin = 24;

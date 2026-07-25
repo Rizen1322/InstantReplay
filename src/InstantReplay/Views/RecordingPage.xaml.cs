@@ -139,19 +139,44 @@ public sealed partial class RecordingPage : Page
         _loading = false;
         SyncPresets();
         UpdateCodecWarning();
+        UpdateSourceSummary();
+    }
+
+    /// <summary>Сводка в заголовке свёрнутого блока «Источник захвата».</summary>
+    private void UpdateSourceSummary()
+    {
+        string monitor = (MonitorBox.SelectedItem as ComboBoxItem)?.Content as string ?? "монитор по умолчанию";
+        SourceSummary.Text = $"{monitor} · курсор {(CursorToggle.IsOn ? "записывается" : "не записывается")}";
+
+        // На Windows 10 захват идёт через Desktop Duplication, а он курсор в кадр
+        // не отдаёт вовсе. Раньше об этом было сказано только в логе.
+        bool win11 = Environment.OSVersion.Version.Build >= 22000;
+        CursorNote.Text = win11
+            ? "Курсор виден в записи"
+            : "На Windows 10 курсор в запись не попадает — ограничение системы";
     }
 
     /// <summary>Подсветить пресет, совпадающий с текущими настройками (или снять все).</summary>
     private void SyncPresets()
     {
-        int res = int.TryParse(Tag(ResolutionBox), out int r) ? r : 0;
-        int fps = int.TryParse(Tag(FpsBox), out int f) ? f : 0;
+        int res = int.TryParse(TagOf(ResolutionBox), out int r) ? r : 0;
+        int fps = int.TryParse(TagOf(FpsBox), out int f) ? f : 0;
         int mbps = (int)BitrateSlider.Value;
-        Enum.TryParse(Tag(CodecBox), out VideoCodec codec);
+        Enum.TryParse(TagOf(CodecBox), out VideoCodec codec);
 
+        Preset? active = null;
         foreach (var btn in _presetButtons)
-            btn.IsChecked = btn.Tag is Preset p
+        {
+            bool match = btn.Tag is Preset p
                 && p.Res == res && p.Fps == fps && p.Mbps == mbps && p.Codec == codec;
+            btn.IsChecked = match;
+            if (match) active = (Preset)btn.Tag;
+        }
+
+        // Заголовок свёрнутого блока показывает текущий набор — чтобы не разворачивать
+        PresetSummary.Text = active is not null
+            ? $"Активен: {active.Name}"
+            : $"Своя конфигурация · {res}p · {fps} FPS · {mbps} Мбит/с · {codec}";
     }
 
     /// <summary>
@@ -161,7 +186,7 @@ public sealed partial class RecordingPage : Page
     private void UpdateCodecWarning()
     {
         if (_availableCodecs is null || _availableCodecs.Count == 0) { CodecBar.IsOpen = false; return; }
-        CodecBar.IsOpen = Enum.TryParse(Tag(CodecBox), out VideoCodec codec)
+        CodecBar.IsOpen = Enum.TryParse(TagOf(CodecBox), out VideoCodec codec)
                           && !_availableCodecs.Contains(codec);
     }
 
@@ -172,20 +197,29 @@ public sealed partial class RecordingPage : Page
         SyncPresets();
     }
 
+    /// <summary>Любая правка вручную — обновить сводки свёрнутых блоков.</summary>
+    private void VideoSetting_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading) return;
+        SyncPresets();
+        UpdateSourceSummary();
+    }
+
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
         var s = Services.Settings.Current;
         s.ReplayLengthSeconds = (int)Math.Max(5, CustomLengthBox.Value);
-        if (int.TryParse(Tag(ResolutionBox), out int res)) s.VerticalResolution = res;
-        if (int.TryParse(Tag(FpsBox), out int fps)) s.Fps = fps;
+        if (int.TryParse(TagOf(ResolutionBox), out int res)) s.VerticalResolution = res;
+        if (int.TryParse(TagOf(FpsBox), out int fps)) s.Fps = fps;
         s.BitrateMbps = (int)BitrateSlider.Value;
-        if (Enum.TryParse(Tag(CodecBox), out VideoCodec codec)) s.Codec = codec;
-        if (int.TryParse(Tag(MonitorBox), out int mon)) s.MonitorIndex = mon;
+        if (Enum.TryParse(TagOf(CodecBox), out VideoCodec codec)) s.Codec = codec;
+        if (int.TryParse(TagOf(MonitorBox), out int mon)) s.MonitorIndex = mon;
         s.RecordCursor = CursorToggle.IsOn;
         Services.Settings.Save("video");
 
         SyncPresets();
         UpdateCodecWarning();
+        UpdateSourceSummary();
         ApplyBtn.Content = "Применено ✓";
         _ = ResetApplyLabelAsync();
     }
@@ -231,6 +265,11 @@ public sealed partial class RecordingPage : Page
 
     private void UpdateRamEstimate()
     {
+        // Может вызваться во время разбора XAML: присвоение Minimum слайдеру
+        // поднимает его Value и вызывает ValueChanged раньше, чем созданы
+        // элементы ниже по разметке. Без этой проверки страница падала целиком.
+        if (CustomLengthBox is null || BitrateSlider is null || RamEstimate is null) return;
+
         int seconds = (int)Math.Max(5, double.IsNaN(CustomLengthBox.Value) ? 180 : CustomLengthBox.Value);
         int mbps = (int)BitrateSlider.Value;
         double gb = mbps / 8.0 * seconds / 1000.0;
@@ -247,8 +286,10 @@ public sealed partial class RecordingPage : Page
 
     private void Bitrate_Changed(object sender, RangeBaseValueChangedEventArgs e)
     {
+        if (BitrateLabel is null) return; // ещё идёт разбор XAML
         BitrateLabel.Text = $"{(int)e.NewValue} Мбит/с";
         UpdateRamEstimate();
+        if (!_loading) SyncPresets();
     }
 
     private void OnEngineState(EngineState st) => Services.Dispatcher.Enqueue(() =>
@@ -257,6 +298,7 @@ public sealed partial class RecordingPage : Page
         ActiveBar.IsOpen = locked;
         UiUtil.SetEnabledRecursive(PresetsPanel, !locked);
         UiUtil.SetEnabledRecursive(LengthChips, !locked);
+        SourceExpander.IsEnabled = !locked;
         CustomLengthBox.IsEnabled = !locked;
         ResolutionBox.IsEnabled = !locked;
         FpsBox.IsEnabled = !locked;
@@ -298,7 +340,7 @@ public sealed partial class RecordingPage : Page
             if (item is ComboBoxItem c && (string?)c.Tag == tag) { box.SelectedItem = c; return; }
     }
 
-    private static string Tag(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+    private static string TagOf(ComboBox box) => (box.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
 }

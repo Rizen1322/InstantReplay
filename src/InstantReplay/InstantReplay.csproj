@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows10.0.22621.0</TargetFramework>
@@ -9,7 +9,7 @@
     <Platforms>x64</Platforms>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>
-    <!-- Unpackaged-приложение: обычный exe, без MSIX -->
+    <!-- Unpackaged-РїСЂРёР»РѕР¶РµРЅРёРµ: РѕР±С‹С‡РЅС‹Р№ exe, Р±РµР· MSIX -->
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
@@ -17,13 +17,17 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyVersion>1.0.0.1</AssemblyVersion>
-    <FileVersion>1.0.0.1</FileVersion>
-    <Version>1.0.1</Version>
+    <!-- Р’РђР–РќРћ: РїРµСЂРІС‹Рµ С‚СЂРё С‡РёСЃР»Р° AssemblyVersion РґРѕР»Р¶РЅС‹ СЃРѕРІРїР°РґР°С‚СЊ СЃ С‚РµРіРѕРј СЂРµР»РёР·Р°
+         (v1.0.1 в†’ 1.0.1.0). РђРІС‚РѕРѕР±РЅРѕРІР»РµРЅРёРµ СЃСЂР°РІРЅРёРІР°РµС‚ С‚РµРі СЃ AssemblyVersion, Рё РїСЂРё
+         1.0.0.1 РїСЂРёР»РѕР¶РµРЅРёРµ СЃС‡РёС‚Р°Р»Рѕ Р±С‹ СѓР¶Рµ СѓСЃС‚Р°РЅРѕРІР»РµРЅРЅС‹Р№ СЂРµР»РёР· v1.0.1 РЅРѕРІРµРµ СЃРµР±СЏ вЂ”
+         Рё РїСЂРµРґР»Р°РіР°Р»Рѕ Р±С‹ РµРіРѕ СЃРЅРѕРІР° РїРѕСЃР»Рµ РєР°Р¶РґРѕРіРѕ РѕР±РЅРѕРІР»РµРЅРёСЏ. -->
+    <AssemblyVersion>1.0.6.0</AssemblyVersion>
+    <FileVersion>1.0.6.0</FileVersion>
+    <Version>1.0.6</Version>
 
-    <!-- Чистая папка установки: только английские ресурсы вместо ~100 языковых папок -->
+    <!-- Р§РёСЃС‚Р°СЏ РїР°РїРєР° СѓСЃС‚Р°РЅРѕРІРєРё: С‚РѕР»СЊРєРѕ Р°РЅРіР»РёР№СЃРєРёРµ СЂРµСЃСѓСЂСЃС‹ РІРјРµСЃС‚Рѕ ~100 СЏР·С‹РєРѕРІС‹С… РїР°РїРѕРє -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <!-- Символы в релиз не кладём -->
+    <!-- РЎРёРјРІРѕР»С‹ РІ СЂРµР»РёР· РЅРµ РєР»Р°РґС‘Рј -->
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
@@ -32,15 +36,15 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250228001" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <!-- Direct3D11 / DXGI / Media Foundation обёртки -->
+    <!-- Direct3D11 / DXGI / Media Foundation РѕР±С‘СЂС‚РєРё -->
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
-    <!-- WASAPI-захват и ресемплинг. Только нужные пакеты: мета-пакет NAudio тянет
-         NAudio.WinForms и вместе с ним 23 МБ System.Windows.Forms в поставку. -->
+    <!-- WASAPI-Р·Р°С…РІР°С‚ Рё СЂРµСЃРµРјРїР»РёРЅРі. РўРѕР»СЊРєРѕ РЅСѓР¶РЅС‹Рµ РїР°РєРµС‚С‹: РјРµС‚Р°-РїР°РєРµС‚ NAudio С‚СЏРЅРµС‚
+         NAudio.WinForms Рё РІРјРµСЃС‚Рµ СЃ РЅРёРј 23 РњР‘ System.Windows.Forms РІ РїРѕСЃС‚Р°РІРєСѓ. -->
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="NAudio.Core" Version="2.2.1" />
-    <!-- Иконка в трее для WinUI 3 -->
+    <!-- РРєРѕРЅРєР° РІ С‚СЂРµРµ РґР»СЏ WinUI 3 -->
     <PackageReference Include="H.NotifyIcon.WinUI" Version="2.1.4" />
     <!-- WMI -->
     <PackageReference Include="System.Management" Version="9.0.0" />
