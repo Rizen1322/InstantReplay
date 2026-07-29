@@ -15,12 +15,22 @@ internal static class MfMp4Writer
     public const int SampleRate = Audio.AudioCaptureSource.SampleRate;
     public const int Channels = Audio.AudioCaptureSource.Channels;
 
-    public static IMFSinkWriter Create(string filePath)
+    /// <summary>
+    /// SinkWriter для MP4. По умолчанию throttling ВЫКЛЮЧЕН — так работают оба
+    /// сценария записи:
+    ///
+    /// • ManualRecorder пишет в реальном времени из колбэка энкодера, и блокировка
+    ///   писателем застопорила бы весь конвейер;
+    /// • ReplaySaver отдаёт готовый снимок буфера, и включённый throttling добавляет
+    ///   паузы, рассчитанные на реальное время: в замерах фаза записи выросла с 0.6
+    ///   до 33 секунд. Темп подачи там ограничивается своим пейсером (см. ReplaySaver).
+    /// </summary>
+    public static IMFSinkWriter Create(string filePath, bool disableThrottling = true)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
         using IMFAttributes attrs = MediaFactory.MFCreateAttributes(2);
         attrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, 1u);
-        attrs.Set(SinkWriterAttributeKeys.DisableThrottling, 1u);
+        if (disableThrottling) attrs.Set(SinkWriterAttributeKeys.DisableThrottling, 1u);
         return MediaFactory.MFCreateSinkWriterFromURL(filePath, null, attrs);
     }
 

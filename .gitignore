@@ -8,6 +8,9 @@ dist/
 # Тяжёлый архив с исходниками/бэкапом
 InstantReplay.7z
 
+# Отладочные выхлопы XAML-компилятора (xamlout.txt/xamlerr.txt рядом с проектом)
+xaml[oe]*.txt
+
 # Пользовательские данные IDE
 .vs/
 *.user

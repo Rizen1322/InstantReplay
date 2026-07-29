@@ -6,8 +6,6 @@ using static InstantReplay.Core.Interop.NativeMethods;
 
 namespace InstantReplay.Core.Hotkeys;
 
-public enum HotkeyAction { SaveReplay, SaveLast30, StartRecording, StopRecording, ToggleInstantReplay, Screenshot, OpenFolder }
-
 /// <summary>
 /// Глобальные горячие клавиши через низкоуровневый хук WH_KEYBOARD_LL.
 /// В отличие от RegisterHotKey, хук стоит В НАЧАЛЕ цепочки обработки ввода —
@@ -145,46 +143,5 @@ public sealed class HotkeyService : IDisposable
     }
 }
 
-/// <summary>Парсер строк вида "Ctrl+Alt+F10", "Shift+S", "F9" в (vk + модификаторы).</summary>
-public static class HotkeyParser
-{
-    private static readonly Dictionary<string, uint> Special = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Space"] = 0x20, ["Enter"] = 0x0D, ["Tab"] = 0x09, ["Esc"] = 0x1B, ["Backspace"] = 0x08,
-        ["Insert"] = 0x2D, ["Delete"] = 0x2E, ["Home"] = 0x24, ["End"] = 0x23,
-        ["PageUp"] = 0x21, ["PageDown"] = 0x22, ["PrintScreen"] = 0x2C, ["Pause"] = 0x13,
-        ["Up"] = 0x26, ["Down"] = 0x28, ["Left"] = 0x25, ["Right"] = 0x27,
-    };
-
-    public static bool TryParse(string combo, out (uint vk, bool ctrl, bool shift, bool alt, bool win) result)
-    {
-        result = default;
-        if (string.IsNullOrWhiteSpace(combo)) return false;
-
-        bool ctrl = false, shift = false, alt = false, win = false;
-        uint vk = 0;
-
-        foreach (var raw in combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
-        {
-            switch (raw.ToLowerInvariant())
-            {
-                case "ctrl" or "control": ctrl = true; break;
-                case "shift": shift = true; break;
-                case "alt": alt = true; break;
-                case "win" or "windows": win = true; break;
-                default:
-                    if (raw.Length == 1 && char.IsLetterOrDigit(raw[0]))
-                        vk = char.ToUpperInvariant(raw[0]);
-                    else if (raw.Length is 2 or 3 && (raw[0] is 'F' or 'f') && int.TryParse(raw[1..], out int f) && f is >= 1 and <= 24)
-                        vk = (uint)(0x70 + f - 1); // VK_F1..F24
-                    else if (Special.TryGetValue(raw, out var s))
-                        vk = s;
-                    else return false;
-                    break;
-            }
-        }
-        if (vk == 0) return false;
-        result = (vk, ctrl, shift, alt, win);
-        return true;
-    }
-}
+// HotkeyParser вынесен в отдельный файл (Core/Hotkeys/HotkeyParser.cs): им пользуются
+// ещё и проверка конфликтов, и тесты, которым WinUI-часть проекта не нужна.

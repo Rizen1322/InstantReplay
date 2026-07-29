@@ -10,21 +10,23 @@ namespace InstantReplay.Views;
 
 public sealed partial class HotkeysPage : Page
 {
-    private sealed record HotkeyRow(string Title, string? Desc,
+    private sealed record HotkeyRow(HotkeyAction Action, string Title, string? Desc,
         Func<AppSettings, string> Get, Action<AppSettings, string> Set);
 
     private static readonly HotkeyRow[] Rows =
     [
-        new("Сохранить повтор", "Весь буфер целиком", s => s.HotkeySaveReplay, (s, v) => s.HotkeySaveReplay = v),
-        new("Сохранить последние 30 сек", "Быстрый короткий клип", s => s.HotkeySaveLast30, (s, v) => s.HotkeySaveLast30 = v),
-        new("Вкл/выкл Instant Replay", null, s => s.HotkeyToggleInstantReplay, (s, v) => s.HotkeyToggleInstantReplay = v),
-        new("Начать запись", "Обычная запись в файл", s => s.HotkeyStartRecording, (s, v) => s.HotkeyStartRecording = v),
-        new("Остановить запись", null, s => s.HotkeyStopRecording, (s, v) => s.HotkeyStopRecording = v),
-        new("Скриншот", "Сохраняет PNG", s => s.HotkeyScreenshot, (s, v) => s.HotkeyScreenshot = v),
-        new("Открыть папку записей", null, s => s.HotkeyOpenFolder, (s, v) => s.HotkeyOpenFolder = v),
+        new(HotkeyAction.SaveReplay, "Сохранить повтор", "Весь буфер целиком", s => s.HotkeySaveReplay, (s, v) => s.HotkeySaveReplay = v),
+        new(HotkeyAction.SaveLast30, "Сохранить последние 30 сек", "Быстрый короткий клип", s => s.HotkeySaveLast30, (s, v) => s.HotkeySaveLast30 = v),
+        new(HotkeyAction.ToggleInstantReplay, "Вкл/выкл Instant Replay", null, s => s.HotkeyToggleInstantReplay, (s, v) => s.HotkeyToggleInstantReplay = v),
+        new(HotkeyAction.StartRecording, "Начать запись", "Обычная запись в файл", s => s.HotkeyStartRecording, (s, v) => s.HotkeyStartRecording = v),
+        new(HotkeyAction.StopRecording, "Остановить запись", null, s => s.HotkeyStopRecording, (s, v) => s.HotkeyStopRecording = v),
+        new(HotkeyAction.Screenshot, "Скриншот", "Сохраняет PNG", s => s.HotkeyScreenshot, (s, v) => s.HotkeyScreenshot = v),
+        new(HotkeyAction.OpenFolder, "Открыть папку записей", null, s => s.HotkeyOpenFolder, (s, v) => s.HotkeyOpenFolder = v),
     ];
 
     private readonly Dictionary<HotkeyRow, Button> _buttons = new();
+    /// <summary>Строка предупреждения под названием действия (дубль или опасное сочетание).</summary>
+    private readonly Dictionary<HotkeyRow, TextBlock> _warnings = new();
     private HotkeyRow? _capturing;
 
     public HotkeysPage()
@@ -63,6 +65,16 @@ public sealed partial class HotkeysPage : Page
                     FontSize = 11.5,
                     Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
                 });
+
+            var warning = new TextBlock
+            {
+                FontSize = 11.5,
+                TextWrapping = TextWrapping.Wrap,
+                Visibility = Visibility.Collapsed,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SystemFillColorCautionBrush"]
+            };
+            left.Children.Add(warning);
+            _warnings[row] = warning;
             grid.Children.Add(left);
 
             var btn = new Button
@@ -102,6 +114,35 @@ public sealed partial class HotkeysPage : Page
         var s = Services.Settings.Current;
         foreach (var (row, btn) in _buttons)
             btn.Content = Pretty(row.Get(s));
+        UpdateConflicts();
+    }
+
+    /// <summary>
+    /// Показать проблемы назначений: одно сочетание на двух действиях (сработает
+    /// только одно) и сочетания, перехват которых ломает работу вне игры.
+    /// </summary>
+    private void UpdateConflicts()
+    {
+        var s = Services.Settings.Current;
+        var duplicates = HotkeyConflicts.FindDuplicates(HotkeyConflicts.Bindings(s));
+        int problems = 0;
+
+        foreach (var row in Rows)
+        {
+            string? text = duplicates.TryGetValue(row.Action, out var other)
+                ? $"Это же сочетание назначено действию «{other}» — сработает только одно"
+                : HotkeyConflicts.Risk(row.Get(s));
+
+            if (!_warnings.TryGetValue(row, out var label)) continue;
+            label.Text = text ?? "";
+            label.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+            if (text is not null) problems++;
+        }
+
+        ConflictBar.IsOpen = problems > 0;
+        ConflictBar.Message = problems == 1
+            ? "Одно назначение требует внимания — подробности под строкой."
+            : $"Назначений, требующих внимания: {problems} — подробности под строками.";
     }
 
     private static string Pretty(string combo)
@@ -146,9 +187,48 @@ public sealed partial class HotkeysPage : Page
         var row = _capturing;
         _capturing = null;
         Services.Hotkeys.Suspended = false;
+
+        // Сочетание уже занято другим действием — спрашиваем, а не назначаем молча:
+        // молчаливый дубль означал, что одно из двух действий никогда не сработает.
+        var occupant = HotkeyConflicts.Occupant(Services.Settings.Current, row.Action, combo);
+        if (occupant is not null)
+        {
+            _ = ResolveDuplicateAsync(row, combo, occupant);
+            return;
+        }
+
+        Assign(row, combo);
+    }
+
+    private void Assign(HotkeyRow row, string combo)
+    {
         row.Set(Services.Settings.Current, combo);
         Services.Settings.Save("hotkeys");
         RefreshLabels();
+    }
+
+    private async Task ResolveDuplicateAsync(HotkeyRow row, string combo, HotkeyBinding occupant)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = "Сочетание уже занято",
+            Content = $"{Pretty(combo)} назначено действию «{occupant.Title}». " +
+                      "Переназначить на текущее действие? Прежнее останется без горячей клавиши.",
+            PrimaryButtonText = "Переназначить",
+            CloseButtonText = "Отмена",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            RefreshLabels(); // вернуть подпись кнопки из режима захвата
+            return;
+        }
+
+        var previous = Array.Find(Rows, r => r.Action == occupant.Action);
+        previous?.Set(Services.Settings.Current, "");
+        Assign(row, combo);
     }
 
     private void CancelCapture()

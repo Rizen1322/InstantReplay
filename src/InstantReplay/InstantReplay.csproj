@@ -21,9 +21,9 @@
          (v1.0.1 → 1.0.1.0). Автообновление сравнивает тег с AssemblyVersion, и при
          1.0.0.1 приложение считало бы уже установленный релиз v1.0.1 новее себя —
          и предлагало бы его снова после каждого обновления. -->
-    <AssemblyVersion>1.0.7.0</AssemblyVersion>
-    <FileVersion>1.0.7.0</FileVersion>
-    <Version>1.0.7</Version>
+    <AssemblyVersion>1.0.8.0</AssemblyVersion>
+    <FileVersion>1.0.8.0</FileVersion>
+    <Version>1.0.8</Version>
 
     <!-- Чистая папка установки: только английские ресурсы вместо ~100 языковых папок -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
@@ -35,7 +35,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250228001" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <!-- Direct3D11 / DXGI / Media Foundation обёртки -->
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />

@@ -43,7 +43,10 @@ SinkWriter, видео passthrough (remux без перекодирования)
 - **CsWinRT-интероп** с `IGraphicsCaptureItemInterop` / `IDirect3DDxgiInterfaceAccess` — через `RoGetActivationFactory` + `Marshal.GetObjectForIUnknown` / `FromAbi` (не `.As<T>()`).
 - **Хоткеи** — низкоуровневый хук `WH_KEYBOARD_LL` в отдельном потоке: комбинация ловится до игры, обработка уводится в ThreadPool (<1 мс в хуке).
 - **Уведомления** — WinUI-окно поверх всех окон, Acrylic, fade+slide-анимации, click-through, не отбирает фокус. **Белая рамка** системного окна убрана через `DwmSetWindowAttribute(DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE)` — это единственный работающий способ для WinUI 3.
-- **Статистика хранилища** всегда считается по актуальному `SaveRootPath`; смена папки в настройках триггерит `Settings.Changed("storage")` → мгновенный пересчёт по новой папке.
+- **Статистика хранилища** считается по индексу папки (`Core/Storage/ClipIndex.cs`), который перестраивается в фоне и правится инкрементально после каждой записи. Обхода диска перед сохранением клипа больше нет — раньше `EnsureSpace()` рекурсивно перечислял всю папку ровно в момент сохранения. Смена папки в настройках триггерит `Settings.Changed("storage")` → перестройка индекса по новой папке.
+- **Потеря GPU-устройства** (TDR, обновление драйвера, смена GPU) распознаётся по HRESULT (`Core/Capture/DeviceLoss.cs`) и в колбэке кадра, и в вотчдоге захвата: конвейер пересобирается заново с паузами (объекты D3D после device removed мертвы навсегда), пользователь получает уведомление.
+- **Одна копия приложения**: вторая копия не умирает молча, а сигналит первой именованным `EventWaitHandle` — та показывает окно и выходит на передний план.
+- **Настройки применяются по одной модели**: вкладки «Запись», «Аудио», «Хранилище» копят изменения до кнопки «Применить» (в строке состояния видно, что есть несохранённое), остальные применяются сразу и об этом написано на самой вкладке.
 
 ## Модули
 
@@ -58,11 +61,30 @@ SinkWriter, видео passthrough (remux без перекодирования)
 | Hotkeys | `Core/Hotkeys/HotkeyService.cs` |
 | Notifications/Overlay | `Core/Notifications/NotificationService.cs` |
 | Game Detection | `Core/GameDetection/GameDetector.cs` |
-| Storage Manager | `Core/Storage/StorageManager.cs` |
+| Storage Manager | `Core/Storage/StorageManager.cs` + `ClipIndex.cs` (индекс папки), `FileNaming.cs`, `ByteSize.cs` |
+| Библиотека клипов | `Core/Library/*` (сканирование папки, миниатюры через shell + дисковый кэш в `thumbs\`) |
 | Settings Manager | `Core/Settings/*` |
 | Характеристики | `Core/Hardware/HardwareServices.cs` (WMI + GeForce lookup API + ZenitH-AT/nvidia-data) |
 | Система | `Core/System/*` (автозапуск, автообновление) |
 | UI | `MainWindow`, `Views/*` (Mica, Fluent, тёмная тема, NavigationView) |
+| Обзор (первая вкладка) | `Views/OverviewPage.xaml(.cs)` — состояние, буфер, здоровье конвейера, уровни звука, хранилище, хоткеи, последние клипы |
+| Панорама записей | `Views/ClipsPage.xaml(.cs)` — секции по датам, сетка миниатюр, фильтры, просмотр клипа с выбором аудиодорожки |
+
+## Тесты
+
+```
+dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
+```
+
+Тест-проект (`net9.0`, xUnit) компилирует **исходники приложения напрямую** (`Compile Include`),
+а не ссылается на него: сам проект — WinUI-приложение, и `ProjectReference` притащил бы
+в тестовый хост весь Windows App SDK. Поэтому логика, которую хочется покрыть, лежит в
+файлах без зависимостей от UI: `HotkeyParser`, `HotkeyConflicts`, `ClipIndex`, `FileNaming`,
+`ByteSize`, `ClipGrouping`, `ReplayBuffers`.
+
+Тест `БезКлючевыхКадровБуферВсёРавноОграничен` появился не зря: он нашёл реальную дыру —
+при единственном keyframe в начале (сломанный GOP) страховка вытеснения не срабатывала,
+и кольцевой буфер рос без ограничения.
 
 ## Выпуск новой версии (автообновление)
 

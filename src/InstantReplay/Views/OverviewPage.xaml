@@ -1,0 +1,145 @@
+<Page
+    x:Class="InstantReplay.Views.OverviewPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    NavigationCacheMode="Required">
+
+    <ScrollViewer Padding="28,12,28,0">
+        <StackPanel Spacing="10" HorizontalAlignment="Stretch">
+
+            <!-- Что происходит прямо сейчас -->
+            <Grid Style="{StaticResource SettingCard}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Spacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Ellipse x:Name="StateDot" Width="11" Height="11" VerticalAlignment="Center" Fill="Gray"/>
+                        <TextBlock x:Name="StateText" Text="Выключено" FontSize="21" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <TextBlock x:Name="StateSub" Style="{StaticResource RowSub}" Margin="0"/>
+
+                    <ProgressBar x:Name="BufferBar" Height="6" Minimum="0" Maximum="100" Margin="0,4,0,0"/>
+                    <TextBlock x:Name="BufferText" Style="{StaticResource RowSub}" Margin="0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center" MinWidth="220">
+                    <TextBlock Text="В фокусе" Style="{StaticResource RowSub}" Margin="0"/>
+                    <TextBlock x:Name="GameText" Text="—" FontSize="16" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" MaxLines="1"/>
+                    <TextBlock x:Name="GameHint" Style="{StaticResource RowSub}" Margin="0,2,0,0"
+                               Text="Сюда попадёт имя папки для следующего клипа"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Конвейер: видно, доезжает ли запись до заданных настроек -->
+            <TextBlock Text="Конвейер записи" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
+            <Grid Style="{StaticResource SettingCard}">
+                <StackPanel Spacing="12">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Spacing="2">
+                            <TextBlock x:Name="CaptureFpsText" Text="—" FontSize="22" FontWeight="SemiBold"/>
+                            <TextBlock Text="кадров/с с экрана" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock x:Name="EncodeFpsText" Text="—" FontSize="22" FontWeight="SemiBold"/>
+                            <TextBlock Text="кадров/с в кодек" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Spacing="2">
+                            <TextBlock x:Name="DropText" Text="—" FontSize="22" FontWeight="SemiBold"/>
+                            <TextBlock Text="потеряно кадров" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="3" Spacing="2">
+                            <TextBlock x:Name="RamText" Text="—" FontSize="22" FontWeight="SemiBold"/>
+                            <TextBlock Text="буфер в оперативной памяти" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock x:Name="EncoderText" Style="{StaticResource RowSub}" Margin="0"/>
+                    <InfoBar x:Name="PipelineBar" Severity="Warning" IsClosable="False" IsOpen="False"
+                             Title="Кадры теряются"
+                             Message="Энкодер не успевает за захватом. Снизьте разрешение, FPS или битрейт на вкладке «Запись»."/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Звук: видно, что микрофон и игра реально пишутся -->
+            <TextBlock Text="Звук" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
+            <Grid Style="{StaticResource SettingCard}">
+                <StackPanel Spacing="10">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="110"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Игра" Style="{StaticResource RowLabel}"/>
+                        <ProgressBar x:Name="GameLevel" Grid.Column="1" Minimum="0" Maximum="1" Height="6"
+                                     VerticalAlignment="Center"/>
+                    </Grid>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="110"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
+                        <ProgressBar x:Name="MicLevel" Grid.Column="1" Minimum="0" Maximum="1" Height="6"
+                                     VerticalAlignment="Center"/>
+                    </Grid>
+                    <TextBlock x:Name="AudioModeText" Style="{StaticResource RowSub}" Margin="0"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Последние записи: попасть в клип за один клик -->
+            <Grid Margin="0,12,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Последние записи" Style="{StaticResource SectionHeader}" Margin="0"/>
+                <HyperlinkButton Grid.Column="1" Content="Вся панорама" Click="OpenClips_Click"
+                                 VerticalAlignment="Bottom"/>
+            </Grid>
+            <Grid Style="{StaticResource SettingCard}">
+                <StackPanel Spacing="10">
+                    <StackPanel x:Name="RecentPanel" Orientation="Horizontal" Spacing="12"/>
+                    <TextBlock x:Name="RecentEmpty" Style="{StaticResource RowSub}" Margin="0"
+                               Text="Записей пока нет — сохрани первый повтор горячей клавишей."/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Хранилище и клавиши: две колонки -->
+            <Grid ColumnSpacing="10" Margin="0,12,0,16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Хранилище" Style="{StaticResource SectionHeader}" Margin="0"/>
+                    <Grid Style="{StaticResource SettingCard}">
+                        <StackPanel Spacing="8">
+                            <TextBlock x:Name="StorageMain" Text="—" FontSize="18" FontWeight="SemiBold"/>
+                            <ProgressBar x:Name="StorageBar" Height="6" Minimum="0" Maximum="100"/>
+                            <TextBlock x:Name="StorageSub" Style="{StaticResource RowSub}" Margin="0"/>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Spacing="10">
+                    <TextBlock Text="Горячие клавиши" Style="{StaticResource SectionHeader}" Margin="0"/>
+                    <Grid Style="{StaticResource SettingCard}">
+                        <StackPanel x:Name="HotkeysPanel" Spacing="6"/>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

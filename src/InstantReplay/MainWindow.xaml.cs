@@ -16,13 +16,15 @@ public static class WindowTracker
 
 public sealed partial class MainWindow : Window
 {
-    private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    // Секунда, а не полсекунды: в шапке нет ничего, что меняется чаще (буфер считается
+    // в целых секундах), а тик — это обход состояния движка и сравнение строк.
+    private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool _syncingSwitch;
 
     private static readonly Type[] Pages =
     [
-        typeof(RecordingPage), typeof(AudioPage), typeof(HotkeysPage),
-        typeof(StoragePage), typeof(AppPage), typeof(HardwarePage)
+        typeof(OverviewPage), typeof(RecordingPage), typeof(ClipsPage), typeof(AudioPage),
+        typeof(HotkeysPage), typeof(StoragePage), typeof(AppPage), typeof(HardwarePage)
     ];
 
     public MainWindow()
@@ -43,7 +45,7 @@ public sealed partial class MainWindow : Window
         // (OverlappedPresenter.PreferredMinimumWidth появился только в WinAppSDK 1.7)
         InstallMinSizeHook();
 
-        Tabs.SelectedItem = TabRecording;
+        Tabs.SelectedItem = TabOverview;
 
         Services.Engine.StateChanged += _ => Services.Dispatcher.Enqueue(RefreshStatus);
         Services.Engine.RecordingChanged += _ => Services.Dispatcher.Enqueue(RefreshStatus);
@@ -105,39 +107,87 @@ public sealed partial class MainWindow : Window
             };
     }
 
+    // Кисти статуса создаются один раз. Раньше каждый тик таймера пересоздавал по две
+    // SolidColorBrush и заново присваивал одни и те же строки — мусор в куче каждые
+    // полсекунды всё время, пока открыто окно.
+    private static readonly SolidColorBrush DotRunning = new(Color("#4CD964"));
+    private static readonly SolidColorBrush DotRecording = new(Colors.OrangeRed);
+    private static readonly SolidColorBrush DotOff = new(Colors.Gray);
+    private static readonly SolidColorBrush RecDotIdle = new(Color("#B0B0B0"));
+
+    // Последнее показанное состояние: обновляем элементы только на реальных изменениях
+    private Brush? _shownStatusDot, _shownRecDot;
+    private string _shownStatus = "", _shownDetail = "", _shownRecText = "";
+
     private void RefreshStatus()
     {
         var e = Services.Engine;
         bool running = e.State != EngineState.Stopped;
         bool recording = e.IsRecordingToFile;
 
-        StatusDot.Fill = new SolidColorBrush(
-            recording ? Colors.OrangeRed :
-            running ? Color("#4CD964") : Colors.Gray);
-        StatusText.Text = e.State switch
+        Brush dot = recording ? DotRecording : running ? DotRunning : DotOff;
+        if (!ReferenceEquals(dot, _shownStatusDot))
+        {
+            StatusDot.Fill = dot;
+            _shownStatusDot = dot;
+        }
+
+        string status = e.State switch
         {
             _ when recording => "Идёт запись",
             EngineState.Running => "Запись в буфер",
             EngineState.Saving => "Сохранение…",
             _ => "Выключено"
         };
+        if (status != _shownStatus)
+        {
+            StatusText.Text = status;
+            _shownStatus = status;
+        }
 
+        string detail = "";
         if (running)
         {
             int sec = (int)e.BufferedDuration.TotalSeconds;
             string label = e.EncoderLabel is { Length: > 0 } l ? $"· {l} " : "";
-            StatusDetail.Text = $"{label}· буфер {FormatSec(sec)} ({StorageManager.FormatBytes(e.BufferedBytes)})";
+            detail = $"{label}· буфер {FormatSec(sec)} ({ByteSize.Format(e.BufferedBytes)})";
         }
-        else StatusDetail.Text = "";
+        if (detail != _shownDetail)
+        {
+            StatusDetail.Text = detail;
+            _shownDetail = detail;
+        }
 
-        SaveReplayBtn.IsEnabled = e.State == EngineState.Running;
-        RecBtnText.Text = recording ? "Остановить запись" : "Начать запись";
-        RecDot.Fill = new SolidColorBrush(recording ? Colors.OrangeRed
-            : Color("#B0B0B0"));
+        bool canSave = e.State == EngineState.Running;
+        if (SaveReplayBtn.IsEnabled != canSave) SaveReplayBtn.IsEnabled = canSave;
 
-        _syncingSwitch = true;
-        BufferSwitch.IsOn = running;
-        _syncingSwitch = false;
+        string recText = recording ? "Остановить запись" : "Начать запись";
+        if (recText != _shownRecText)
+        {
+            RecBtnText.Text = recText;
+            _shownRecText = recText;
+        }
+
+        Brush recDot = recording ? DotRecording : RecDotIdle;
+        if (!ReferenceEquals(recDot, _shownRecDot))
+        {
+            RecDot.Fill = recDot;
+            _shownRecDot = recDot;
+        }
+
+        if (BufferSwitch.IsOn != running)
+        {
+            _syncingSwitch = true;
+            BufferSwitch.IsOn = running;
+            _syncingSwitch = false;
+        }
+    }
+
+    /// <summary>Переключить вкладку из кода (например «Вся панорама» на «Обзоре»).</summary>
+    public void SelectTab(Type pageType)
+    {
+        int index = Array.IndexOf(Pages, pageType);
+        if (index >= 0 && index < Tabs.Items.Count) Tabs.SelectedItem = Tabs.Items[index];
     }
 
     private static string FormatSec(int sec) =>

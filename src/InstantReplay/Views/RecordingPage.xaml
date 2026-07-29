@@ -166,10 +166,16 @@
             </StackPanel>
         </ScrollViewer>
 
-        <!-- Нижняя панель действий -->
+        <!-- Нижняя панель действий: слева — состояние изменений, справа — кнопки -->
         <Grid Grid.Row="1" Padding="28,10,28,14">
-            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="DirtyText" Style="{StaticResource RowSub}" VerticalAlignment="Center" Margin="0"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
                 <Button Content="Открыть папку записей" Click="OpenFolder_Click"/>
+                <Button x:Name="RevertBtn" Content="Отменить" Click="Revert_Click"/>
                 <Button x:Name="ApplyBtn" Content="Применить" Style="{StaticResource AccentButtonStyle}"
                         MinWidth="110" Click="Apply_Click"/>
             </StackPanel>

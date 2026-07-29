@@ -60,7 +60,11 @@ public sealed class ReplayVideoBuffer
                     break;
                 node = node.Next;
             }
-            if (cutTo is not null)
+            // cutTo == первый кадр означает «резать нечего»: подходящий keyframe и так
+            // в голове буфера. Такой случай обязан проваливаться в страховку ниже —
+            // иначе при единственном keyframe в начале (сломанный GOP) буфер рос
+            // бесконечно: вытеснять нечего, а страховка не срабатывала.
+            if (cutTo is not null && !ReferenceEquals(cutTo, _frames.First))
             {
                 // Оставляем начиная с ПОСЛЕДНЕГО keyframe, дающего >= MaxDuration
                 while (_frames.First is not null && !ReferenceEquals(_frames.First, cutTo))

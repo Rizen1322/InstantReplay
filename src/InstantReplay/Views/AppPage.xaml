@@ -7,6 +7,9 @@
     <ScrollViewer Padding="28,12,28,0">
         <StackPanel Spacing="10" HorizontalAlignment="Stretch">
 
+            <TextBlock Text="Настройки этой вкладки применяются сразу — кнопки «Применить» здесь нет."
+                       Style="{StaticResource RowSub}" Margin="0,0,0,4"/>
+
             <TextBlock Text="Запуск" Style="{StaticResource SectionHeader}"/>
             <Grid Style="{StaticResource SettingCard}">
                 <StackPanel Spacing="16">

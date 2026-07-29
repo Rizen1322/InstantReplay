@@ -37,6 +37,8 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>Успешное сохранение: путь к файлу + фактическая длительность (сек).</summary>
     public event Action<string, int>? ReplaySaved;
     public event Action<string>? SaveFailed;
+    /// <summary>Сообщение о нештатной ситуации для пользователя (потеря GPU, восстановление).</summary>
+    public event Action<string>? Warning;
 
     public TimeSpan BufferedDuration => TimeSpan.FromTicks(_videoBuffer.BufferedDurationTicks);
     public long BufferedBytes => _videoBuffer.TotalBytes;
@@ -47,6 +49,14 @@ public sealed class ReplayEngine : IDisposable
     public string EncoderVendor => _encoder?.EncoderVendor ?? "";
     /// <summary>Живые пиковые уровни аудио (0..1) — для индикаторов.</summary>
     public (float Game, float Mic) AudioLevels => (_audio.GamePeak, _audio.MicPeak);
+
+    /// <summary>Счётчики конвейера для панели «Обзор»: сколько кадров прошло каждую стадию.</summary>
+    public (long Received, long Accepted, long Encoded, long Dropped, long Duplicated) FrameCounters =>
+        (_capture?.FramesReceived ?? 0, _capture?.FramesAccepted ?? 0,
+         _encoder?.FramesEncoded ?? 0, _encoder?.FramesDroppedQueue ?? 0, _encoder?.FramesDuplicated ?? 0);
+
+    /// <summary>Размер кадра, который реально уходит в энкодер (после масштабирования).</summary>
+    public (int Width, int Height) OutputSize => (_processor?.OutWidth ?? 0, _processor?.OutHeight ?? 0);
 
     /// <summary>
     /// Отдать последний захваченный кадр (для скриншота), не создавая вторую
@@ -151,9 +161,68 @@ public sealed class ReplayEngine : IDisposable
         }
         catch (Exception ex)
         {
+            // Сброс/пропажа устройства — единственная ошибка кадра, из которой конвейер
+            // сам не выберется: все объекты D3D мертвы, нужно пересобирать с нуля.
+            if (DeviceLoss.IsDeviceLost(ex))
+            {
+                RecoverFromDeviceLoss($"ошибка кадра: {ex.Message}");
+                return;
+            }
             Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
         }
     }
+
+    // ---------------- Восстановление после потери GPU-устройства ----------------
+
+    private int _recovering;
+
+    /// <summary>
+    /// Пересобрать конвейер после потери устройства (TDR, обновление драйвера, смена GPU).
+    /// Работа уходит в пул потоков: вызывают из колбэка захвата, а внутри мы этот же
+    /// захват останавливаем. Драйверу нужно время подняться, поэтому попытки с паузами.
+    /// </summary>
+    private void RecoverFromDeviceLoss(string reason)
+    {
+        if (Interlocked.Exchange(ref _recovering, 1) == 1) return; // уже восстанавливаемся
+        bool wasRecording = IsRecordingToFile;
+
+        Task.Run(() =>
+        {
+            try
+            {
+                Log.Warn("Engine", $"Потеряно устройство GPU ({reason}) — пересобираю конвейер");
+                Warning?.Invoke("Сброс драйвера GPU — перезапускаю запись");
+                try { Stop(); } catch (Exception ex) { Log.Warn("Engine", $"Остановка: {ex.Message}"); }
+
+                for (int attempt = 1; attempt <= RecoveryAttempts; attempt++)
+                {
+                    Thread.Sleep(attempt == 1 ? 1500 : 3000);
+                    try
+                    {
+                        Start();
+                        Log.Info("Engine", $"Конвейер восстановлен (попытка {attempt})");
+                        if (wasRecording)
+                        {
+                            // Прежний файл записи закрыт корректно в Stop(); продолжаем в новый
+                            try { StartRecordingToFile(); }
+                            catch (Exception ex) { Log.Warn("Engine", $"Запись не возобновилась: {ex.Message}"); }
+                        }
+                        Warning?.Invoke("Запись восстановлена");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("Engine", $"Восстановление, попытка {attempt}: {ex.Message}");
+                    }
+                }
+                Log.Error("Engine", "Восстановить конвейер не удалось");
+                Warning?.Invoke("Не удалось восстановить запись — включите Instant Replay заново");
+            }
+            finally { Interlocked.Exchange(ref _recovering, 0); }
+        });
+    }
+
+    private const int RecoveryAttempts = 10;
 
     // Раз в минуту — здоровье конвейера в лог: по этим цифрам видно, ГДЕ теряются
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
@@ -195,10 +264,12 @@ public sealed class ReplayEngine : IDisposable
     private long _wdLastReceived = -1;
     private DateTime _wdLastActivity = DateTime.UtcNow;
     private bool _wdEpisodeLogged; // логируем только начало эпизода тишины, не каждые 15 сек
+    private int _wdFailures;       // сколько попыток пересоздать сессию не удалось подряд
 
     private void StartCaptureWatchdog()
     {
         _wdLastReceived = -1;
+        _wdFailures = 0;
         _wdLastActivity = DateTime.UtcNow;
         _watchdog?.Dispose();
         _watchdog = new System.Threading.Timer(_ =>
@@ -226,9 +297,23 @@ public sealed class ReplayEngine : IDisposable
                     Log.Warn("Engine", "Захват молчит >15 сек (AFK/монитор выключен?) — пересоздаю WGC-сессию");
                 }
                 cap.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
+                _wdFailures = 0;
             }
             catch (Exception ex)
             {
+                // Пересоздание сессии не помогает, если умерло само устройство D3D:
+                // тогда лечит только полная пересборка конвейера.
+                if (DeviceLoss.IsDeviceLost(ex))
+                {
+                    RecoverFromDeviceLoss($"захват не создаётся: {ex.Message}");
+                    return;
+                }
+                if (++_wdFailures >= 3)
+                {
+                    _wdFailures = 0;
+                    RecoverFromDeviceLoss("захват не восстанавливается три попытки подряд");
+                    return;
+                }
                 if (_wdEpisodeLogged) return; // монитор выключен — молча ждём пробуждения
                 Log.Warn("Engine", $"Захват пока не восстановился: {ex.Message}");
             }
@@ -307,6 +392,7 @@ public sealed class ReplayEngine : IDisposable
 
                 ReplaySaver.Save(file, video, audio, mediaType, s.TrackMode,
                                  s.CaptureGameAudio, s.CaptureMicrophone);
+                _storage.RegisterSaved(file); // индекс папки — без повторного обхода диска
                 s.TotalReplaysSaved++;
                 _settings.Save("stats");
                 ReplaySaved?.Invoke(file, Math.Max(seconds, 1));
@@ -331,23 +417,8 @@ public sealed class ReplayEngine : IDisposable
     private string BuildFilePath(string game, string fallbackPrefix)
     {
         var s = _settings.Current;
-        var now = DateTime.Now;
-        string preset = $"{s.VerticalResolution}p{s.Fps}";
-
-        string name = (string.IsNullOrWhiteSpace(s.FileNameTemplate) ? "{game} {date} - {time}" : s.FileNameTemplate)
-            .Replace("{game}", game, StringComparison.OrdinalIgnoreCase)
-            .Replace("{date}", now.ToString("yyyy-MM-dd"), StringComparison.OrdinalIgnoreCase)
-            .Replace("{time}", now.ToString("HH-mm-ss"), StringComparison.OrdinalIgnoreCase)
-            .Replace("{preset}", preset, StringComparison.OrdinalIgnoreCase)
-            .Trim();
-        foreach (char c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
-        if (string.IsNullOrWhiteSpace(name)) name = $"{fallbackPrefix}_{now:yyyy-MM-dd_HH-mm-ss}";
-
-        string dir = s.GroupByGame ? Path.Combine(s.SaveRootPath, game) : s.SaveRootPath;
-        string path = Path.Combine(dir, name + ".mp4");
-        for (int i = 2; File.Exists(path); i++)
-            path = Path.Combine(dir, $"{name} ({i}).mp4");
-        return path;
+        return FileNaming.BuildPath(s.SaveRootPath, s.GroupByGame, s.FileNameTemplate, game,
+                                    DateTime.Now, $"{s.VerticalResolution}p{s.Fps}", fallbackPrefix);
     }
 
     // ---------------- Обычная запись в файл ----------------
@@ -379,6 +450,7 @@ public sealed class ReplayEngine : IDisposable
         if (_encoder is not null) _encoder.FrameEncoded -= recorder.OnFrame;
         _audio.BlockReady -= recorder.OnAudio;
         int seconds = recorder.Finish();
+        _storage.RegisterSaved(recorder.FilePath);
         RecordingChanged?.Invoke(false);
         RecordingSaved?.Invoke(recorder.FilePath, Math.Max(seconds, 1));
         return recorder.FilePath;

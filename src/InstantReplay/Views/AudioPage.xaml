@@ -52,12 +52,14 @@
                             <TextBlock x:Name="MicVolText" Grid.Column="2" Text="100%"
                                        VerticalAlignment="Center" HorizontalAlignment="Right"/>
                         </Grid>
-                        <TextBlock Text="Полоски показывают живой уровень сигнала, когда запись включена"
+                        <TextBlock Text="Полоски показывают живой уровень сигнала, когда запись включена. Громкость применяется сразу, без перезапуска."
                                    Style="{StaticResource RowSub}"/>
                     </StackPanel>
                 </Grid>
 
                 <TextBlock Text="Источники звука" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <TextBlock Text="Вступают в силу по кнопке «Применить» — конвейер записи перезапускается"
+                           Style="{StaticResource SectionSub}"/>
                 <Grid x:Name="SourcesCard" Style="{StaticResource SettingCard}">
                     <StackPanel Spacing="16">
                         <Grid>
@@ -67,7 +69,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Звук игры (системный)" Style="{StaticResource RowLabel}"/>
                             <ToggleSwitch x:Name="GameAudioToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
-                                          HorizontalAlignment="Right" MinWidth="0"/>
+                                          HorizontalAlignment="Right" MinWidth="0" Toggled="Device_Changed"/>
                         </Grid>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -76,7 +78,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
                             <ToggleSwitch x:Name="MicToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
-                                          HorizontalAlignment="Right" MinWidth="0"/>
+                                          HorizontalAlignment="Right" MinWidth="0" Toggled="Device_Changed"/>
                         </Grid>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -84,7 +86,7 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="Режим дорожек" Style="{StaticResource RowLabel}"/>
-                            <ComboBox x:Name="TrackModeBox" Grid.Column="1" MinWidth="280">
+                            <ComboBox x:Name="TrackModeBox" Grid.Column="1" MinWidth="280" SelectionChanged="Device_Changed">
                                 <ComboBoxItem Content="Одна дорожка (игра + микрофон)" Tag="Mixed"/>
                                 <ComboBoxItem Content="Две отдельные дорожки" Tag="Separate"/>
                                 <ComboBoxItem Content="Только игра" Tag="GameOnly"/>
@@ -140,8 +142,14 @@
         </ScrollViewer>
 
         <Grid Grid.Row="1" Padding="28,10,28,14">
-            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="DirtyText" Style="{StaticResource RowSub}" VerticalAlignment="Center" Margin="0"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
                 <Button Content="Открыть папку записей" Click="OpenFolder_Click"/>
+                <Button x:Name="RevertBtn" Content="Отменить" Click="Revert_Click"/>
                 <Button x:Name="ApplyBtn" Content="Применить" Style="{StaticResource AccentButtonStyle}"
                         MinWidth="110" Click="Apply_Click"/>
             </StackPanel>

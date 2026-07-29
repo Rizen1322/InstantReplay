@@ -29,6 +29,14 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
+    // Вывод окна на передний план, когда его просит показать вторая копия приложения:
+    // Activate() у скрытого окна оставляет его позади активного (обычно позади игры).
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetForegroundWindow(IntPtr hWnd);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    internal const int SW_RESTORE = 9;
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptX; public int ptY; }
 

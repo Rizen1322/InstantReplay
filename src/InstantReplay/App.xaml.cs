@@ -38,7 +38,12 @@ public static class Services
 
 public partial class App : Application
 {
+    /// <summary>Имена объектов синхронизации одной копии приложения.</summary>
+    private const string InstanceMutexName = @"Global\InstantReplay.SingleInstance";
+    private const string ShowWindowEventName = @"Global\InstantReplay.ShowWindow";
+
     private static Mutex? _singleInstance;
+    private static EventWaitHandle? _showWindowSignal;
     private MainWindow? _mainWindow;
     private TaskbarIcon? _tray;
 
@@ -50,9 +55,16 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // Одна копия приложения (иначе конфликт хоткеев и двойной захват)
-        _singleInstance = new Mutex(true, @"Global\InstantReplay.SingleInstance", out bool isNew);
-        if (!isNew) { Environment.Exit(0); return; }
+        // Одна копия приложения (иначе конфликт хоткеев и двойной захват).
+        // Вторая копия не умирает молча — она просит первую показать окно: запуск
+        // ярлыка при уже работающем приложении раньше выглядел как «не запускается».
+        _singleInstance = new Mutex(true, InstanceMutexName, out bool isNew);
+        if (!isNew)
+        {
+            RequestExistingInstanceToShow();
+            Environment.Exit(0);
+            return;
+        }
 
         Log.Init();
         Core.Interop.NativeMethods.timeBeginPeriod(1); // точный Sleep для конвейера записи и аудио
@@ -81,6 +93,8 @@ public partial class App : Application
         Services.Hotkeys.Start();
         InitTray();
 
+        StartShowWindowListener();
+
         bool minimized = Environment.GetCommandLineArgs().Contains("--minimized")
                          || Services.Settings.Current.StartMinimizedToTray;
         _mainWindow = new MainWindow();
@@ -91,6 +105,47 @@ public partial class App : Application
 
         if (Services.Settings.Current.CheckForUpdates)
             _ = CheckUpdatesAsync();
+    }
+
+    /// <summary>Сигнал уже работающей копии: «покажи окно». Ошибки не важны — мы всё равно выходим.</summary>
+    private static void RequestExistingInstanceToShow()
+    {
+        try
+        {
+            if (EventWaitHandle.TryOpenExisting(ShowWindowEventName, out var signal))
+                using (signal) signal.Set();
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Ждём сигнала от новых копий приложения в фоновом потоке. Именованное событие,
+    /// а не оконное сообщение: работает при спрятанном окне и не зависит от того,
+    /// создано ли оно вообще (запуск свёрнутым в трей).
+    /// </summary>
+    private void StartShowWindowListener()
+    {
+        try
+        {
+            _showWindowSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ShowWindowEventName);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("App", $"Сигнал показа окна недоступен: {ex.Message}");
+            return;
+        }
+
+        var thread = new Thread(() =>
+        {
+            while (true)
+            {
+                try { _showWindowSignal.WaitOne(); }
+                catch { return; }
+                ShowMainWindow();
+            }
+        })
+        { IsBackground = true, Name = "ShowWindowSignal" };
+        thread.Start();
     }
 
     private void WireEvents()
@@ -120,6 +175,9 @@ public partial class App : Application
             AfterFileSaved(file);
         };
         e.SaveFailed += msg => n.Show(NotificationKind.Warning, Loc.T("save_failed") + ": " + msg);
+        // Потеря GPU-устройства и восстановление после неё — пользователь должен знать,
+        // что запись прерывалась, а не догадываться по дыре в клипе.
+        e.Warning += msg => n.Show(NotificationKind.Warning, msg);
         e.RecordingChanged += rec =>
         {
             if (rec) n.Show(NotificationKind.Recording, Loc.T("rec_started"));
@@ -186,6 +244,7 @@ public partial class App : Application
             // Кадр берём у работающего буфера, если он включён (см. ScreenshotService)
             await Core.Capture.ScreenshotService.CaptureAsync(
                 s.MonitorIndex, file, s.RecordCursor, Services.Engine.TryUseLiveFrame);
+            Services.Storage.RegisterSaved(file); // индекс папки записей
             Services.Notifications.Show(NotificationKind.Screenshot, Loc.T("shot_saved"));
         }
         catch (Exception ex)
@@ -287,6 +346,16 @@ public partial class App : Application
             _mainWindow ??= new MainWindow();
             _mainWindow.AppWindow.Show(); // окно было спрятано AppWindow.Hide() — одного Activate мало
             _mainWindow.Activate();
+
+            // Свёрнутое/спрятанное окно после Activate остаётся за активным окном
+            // (обычно за игрой) — поднимаем его явно.
+            try
+            {
+                IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow);
+                Core.Interop.NativeMethods.ShowWindow(hwnd, Core.Interop.NativeMethods.SW_RESTORE);
+                Core.Interop.NativeMethods.SetForegroundWindow(hwnd);
+            }
+            catch { }
         });
     }
 

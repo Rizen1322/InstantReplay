@@ -16,8 +16,12 @@
                          Title="Запись активна"
                          Message="Параметры захвата заблокированы, чтобы не прерывать запись. Горячие клавиши можно менять всегда."/>
 
+                <!-- Замечания по назначениям: дубли и сочетания, которые лучше не занимать -->
+                <InfoBar x:Name="ConflictBar" Severity="Warning" IsClosable="False" IsOpen="False"
+                         Title="Проверьте назначения"/>
+
                 <TextBlock Text="Глобальные горячие клавиши" Style="{StaticResource SectionHeader}"/>
-                <TextBlock Text="Работают поверх любой игры. Кликни по полю и нажми новое сочетание."
+                <TextBlock Text="Работают поверх любой игры. Кликни по полю и нажми новое сочетание — оно применяется сразу."
                            Style="{StaticResource SectionSub}"/>
 
                 <Grid Style="{StaticResource SettingCard}">

@@ -11,10 +11,12 @@ public sealed partial class AudioPage : Page
 {
     private bool _loading = true;
     private readonly DispatcherTimer _levelTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private DirtyState _dirty = null!;
 
     public AudioPage()
     {
         InitializeComponent();
+        _dirty = new DirtyState(DirtyText, ApplyBtn, RevertBtn);
         _levelTimer.Tick += (_, _) => UpdateLevels();
 
         Loaded += (_, _) =>
@@ -52,6 +54,7 @@ public sealed partial class AudioPage : Page
     private void LoadFromSettings()
     {
         _loading = true;
+        _dirty.Suspended = true;
         var s = Services.Settings.Current;
         GameAudioToggle.IsOn = s.CaptureGameAudio;
         MicToggle.IsOn = s.CaptureMicrophone;
@@ -65,6 +68,8 @@ public sealed partial class AudioPage : Page
         MicVolSlider.Value = s.MicVolume * 100;
         UpdateVolumeTexts();
         _loading = false;
+        _dirty.Suspended = false;
+        _dirty.Clear();
         UpdateDevicesSummary();
     }
 
@@ -80,6 +85,7 @@ public sealed partial class AudioPage : Page
     private void Device_Changed(object sender, object e)
     {
         if (_loading) return;
+        _dirty.Mark(); // источники и устройства применяются кнопкой: нужен перезапуск конвейера
         UpdateDevicesSummary();
     }
 
@@ -97,15 +103,10 @@ public sealed partial class AudioPage : Page
         Services.Settings.Save("audio");
 
         UpdateDevicesSummary();
-        ApplyBtn.Content = "Применено ✓";
-        _ = ResetApplyLabelAsync();
+        _dirty.MarkSaved();
     }
 
-    private async Task ResetApplyLabelAsync()
-    {
-        await Task.Delay(1500);
-        ApplyBtn.Content = "Применить";
-    }
+    private void Revert_Click(object sender, RoutedEventArgs e) => LoadFromSettings();
 
     private void Volume_Changed(object sender, RangeBaseValueChangedEventArgs e)
     {
@@ -145,7 +146,7 @@ public sealed partial class AudioPage : Page
         ActiveBar.IsOpen = locked;
         UiUtil.SetEnabledRecursive(SourcesCard, !locked);
         DevicesExpander.IsEnabled = !locked;
-        ApplyBtn.IsEnabled = !locked;
+        _dirty.Locked = locked; // применить нельзя, пока идёт запись
     });
 
     private static void SelectByTag(ComboBox box, string tag)

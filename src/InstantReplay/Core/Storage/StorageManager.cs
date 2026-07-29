@@ -6,59 +6,105 @@ namespace InstantReplay.Core.Storage;
 public sealed record StorageStats(long FolderBytes, long FreeDiskBytes, int ClipCount, string RootPath);
 
 /// <summary>
-/// Проверка свободного места, лимит размера папки записей и автоудаление
-/// самых старых клипов. Статистика ВСЕГДА считается по актуальному
-/// Settings.Current.SaveRootPath (грабли: после смены папки в настройках
-/// статистика должна пересчитаться по новой папке, а не показывать старую —
-/// поэтому путь не кэшируется, а событие Settings.Changed("storage")
-/// дополнительно триггерит StatsChanged для UI).
+/// Свободное место, лимит размера папки записей и автоудаление самых старых клипов.
+///
+/// Всё считается по индексу папки (<see cref="ClipIndex"/>), который перестраивается
+/// В ФОНЕ. Раньше и статистика, и автоочистка обходили папку рекурсивно прямо перед
+/// сохранением клипа — то есть в самый неудачный момент. Теперь горячий путь
+/// (<see cref="EnsureSpace"/>) складывает готовые числа.
+///
+/// Индекс правится инкрементально: <see cref="RegisterSaved"/> после записи файла,
+/// <see cref="Forget"/> и <see cref="Rename"/> — при операциях из панорамы. Изменения
+/// извне (проводник) подхватывает перестройка по устареванию.
 /// </summary>
 public sealed class StorageManager
 {
+    /// <summary>Через сколько индекс считается устаревшим (файлы могли поменяться извне).</summary>
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(2);
+
     private readonly SettingsManager _settings;
+    private readonly ClipIndex _index = new();
+    private int _rebuilding;
+
     public event Action<StorageStats>? StatsChanged;
 
     public StorageManager(SettingsManager settings)
     {
         _settings = settings;
-        _settings.Changed += g =>
+        _settings.Changed += group =>
         {
-            if (g is "" or "storage")
+            if (group is "" or "storage")
             {
                 Directory.CreateDirectory(_settings.Current.SaveRootPath);
-                NotifyStats(); // немедленный пересчёт по НОВОЙ папке
+                RequestRebuild(force: true); // папка могла смениться — считаем по новой
             }
         };
     }
 
+    private string Root => _settings.Current.SaveRootPath;
+
+    /// <summary>
+    /// Перестроить индекс в фоне, если он устарел или собран по другой папке.
+    /// force — перестроить обязательно (смена папки записей).
+    /// </summary>
+    public void RequestRebuild(bool force = false)
+    {
+        string root = Root;
+        bool stale = force || !_index.IsBuilt || !_index.MatchesRoot(root)
+                     || DateTime.UtcNow - _index.BuiltUtc > StaleAfter;
+        if (!stale) return;
+        if (Interlocked.Exchange(ref _rebuilding, 1) == 1) return; // уже строится
+
+        Task.Run(() =>
+        {
+            try
+            {
+                _index.Rebuild(root);
+                NotifyStats();
+            }
+            catch (Exception ex) { Log.Warn("Storage", $"Индекс папки: {ex.Message}"); }
+            finally { Interlocked.Exchange(ref _rebuilding, 0); }
+        });
+    }
+
+    /// <summary>
+    /// Статистика по индексу. Если индекс ещё не собран, вернёт нули и запустит сборку —
+    /// UI получит настоящие числа событием StatsChanged через мгновение.
+    /// </summary>
     public StorageStats GetStats()
     {
-        string root = _settings.Current.SaveRootPath; // всегда актуальный путь
-        long folderBytes = 0;
-        int count = 0;
-        try
-        {
-            if (Directory.Exists(root))
-                foreach (var f in Directory.EnumerateFiles(root, "*.mp4", SearchOption.AllDirectories))
-                {
-                    folderBytes += new FileInfo(f).Length;
-                    count++;
-                }
-        }
-        catch (Exception ex) { Log.Warn("Storage", ex.Message); }
-
-        long free = 0;
-        try { free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace; }
-        catch { }
-
-        return new StorageStats(folderBytes, free, count, root);
+        string root = Root;
+        RequestRebuild();
+        return new StorageStats(_index.TotalBytes, FreeSpace(root), _index.ClipCount, root);
     }
 
     public void NotifyStats() => StatsChanged?.Invoke(GetStats());
 
+    /// <summary>Файл записан — сразу в индекс, без обхода папки.</summary>
+    public void RegisterSaved(string path)
+    {
+        _index.Add(path);
+        NotifyStats();
+    }
+
+    /// <summary>Файл удалён из панорамы или извне.</summary>
+    public void Forget(string path)
+    {
+        _index.Remove(path);
+        NotifyStats();
+    }
+
+    public void Rename(string from, string to)
+    {
+        _index.Rename(from, to);
+        NotifyStats();
+    }
+
     /// <summary>
     /// Гарантирует место перед сохранением: если включено автоудаление и
     /// (папка превысила лимит ИЛИ на диске мало места) — удаляем самые старые клипы.
+    /// Удаляются только видео: скриншоты пользователь складывает сам, и молча
+    /// подчищать их приложение не должно.
     /// </summary>
     public void EnsureSpace()
     {
@@ -68,49 +114,57 @@ public sealed class StorageManager
         string root = s.SaveRootPath;
         if (!Directory.Exists(root)) return;
 
+        // Первый запуск за сеанс — индекса ещё нет, собираем здесь (один раз).
+        if (!_index.IsBuilt || !_index.MatchesRoot(root)) _index.Rebuild(root);
+
         long maxFolder = s.MaxFolderSizeGb > 0 ? s.MaxFolderSizeGb * 1024L * 1024 * 1024 : long.MaxValue;
         long minFree = s.MinFreeSpaceGb * 1024L * 1024 * 1024;
 
-        var files = Directory.EnumerateFiles(root, "*.mp4", SearchOption.AllDirectories)
-            .Select(f => new FileInfo(f))
-            .OrderBy(f => f.CreationTimeUtc) // старые — первыми под нож
-            .ToList();
-
-        long folderBytes = files.Sum(f => f.Length);
-        long free;
-        try { free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace; }
-        catch { free = long.MaxValue; }
+        long folderBytes = _index.TotalBytes;
+        long free = FreeSpace(root);
+        if (folderBytes <= maxFolder && free >= minFree) return; // обычный случай — выходим сразу
 
         int deleted = 0;
-        foreach (var f in files)
+        foreach (var file in _index.OldestFirst())
         {
             if (folderBytes <= maxFolder && free >= minFree) break;
+            if (!file.IsClip) continue;
             try
             {
-                long len = f.Length;
-                f.Delete();
-                folderBytes -= len;
-                free += len;
+                File.Delete(file.Path);
+                _index.Remove(file.Path);
+                folderBytes -= file.SizeBytes;
+                free += file.SizeBytes;
                 deleted++;
             }
-            catch (Exception ex) { Log.Warn("Storage", $"Не удалился {f.Name}: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                // Файл открыт в плеере/проводнике — пропускаем, но из индекса не убираем
+                Log.Warn("Storage", $"Не удалился {Path.GetFileName(file.Path)}: {ex.Message}");
+            }
         }
+
         if (deleted > 0)
         {
             Log.Info("Storage", $"Автоочистка: удалено {deleted} старых клипов");
+            CleanEmptyGameFolders(root);
             NotifyStats();
         }
-
-        // Пустые папки игр подчищаем
-        foreach (var dir in Directory.EnumerateDirectories(root))
-            try { if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir); } catch { }
     }
 
-    public static string FormatBytes(long bytes) => bytes switch
+    private static void CleanEmptyGameFolders(string root)
     {
-        >= 1L << 30 => $"{bytes / (double)(1L << 30):0.##} ГБ",
-        >= 1L << 20 => $"{bytes / (double)(1L << 20):0.#} МБ",
-        >= 1L << 10 => $"{bytes / (double)(1L << 10):0} КБ",
-        _ => $"{bytes} Б"
-    };
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(root))
+                try { if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir); } catch { }
+        }
+        catch { }
+    }
+
+    private static long FreeSpace(string root)
+    {
+        try { return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace; }
+        catch { return 0; }
+    }
 }

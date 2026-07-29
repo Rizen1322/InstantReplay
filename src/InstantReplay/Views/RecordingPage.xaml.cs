@@ -35,14 +35,19 @@ public sealed partial class RecordingPage : Page
     /// <summary>Кодеки, которые реально поддерживает GPU (по энумерации MFT).</summary>
     private List<VideoCodec>? _availableCodecs;
 
+    private DirtyState _dirty = null!;
+
     public RecordingPage()
     {
         InitializeComponent();
+        _dirty = new DirtyState(DirtyText, ApplyBtn, RevertBtn);
+
         // Только теперь, когда всё дерево построено, вешаем обработчики значений:
         // из разметки они срабатывали бы прямо во время разбора (Minimum поднимает
         // Value слайдера) и лезли к ещё не созданным элементам.
         BitrateSlider.ValueChanged += Bitrate_Changed;
         CustomLengthBox.ValueChanged += Length_Changed;
+        CursorToggle.Toggled += (_, _) => { if (!_loading) { _dirty.Mark(); UpdateSourceSummary(); } };
 
         BuildPresets();
         BuildChips();
@@ -127,6 +132,7 @@ public sealed partial class RecordingPage : Page
     private void LoadFromSettings()
     {
         _loading = true;
+        _dirty.Suspended = true;
         var s = Services.Settings.Current;
 
         CustomLengthBox.Value = s.ReplayLengthSeconds;
@@ -143,6 +149,8 @@ public sealed partial class RecordingPage : Page
         CursorToggle.IsOn = s.RecordCursor;
 
         _loading = false;
+        _dirty.Suspended = false;
+        _dirty.Clear();
         SyncPresets();
         UpdateCodecWarning();
         UpdateSourceSummary();
@@ -199,14 +207,16 @@ public sealed partial class RecordingPage : Page
     private void Codec_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loading) return;
+        _dirty.Mark();
         UpdateCodecWarning();
         SyncPresets();
     }
 
-    /// <summary>Любая правка вручную — обновить сводки свёрнутых блоков.</summary>
+    /// <summary>Любая правка вручную — пометить страницу изменённой и обновить сводки.</summary>
     private void VideoSetting_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loading) return;
+        _dirty.Mark();
         SyncPresets();
         UpdateSourceSummary();
     }
@@ -226,18 +236,18 @@ public sealed partial class RecordingPage : Page
         SyncPresets();
         UpdateCodecWarning();
         UpdateSourceSummary();
-        ApplyBtn.Content = "Применено ✓";
-        _ = ResetApplyLabelAsync();
+        _dirty.MarkSaved();
     }
 
-    private async Task ResetApplyLabelAsync()
-    {
-        await Task.Delay(1500);
-        ApplyBtn.Content = "Применить";
-    }
+    private void Revert_Click(object sender, RoutedEventArgs e) => LoadFromSettings();
 
     // ---------------- Обработчики ----------------
 
+    /// <summary>
+    /// Пресет только раскладывает значения по контролам. Раньше он применялся сразу,
+    /// хотя соседние настройки ждали кнопку — из-за этого было непонятно, что уже
+    /// вступило в силу, а что нет.
+    /// </summary>
     private void Preset_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as ToggleButton)?.Tag is not Preset p) return;
@@ -245,7 +255,9 @@ public sealed partial class RecordingPage : Page
         SelectByTag(FpsBox, p.Fps.ToString());
         BitrateSlider.Value = p.Mbps;
         SelectByTag(CodecBox, p.Codec.ToString());
-        Apply_Click(sender, e);
+        _dirty.Mark();
+        SyncPresets();
+        UpdateCodecWarning();
     }
 
     private void Chip_Click(object sender, RoutedEventArgs e)
@@ -254,6 +266,7 @@ public sealed partial class RecordingPage : Page
         CustomLengthBox.Value = seconds;
         SyncChips(seconds);
         UpdateRamEstimate();
+        _dirty.Mark();
     }
 
     private void Length_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args)
@@ -261,6 +274,7 @@ public sealed partial class RecordingPage : Page
         if (_loading) return;
         SyncChips((int)sender.Value);
         UpdateRamEstimate();
+        _dirty.Mark();
     }
 
     private void SyncChips(int seconds)
@@ -295,7 +309,9 @@ public sealed partial class RecordingPage : Page
         if (BitrateLabel is null) return; // ещё идёт разбор XAML
         BitrateLabel.Text = $"{(int)e.NewValue} Мбит/с";
         UpdateRamEstimate();
-        if (!_loading) SyncPresets();
+        if (_loading) return;
+        _dirty.Mark();
+        SyncPresets();
     }
 
     private void OnEngineState(EngineState st) => Services.Dispatcher.Enqueue(() =>
@@ -312,7 +328,7 @@ public sealed partial class RecordingPage : Page
         CodecBox.IsEnabled = !locked;
         MonitorBox.IsEnabled = !locked;
         CursorToggle.IsEnabled = !locked;
-        ApplyBtn.IsEnabled = !locked;
+        _dirty.Locked = locked; // применить нельзя, пока идёт запись
     });
 
     private async Task LoadHwInfoAsync()

@@ -58,8 +58,14 @@
 
         <!-- Вкладки -->
         <SelectorBar x:Name="Tabs" Grid.Row="2" Margin="22,2,20,0" SelectionChanged="Tabs_SelectionChanged">
+            <SelectorBarItem x:Name="TabOverview" Text="Обзор">
+                <SelectorBarItem.Icon><FontIcon Glyph="&#xE80F;"/></SelectorBarItem.Icon>
+            </SelectorBarItem>
             <SelectorBarItem x:Name="TabRecording" Text="Запись">
                 <SelectorBarItem.Icon><FontIcon Glyph="&#xE714;"/></SelectorBarItem.Icon>
+            </SelectorBarItem>
+            <SelectorBarItem Text="Клипы">
+                <SelectorBarItem.Icon><FontIcon Glyph="&#xE786;"/></SelectorBarItem.Icon>
             </SelectorBarItem>
             <SelectorBarItem Text="Аудио">
                 <SelectorBarItem.Icon><FontIcon Glyph="&#xE720;"/></SelectorBarItem.Icon>

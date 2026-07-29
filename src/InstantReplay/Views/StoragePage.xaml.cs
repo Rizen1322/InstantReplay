@@ -7,9 +7,16 @@ namespace InstantReplay.Views;
 
 public sealed partial class StoragePage : Page
 {
+    private readonly DirtyState _dirty;
+    private bool _loading;
+    /// <summary>Выбранная в пикере папка до нажатия «Применить».</summary>
+    private string? _pendingPath;
+
     public StoragePage()
     {
         InitializeComponent();
+        _dirty = new DirtyState(DirtyText, ApplyBtn, RevertBtn);
+
         Loaded += (_, _) =>
         {
             LoadFromSettings();
@@ -21,34 +28,44 @@ public sealed partial class StoragePage : Page
 
     private void LoadFromSettings()
     {
+        _loading = true;
+        _dirty.Suspended = true;
+
         var s = Services.Settings.Current;
+        _pendingPath = null;
         PathText.Text = s.SaveRootPath;
         GroupToggle.IsOn = s.GroupByGame;
         TemplateBox.Text = s.FileNameTemplate;
         MaxFolderBox.Value = s.MaxFolderSizeGb;
         MinFreeBox.Value = s.MinFreeSpaceGb;
         AutoDeleteToggle.IsOn = s.AutoDeleteOldClips;
+
+        _dirty.Suspended = false;
+        _dirty.Clear();
+        _loading = false;
     }
+
+    // Любая правка только помечает страницу изменённой — сохраняет кнопка «Применить».
+    private void Setting_Changed(object sender, RoutedEventArgs e) => _dirty.Mark();
+    private void Text_Changed(object sender, TextChangedEventArgs e) => _dirty.Mark();
+    private void Number_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args) => _dirty.Mark();
 
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
         var s = Services.Settings.Current;
+        if (_pendingPath is { Length: > 0 }) s.SaveRootPath = _pendingPath;
         s.GroupByGame = GroupToggle.IsOn;
         if (!string.IsNullOrWhiteSpace(TemplateBox.Text)) s.FileNameTemplate = TemplateBox.Text.Trim();
         s.MaxFolderSizeGb = (int)MaxFolderBox.Value;
         s.MinFreeSpaceGb = (int)MinFreeBox.Value;
         s.AutoDeleteOldClips = AutoDeleteToggle.IsOn;
-        Services.Settings.Save("storage");
+        Services.Settings.Save("storage"); // StorageManager пересоберёт индекс по новой папке
 
-        ApplyBtn.Content = "Применено ✓";
-        _ = ResetApplyLabelAsync();
+        _pendingPath = null;
+        _dirty.MarkSaved();
     }
 
-    private async Task ResetApplyLabelAsync()
-    {
-        await Task.Delay(1500);
-        ApplyBtn.Content = "Применить";
-    }
+    private void Revert_Click(object sender, RoutedEventArgs e) => LoadFromSettings();
 
     private async void Browse_Click(object sender, RoutedEventArgs e)
     {
@@ -61,17 +78,20 @@ public sealed partial class StoragePage : Page
         var folder = await picker.PickSingleFolderAsync();
         if (folder is null) return;
 
+        // Папка применяется той же кнопкой, что и остальные настройки вкладки:
+        // раньше она сохранялась мгновенно, а соседние поля ждали «Применить».
+        _pendingPath = folder.Path;
         PathText.Text = folder.Path;
-        Services.Settings.Current.SaveRootPath = folder.Path;
-        Services.Settings.Save("storage"); // StorageManager пересчитает статистику по новой папке
+        _dirty.Mark();
     }
 
     private void OnStats(StorageStats stats) => Services.Dispatcher.Enqueue(() =>
     {
         SavedCountText.Text = Services.Settings.Current.TotalReplaysSaved.ToString();
-        UsedText.Text = StorageManager.FormatBytes(stats.FolderBytes);
-        FreeText.Text = StorageManager.FormatBytes(stats.FreeDiskBytes);
-        PathText.Text = stats.RootPath;
+        UsedText.Text = ByteSize.Format(stats.FolderBytes);
+        FreeText.Text = ByteSize.Format(stats.FreeDiskBytes);
+        // Пока изменения не применены, в строке пути должна оставаться выбранная папка
+        if (!_loading && _pendingPath is null) PathText.Text = stats.RootPath;
         UpdateUsageBar(stats);
     });
 
@@ -98,7 +118,7 @@ public sealed partial class StoragePage : Page
                                      : "SystemFillColorSuccessBrush";
         UsageBar.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[brush];
 
-        UsageText.Text = $"{StorageManager.FormatBytes(stats.FolderBytes)} из {limitGb} ГБ " +
+        UsageText.Text = $"{ByteSize.Format(stats.FolderBytes)} из {limitGb} ГБ " +
                          $"({percent:0}%) · {stats.ClipCount} клипов" +
                          (Services.Settings.Current.AutoDeleteOldClips
                              ? " · при заполнении удалятся самые старые"
