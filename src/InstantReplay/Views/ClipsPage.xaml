@@ -19,7 +19,12 @@
         </Style>
 
         <DataTemplate x:Key="ClipCardTemplate" x:DataType="lib:ClipItem">
+            <!-- DataContext задаётся ЯВНО: ItemsRepeater при шаблоне на x:Bind не
+                 проставляет его сам (данные идут через сгенерированный код привязок).
+                 Из-за этого обработчики, читающие DataContext, получали null — карточки
+                 рисовались, но не открывались и не запрашивали миниатюру. -->
             <Button Style="{StaticResource ClipCardStyle}" Width="288"
+                    DataContext="{x:Bind}"
                     Click="Card_Click"
                     PointerEntered="Card_PointerEntered"
                     PointerExited="Card_PointerExited"
@@ -146,6 +151,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -197,8 +203,18 @@
             </Button>
         </Grid>
 
+        <!-- Кадры HEVC-клипов Windows показывает только с установленным расширением:
+             без него и превью, и встроенный плеер работать не могут. -->
+        <InfoBar x:Name="CodecBar" Grid.Row="1" Margin="28,0,20,8" Severity="Warning" IsOpen="False"
+                 Title="Windows не умеет открывать эти клипы"
+                 Message="Клипы записаны в HEVC, а в системе нет декодера: не будет ни кадров в панораме, ни просмотра внутри приложения. Поставьте бесплатное расширение из Microsoft Store — или переключите кодек на H.264 на вкладке «Запись».">
+            <InfoBar.ActionButton>
+                <Button Content="Открыть расширение в Store" Click="InstallHevc_Click"/>
+            </InfoBar.ActionButton>
+        </InfoBar>
+
         <!-- Секции по датам, внутри каждой — сетка карточек -->
-        <ScrollViewer x:Name="Scroller" Grid.Row="1" Padding="28,0,20,20"
+        <ScrollViewer x:Name="Scroller" Grid.Row="2" Padding="28,0,20,20"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
             <ItemsRepeater x:Name="Sections" ItemTemplate="{StaticResource ClipSectionTemplate}">
                 <ItemsRepeater.Layout>
@@ -208,7 +224,7 @@
         </ScrollViewer>
 
         <!-- Пусто / ничего не найдено -->
-        <StackPanel x:Name="EmptyState" Grid.Row="1" Spacing="10" Visibility="Collapsed"
+        <StackPanel x:Name="EmptyState" Grid.Row="2" Spacing="10" Visibility="Collapsed"
                     HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="440">
             <FontIcon Glyph="&#xE786;" FontSize="40" Opacity="0.35"/>
             <TextBlock x:Name="EmptyTitle" Text="Здесь пока пусто" FontSize="17" FontWeight="SemiBold"
@@ -218,11 +234,11 @@
             <Button Content="Открыть папку записей" Click="OpenFolder_Click" HorizontalAlignment="Center"/>
         </StackPanel>
 
-        <ProgressRing x:Name="LoadRing" Grid.Row="1" Width="34" Height="34" IsActive="False"
+        <ProgressRing x:Name="LoadRing" Grid.Row="2" Width="34" Height="34" IsActive="False"
                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
 
         <!-- Просмотр: плеер поверх страницы -->
-        <Grid x:Name="Theater" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed"
+        <Grid x:Name="Theater" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed"
               Background="#F00A0C0E" Tapped="TheaterBackdrop_Tapped">
             <Grid MaxWidth="1200" Margin="34,22,34,22">
                 <Grid.RowDefinitions>

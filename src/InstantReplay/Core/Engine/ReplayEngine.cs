@@ -58,6 +58,9 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>Размер кадра, который реально уходит в энкодер (после масштабирования).</summary>
     public (int Width, int Height) OutputSize => (_processor?.OutWidth ?? 0, _processor?.OutHeight ?? 0);
 
+    /// <summary>Готовность текущего сохранения, 0..1 — для показа в UI вместо немой паузы.</summary>
+    public double SaveProgress { get; private set; }
+
     /// <summary>
     /// Отдать последний захваченный кадр (для скриншота), не создавая вторую
     /// сессию захвата. На Windows 10 это единственный рабочий путь при включённом
@@ -368,6 +371,7 @@ public sealed class ReplayEngine : IDisposable
         var mediaType = _encoder.OutputMediaType;
         int seconds = (int)Math.Round(TimeSpan.FromTicks(video[^1].PtsTicks - video[0].PtsTicks).TotalSeconds);
 
+        SaveProgress = 0;
         SetState(EngineState.Saving);
         Task.Run(() =>
         {
@@ -391,7 +395,8 @@ public sealed class ReplayEngine : IDisposable
                                        "— сохранение начинается с задержкой");
 
                 ReplaySaver.Save(file, video, audio, mediaType, s.TrackMode,
-                                 s.CaptureGameAudio, s.CaptureMicrophone);
+                                 s.CaptureGameAudio, s.CaptureMicrophone,
+                                 p => SaveProgress = p);
                 _storage.RegisterSaved(file); // индекс папки — без повторного обхода диска
                 s.TotalReplaysSaved++;
                 _settings.Save("stats");

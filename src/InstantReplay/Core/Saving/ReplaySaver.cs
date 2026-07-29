@@ -40,7 +40,8 @@ public static class ReplaySaver
         List<AudioBlock> audio,
         IMFMediaType videoType,
         AudioTrackMode trackMode,
-        bool hasGame, bool hasMic)
+        bool hasGame, bool hasMic,
+        Action<double>? progress = null)
     {
         if (video.Count == 0) throw new InvalidOperationException("Видеобуфер пуст");
 
@@ -77,22 +78,18 @@ public static class ReplaySaver
         // а рядом игра занимает большую часть ОЗУ — система уходила в подкачку.
         // CreateSample копирует данные в буфер Media Foundation, поэтому наш массив
         // можно вернуть в пул сразу же.
-        // Ограничение темпа подачи. Замеры показали: на клипе 91 МБ финализация
-        // занимает 5 мс — писатель успевает слить всё на диск прямо по ходу записи
-        // и держит ~340 МБ/с. На клипе 978 МБ мы отдаём ему всё за 0.98 с, он не
-        // успевает, копит в памяти и потом разгребает 54 секунды на 18 МБ/с.
-        // Подаём не быстрее, чем он реально пишет — очередь не растёт, финализация
-        // остаётся мгновенной, а игра не встаёт от залпового ввода-вывода.
-        const double TargetBytesPerMs = 220.0 * 1024 * 1024 / 1000.0; // ~220 МБ/с
-        var pace = System.Diagnostics.Stopwatch.StartNew();
-        long paced = 0;
+        // Ограничение темпа подачи (см. WriteDrain): подаём писателю не быстрее, чем
+        // он реально сливает байты на диск. Раньше здесь стоял фиксированный потолок
+        // 220 МБ/с — угаданное число, которое на быстром SSD тормозило сохранение
+        // на ровном месте, а на занятой игрой системе всё равно оказывалось слишком
+        // щедрым: писатель копил клип в памяти и потом разгребал его десятками секунд,
+        // попутно вываливая на диск гигабайт грязных страниц (от этого и фризы в игре).
+        int blockSamples = audio.Count > 0 ? audio[0].Game.Length : 960;
+        long totalBytes = 0;
+        foreach (var f in video) totalBytes += f.Length;
+        totalBytes += (long)audio.Count * blockSamples * sizeof(float) * audioStreams.Count;
 
-        void Pace(int bytes)
-        {
-            paced += bytes;
-            double aheadMs = paced / TargetBytesPerMs - pace.ElapsedMilliseconds;
-            if (aheadMs > 5) Thread.Sleep((int)aheadMs);
-        }
+        using var drain = new WriteDrain(filePath, totalBytes, progress);
 
         // Аудио пишем КРУПНЫМИ кусками (~1 с), а не блоками по 10 мс, как они приходят
         // из микшера. Скорость финализации у Media Foundation определяется ЧИСЛОМ
@@ -101,7 +98,6 @@ public static class ReplaySaver
         // то есть 77% всех сэмплов были аудио. Секундные куски сокращают их до 180
         // на дорожку. AAC-энкодер сам режет PCM на свои кадры, качество не меняется.
         const int BlocksPerChunk = 100;                       // 100 × 10 мс = 1 секунда
-        int blockSamples = audio.Count > 0 ? audio[0].Game.Length : 960;
         // Буфер СВОЙ на каждую дорожку: они накапливаются параллельно
         var chunkBuf = new float[audioStreams.Count][];
         for (int s = 0; s < audioStreams.Count; s++)
@@ -118,7 +114,7 @@ public static class ReplaySaver
             using var sample = MfMp4Writer.CreateSample(
                 bytes, bytes.Length, chunkStart[s], chunkFill[s] * 100_000L);
             writer.WriteSample(audioStreams[s].Index, sample);
-            Pace(bytes.Length);
+            drain.Submitted(bytes.Length);
             chunkFill[s] = 0;
         }
 
@@ -158,7 +154,7 @@ public static class ReplaySaver
             // Данные уже скопированы в сэмпл — массив больше не нужен
             System.Buffers.ArrayPool<byte>.Shared.Return(f.Data);
             released = fi + 1;
-            Pace(f.Length);
+            drain.Submitted(f.Length);
         }
         }
         finally
@@ -214,6 +210,109 @@ public static class ReplaySaver
         Log.Info("Saver", $"Запись файла заняла {total} мс " +
                           $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +
                           $"финализация {total - tAudio}); {fileBytes / (1024 * 1024)} МБ, " +
-                          $"{(total > 0 ? fileBytes / 1024.0 / 1024 / (total / 1000.0) : 0):F0} МБ/с");
+                          $"{(total > 0 ? fileBytes / 1024.0 / 1024 / (total / 1000.0) : 0):F0} МБ/с; " +
+                          $"ждали диск {drain.WaitedMs} мс ({drain.Mode})");
+        progress?.Invoke(1);
+    }
+
+    /// <summary>
+    /// Обратная связь по реально записанному на диск.
+    ///
+    /// Проблема, которую это лечит: SinkWriter принимает сэмплы охотнее, чем диск их
+    /// глотает, и разница копится в оперативной памяти. На клипе в гигабайт получалось
+    /// так: всё отдано за секунду, потом писатель десятки секунд разгребает очередь,
+    /// а система в это время сбрасывает гигабайт грязных страниц — игра встаёт
+    /// колом, хотя диск SSD. Фиксированный потолок «220 МБ/с» был угадан и мешал
+    /// в обе стороны: быстрый диск искусственно тормозился, медленный всё равно
+    /// захлёбывался.
+    ///
+    /// Теперь смотрим на РАЗМЕР ФАЙЛА на диске и держим «в полёте» не больше окна:
+    /// если писатель успевает — не ждём ни миллисекунды, если отстаёт — притормаживаем
+    /// подачу вместо того, чтобы копить в памяти.
+    ///
+    /// Размер читаем через СВОЙ дескриптор файла: FileInfo.Length берёт кэш каталога,
+    /// который для растущего файла обновляется с задержкой.
+    /// </summary>
+    private sealed class WriteDrain : IDisposable
+    {
+        /// <summary>Сколько байт допускаем между «отдано писателю» и «лежит на диске».</summary>
+        private const long WindowBytes = 48L * 1024 * 1024;
+        /// <summary>Как часто сверяться с диском (чаще — лишние системные вызовы).</summary>
+        private const long CheckEveryBytes = 4L * 1024 * 1024;
+        /// <summary>Запасной темп, если размер файла прочитать не удалось.</summary>
+        private const double FallbackBytesPerMs = 220.0 * 1024 * 1024 / 1000.0;
+        /// <summary>Потолок ожидания на одну сверку: лучше отдать данные, чем зависнуть.</summary>
+        private const int MaxWaitPerCheckMs = 2000;
+
+        private readonly FileStream? _probe;
+        private readonly long _total;
+        private readonly Action<double>? _progress;
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+
+        private long _submitted, _lastCheck, _lastProgressMs;
+
+        public long WaitedMs { get; private set; }
+        public string Mode => _probe is null ? "по таймеру" : "по размеру файла";
+
+        public WriteDrain(string path, long totalBytes, Action<double>? progress)
+        {
+            _total = Math.Max(1, totalBytes);
+            _progress = progress;
+            try
+            {
+                _probe = new FileStream(path, FileMode.Open, FileAccess.Read,
+                                        FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
+            }
+            catch
+            {
+                _probe = null; // писатель не пустил на чтение — работаем по таймеру
+            }
+        }
+
+        public void Submitted(int bytes)
+        {
+            _submitted += bytes;
+            ReportProgress();
+            if (_submitted - _lastCheck < CheckEveryBytes) return;
+            _lastCheck = _submitted;
+            WaitForDisk();
+        }
+
+        private void WaitForDisk()
+        {
+            long start = _clock.ElapsedMilliseconds;
+            while (_clock.ElapsedMilliseconds - start < MaxWaitPerCheckMs)
+            {
+                long onDisk = OnDisk();
+                if (onDisk < 0)
+                {
+                    // Размер недоступен — равномерная подача по запасному темпу
+                    double aheadMs = _submitted / FallbackBytesPerMs - _clock.ElapsedMilliseconds;
+                    if (aheadMs > 5) Thread.Sleep((int)Math.Min(aheadMs, 200));
+                    break;
+                }
+                if (_submitted - onDisk <= WindowBytes) break;
+                Thread.Sleep(5);
+            }
+            WaitedMs += _clock.ElapsedMilliseconds - start;
+        }
+
+        private long OnDisk()
+        {
+            try { return _probe?.Length ?? -1; }
+            catch { return -1; }
+        }
+
+        /// <summary>Прогресс наружу не чаще пяти раз в секунду — его читает UI.</summary>
+        private void ReportProgress()
+        {
+            if (_progress is null) return;
+            long now = _clock.ElapsedMilliseconds;
+            if (now - _lastProgressMs < 200) return;
+            _lastProgressMs = now;
+            _progress(Math.Clamp(_submitted / (double)_total, 0, 1));
+        }
+
+        public void Dispose() => _probe?.Dispose();
     }
 }

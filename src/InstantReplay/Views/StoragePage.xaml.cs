@@ -39,6 +39,7 @@ public sealed partial class StoragePage : Page
         MaxFolderBox.Value = s.MaxFolderSizeGb;
         MinFreeBox.Value = s.MinFreeSpaceGb;
         AutoDeleteToggle.IsOn = s.AutoDeleteOldClips;
+        UpdateLimitsVisibility();
 
         _dirty.Suspended = false;
         _dirty.Clear();
@@ -46,7 +47,15 @@ public sealed partial class StoragePage : Page
     }
 
     // Любая правка только помечает страницу изменённой — сохраняет кнопка «Применить».
-    private void Setting_Changed(object sender, RoutedEventArgs e) => _dirty.Mark();
+    private void Setting_Changed(object sender, RoutedEventArgs e)
+    {
+        _dirty.Mark();
+        UpdateLimitsVisibility();
+    }
+
+    /// <summary>Поля лимитов имеют смысл только при включённом автоудалении.</summary>
+    private void UpdateLimitsVisibility() =>
+        LimitsPanel.Visibility = AutoDeleteToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
     private void Text_Changed(object sender, TextChangedEventArgs e) => _dirty.Mark();
     private void Number_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args) => _dirty.Mark();
 
@@ -101,8 +110,11 @@ public sealed partial class StoragePage : Page
     /// </summary>
     private void UpdateUsageBar(StorageStats stats)
     {
-        int limitGb = Services.Settings.Current.MaxFolderSizeGb;
-        if (limitGb <= 0) // 0 = без лимита, показывать нечего
+        var settings = Services.Settings.Current;
+        int limitGb = settings.MaxFolderSizeGb;
+        // Полоса «занято из лимита» показывается только когда лимит реально работает,
+        // то есть при включённом автоудалении. Иначе это цифра ни о чём.
+        if (limitGb <= 0 || !settings.AutoDeleteOldClips)
         {
             UsagePanel.Visibility = Visibility.Collapsed;
             return;
@@ -119,10 +131,7 @@ public sealed partial class StoragePage : Page
         UsageBar.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[brush];
 
         UsageText.Text = $"{ByteSize.Format(stats.FolderBytes)} из {limitGb} ГБ " +
-                         $"({percent:0}%) · {stats.ClipCount} клипов" +
-                         (Services.Settings.Current.AutoDeleteOldClips
-                             ? " · при заполнении удалятся самые старые"
-                             : " · автоудаление выключено");
+                         $"({percent:0}%) · {stats.ClipCount} клипов · при заполнении удалятся самые старые";
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();

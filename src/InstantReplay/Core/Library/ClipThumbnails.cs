@@ -31,15 +31,28 @@ public static class ClipThumbnails
     /// </summary>
     private static readonly SemaphoreSlim Gate = new(3);
 
+    /// <summary>Чем закончилась попытка получить кадр.</summary>
+    public enum ThumbResult
+    {
+        /// <summary>Уже запрашивали для этого файла.</summary>
+        Skipped,
+        /// <summary>Кадр получен.</summary>
+        Ok,
+        /// <summary>Система вернула иконку файла вместо кадра — обычно нет декодера (HEVC).</summary>
+        NoDecoder,
+        Failed
+    }
+
     /// <summary>
     /// Догрузить миниатюру и метаданные элемента. Вызывать из UI-потока: продолжения
     /// возвращаются на него, и BitmapImage создаётся там, где положено.
     /// Ошибки не пробрасываются — карточка просто останется с заглушкой.
     /// </summary>
-    public static async Task LoadAsync(ClipItem item)
+    public static async Task<ThumbResult> LoadAsync(ClipItem item)
     {
-        if (item.ThumbRequested) return;
+        if (item.ThumbRequested) return ThumbResult.Skipped;
         item.ThumbRequested = true;
+        bool noDecoder = false;
 
         try
         {
@@ -88,14 +101,20 @@ public static class ClipThumbnails
                         item.IsScreenshot ? ThumbnailMode.PicturesView : ThumbnailMode.VideosView,
                         ThumbWidth, ThumbnailOptions.ResizeThumbnail);
 
-                    // ThumbnailType.Icon — это generic-иконка файла (нет провайдера для
-                    // кодека): в сетке она смотрится хуже нашей заглушки, поэтому не берём.
+                    // ThumbnailType.Icon — это generic-иконка файла: система не смогла
+                    // декодировать видео (у HEVC такое бывает без «HEVC Video Extensions»).
+                    // В сетке иконка смотрится хуже нашей заглушки, поэтому не берём её,
+                    // но запоминаем причину — страница подскажет пользователю, что делать.
                     if (thumb is not null && thumb.Size > 0 && thumb.Type == ThumbnailType.Image)
                     {
                         using var source = thumb.AsStreamForRead();
                         using var buffer = new MemoryStream();
                         await source.CopyToAsync(buffer);
                         bytes = buffer.ToArray();
+                    }
+                    else if (!item.IsScreenshot)
+                    {
+                        noDecoder = true;
                     }
 
                     Directory.CreateDirectory(CacheDir);
@@ -107,16 +126,19 @@ public static class ClipThumbnails
 
             if (duration is not null) item.Duration = duration;
             if (resolution is not null) item.Resolution = resolution;
-            if (bytes is null || bytes.Length == 0) return;
+            if (bytes is null || bytes.Length == 0)
+                return noDecoder ? ThumbResult.NoDecoder : ThumbResult.Failed;
 
             var image = new BitmapImage { DecodePixelWidth = (int)ThumbWidth };
             using var memory = new MemoryStream(bytes);
             await image.SetSourceAsync(memory.AsRandomAccessStream());
             item.Thumbnail = image;
+            return ThumbResult.Ok;
         }
         catch (Exception ex)
         {
             Log.Warn("Library", $"Миниатюра «{item.FileName}»: {ex.Message}");
+            return ThumbResult.Failed;
         }
     }
 

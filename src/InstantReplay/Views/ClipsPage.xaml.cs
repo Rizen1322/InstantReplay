@@ -177,6 +177,11 @@ public sealed partial class ClipsPage : Page
         Sections.ItemsSource = sections;
         Scroller.ChangeView(null, 0, null, true); // после смены фильтра — к началу списка
 
+        // Первый экран грузим сразу, не дожидаясь событий вьюпорта: карточки только
+        // создаются, и первое EffectiveViewportChanged может прийти уже после того,
+        // как пользователь увидел пустые заглушки.
+        foreach (var item in list.Take(12)) _ = LoadThumbnailAsync(item);
+
         UpdateSummary(list.Count);
         UpdateEmptyState(list.Count);
     }
@@ -217,7 +222,30 @@ public sealed partial class ClipsPage : Page
         // миниатюру просим только у тех, что уже близко к видимой области — иначе
         // открытие вкладки запускало бы сотни запросов к системным миниатюрам.
         if (args.BringIntoViewDistanceY > 600) return;
-        if (sender.DataContext is ClipItem item) _ = ClipThumbnails.LoadAsync(item);
+        if (sender.DataContext is ClipItem item) _ = LoadThumbnailAsync(item);
+    }
+
+    private async Task LoadThumbnailAsync(ClipItem item)
+    {
+        var result = await ClipThumbnails.LoadAsync(item);
+        if (result != ClipThumbnails.ThumbResult.NoDecoder) return;
+
+        // Система вернула иконку файла вместо кадра. Один-два раза это может быть
+        // повреждённый файл, но если так со всеми клипами — в системе нет декодера.
+        if (++_noDecoderCount >= 3) CodecBar.IsOpen = true;
+    }
+
+    private int _noDecoderCount;
+
+    /// <summary>Страница расширения HEVC в Microsoft Store (бесплатная версия от производителя).</summary>
+    private void InstallHevc_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("ms-windows-store://pdp/?ProductId=9n4wgh0z6vhq")
+            { UseShellExecute = true });
+        }
+        catch (Exception ex) { Log.Warn("Library", $"Открытие Store: {ex.Message}"); }
     }
 
     private void Card_PointerEntered(object sender, PointerRoutedEventArgs e)
@@ -323,10 +351,28 @@ public sealed partial class ClipsPage : Page
         {
             _player = new MediaPlayer { AutoPlay = true };
             _player.PlaybackSession.PlaybackStateChanged += OnPlaybackStateChanged;
+            _player.MediaFailed += OnMediaFailed;
             Player.SetMediaPlayer(_player);
         }
         return _player;
     }
+
+    /// <summary>
+    /// Файл не открылся. Самая частая причина — в системе нет декодера HEVC:
+    /// тогда и кадров в панораме нет, и плеер молча показывает чёрный экран.
+    /// </summary>
+    private void OnMediaFailed(MediaPlayer sender, MediaPlayerFailedEventArgs args) =>
+        Services.Dispatcher.Enqueue(() =>
+        {
+            Log.Warn("Library", $"Плеер: {args.Error} {args.ErrorMessage}");
+            PlayerBar.Message = args.Error is MediaPlayerError.DecodingError or MediaPlayerError.SourceNotSupported
+                ? "Windows не может декодировать этот файл — обычно не хватает расширения HEVC. " +
+                  "Откройте клип во внешнем плеере (кнопка ниже) или поставьте расширение из Store."
+                : "Файл можно открыть во внешнем плеере — кнопка ниже.";
+            PlayerBar.IsOpen = true;
+            if (args.Error is MediaPlayerError.DecodingError or MediaPlayerError.SourceNotSupported)
+                CodecBar.IsOpen = true;
+        });
 
     private void OnAudioTracksChanged(MediaPlaybackItem sender, IVectorChangedEventArgs args) =>
         Services.Dispatcher.Enqueue(ApplyTrackSelection);

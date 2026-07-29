@@ -88,26 +88,6 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="Лимит размера папки (ГБ)" Style="{StaticResource RowLabel}"/>
-                            <NumberBox x:Name="MaxFolderBox" Grid.Column="1" Minimum="0" Maximum="5000"
-                                       SpinButtonPlacementMode="Compact" MinWidth="160"
-                                       ValueChanged="Number_Changed"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Минимум свободного места (ГБ)" Style="{StaticResource RowLabel}"/>
-                            <NumberBox x:Name="MinFreeBox" Grid.Column="1" Minimum="1" Maximum="500"
-                                       SpinButtonPlacementMode="Compact" MinWidth="160"
-                                       ValueChanged="Number_Changed"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
                             <StackPanel>
                                 <TextBlock Text="Автоудаление старых записей" Style="{StaticResource RowLabel}"/>
                                 <TextBlock Text="Удаляет самые старые при достижении лимита" Style="{StaticResource RowSub}"/>
@@ -115,6 +95,31 @@
                             <ToggleSwitch x:Name="AutoDeleteToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
                                           HorizontalAlignment="Right" MinWidth="0" Toggled="Setting_Changed"/>
                         </Grid>
+
+                        <!-- Лимиты нужны только при включённом автоудалении: без него
+                             цифра «лимит папки» ни на что не влияет и только путает. -->
+                        <StackPanel x:Name="LimitsPanel" Spacing="16" Visibility="Collapsed">
+                        <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Лимит размера папки (ГБ)" Style="{StaticResource RowLabel}"/>
+                                <NumberBox x:Name="MaxFolderBox" Grid.Column="1" Minimum="0" Maximum="5000"
+                                           SpinButtonPlacementMode="Compact" MinWidth="160"
+                                           ValueChanged="Number_Changed"/>
+                            </Grid>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Минимум свободного места (ГБ)" Style="{StaticResource RowLabel}"/>
+                                <NumberBox x:Name="MinFreeBox" Grid.Column="1" Minimum="1" Maximum="500"
+                                           SpinButtonPlacementMode="Compact" MinWidth="160"
+                                           ValueChanged="Number_Changed"/>
+                            </Grid>
+                        </StackPanel>
                     </StackPanel>
                 </Grid>
 

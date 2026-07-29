@@ -2,10 +2,8 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
 using InstantReplay.Core.Engine;
 using InstantReplay.Core.GameDetection;
-using InstantReplay.Core.Hotkeys;
 using InstantReplay.Core.Library;
 using InstantReplay.Core.Settings;
 using InstantReplay.Core.Storage;
@@ -14,10 +12,10 @@ namespace InstantReplay.Views;
 
 /// <summary>
 /// Обзор: что происходит прямо сейчас. Первая вкладка — раньше приложение открывалось
-/// на настройках, и понять «пишется ли буфер, доезжает ли кодек, слышно ли микрофон»
+/// на настройках, и понять «пишется ли буфер, доезжает ли кодек, сколько занято»
 /// можно было только по косвенным признакам.
 ///
-/// Все живые цифры обновляются раз в секунду и ТОЛЬКО пока страница на экране:
+/// Живые цифры обновляются раз в секунду и ТОЛЬКО пока страница на экране:
 /// таймер запускается в Loaded и гасится в Unloaded.
 /// </summary>
 public sealed partial class OverviewPage : Page
@@ -31,6 +29,7 @@ public sealed partial class OverviewPage : Page
 
     private static readonly SolidColorBrush GreenDot = new(Windows.UI.Color.FromArgb(255, 0x4C, 0xD9, 0x64));
     private static readonly SolidColorBrush RedDot = new(Colors.OrangeRed);
+    private static readonly SolidColorBrush BlueDot = new(Windows.UI.Color.FromArgb(255, 0x0A, 0x84, 0xFF));
     private static readonly SolidColorBrush GrayDot = new(Colors.Gray);
 
     public OverviewPage()
@@ -42,13 +41,11 @@ public sealed partial class OverviewPage : Page
         {
             _hasPrev = false;
             Refresh();
-            BuildHotkeys();
             _ = LoadRecentAsync();
             Services.Storage.StatsChanged += OnStats;
             OnStats(Services.Storage.GetStats());
             Services.Engine.ReplaySaved += OnFileSaved;
             Services.Engine.RecordingSaved += OnFileSaved;
-            Services.Settings.Changed += OnSettingsChanged;
             _timer.Start();
         };
         Unloaded += (_, _) =>
@@ -57,17 +54,11 @@ public sealed partial class OverviewPage : Page
             Services.Storage.StatsChanged -= OnStats;
             Services.Engine.ReplaySaved -= OnFileSaved;
             Services.Engine.RecordingSaved -= OnFileSaved;
-            Services.Settings.Changed -= OnSettingsChanged;
         };
     }
 
     private void OnFileSaved(string file, int seconds) =>
         Services.Dispatcher.Enqueue(() => _ = LoadRecentAsync());
-
-    private void OnSettingsChanged(string group) => Services.Dispatcher.Enqueue(() =>
-    {
-        if (group is "" or "hotkeys") BuildHotkeys();
-    });
 
     // ---------------- Живые показатели ----------------
 
@@ -77,34 +68,49 @@ public sealed partial class OverviewPage : Page
         var settings = Services.Settings.Current;
         bool running = engine.State != EngineState.Stopped;
         bool recording = engine.IsRecordingToFile;
+        bool saving = engine.State == EngineState.Saving;
 
-        StateDot.Fill = recording ? RedDot : running ? GreenDot : GrayDot;
+        StateDot.Fill = saving ? BlueDot : recording ? RedDot : running ? GreenDot : GrayDot;
         StateText.Text = engine.State switch
         {
+            EngineState.Saving => $"Сохраняю клип… {engine.SaveProgress * 100:0}%",
             _ when recording => "Идёт запись в файл",
             EngineState.Running => "Instant Replay пишет буфер",
-            EngineState.Saving => "Сохраняю клип…",
             _ => "Выключено"
         };
-        StateSub.Text = running
-            ? $"Последние {FormatSeconds(settings.ReplayLengthSeconds)} всегда можно сохранить — " +
-              $"{PrettyHotkey(settings.HotkeySaveReplay)}"
-            : "Включи переключатель в шапке или нажми " + PrettyHotkey(settings.HotkeyToggleInstantReplay);
+        StateSub.Text = StateSubtitle(settings, running, saving);
 
         // Буфер: сколько уже накоплено из заданной длины
         int buffered = (int)engine.BufferedDuration.TotalSeconds;
         int target = Math.Max(1, settings.ReplayLengthSeconds);
         BufferBar.Value = running ? Math.Clamp(buffered * 100.0 / target, 0, 100) : 0;
+        BufferLabel.Text = running
+            ? $"Буфер повтора · до {FormatSeconds(target)}"
+            : "Буфер повтора";
         BufferText.Text = running
-            ? $"В буфере {FormatSeconds(buffered)} из {FormatSeconds(target)} · {ByteSize.Format(engine.BufferedBytes)}"
-            : "Буфер пуст";
+            ? $"{FormatSeconds(buffered)} · {ByteSize.Format(engine.BufferedBytes)}"
+            : "пуст";
 
         UpdatePipeline(engine, settings, running);
-        UpdateAudio(engine, settings, running);
 
         // Игру опрашиваем раз в две секунды: определение лезет в процесс переднего окна
         if (_tick++ % 2 == 0) UpdateGame();
     }
+
+    /// <summary>Подпись под статусом: подсказывает следующий шаг, а не повторяет статус.</summary>
+    private static string StateSubtitle(AppSettings settings, bool running, bool saving)
+    {
+        if (saving) return "Клип дописывается на диск — запись буфера продолжается";
+        if (!running) return "Включите переключатель в шапке окна, чтобы копить последние минуты игры";
+
+        string hotkey = settings.HotkeySaveReplay.Trim();
+        return hotkey.Length > 0
+            ? $"Последние {FormatSeconds(settings.ReplayLengthSeconds)} сохранятся по {Pretty(hotkey)}"
+            : $"Последние {FormatSeconds(settings.ReplayLengthSeconds)} можно сохранить кнопкой в шапке окна";
+    }
+
+    private static string Pretty(string combo) =>
+        string.Join(" + ", combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
 
     private void UpdatePipeline(ReplayEngine engine, AppSettings settings, bool running)
     {
@@ -143,43 +149,23 @@ public sealed partial class OverviewPage : Page
         EncoderText.Text = $"{encoder} · {size} · {settings.Fps} FPS · {settings.BitrateMbps} Мбит/с · {settings.Codec}";
     }
 
-    private void UpdateAudio(ReplayEngine engine, AppSettings settings, bool running)
-    {
-        var (game, mic) = running ? engine.AudioLevels : (0f, 0f);
-        GameLevel.Value = Math.Clamp(game, 0, 1);
-        MicLevel.Value = Math.Clamp(mic, 0, 1);
-
-        string mode = settings.TrackMode switch
-        {
-            AudioTrackMode.Separate => "две отдельные дорожки (игра и микрофон)",
-            AudioTrackMode.GameOnly => "только звук игры",
-            AudioTrackMode.MicOnly => "только микрофон",
-            _ => "одна смикшированная дорожка"
-        };
-        string sources = (settings.CaptureGameAudio ? "игра" : "")
-                       + (settings.CaptureGameAudio && settings.CaptureMicrophone ? " + " : "")
-                       + (settings.CaptureMicrophone ? "микрофон" : "");
-        if (sources.Length == 0) sources = "звук не записывается";
-        AudioModeText.Text = $"Источники: {sources} · В файле: {mode}";
-    }
-
     private void UpdateGame()
     {
-        string game = GameDetector.DetectForegroundGame();
-        GameText.Text = game;
-        GameHint.Text = Services.Settings.Current.GroupByGame
-            ? $"Следующий клип ляжет в папку «{game}»"
-            : "Раскладка по папкам игр выключена";
+        GameText.Text = GameDetector.DetectForegroundGame();
     }
 
     // ---------------- Хранилище ----------------
 
     private void OnStats(StorageStats stats) => Services.Dispatcher.Enqueue(() =>
     {
-        int limitGb = Services.Settings.Current.MaxFolderSizeGb;
+        var settings = Services.Settings.Current;
         StorageMain.Text = $"{ByteSize.Format(stats.FolderBytes)} · {stats.ClipCount} клипов";
+        StorageFree.Text = $"свободно {ByteSize.Format(stats.FreeDiskBytes)}";
 
-        if (limitGb > 0)
+        // Полоса лимита имеет смысл только когда включено автоудаление: иначе лимит
+        // ни на что не влияет, и шкала «занято из N ГБ» только путает.
+        int limitGb = settings.MaxFolderSizeGb;
+        if (settings.AutoDeleteOldClips && limitGb > 0)
         {
             long limit = limitGb * 1024L * 1024 * 1024;
             double percent = Math.Clamp(stats.FolderBytes * 100.0 / limit, 0, 100);
@@ -189,48 +175,14 @@ public sealed partial class OverviewPage : Page
                 percent >= 90 ? "SystemFillColorCriticalBrush"
                 : percent >= 70 ? "SystemFillColorCautionBrush"
                 : "SystemFillColorSuccessBrush"];
-            StorageSub.Text = $"{percent:0}% от лимита {limitGb} ГБ · свободно на диске {ByteSize.Format(stats.FreeDiskBytes)}";
+            StorageSub.Text = $"{percent:0}% от лимита {limitGb} ГБ · при заполнении удалятся самые старые";
         }
         else
         {
             StorageBar.Visibility = Visibility.Collapsed;
-            StorageSub.Text = $"Лимит папки не задан · свободно на диске {ByteSize.Format(stats.FreeDiskBytes)}";
+            StorageSub.Text = settings.SaveRootPath;
         }
     });
-
-    // ---------------- Хоткеи ----------------
-
-    private void BuildHotkeys()
-    {
-        HotkeysPanel.Children.Clear();
-        foreach (var binding in HotkeyConflicts.Bindings(Services.Settings.Current))
-        {
-            var grid = new Grid();
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            grid.Children.Add(new TextBlock { Text = binding.Title, FontSize = 13 });
-
-            var combo = new TextBlock
-            {
-                Text = PrettyHotkey(binding.Combo),
-                FontSize = 13,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = (Brush)Application.Current.Resources[
-                    binding.Combo.Length > 0 ? "TextFillColorPrimaryBrush" : "TextFillColorSecondaryBrush"]
-            };
-            Grid.SetColumn(combo, 1);
-            grid.Children.Add(combo);
-
-            HotkeysPanel.Children.Add(grid);
-        }
-    }
-
-    private static string PrettyHotkey(string combo)
-    {
-        if (string.IsNullOrWhiteSpace(combo)) return "не задано";
-        return string.Join(" + ", combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
-    }
 
     // ---------------- Последние записи ----------------
 

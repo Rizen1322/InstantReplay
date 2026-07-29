@@ -7,30 +7,58 @@
     <ScrollViewer Padding="28,12,28,0">
         <StackPanel Spacing="10" HorizontalAlignment="Stretch">
 
-            <!-- Что происходит прямо сейчас -->
+            <!-- Состояние. Всё в одну колонку: правый столбец с длинным текстом
+                 налезал на полосу буфера и выглядел сломанным. -->
             <Grid Style="{StaticResource SettingCard}">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="14">
 
-                <StackPanel Spacing="8">
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                        <Ellipse x:Name="StateDot" Width="11" Height="11" VerticalAlignment="Center" Fill="Gray"/>
-                        <TextBlock x:Name="StateText" Text="Выключено" FontSize="21" FontWeight="SemiBold"/>
+                    <!-- Строка 1: статус слева, плашка с игрой справа -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Spacing="4" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Ellipse x:Name="StateDot" Width="11" Height="11"
+                                         VerticalAlignment="Center" Fill="Gray"/>
+                                <TextBlock x:Name="StateText" Text="Выключено" FontSize="22" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <TextBlock x:Name="StateSub" Style="{StaticResource RowSub}" Margin="21,0,12,0"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+
+                        <Border Grid.Column="1" CornerRadius="8" Padding="14,8,16,9" VerticalAlignment="Center"
+                                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <FontIcon Glyph="&#xE7FC;" FontSize="15" VerticalAlignment="Center"
+                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <StackPanel Spacing="1" MaxWidth="240">
+                                    <TextBlock Text="В фокусе" FontSize="11"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    <TextBlock x:Name="GameText" Text="—" FontSize="14" FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" MaxLines="1"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <!-- Строка 2: буфер -->
+                    <StackPanel Spacing="6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="BufferLabel" Text="Буфер повтора" FontSize="12.5"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            <TextBlock x:Name="BufferText" Grid.Column="1" Text="пуст" FontSize="12.5"
+                                       FontWeight="SemiBold"/>
+                        </Grid>
+                        <ProgressBar x:Name="BufferBar" Height="6" Minimum="0" Maximum="100"/>
                     </StackPanel>
-                    <TextBlock x:Name="StateSub" Style="{StaticResource RowSub}" Margin="0"/>
-
-                    <ProgressBar x:Name="BufferBar" Height="6" Minimum="0" Maximum="100" Margin="0,4,0,0"/>
-                    <TextBlock x:Name="BufferText" Style="{StaticResource RowSub}" Margin="0"/>
-                </StackPanel>
-
-                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center" MinWidth="220">
-                    <TextBlock Text="В фокусе" Style="{StaticResource RowSub}" Margin="0"/>
-                    <TextBlock x:Name="GameText" Text="—" FontSize="16" FontWeight="SemiBold"
-                               TextTrimming="CharacterEllipsis" MaxLines="1"/>
-                    <TextBlock x:Name="GameHint" Style="{StaticResource RowSub}" Margin="0,2,0,0"
-                               Text="Сюда попадёт имя папки для следующего клипа"/>
                 </StackPanel>
             </Grid>
 
@@ -71,32 +99,6 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Звук: видно, что микрофон и игра реально пишутся -->
-            <TextBlock Text="Звук" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
-            <Grid Style="{StaticResource SettingCard}">
-                <StackPanel Spacing="10">
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="110"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Игра" Style="{StaticResource RowLabel}"/>
-                        <ProgressBar x:Name="GameLevel" Grid.Column="1" Minimum="0" Maximum="1" Height="6"
-                                     VerticalAlignment="Center"/>
-                    </Grid>
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="110"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
-                        <ProgressBar x:Name="MicLevel" Grid.Column="1" Minimum="0" Maximum="1" Height="6"
-                                     VerticalAlignment="Center"/>
-                    </Grid>
-                    <TextBlock x:Name="AudioModeText" Style="{StaticResource RowSub}" Margin="0"/>
-                </StackPanel>
-            </Grid>
-
             <!-- Последние записи: попасть в клип за один клик -->
             <Grid Margin="0,12,0,2">
                 <Grid.ColumnDefinitions>
@@ -115,29 +117,22 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Хранилище и клавиши: две колонки -->
-            <Grid ColumnSpacing="10" Margin="0,12,0,16">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Spacing="10">
-                    <TextBlock Text="Хранилище" Style="{StaticResource SectionHeader}" Margin="0"/>
-                    <Grid Style="{StaticResource SettingCard}">
-                        <StackPanel Spacing="8">
-                            <TextBlock x:Name="StorageMain" Text="—" FontSize="18" FontWeight="SemiBold"/>
-                            <ProgressBar x:Name="StorageBar" Height="6" Minimum="0" Maximum="100"/>
-                            <TextBlock x:Name="StorageSub" Style="{StaticResource RowSub}" Margin="0"/>
-                        </StackPanel>
+            <!-- Хранилище -->
+            <TextBlock Text="Хранилище" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
+            <Grid Style="{StaticResource SettingCard}" Margin="0,0,0,16">
+                <StackPanel Spacing="8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StorageMain" Text="—" FontSize="18" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="StorageFree" Grid.Column="1" Text="" FontSize="13"
+                                   VerticalAlignment="Bottom"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     </Grid>
-                </StackPanel>
-
-                <StackPanel Grid.Column="1" Spacing="10">
-                    <TextBlock Text="Горячие клавиши" Style="{StaticResource SectionHeader}" Margin="0"/>
-                    <Grid Style="{StaticResource SettingCard}">
-                        <StackPanel x:Name="HotkeysPanel" Spacing="6"/>
-                    </Grid>
+                    <ProgressBar x:Name="StorageBar" Height="6" Minimum="0" Maximum="100"/>
+                    <TextBlock x:Name="StorageSub" Style="{StaticResource RowSub}" Margin="0"/>
                 </StackPanel>
             </Grid>
         </StackPanel>

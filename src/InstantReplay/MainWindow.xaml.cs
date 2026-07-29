@@ -134,9 +134,11 @@ public sealed partial class MainWindow : Window
 
         string status = e.State switch
         {
+            // Проценты вместо немой паузы: на длинном клипе сохранение занимает секунды,
+            // и раньше было не понять, идёт ли оно вообще
+            EngineState.Saving => $"Сохранение… {e.SaveProgress * 100:0}%",
             _ when recording => "Идёт запись",
             EngineState.Running => "Запись в буфер",
-            EngineState.Saving => "Сохранение…",
             _ => "Выключено"
         };
         if (status != _shownStatus)
