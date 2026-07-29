@@ -1,14 +1,22 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Windows.Storage.Pickers;
 using Windows.System;
-using InstantReplay.Core.Engine;
 using InstantReplay.Core.Hotkeys;
 using InstantReplay.Core.Settings;
+using InstantReplay.Core.Storage;
 
 namespace InstantReplay.Views;
 
-public sealed partial class HotkeysPage : Page
+/// <summary>
+/// «Клавиши и файлы»: чем запускать сохранение и куда всё складывается.
+/// Раньше это были две отдельные вкладки, хотя настраивают их за один заход.
+///
+/// Клавиши применяются сразу (назначение — уже подтверждённое действие), настройки
+/// папки — кнопкой «Применить», как на вкладке «Запись».
+/// </summary>
+public sealed partial class KeysFilesPage : Page
 {
     private sealed record HotkeyRow(HotkeyAction Action, string Title, string? Desc,
         Func<AppSettings, string> Get, Action<AppSettings, string> Set);
@@ -20,7 +28,7 @@ public sealed partial class HotkeysPage : Page
         new(HotkeyAction.ToggleInstantReplay, "Вкл/выкл Instant Replay", null, s => s.HotkeyToggleInstantReplay, (s, v) => s.HotkeyToggleInstantReplay = v),
         new(HotkeyAction.StartRecording, "Начать запись", "Обычная запись в файл", s => s.HotkeyStartRecording, (s, v) => s.HotkeyStartRecording = v),
         new(HotkeyAction.StopRecording, "Остановить запись", null, s => s.HotkeyStopRecording, (s, v) => s.HotkeyStopRecording = v),
-        new(HotkeyAction.Screenshot, "Скриншот", "Сохраняет PNG", s => s.HotkeyScreenshot, (s, v) => s.HotkeyScreenshot = v),
+        new(HotkeyAction.Screenshot, "Скриншот", "Сохраняет PNG в папку записей", s => s.HotkeyScreenshot, (s, v) => s.HotkeyScreenshot = v),
         new(HotkeyAction.OpenFolder, "Открыть папку записей", null, s => s.HotkeyOpenFolder, (s, v) => s.HotkeyOpenFolder = v),
     ];
 
@@ -29,25 +37,34 @@ public sealed partial class HotkeysPage : Page
     private readonly Dictionary<HotkeyRow, TextBlock> _warnings = new();
     private HotkeyRow? _capturing;
 
-    public HotkeysPage()
+    private readonly DirtyState _dirty;
+    private bool _loading;
+    /// <summary>Выбранная в пикере папка до нажатия «Применить».</summary>
+    private string? _pendingPath;
+
+    public KeysFilesPage()
     {
         InitializeComponent();
-        BuildRows();
+        _dirty = new DirtyState(DirtyText, ApplyBtn, RevertBtn);
+        BuildHotkeyRows();
 
         Loaded += (_, _) =>
         {
-            RefreshLabels();
-            Services.Engine.StateChanged += OnEngineState;
-            OnEngineState(Services.Engine.State);
+            RefreshHotkeyLabels();
+            LoadStorageSettings();
+            Services.Storage.StatsChanged += OnStats;
+            OnStats(Services.Storage.GetStats());
         };
         Unloaded += (_, _) =>
         {
             CancelCapture();
-            Services.Engine.StateChanged -= OnEngineState;
+            Services.Storage.StatsChanged -= OnStats;
         };
     }
 
-    private void BuildRows()
+    // ---------------- Горячие клавиши ----------------
+
+    private void BuildHotkeyRows()
     {
         foreach (var row in Rows)
         {
@@ -89,9 +106,7 @@ public sealed partial class HotkeysPage : Page
             Grid.SetColumn(btn, 1);
             grid.Children.Add(btn);
 
-            // Кнопка очистки: делает бинд пустым — действие остаётся без горячей
-            // клавиши (можно вызвать из трея/окна). "✕" = ✕ в обычном шрифте,
-            // без зависимости от Segoe-иконок (их нет на Windows 10).
+            // "✕" обычным шрифтом: Segoe-иконок на Windows 10 может не быть
             var clear = new Button
             {
                 Content = "✕",
@@ -109,7 +124,7 @@ public sealed partial class HotkeysPage : Page
         }
     }
 
-    private void RefreshLabels()
+    private void RefreshHotkeyLabels()
     {
         var s = Services.Settings.Current;
         foreach (var (row, btn) in _buttons)
@@ -151,8 +166,6 @@ public sealed partial class HotkeysPage : Page
             combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
         return pretty.Length == 0 ? "Не задано" : pretty;
     }
-
-    // ---------------- Захват сочетания ----------------
 
     private void CaptureButton_Click(object sender, RoutedEventArgs e)
     {
@@ -204,7 +217,7 @@ public sealed partial class HotkeysPage : Page
     {
         row.Set(Services.Settings.Current, combo);
         Services.Settings.Save("hotkeys");
-        RefreshLabels();
+        RefreshHotkeyLabels();
     }
 
     private async Task ResolveDuplicateAsync(HotkeyRow row, string combo, HotkeyBinding occupant)
@@ -222,7 +235,7 @@ public sealed partial class HotkeysPage : Page
 
         if (await dialog.ShowAsync() != ContentDialogResult.Primary)
         {
-            RefreshLabels(); // вернуть подпись кнопки из режима захвата
+            RefreshHotkeyLabels(); // вернуть подпись кнопки из режима захвата
             return;
         }
 
@@ -235,7 +248,7 @@ public sealed partial class HotkeysPage : Page
     {
         _capturing = null;
         Services.Hotkeys.Suspended = false;
-        RefreshLabels();
+        RefreshHotkeyLabels();
     }
 
     /// <summary>Убрать горячую клавишу для действия (пустой бинд).</summary>
@@ -245,7 +258,17 @@ public sealed partial class HotkeysPage : Page
         if (_capturing is not null) CancelCapture();
         row.Set(Services.Settings.Current, "");
         Services.Settings.Save("hotkeys");
-        RefreshLabels();
+        RefreshHotkeyLabels();
+    }
+
+    private void ResetHotkeys_Click(object sender, RoutedEventArgs e)
+    {
+        var defaults = new AppSettings();
+        var s = Services.Settings.Current;
+        foreach (var row in Rows)
+            row.Set(s, row.Get(defaults));
+        Services.Settings.Save("hotkeys");
+        RefreshHotkeyLabels();
     }
 
     private static bool IsModifier(VirtualKey k) => k is VirtualKey.Control or VirtualKey.LeftControl
@@ -287,18 +310,105 @@ public sealed partial class HotkeysPage : Page
         };
     }
 
-    private void Reset_Click(object sender, RoutedEventArgs e)
+    // ---------------- Папка записей ----------------
+
+    private void LoadStorageSettings()
     {
-        var defaults = new AppSettings();
+        _loading = true;
+        _dirty.Suspended = true;
+
         var s = Services.Settings.Current;
-        foreach (var row in Rows)
-            row.Set(s, row.Get(defaults));
-        Services.Settings.Save("hotkeys");
-        RefreshLabels();
+        _pendingPath = null;
+        PathText.Text = s.SaveRootPath;
+        MaxFolderBox.Value = s.MaxFolderSizeGb;
+        MinFreeBox.Value = s.MinFreeSpaceGb;
+        AutoDeleteToggle.IsOn = s.AutoDeleteOldClips;
+        UpdateLimitsVisibility();
+
+        _dirty.Suspended = false;
+        _dirty.Clear();
+        _loading = false;
     }
 
-    private void OnEngineState(EngineState st) => Services.Dispatcher.Enqueue(() =>
-        ActiveBar.IsOpen = st != EngineState.Stopped);
+    private void Setting_Changed(object sender, RoutedEventArgs e)
+    {
+        _dirty.Mark();
+        UpdateLimitsVisibility();
+    }
+
+    private void Number_Changed(NumberBox sender, NumberBoxValueChangedEventArgs args) => _dirty.Mark();
+
+    /// <summary>Поля лимитов имеют смысл только при включённом автоудалении.</summary>
+    private void UpdateLimitsVisibility() =>
+        LimitsPanel.Visibility = AutoDeleteToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
+
+    private void Apply_Click(object sender, RoutedEventArgs e)
+    {
+        var s = Services.Settings.Current;
+        if (_pendingPath is { Length: > 0 }) s.SaveRootPath = _pendingPath;
+        s.MaxFolderSizeGb = (int)MaxFolderBox.Value;
+        s.MinFreeSpaceGb = (int)MinFreeBox.Value;
+        s.AutoDeleteOldClips = AutoDeleteToggle.IsOn;
+        Services.Settings.Save("storage"); // StorageManager пересоберёт индекс по новой папке
+
+        _pendingPath = null;
+        _dirty.MarkSaved();
+    }
+
+    private void Revert_Click(object sender, RoutedEventArgs e) => LoadStorageSettings();
+
+    private async void Browse_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new FolderPicker();
+        picker.FileTypeFilter.Add("*");
+        // WinUI 3 desktop: пикеру нужен HWND главного окна
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(WindowTracker.Main!);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+
+        var folder = await picker.PickSingleFolderAsync();
+        if (folder is null) return;
+
+        _pendingPath = folder.Path;
+        PathText.Text = folder.Path;
+        _dirty.Mark();
+    }
+
+    private void OnStats(StorageStats stats) => Services.Dispatcher.Enqueue(() =>
+    {
+        SavedCountText.Text = Services.Settings.Current.TotalReplaysSaved.ToString();
+        UsedText.Text = ByteSize.Format(stats.FolderBytes);
+        FreeText.Text = ByteSize.Format(stats.FreeDiskBytes);
+        if (!_loading && _pendingPath is null) PathText.Text = stats.RootPath;
+        UpdateUsageBar(stats);
+    });
+
+    /// <summary>
+    /// Полоса «сколько из лимита занято» — только когда лимит реально работает,
+    /// то есть при включённом автоудалении. Иначе это цифра ни о чём.
+    /// </summary>
+    private void UpdateUsageBar(StorageStats stats)
+    {
+        var settings = Services.Settings.Current;
+        int limitGb = settings.MaxFolderSizeGb;
+        if (limitGb <= 0 || !settings.AutoDeleteOldClips)
+        {
+            UsagePanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        UsagePanel.Visibility = Visibility.Visible;
+
+        long limitBytes = limitGb * 1024L * 1024 * 1024;
+        double percent = Math.Clamp(stats.FolderBytes * 100.0 / limitBytes, 0, 100);
+        UsageBar.Value = percent;
+
+        string brush = percent >= 90 ? "SystemFillColorCriticalBrush"
+                     : percent >= 70 ? "SystemFillColorCautionBrush"
+                                     : "SystemFillColorSuccessBrush";
+        UsageBar.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[brush];
+
+        UsageText.Text = $"{ByteSize.Format(stats.FolderBytes)} из {limitGb} ГБ ({percent:0}%) · " +
+                         $"{stats.ClipCount} клипов · при заполнении удалятся самые старые";
+    }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
 }

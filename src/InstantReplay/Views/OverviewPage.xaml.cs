@@ -22,9 +22,6 @@ public sealed partial class OverviewPage : Page
 {
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
 
-    // Счётчики прошлого тика — из них считаем скорость за секунду
-    private long _prevAccepted, _prevEncoded, _prevDropped;
-    private bool _hasPrev;
     private int _tick;
 
     private static readonly SolidColorBrush GreenDot = new(Windows.UI.Color.FromArgb(255, 0x4C, 0xD9, 0x64));
@@ -39,7 +36,6 @@ public sealed partial class OverviewPage : Page
 
         Loaded += (_, _) =>
         {
-            _hasPrev = false;
             Refresh();
             _ = LoadRecentAsync();
             Services.Storage.StatsChanged += OnStats;
@@ -79,6 +75,7 @@ public sealed partial class OverviewPage : Page
             _ => "Выключено"
         };
         StateSub.Text = StateSubtitle(settings, running, saving);
+        UpdateQuickActions(settings, running, recording);
 
         // Буфер: сколько уже накоплено из заданной длины
         int buffered = (int)engine.BufferedDuration.TotalSeconds;
@@ -91,11 +88,56 @@ public sealed partial class OverviewPage : Page
             ? $"{FormatSeconds(buffered)} · {ByteSize.Format(engine.BufferedBytes)}"
             : "пуст";
 
-        UpdatePipeline(engine, settings, running);
-
         // Игру опрашиваем раз в две секунды: определение лезет в процесс переднего окна
         if (_tick++ % 2 == 0) UpdateGame();
     }
+
+    // ---------------- Быстрые действия ----------------
+
+    private void UpdateQuickActions(AppSettings settings, bool running, bool recording)
+    {
+        bool canSave = Services.Engine.State == EngineState.Running;
+        SaveReplayBtn.IsEnabled = canSave;
+        Save30Btn.IsEnabled = canSave;
+
+        SaveReplayHint.Text = HotkeyHint(settings.HotkeySaveReplay, $"весь буфер · {FormatSeconds(settings.ReplayLengthSeconds)}");
+        Save30Hint.Text = HotkeyHint(settings.HotkeySaveLast30, "короткий клип");
+
+        RecordText.Text = recording ? "Остановить запись" : "Начать запись";
+        RecordHint.Text = HotkeyHint(
+            recording ? settings.HotkeyStopRecording : settings.HotkeyStartRecording,
+            recording ? "идёт запись в файл" : "обычная запись в файл");
+        RecordDot.Fill = recording ? RedDot : GrayDot;
+    }
+
+    private static string HotkeyHint(string combo, string fallback) =>
+        string.IsNullOrWhiteSpace(combo) ? fallback : Pretty(combo);
+
+    private void SaveReplay_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay();
+
+    private void SaveLast30_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay(30);
+
+    private void Record_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Services.Engine.IsRecordingToFile) Services.Engine.StopRecordingToFile();
+            else Services.Engine.StartRecordingToFile();
+        }
+        catch (Exception ex)
+        {
+            _ = new ContentDialog
+            {
+                Title = "Не удалось начать запись",
+                Content = ex.Message,
+                CloseButtonText = "OK",
+                XamlRoot = XamlRoot
+            }.ShowAsync();
+        }
+        Refresh();
+    }
+
+    private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
 
     /// <summary>Подпись под статусом: подсказывает следующий шаг, а не повторяет статус.</summary>
     private static string StateSubtitle(AppSettings settings, bool running, bool saving)
@@ -111,43 +153,6 @@ public sealed partial class OverviewPage : Page
 
     private static string Pretty(string combo) =>
         string.Join(" + ", combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
-
-    private void UpdatePipeline(ReplayEngine engine, AppSettings settings, bool running)
-    {
-        var (_, accepted, encoded, dropped, _) = engine.FrameCounters;
-
-        if (!running)
-        {
-            CaptureFpsText.Text = EncodeFpsText.Text = DropText.Text = "—";
-            RamText.Text = "—";
-            PipelineBar.IsOpen = false;
-            EncoderText.Text = "Запись выключена";
-            _hasPrev = false;
-            return;
-        }
-
-        long dCapture = _hasPrev ? accepted - _prevAccepted : 0;
-        long dEncode = _hasPrev ? encoded - _prevEncoded : 0;
-        long dDrop = _hasPrev ? dropped - _prevDropped : 0;
-        _prevAccepted = accepted; _prevEncoded = encoded; _prevDropped = dropped;
-        bool hadPrev = _hasPrev;
-        _hasPrev = true;
-
-        CaptureFpsText.Text = hadPrev ? dCapture.ToString() : "—";
-        EncodeFpsText.Text = hadPrev ? dEncode.ToString() : "—";
-        DropText.Text = hadPrev ? dDrop.ToString() : "—";
-        RamText.Text = ByteSize.Format(engine.BufferedBytes);
-
-        // Потери кадров — единственная цифра, из-за которой запись выглядит рваной
-        DropText.Foreground = (Brush)Application.Current.Resources[
-            dDrop > 0 ? "SystemFillColorCriticalBrush" : "TextFillColorPrimaryBrush"];
-        PipelineBar.IsOpen = dDrop > 0;
-
-        var (w, h) = engine.OutputSize;
-        string encoder = engine.EncoderLabel is { Length: > 0 } label ? label : "энкодер запускается";
-        string size = w > 0 ? $"{w}×{h}" : $"{settings.VerticalResolution}p";
-        EncoderText.Text = $"{encoder} · {size} · {settings.Fps} FPS · {settings.BitrateMbps} Мбит/с · {settings.Codec}";
-    }
 
     private void UpdateGame()
     {

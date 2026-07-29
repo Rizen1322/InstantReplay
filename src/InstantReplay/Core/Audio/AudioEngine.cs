@@ -103,10 +103,15 @@ public sealed class AudioMixerEngine : IDisposable
     private Thread? _thread;
     private volatile bool _running;
 
-    public float GameVolume { get; set; } = 1f;
-    public float MicVolume { get; set; } = 1f;
     /// <summary>Noise gate для микрофона: глушит фоновый гул, когда голоса нет.</summary>
     public bool MicNoiseGate { get; set; }
+
+    /// <summary>
+    /// Порог шумодава в дБFS: всё тише этого уровня считается фоном и глушится.
+    /// -60 — почти всё пропускает (только совсем тихий гул), -30 — жёстко режет и
+    /// может съедать начало тихих фраз. Разумная середина около -44.
+    /// </summary>
+    public float MicGateThresholdDb { get; set; } = -44f;
 
     /// <summary>Пиковые уровни последнего блока (0..1) — для индикаторов в UI.</summary>
     public float GamePeak { get; private set; }
@@ -165,15 +170,17 @@ public sealed class AudioMixerEngine : IDisposable
             if (_game is not null) _game.Read(gameBuf, BlockSamples); else Array.Clear(gameBuf);
             if (_mic is not null) _mic.Read(micBuf, BlockSamples); else Array.Clear(micBuf);
 
-            // Noise gate микрофона: ниже порога (~ -44 дБ) плавно закрываемся.
-            // Быстрая атака (голос не «съедается»), медленный релиз (нет щёлканья).
+            // Noise gate микрофона: ниже порога плавно закрываемся. Порог задаётся
+            // пользователем в дБ (см. MicGateThresholdDb), быстрая атака (голос не
+            // «съедается»), медленный релиз (нет щёлканья).
             float gate = 1f;
             if (MicNoiseGate && _mic is not null)
             {
                 double sum = 0;
                 for (int i = 0; i < BlockSamples; i++) sum += micBuf[i] * micBuf[i];
                 float rms = (float)Math.Sqrt(sum / BlockSamples);
-                float target = rms > 0.006f ? 1f : 0f;
+                float threshold = (float)Math.Pow(10, Math.Clamp(MicGateThresholdDb, -70f, -10f) / 20.0);
+                float target = rms > threshold ? 1f : 0f;
                 float coef = target > _gateEnvelope ? 0.6f : 0.06f;
                 _gateEnvelope += (target - _gateEnvelope) * coef;
                 gate = _gateEnvelope;
@@ -181,12 +188,11 @@ public sealed class AudioMixerEngine : IDisposable
 
             var gameOut = new float[BlockSamples];
             var micOut = new float[BlockSamples];
-            float gv = GameVolume, mv = MicVolume * gate;
             float gPeak = 0, mPeak = 0;
             for (int i = 0; i < BlockSamples; i++)
             {
-                gameOut[i] = Math.Clamp(gameBuf[i] * gv, -1f, 1f);
-                micOut[i] = Math.Clamp(micBuf[i] * mv, -1f, 1f);
+                gameOut[i] = Math.Clamp(gameBuf[i], -1f, 1f);
+                micOut[i] = Math.Clamp(micBuf[i] * gate, -1f, 1f);
                 float ga = Math.Abs(gameOut[i]); if (ga > gPeak) gPeak = ga;
                 float ma = Math.Abs(micOut[i]); if (ma > mPeak) mPeak = ma;
             }

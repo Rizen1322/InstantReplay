@@ -36,11 +36,15 @@ public sealed partial class RecordingPage : Page
     private List<VideoCodec>? _availableCodecs;
 
     private DirtyState _dirty = null!;
+    /// <summary>Живые уровни звука — только пока страница на экране.</summary>
+    private readonly DispatcherTimer _levelTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
 
     public RecordingPage()
     {
         InitializeComponent();
         _dirty = new DirtyState(DirtyText, ApplyBtn, RevertBtn);
+        _levelTimer.Tick += (_, _) => UpdateLevels();
+        GateSlider.ValueChanged += Gate_Changed;
 
         // Только теперь, когда всё дерево построено, вешаем обработчики значений:
         // из разметки они срабатывали бы прямо во время разбора (Minimum поднимает
@@ -55,12 +59,90 @@ public sealed partial class RecordingPage : Page
 
         Loaded += (_, _) =>
         {
+            BuildAudioDevices();
             LoadFromSettings();
             Services.Engine.StateChanged += OnEngineState;
             OnEngineState(Services.Engine.State);
             _ = LoadHwInfoAsync();
+            _levelTimer.Start();
         };
-        Unloaded += (_, _) => Services.Engine.StateChanged -= OnEngineState;
+        Unloaded += (_, _) =>
+        {
+            _levelTimer.Stop();
+            Services.Engine.StateChanged -= OnEngineState;
+        };
+    }
+
+    // ---------------- Звук ----------------
+
+    private void BuildAudioDevices()
+    {
+        RenderDeviceBox.Items.Clear();
+        CaptureDeviceBox.Items.Clear();
+        RenderDeviceBox.Items.Add(new ComboBoxItem { Content = "По умолчанию", Tag = "" });
+        CaptureDeviceBox.Items.Add(new ComboBoxItem { Content = "По умолчанию", Tag = "" });
+        try
+        {
+            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            foreach (var d in enumerator.EnumerateAudioEndPoints(
+                         NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.DeviceState.Active))
+                RenderDeviceBox.Items.Add(new ComboBoxItem { Content = d.FriendlyName, Tag = d.ID });
+            foreach (var d in enumerator.EnumerateAudioEndPoints(
+                         NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.DeviceState.Active))
+                CaptureDeviceBox.Items.Add(new ComboBoxItem { Content = d.FriendlyName, Tag = d.ID });
+        }
+        catch { }
+    }
+
+    /// <summary>Любая правка звука — как и видео, вступает в силу по «Применить».</summary>
+    private void Audio_Changed(object sender, object e)
+    {
+        if (_loading) return;
+        _dirty.Mark();
+        UpdateDevicesSummary();
+    }
+
+    private void NoiseGate_Toggled(object sender, RoutedEventArgs e)
+    {
+        GateRow.Visibility = NoiseToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
+        if (_loading) return;
+        _dirty.Mark();
+    }
+
+    private void Gate_Changed(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (GateLabel is null) return; // ещё идёт разбор XAML
+        GateLabel.Text = $"{(int)GateSlider.Value} дБ · {GateHint((int)GateSlider.Value)}";
+        if (_loading) return;
+        _dirty.Mark();
+    }
+
+    private static string GateHint(int db) => db switch
+    {
+        <= -55 => "пропускает почти всё, режет только тихий гул",
+        <= -45 => "обычный вариант для большинства микрофонов",
+        <= -35 => "жёстче: уберёт клавиатуру, но может съесть тихую речь",
+        _ => "очень жёстко: пройдёт только громкий голос"
+    };
+
+    private void UpdateDevicesSummary()
+    {
+        string render = (RenderDeviceBox.SelectedItem as ComboBoxItem)?.Content as string ?? "По умолчанию";
+        string capture = (CaptureDeviceBox.SelectedItem as ComboBoxItem)?.Content as string ?? "По умолчанию";
+        DevicesSummary.Text = $"Игра: {render} · Микрофон: {capture}";
+    }
+
+    private void UpdateLevels()
+    {
+        if (Services.Engine.State == EngineState.Stopped)
+        {
+            GameLevel.Value = 0;
+            MicLevel.Value = 0;
+            return;
+        }
+        var (game, mic) = Services.Engine.AudioLevels;
+        GameLevel.Value = Math.Min(1, game);
+        MicLevel.Value = Math.Min(1, mic);
     }
 
     // ---------------- Построение UI ----------------
@@ -148,6 +230,20 @@ public sealed partial class RecordingPage : Page
         if (MonitorBox.SelectedIndex < 0 && MonitorBox.Items.Count > 0) MonitorBox.SelectedIndex = 0;
         CursorToggle.IsOn = s.RecordCursor;
 
+        // Звук
+        GameAudioToggle.IsOn = s.CaptureGameAudio;
+        MicToggle.IsOn = s.CaptureMicrophone;
+        SelectByTag(TrackModeBox, s.TrackMode.ToString());
+        SelectByTag(RenderDeviceBox, s.RenderDeviceId ?? "");
+        if (RenderDeviceBox.SelectedIndex < 0) RenderDeviceBox.SelectedIndex = 0;
+        SelectByTag(CaptureDeviceBox, s.CaptureDeviceId ?? "");
+        if (CaptureDeviceBox.SelectedIndex < 0) CaptureDeviceBox.SelectedIndex = 0;
+        NoiseToggle.IsOn = s.MicNoiseSuppression;
+        GateRow.Visibility = s.MicNoiseSuppression ? Visibility.Visible : Visibility.Collapsed;
+        GateSlider.Value = Math.Clamp(s.MicNoiseGateDb, -70, -20);
+        GateLabel.Text = $"{(int)GateSlider.Value} дБ · {GateHint((int)GateSlider.Value)}";
+        UpdateDevicesSummary();
+
         _loading = false;
         _dirty.Suspended = false;
         _dirty.Clear();
@@ -231,7 +327,20 @@ public sealed partial class RecordingPage : Page
         if (Enum.TryParse(TagOf(CodecBox), out VideoCodec codec)) s.Codec = codec;
         if (int.TryParse(TagOf(MonitorBox), out int mon)) s.MonitorIndex = mon;
         s.RecordCursor = CursorToggle.IsOn;
-        Services.Settings.Save("video");
+
+        // Звук сохраняется здесь же: настройки одной записи не должны быть размазаны
+        // по двум вкладкам с двумя кнопками «Применить».
+        s.CaptureGameAudio = GameAudioToggle.IsOn;
+        s.CaptureMicrophone = MicToggle.IsOn;
+        if (Enum.TryParse(TagOf(TrackModeBox), out AudioTrackMode trackMode)) s.TrackMode = trackMode;
+        string render = TagOf(RenderDeviceBox);
+        s.RenderDeviceId = render.Length == 0 ? null : render;
+        string capture = TagOf(CaptureDeviceBox);
+        s.CaptureDeviceId = capture.Length == 0 ? null : capture;
+        s.MicNoiseSuppression = NoiseToggle.IsOn;
+        s.MicNoiseGateDb = (float)GateSlider.Value;
+
+        Services.Settings.Save("video"); // движок перезапустит конвейер целиком
 
         SyncPresets();
         UpdateCodecWarning();
@@ -328,6 +437,14 @@ public sealed partial class RecordingPage : Page
         CodecBox.IsEnabled = !locked;
         MonitorBox.IsEnabled = !locked;
         CursorToggle.IsEnabled = !locked;
+        // Гасим только органы управления звуком: индикаторы уровня во время записи
+        // как раз и нужны — по ним видно, что микрофон живой.
+        GameAudioToggle.IsEnabled = !locked;
+        MicToggle.IsEnabled = !locked;
+        TrackModeBox.IsEnabled = !locked;
+        NoiseToggle.IsEnabled = !locked;
+        GateSlider.IsEnabled = !locked;
+        DevicesExpander.IsEnabled = !locked;
         _dirty.Locked = locked; // применить нельзя, пока идёт запись
     });
 

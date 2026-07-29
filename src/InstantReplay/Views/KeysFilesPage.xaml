@@ -1,5 +1,5 @@
 <Page
-    x:Class="InstantReplay.Views.StoragePage"
+    x:Class="InstantReplay.Views.KeysFilesPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     NavigationCacheMode="Required">
@@ -13,11 +13,24 @@
         <ScrollViewer Padding="28,12,28,0">
             <StackPanel Spacing="10" HorizontalAlignment="Stretch">
 
-                <!-- Статистика первой: главное на этой вкладке — сколько занято
-                     и близко ли автоочистка. Настройки ниже меняют редко. -->
-                <TextBlock Text="Статистика" Style="{StaticResource SectionHeader}"/>
+                <!-- Горячие клавиши первыми: их меняют чаще, чем папку записей -->
+                <TextBlock Text="Горячие клавиши" Style="{StaticResource SectionHeader}"/>
+                <TextBlock Text="Работают поверх любой игры. Кликни по полю и нажми новое сочетание — оно применяется сразу."
+                           Style="{StaticResource SectionSub}"/>
+
+                <InfoBar x:Name="ConflictBar" Severity="Warning" IsClosable="False" IsOpen="False"
+                         Title="Проверьте назначения"/>
+
                 <Grid Style="{StaticResource SettingCard}">
-                    <StackPanel Spacing="10">
+                    <StackPanel x:Name="RowsPanel" Spacing="14"/>
+                </Grid>
+
+                <Button Content="Сбросить клавиши на стандартные" Click="ResetHotkeys_Click" Margin="0,4,0,0"/>
+
+                <!-- Куда всё складывается -->
+                <TextBlock Text="Папка записей" Style="{StaticResource SectionHeader}" Margin="0,20,0,2"/>
+                <Grid Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="14">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -29,60 +42,32 @@
                                 <TextBlock Text="повторов сохранено" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock x:Name="UsedText" Text="0,0 ГБ" FontSize="24" FontWeight="SemiBold"/>
-                                <TextBlock Text="занято на диске" Style="{StaticResource RowSub}"/>
+                                <TextBlock x:Name="UsedText" Text="—" FontSize="24" FontWeight="SemiBold"/>
+                                <TextBlock Text="занято записями" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <StackPanel Grid.Column="2" Spacing="2">
                                 <TextBlock x:Name="FreeText" Text="—" FontSize="24" FontWeight="SemiBold"/>
-                                <TextBlock Text="свободно" Style="{StaticResource RowSub}"/>
+                                <TextBlock Text="свободно на диске" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                         </Grid>
 
-                        <StackPanel x:Name="UsagePanel" Spacing="4" Margin="0,6,0,0">
+                        <StackPanel x:Name="UsagePanel" Spacing="4">
                             <ProgressBar x:Name="UsageBar" Height="6" Minimum="0" Maximum="100"/>
                             <TextBlock x:Name="UsageText" Style="{StaticResource RowSub}"/>
                         </StackPanel>
-                    </StackPanel>
-                </Grid>
 
-                <TextBlock Text="Папка записей" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
-                <Grid Style="{StaticResource SettingCard}">
-                    <StackPanel Spacing="16">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Путь сохранения" Style="{StaticResource RowLabel}"/>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Куда сохранять" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="PathText" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <Button Grid.Column="1" Content="Выбрать…" Click="Browse_Click" VerticalAlignment="Center"/>
                         </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Раскладывать по папкам игр" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Videos\InstantReplay\Counter-Strike 2\…" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <ToggleSwitch x:Name="GroupToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
-                                          HorizontalAlignment="Right" MinWidth="0" Toggled="Setting_Changed"/>
-                        </Grid>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Шаблон имени файла" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Плейсхолдеры: {game} {date} {time} {preset}" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <TextBox x:Name="TemplateBox" Grid.Column="1" MinWidth="280" VerticalAlignment="Center"
-                                     TextChanged="Text_Changed"/>
-                        </Grid>
+
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -90,7 +75,8 @@
                             </Grid.ColumnDefinitions>
                             <StackPanel>
                                 <TextBlock Text="Автоудаление старых записей" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Удаляет самые старые при достижении лимита" Style="{StaticResource RowSub}"/>
+                                <TextBlock Text="Когда места станет мало, самые старые клипы удаляются сами"
+                                           Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <ToggleSwitch x:Name="AutoDeleteToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
                                           HorizontalAlignment="Right" MinWidth="0" Toggled="Setting_Changed"/>
@@ -99,7 +85,7 @@
                         <!-- Лимиты нужны только при включённом автоудалении: без него
                              цифра «лимит папки» ни на что не влияет и только путает. -->
                         <StackPanel x:Name="LimitsPanel" Spacing="16" Visibility="Collapsed">
-                        <Grid>
+                            <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -123,6 +109,8 @@
                     </StackPanel>
                 </Grid>
 
+                <TextBlock Text="Записи раскладываются по папкам игр автоматически. Шаблон имени файла и другие тонкие настройки — в settings.json."
+                           Style="{StaticResource RowSub}" Margin="0,4,0,16"/>
             </StackPanel>
         </ScrollViewer>
 

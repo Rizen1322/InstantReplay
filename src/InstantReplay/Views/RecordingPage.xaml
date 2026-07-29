@@ -110,6 +110,122 @@
                     </StackPanel>
                 </Grid>
 
+                <!-- Звук записи: раньше был отдельной вкладкой, но настраивается он
+                     вместе с качеством видео и в тот же момент. -->
+                <TextBlock Text="Звук" Style="{StaticResource SectionHeader}" Margin="0,16,0,2"/>
+                <Grid x:Name="AudioCard" Style="{StaticResource SettingCard}">
+                    <StackPanel Spacing="16">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Spacing="4">
+                                <TextBlock Text="Звук игры" Style="{StaticResource RowLabel}"/>
+                                <ProgressBar x:Name="GameLevel" Maximum="1" Value="0" Height="3" Width="220"
+                                             HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <ToggleSwitch x:Name="GameAudioToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0" Toggled="Audio_Changed"/>
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Spacing="4">
+                                <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
+                                <ProgressBar x:Name="MicLevel" Maximum="1" Value="0" Height="3" Width="220"
+                                             HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <ToggleSwitch x:Name="MicToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0" Toggled="Audio_Changed"/>
+                        </Grid>
+
+                        <TextBlock Text="Полоски показывают живой уровень сигнала, пока запись включена"
+                                   Style="{StaticResource RowSub}"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Дорожки в файле" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Отдельные дорожки удобны для монтажа: голос можно убрать или свести заново"
+                                           Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <ComboBox x:Name="TrackModeBox" Grid.Column="1" MinWidth="280"
+                                      VerticalAlignment="Center" SelectionChanged="Audio_Changed">
+                                <ComboBoxItem Content="Одна дорожка (игра + микрофон)" Tag="Mixed"/>
+                                <ComboBoxItem Content="Две отдельные дорожки" Tag="Separate"/>
+                                <ComboBoxItem Content="Только игра" Tag="GameOnly"/>
+                                <ComboBoxItem Content="Только микрофон" Tag="MicOnly"/>
+                            </ComboBox>
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Шумодав микрофона" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Глушит фоновый гул в паузах между фразами" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <ToggleSwitch x:Name="NoiseToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                          HorizontalAlignment="Right" MinWidth="0" Toggled="NoiseGate_Toggled"/>
+                        </Grid>
+
+                        <!-- Порог шумодава: применяется на лету, чтобы можно было
+                             подобрать значение прямо под свой микрофон. -->
+                        <Grid x:Name="GateRow" Visibility="Collapsed">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,24,0" MinWidth="230">
+                                <TextBlock Text="Порог срабатывания" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="GateLabel" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <Slider x:Name="GateSlider" Grid.Column="1" Minimum="-70" Maximum="-20"
+                                    StepFrequency="1" TickFrequency="10" TickPlacement="None"
+                                    HorizontalAlignment="Right" MinWidth="230" VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <Expander x:Name="DevicesExpander" HorizontalAlignment="Stretch"
+                                  HorizontalContentAlignment="Stretch">
+                            <Expander.Header>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="Устройства" FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="DevicesSummary" Style="{StaticResource RowSub}"/>
+                                </StackPanel>
+                            </Expander.Header>
+                            <StackPanel Spacing="16" Margin="0,4,0,4">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Откуда брать звук игры" Style="{StaticResource RowLabel}"/>
+                                    <ComboBox x:Name="RenderDeviceBox" Grid.Column="1" MinWidth="280"
+                                              SelectionChanged="Audio_Changed"/>
+                                </Grid>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
+                                    <ComboBox x:Name="CaptureDeviceBox" Grid.Column="1" MinWidth="280"
+                                              SelectionChanged="Audio_Changed"/>
+                                </Grid>
+                            </StackPanel>
+                        </Expander>
+                    </StackPanel>
+                </Grid>
+
                 <!-- Пресеты: свёрнуты, в заголовке — какой сейчас активен -->
                 <Expander x:Name="PresetsExpander" HorizontalAlignment="Stretch"
                           HorizontalContentAlignment="Stretch" Margin="0,16,0,0">

@@ -4,8 +4,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     NavigationCacheMode="Required">
 
-    <ScrollViewer Padding="28,12,28,0">
-        <StackPanel Spacing="10" HorizontalAlignment="Stretch">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Padding="28,12,28,0">
+            <StackPanel Spacing="10" HorizontalAlignment="Stretch">
 
             <!-- Состояние. Всё в одну колонку: правый столбец с длинным текстом
                  налезал на полосу буфера и выглядел сломанным. -->
@@ -62,40 +68,41 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Конвейер: видно, доезжает ли запись до заданных настроек -->
-            <TextBlock Text="Конвейер записи" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
+            <!-- Быстрые действия: то, ради чего приложение вообще открывают.
+                 Под каждой кнопкой — её горячая клавиша. -->
+            <TextBlock Text="Быстрые действия" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
             <Grid Style="{StaticResource SettingCard}">
-                <StackPanel Spacing="12">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Button x:Name="SaveReplayBtn" Click="SaveReplay_Click" MinWidth="210"
+                            Style="{StaticResource AccentButtonStyle}" Padding="16,10,16,11">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <FontIcon Glyph="&#xE74E;" FontSize="15" VerticalAlignment="Center"/>
+                            <StackPanel>
+                                <TextBlock Text="Сохранить повтор" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="SaveReplayHint" FontSize="11" Opacity="0.8"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Button>
 
-                        <StackPanel Spacing="2">
-                            <TextBlock x:Name="CaptureFpsText" Text="—" FontSize="22" FontWeight="SemiBold"/>
-                            <TextBlock Text="кадров/с с экрана" Style="{StaticResource RowSub}"/>
+                    <Button x:Name="Save30Btn" Click="SaveLast30_Click" MinWidth="200" Padding="16,10,16,11">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <FontIcon Glyph="&#xE916;" FontSize="15" VerticalAlignment="Center"/>
+                            <StackPanel>
+                                <TextBlock Text="Последние 30 секунд" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="Save30Hint" FontSize="11" Opacity="0.8"/>
+                            </StackPanel>
                         </StackPanel>
-                        <StackPanel Grid.Column="1" Spacing="2">
-                            <TextBlock x:Name="EncodeFpsText" Text="—" FontSize="22" FontWeight="SemiBold"/>
-                            <TextBlock Text="кадров/с в кодек" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Spacing="2">
-                            <TextBlock x:Name="DropText" Text="—" FontSize="22" FontWeight="SemiBold"/>
-                            <TextBlock Text="потеряно кадров" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="3" Spacing="2">
-                            <TextBlock x:Name="RamText" Text="—" FontSize="22" FontWeight="SemiBold"/>
-                            <TextBlock Text="буфер в оперативной памяти" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                    </Grid>
+                    </Button>
 
-                    <TextBlock x:Name="EncoderText" Style="{StaticResource RowSub}" Margin="0"/>
-                    <InfoBar x:Name="PipelineBar" Severity="Warning" IsClosable="False" IsOpen="False"
-                             Title="Кадры теряются"
-                             Message="Энкодер не успевает за захватом. Снизьте разрешение, FPS или битрейт на вкладке «Запись»."/>
+                    <Button x:Name="RecordBtn" Click="Record_Click" MinWidth="200" Padding="16,10,16,11">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Ellipse x:Name="RecordDot" Width="10" Height="10" VerticalAlignment="Center" Fill="Gray"/>
+                            <StackPanel>
+                                <TextBlock x:Name="RecordText" Text="Начать запись" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="RecordHint" FontSize="11" Opacity="0.8"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
             </Grid>
 
@@ -135,6 +142,25 @@
                     <TextBlock x:Name="StorageSub" Style="{StaticResource RowSub}" Margin="0"/>
                 </StackPanel>
             </Grid>
-        </StackPanel>
-    </ScrollViewer>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Нижняя панель: самое частое действие после сохранения клипа -->
+        <Grid Grid.Row="1" Padding="28,10,28,14">
+            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+                <Button Click="OpenClips_Click">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE786;" FontSize="13"/>
+                        <TextBlock Text="Панорама записей"/>
+                    </StackPanel>
+                </Button>
+                <Button Click="OpenFolder_Click" Style="{StaticResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8B7;" FontSize="13"/>
+                        <TextBlock Text="Открыть папку записей"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+    </Grid>
 </Page>

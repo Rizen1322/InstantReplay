@@ -88,12 +88,11 @@ public sealed class ReplayEngine : IDisposable
         // Реакция на изменение настроек записи: перезапуск конвейера на лету
         _settings.Changed += group =>
         {
-            // Громкости и гейт применяются на лету, без перезапуска
-            if (group is "volume" or "")
+            // Шумодав применяется на лету — перезапускать конвейер ради порога незачем
+            if (group is "" or "video" or "audio")
             {
-                _audio.GameVolume = _settings.Current.GameVolume;
-                _audio.MicVolume = _settings.Current.MicVolume;
                 _audio.MicNoiseGate = _settings.Current.MicNoiseSuppression;
+                _audio.MicGateThresholdDb = _settings.Current.MicNoiseGateDb;
             }
             if (State == EngineState.Stopped) return;
             if (group is "video" or "audio" or "replay")
@@ -128,9 +127,8 @@ public sealed class ReplayEngine : IDisposable
 
             _capture.FrameArrived += OnFrame;
 
-            _audio.GameVolume = s.GameVolume;
-            _audio.MicVolume = s.MicVolume;
             _audio.MicNoiseGate = s.MicNoiseSuppression;
+            _audio.MicGateThresholdDb = s.MicNoiseGateDb;
             _audio.BlockReady += _audioBuffer.Add;
             _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
 

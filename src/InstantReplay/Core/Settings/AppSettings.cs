@@ -43,16 +43,17 @@ public sealed class AppSettings
     public bool CaptureGameAudio { get; set; } = true;
     public bool CaptureMicrophone { get; set; } = true;
     public AudioTrackMode TrackMode { get; set; } = AudioTrackMode.Mixed;
-    /// <summary>Громкость игры 0..2 (1 = 100%).</summary>
-    public float GameVolume { get; set; } = 1.0f;
-    /// <summary>Громкость микрофона 0..2.</summary>
-    public float MicVolume { get; set; } = 1.0f;
     /// <summary>ID устройства вывода (loopback). null = устройство по умолчанию.</summary>
     public string? RenderDeviceId { get; set; }
     /// <summary>ID микрофона. null = устройство по умолчанию.</summary>
     public string? CaptureDeviceId { get; set; }
     /// <summary>Шумоподавление микрофона (noise gate: убирает фоновый гул в паузах).</summary>
     public bool MicNoiseSuppression { get; set; } = false;
+    /// <summary>
+    /// Порог шумодава в дБ: тише этого уровня микрофон глушится.
+    /// -60 пропускает почти всё, -30 режет жёстко.
+    /// </summary>
+    public float MicNoiseGateDb { get; set; } = -44f;
 
     // ---------- Горячие клавиши (строковый формат "Alt+F10") ----------
     public string HotkeySaveReplay { get; set; } = "Alt+F10";
@@ -71,9 +72,16 @@ public sealed class AppSettings
     /// <summary>Минимум свободного места на диске, ГБ, при котором чистим старые записи.</summary>
     public int MinFreeSpaceGb { get; set; } = 5;
     public bool AutoDeleteOldClips { get; set; } = true;
-    /// <summary>Раскладывать записи по папкам игр (Videos\InstantReplay\Counter-Strike 2\…).</summary>
+    /// <summary>
+    /// Раскладывать записи по папкам игр (Videos\InstantReplay\Counter-Strike 2\…).
+    /// В интерфейсе переключателя нет — это поведение по умолчанию; выключить можно
+    /// только правкой settings.json.
+    /// </summary>
     public bool GroupByGame { get; set; } = true;
-    /// <summary>Шаблон имени файла. Плейсхолдеры: {game} {date} {time} {preset}.</summary>
+    /// <summary>
+    /// Шаблон имени файла. Плейсхолдеры: {game} {date} {time} {preset}.
+    /// Настройка «для своих»: меняется только в settings.json, в интерфейсе её нет.
+    /// </summary>
     public string FileNameTemplate { get; set; } = "{game} {date} - {time}";
     /// <summary>Счётчик сохранённых повторов (для статистики).</summary>
     public int TotalReplaysSaved { get; set; }

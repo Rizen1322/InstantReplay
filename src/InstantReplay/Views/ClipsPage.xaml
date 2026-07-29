@@ -3,8 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:lib="using:InstantReplay.Core.Library"
-    NavigationCacheMode="Required"
-    KeyDown="Page_KeyDown">
+    NavigationCacheMode="Required">
 
     <Page.Resources>
         <!-- Карточка клипа. Корень — Button: даёт клавиатурную навигацию, фокус и
@@ -34,11 +33,8 @@
 
                 <Button.ContextFlyout>
                     <MenuFlyout>
-                        <MenuFlyoutItem Text="Открыть" Click="MenuOpen_Click">
+                        <MenuFlyoutItem Text="Открыть в плеере" Click="MenuOpen_Click">
                             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE768;"/></MenuFlyoutItem.Icon>
-                        </MenuFlyoutItem>
-                        <MenuFlyoutItem Text="Открыть во внешнем плеере" Click="MenuExternal_Click">
-                            <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8E5;"/></MenuFlyoutItem.Icon>
                         </MenuFlyoutItem>
                         <MenuFlyoutItem Text="Показать в папке" Click="MenuReveal_Click">
                             <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;"/></MenuFlyoutItem.Icon>
@@ -203,11 +199,11 @@
             </Button>
         </Grid>
 
-        <!-- Кадры HEVC-клипов Windows показывает только с установленным расширением:
-             без него и превью, и встроенный плеер работать не могут. -->
+        <!-- Кадры для превью даёт системный поставщик миниатюр: для HEVC он молчит,
+             пока не установлено расширение. На сами файлы это не влияет. -->
         <InfoBar x:Name="CodecBar" Grid.Row="1" Margin="28,0,20,8" Severity="Warning" IsOpen="False"
-                 Title="Windows не умеет открывать эти клипы"
-                 Message="Клипы записаны в HEVC, а в системе нет декодера: не будет ни кадров в панораме, ни просмотра внутри приложения. Поставьте бесплатное расширение из Microsoft Store — или переключите кодек на H.264 на вкладке «Запись».">
+                 Title="Windows не показывает кадры этих клипов"
+                 Message="Клипы записаны в HEVC, а в системе нет декодера — поэтому вместо превью заглушки. Поставьте бесплатное расширение из Microsoft Store или переключите кодек на H.264 на вкладке «Запись». Сами файлы рабочие и открываются в плеере, который их понимает.">
             <InfoBar.ActionButton>
                 <Button Content="Открыть расширение в Store" Click="InstallHevc_Click"/>
             </InfoBar.ActionButton>
@@ -237,87 +233,5 @@
         <ProgressRing x:Name="LoadRing" Grid.Row="2" Width="34" Height="34" IsActive="False"
                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
 
-        <!-- Просмотр: плеер поверх страницы -->
-        <Grid x:Name="Theater" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed"
-              Background="#F00A0C0E" Tapped="TheaterBackdrop_Tapped">
-            <Grid MaxWidth="1200" Margin="34,22,34,22">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Spacing="2" VerticalAlignment="Center">
-                        <TextBlock x:Name="TheaterTitle" FontSize="19" FontWeight="SemiBold"
-                                   TextTrimming="CharacterEllipsis" MaxLines="1"/>
-                        <TextBlock x:Name="TheaterMeta" Style="{StaticResource RowSub}" Margin="0"/>
-                    </StackPanel>
-                    <Button Grid.Column="1" Click="CloseTheater_Click" VerticalAlignment="Center"
-                            ToolTipService.ToolTip="Закрыть (Esc)">
-                        <FontIcon Glyph="&#xE711;" FontSize="14"/>
-                    </Button>
-                </Grid>
-
-                <Border Grid.Row="1" Margin="0,14,0,14" CornerRadius="12" Background="#FF000000"
-                        BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
-                    <Grid>
-                        <MediaPlayerElement x:Name="Player" AreTransportControlsEnabled="True"
-                                            Stretch="Uniform"/>
-                        <Image x:Name="ShotView" Stretch="Uniform" Visibility="Collapsed"/>
-                        <InfoBar x:Name="PlayerBar" Severity="Warning" IsClosable="False" IsOpen="False"
-                                 VerticalAlignment="Top" Margin="12"
-                                 Title="Не удалось воспроизвести"
-                                 Message="Файл можно открыть во внешнем плеере — кнопка ниже."/>
-                    </Grid>
-                </Border>
-
-                <Grid Grid.Row="2">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-
-                    <!-- Выбор дорожки: в клипе с раздельным звуком по умолчанию играет
-                         первая (звук игры), микрофон переключается здесь. -->
-                    <StackPanel x:Name="TrackPanel" Orientation="Horizontal" Spacing="8"
-                                VerticalAlignment="Center" Visibility="Collapsed">
-                        <FontIcon Glyph="&#xE767;" FontSize="13" VerticalAlignment="Center"/>
-                        <ComboBox x:Name="TrackBox" MinWidth="170" SelectionChanged="Track_Changed"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                        <Button Click="TheaterExternal_Click" ToolTipService.ToolTip="Открыть во внешнем плеере">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <FontIcon Glyph="&#xE8E5;" FontSize="13"/>
-                                <TextBlock Text="Внешний плеер"/>
-                            </StackPanel>
-                        </Button>
-                        <Button Click="TheaterReveal_Click">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <FontIcon Glyph="&#xE8B7;" FontSize="13"/>
-                                <TextBlock Text="Показать в папке"/>
-                            </StackPanel>
-                        </Button>
-                        <Button Click="TheaterCopy_Click" ToolTipService.ToolTip="Копировать путь">
-                            <FontIcon Glyph="&#xE8C8;" FontSize="13"/>
-                        </Button>
-                        <Button Click="TheaterRename_Click" ToolTipService.ToolTip="Переименовать">
-                            <FontIcon Glyph="&#xE8AC;" FontSize="13"/>
-                        </Button>
-                        <Button Click="TheaterDelete_Click" ToolTipService.ToolTip="Удалить в корзину">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <FontIcon Glyph="&#xE74D;" FontSize="13"/>
-                                <TextBlock Text="Удалить"/>
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
-                </Grid>
-            </Grid>
-        </Grid>
     </Grid>
 </Page>

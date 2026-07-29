@@ -23,8 +23,8 @@ public sealed partial class MainWindow : Window
 
     private static readonly Type[] Pages =
     [
-        typeof(OverviewPage), typeof(RecordingPage), typeof(ClipsPage), typeof(AudioPage),
-        typeof(HotkeysPage), typeof(StoragePage), typeof(AppPage), typeof(HardwarePage)
+        typeof(OverviewPage), typeof(RecordingPage), typeof(ClipsPage),
+        typeof(KeysFilesPage), typeof(AppPage), typeof(HardwarePage)
     ];
 
     public MainWindow()
@@ -233,8 +233,6 @@ public sealed partial class MainWindow : Window
     }
 
     private void SaveReplay_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay();
-
-    private void Screenshot_Click(object sender, RoutedEventArgs e) => _ = App.TakeScreenshotAsync();
 
     private void ShowError(string title, string message)
     {
