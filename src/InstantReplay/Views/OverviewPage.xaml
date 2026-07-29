@@ -13,96 +13,21 @@
         <ScrollViewer Padding="28,12,28,0">
             <StackPanel Spacing="10" HorizontalAlignment="Stretch">
 
-            <!-- Состояние. Всё в одну колонку: правый столбец с длинным текстом
-                 налезал на полосу буфера и выглядел сломанным. -->
+            <!-- Только буфер: состояние записи постоянно видно в шапке окна,
+                 дублировать его карточкой ни к чему. -->
             <Grid Style="{StaticResource SettingCard}">
-                <StackPanel Spacing="14">
-
-                    <!-- Строка 1: статус слева, плашка с игрой справа -->
+                <StackPanel Spacing="6">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-
-                        <StackPanel Spacing="4" VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <Ellipse x:Name="StateDot" Width="11" Height="11"
-                                         VerticalAlignment="Center" Fill="Gray"/>
-                                <TextBlock x:Name="StateText" Text="Выключено" FontSize="22" FontWeight="SemiBold"/>
-                            </StackPanel>
-                            <TextBlock x:Name="StateSub" Style="{StaticResource RowSub}" Margin="21,0,12,0"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
-
-                        <Border Grid.Column="1" CornerRadius="8" Padding="14,8,16,9" VerticalAlignment="Center"
-                                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <FontIcon Glyph="&#xE7FC;" FontSize="15" VerticalAlignment="Center"
-                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                <StackPanel Spacing="1" MaxWidth="240">
-                                    <TextBlock Text="В фокусе" FontSize="11"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                    <TextBlock x:Name="GameText" Text="—" FontSize="14" FontWeight="SemiBold"
-                                               TextTrimming="CharacterEllipsis" MaxLines="1"/>
-                                </StackPanel>
-                            </StackPanel>
-                        </Border>
+                        <TextBlock x:Name="BufferLabel" Text="Буфер повтора" FontSize="12.5"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock x:Name="BufferText" Grid.Column="1" Text="пуст" FontSize="12.5"
+                                   FontWeight="SemiBold"/>
                     </Grid>
-
-                    <!-- Строка 2: буфер -->
-                    <StackPanel Spacing="6">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock x:Name="BufferLabel" Text="Буфер повтора" FontSize="12.5"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                            <TextBlock x:Name="BufferText" Grid.Column="1" Text="пуст" FontSize="12.5"
-                                       FontWeight="SemiBold"/>
-                        </Grid>
-                        <ProgressBar x:Name="BufferBar" Height="6" Minimum="0" Maximum="100"/>
-                    </StackPanel>
-                </StackPanel>
-            </Grid>
-
-            <!-- Быстрые действия: то, ради чего приложение вообще открывают.
-                 Под каждой кнопкой — её горячая клавиша. -->
-            <TextBlock Text="Быстрые действия" Style="{StaticResource SectionHeader}" Margin="0,12,0,2"/>
-            <Grid Style="{StaticResource SettingCard}">
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                    <Button x:Name="SaveReplayBtn" Click="SaveReplay_Click" MinWidth="210"
-                            Style="{StaticResource AccentButtonStyle}" Padding="16,10,16,11">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE74E;" FontSize="15" VerticalAlignment="Center"/>
-                            <StackPanel>
-                                <TextBlock Text="Сохранить повтор" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="SaveReplayHint" FontSize="11" Opacity="0.8"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </Button>
-
-                    <Button x:Name="Save30Btn" Click="SaveLast30_Click" MinWidth="200" Padding="16,10,16,11">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE916;" FontSize="15" VerticalAlignment="Center"/>
-                            <StackPanel>
-                                <TextBlock Text="Последние 30 секунд" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="Save30Hint" FontSize="11" Opacity="0.8"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </Button>
-
-                    <Button x:Name="RecordBtn" Click="Record_Click" MinWidth="200" Padding="16,10,16,11">
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <Ellipse x:Name="RecordDot" Width="10" Height="10" VerticalAlignment="Center" Fill="Gray"/>
-                            <StackPanel>
-                                <TextBlock x:Name="RecordText" Text="Начать запись" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="RecordHint" FontSize="11" Opacity="0.8"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </Button>
+                    <ProgressBar x:Name="BufferBar" Height="6" Minimum="0" Maximum="100"/>
                 </StackPanel>
             </Grid>
 

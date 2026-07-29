@@ -78,18 +78,17 @@ public static class ReplaySaver
         // а рядом игра занимает большую часть ОЗУ — система уходила в подкачку.
         // CreateSample копирует данные в буфер Media Foundation, поэтому наш массив
         // можно вернуть в пул сразу же.
-        // Ограничение темпа подачи (см. WriteDrain): подаём писателю не быстрее, чем
-        // он реально сливает байты на диск. Раньше здесь стоял фиксированный потолок
-        // 220 МБ/с — угаданное число, которое на быстром SSD тормозило сохранение
-        // на ровном месте, а на занятой игрой системе всё равно оказывалось слишком
-        // щедрым: писатель копил клип в памяти и потом разгребал его десятками секунд,
-        // попутно вываливая на диск гигабайт грязных страниц (от этого и фризы в игре).
+        // Ограничение темпа подачи (см. WriteDrain): равномерно ~220 МБ/с плюс
+        // страховка по очереди внутри писателя. Без ограничения писатель принимает
+        // сэмплы быстрее, чем сливает их на диск, копит клип в памяти и потом
+        // разгребает его десятками секунд, попутно вываливая гигабайт грязных
+        // страниц — от этого и фризы в игре.
         int blockSamples = audio.Count > 0 ? audio[0].Game.Length : 960;
         long totalBytes = 0;
         foreach (var f in video) totalBytes += f.Length;
         totalBytes += (long)audio.Count * blockSamples * sizeof(float) * audioStreams.Count;
 
-        using var drain = new WriteDrain(filePath, totalBytes, progress);
+        var drain = new WriteDrain(writer, videoStream, totalBytes, progress);
 
         // Аудио пишем КРУПНЫМИ кусками (~1 с), а не блоками по 10 мс, как они приходят
         // из микшера. Скорость финализации у Media Foundation определяется ЧИСЛОМ
@@ -211,62 +210,64 @@ public static class ReplaySaver
                           $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +
                           $"финализация {total - tAudio}); {fileBytes / (1024 * 1024)} МБ, " +
                           $"{(total > 0 ? fileBytes / 1024.0 / 1024 / (total / 1000.0) : 0):F0} МБ/с; " +
-                          $"ждали диск {drain.WaitedMs} мс ({drain.Mode})");
+                          $"темп подачи ждал {drain.WaitedMs} мс (из них очередь писателя {drain.QueueWaitMs} мс)");
         progress?.Invoke(1);
     }
 
     /// <summary>
-    /// Обратная связь по реально записанному на диск.
+    /// Темп подачи сэмплов в SinkWriter.
     ///
-    /// Проблема, которую это лечит: SinkWriter принимает сэмплы охотнее, чем диск их
-    /// глотает, и разница копится в оперативной памяти. На клипе в гигабайт получалось
-    /// так: всё отдано за секунду, потом писатель десятки секунд разгребает очередь,
-    /// а система в это время сбрасывает гигабайт грязных страниц — игра встаёт
-    /// колом, хотя диск SSD. Фиксированный потолок «220 МБ/с» был угадан и мешал
-    /// в обе стороны: быстрый диск искусственно тормозился, медленный всё равно
-    /// захлёбывался.
+    /// Базовый механизм — равномерная подача ~220 МБ/с. Он простой и проверенный:
+    /// писатель успевает сливать данные по ходу записи, финализация остаётся
+    /// мгновенной, а игра не встаёт от залпового ввода-вывода.
     ///
-    /// Теперь смотрим на РАЗМЕР ФАЙЛА на диске и держим «в полёте» не больше окна:
-    /// если писатель успевает — не ждём ни миллисекунды, если отстаёт — притормаживаем
-    /// подачу вместо того, чтобы копить в памяти.
+    /// ГРАБЛИ, которые тут уже собрали: пробовали вместо таймера смотреть на РАЗМЕР
+    /// ФАЙЛА (FileStream.Length по своему дескриптору) и ждать, пока диск догонит.
+    /// Оказалось, что размер растущего файла обновляется рывками и сильно отстаёт от
+    /// реально записанного — механизм считал, что диск не успевает, и ждал на каждой
+    /// проверке до потолка. Результат в логе: клип 317 МБ сохранялся 102 секунды,
+    /// из них 102.4 с — чистое ожидание на пустом месте. Больше на размер файла
+    /// не смотрим.
     ///
-    /// Размер читаем через СВОЙ дескриптор файла: FileInfo.Length берёт кэш каталога,
-    /// который для растущего файла обновляется с задержкой.
+    /// Дополнительная страховка — очередь ВНУТРИ писателя (IMFSinkWriter::GetStatistics,
+    /// ByteCountQueued): именно она раздувала память на гигабайтных клипах. Ожидание
+    /// по ней жёстко ограничено сверху (см. MaxQueueWaitMs), поэтому даже если
+    /// статистика недоступна или врёт, сохранение не может стать медленнее базового
+    /// темпа больше чем на пару секунд.
     /// </summary>
-    private sealed class WriteDrain : IDisposable
+    private sealed class WriteDrain
     {
-        /// <summary>Сколько байт допускаем между «отдано писателю» и «лежит на диске».</summary>
-        private const long WindowBytes = 48L * 1024 * 1024;
-        /// <summary>Как часто сверяться с диском (чаще — лишние системные вызовы).</summary>
+        /// <summary>Базовый темп подачи.</summary>
+        private const double TargetBytesPerMs = 220.0 * 1024 * 1024 / 1000.0;
+        /// <summary>Как часто сверяться с писателем.</summary>
         private const long CheckEveryBytes = 4L * 1024 * 1024;
-        /// <summary>Запасной темп, если размер файла прочитать не удалось.</summary>
-        private const double FallbackBytesPerMs = 220.0 * 1024 * 1024 / 1000.0;
-        /// <summary>Потолок ожидания на одну сверку: лучше отдать данные, чем зависнуть.</summary>
-        private const int MaxWaitPerCheckMs = 2000;
+        /// <summary>Сколько данных писателю позволено держать в очереди.</summary>
+        private const long QueueLimitBytes = 64L * 1024 * 1024;
+        /// <summary>Потолок ожидания очереди за одну сверку.</summary>
+        private const int MaxQueueWaitPerCheckMs = 200;
+        /// <summary>Суммарный потолок ожидания очереди за всё сохранение.</summary>
+        private const long MaxQueueWaitMs = 2000;
 
-        private readonly FileStream? _probe;
+        private readonly IMFSinkWriter _writer;
+        private readonly int _stream;
         private readonly long _total;
         private readonly Action<double>? _progress;
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
         private long _submitted, _lastCheck, _lastProgressMs;
+        private bool _statsAvailable = true;
 
+        /// <summary>Сколько ждали писателя (диагностика в логе).</summary>
         public long WaitedMs { get; private set; }
-        public string Mode => _probe is null ? "по таймеру" : "по размеру файла";
+        /// <summary>Сколько из этого ушло на переполненную очередь писателя.</summary>
+        public long QueueWaitMs { get; private set; }
 
-        public WriteDrain(string path, long totalBytes, Action<double>? progress)
+        public WriteDrain(IMFSinkWriter writer, int probeStream, long totalBytes, Action<double>? progress)
         {
+            _writer = writer;
+            _stream = probeStream;
             _total = Math.Max(1, totalBytes);
             _progress = progress;
-            try
-            {
-                _probe = new FileStream(path, FileMode.Open, FileAccess.Read,
-                                        FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
-            }
-            catch
-            {
-                _probe = null; // писатель не пустил на чтение — работаем по таймеру
-            }
         }
 
         public void Submitted(int bytes)
@@ -275,32 +276,50 @@ public static class ReplaySaver
             ReportProgress();
             if (_submitted - _lastCheck < CheckEveryBytes) return;
             _lastCheck = _submitted;
-            WaitForDisk();
-        }
 
-        private void WaitForDisk()
-        {
             long start = _clock.ElapsedMilliseconds;
-            while (_clock.ElapsedMilliseconds - start < MaxWaitPerCheckMs)
-            {
-                long onDisk = OnDisk();
-                if (onDisk < 0)
-                {
-                    // Размер недоступен — равномерная подача по запасному темпу
-                    double aheadMs = _submitted / FallbackBytesPerMs - _clock.ElapsedMilliseconds;
-                    if (aheadMs > 5) Thread.Sleep((int)Math.Min(aheadMs, 200));
-                    break;
-                }
-                if (_submitted - onDisk <= WindowBytes) break;
-                Thread.Sleep(5);
-            }
+            PaceByRate();
+            WaitForQueue();
             WaitedMs += _clock.ElapsedMilliseconds - start;
         }
 
-        private long OnDisk()
+        /// <summary>Базовый равномерный темп: не быстрее TargetBytesPerMs.</summary>
+        private void PaceByRate()
         {
-            try { return _probe?.Length ?? -1; }
-            catch { return -1; }
+            double aheadMs = _submitted / TargetBytesPerMs - _clock.ElapsedMilliseconds;
+            if (aheadMs > 5) Thread.Sleep((int)Math.Min(aheadMs, 200));
+        }
+
+        /// <summary>Придержать подачу, если писатель накопил слишком много неразобранного.</summary>
+        private void WaitForQueue()
+        {
+            if (!_statsAvailable || QueueWaitMs >= MaxQueueWaitMs) return;
+
+            long start = _clock.ElapsedMilliseconds;
+            while (_clock.ElapsedMilliseconds - start < MaxQueueWaitPerCheckMs
+                   && QueueWaitMs + (_clock.ElapsedMilliseconds - start) < MaxQueueWaitMs)
+            {
+                long queued = QueuedBytes();
+                if (queued < 0 || queued <= QueueLimitBytes) break;
+                Thread.Sleep(5);
+            }
+            QueueWaitMs += _clock.ElapsedMilliseconds - start;
+        }
+
+        /// <summary>Байты в очереди писателя; -1 — статистика недоступна.</summary>
+        private long QueuedBytes()
+        {
+            try
+            {
+                var stats = _writer.GetStatistics(_stream);
+                return stats.ByteCountQueued;
+            }
+            catch
+            {
+                // Обёртка/система не дают статистику — просто больше не спрашиваем
+                _statsAvailable = false;
+                return -1;
+            }
         }
 
         /// <summary>Прогресс наружу не чаще пяти раз в секунду — его читает UI.</summary>
@@ -312,7 +331,5 @@ public static class ReplaySaver
             _lastProgressMs = now;
             _progress(Math.Clamp(_submitted / (double)_total, 0, 1));
         }
-
-        public void Dispose() => _probe?.Dispose();
     }
 }

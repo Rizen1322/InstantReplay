@@ -3,31 +3,21 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using InstantReplay.Core.Engine;
-using InstantReplay.Core.GameDetection;
 using InstantReplay.Core.Library;
-using InstantReplay.Core.Settings;
 using InstantReplay.Core.Storage;
 
 namespace InstantReplay.Views;
 
 /// <summary>
-/// Обзор: что происходит прямо сейчас. Первая вкладка — раньше приложение открывалось
-/// на настройках, и понять «пишется ли буфер, доезжает ли кодек, сколько занято»
-/// можно было только по косвенным признакам.
+/// Обзор: буфер, последние записи и хранилище.
 ///
-/// Живые цифры обновляются раз в секунду и ТОЛЬКО пока страница на экране:
-/// таймер запускается в Loaded и гасится в Unloaded.
+/// Состояние записи и прогресс сохранения намеренно не дублируются: они постоянно
+/// видны в шапке окна, а вторая копия тех же строк на странице только шумела.
+/// Живые цифры обновляются раз в секунду и ТОЛЬКО пока страница на экране.
 /// </summary>
 public sealed partial class OverviewPage : Page
 {
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
-
-    private int _tick;
-
-    private static readonly SolidColorBrush GreenDot = new(Windows.UI.Color.FromArgb(255, 0x4C, 0xD9, 0x64));
-    private static readonly SolidColorBrush RedDot = new(Colors.OrangeRed);
-    private static readonly SolidColorBrush BlueDot = new(Windows.UI.Color.FromArgb(255, 0x0A, 0x84, 0xFF));
-    private static readonly SolidColorBrush GrayDot = new(Colors.Gray);
 
     public OverviewPage()
     {
@@ -56,107 +46,22 @@ public sealed partial class OverviewPage : Page
     private void OnFileSaved(string file, int seconds) =>
         Services.Dispatcher.Enqueue(() => _ = LoadRecentAsync());
 
-    // ---------------- Живые показатели ----------------
+    // ---------------- Буфер ----------------
 
     private void Refresh()
     {
         var engine = Services.Engine;
         var settings = Services.Settings.Current;
         bool running = engine.State != EngineState.Stopped;
-        bool recording = engine.IsRecordingToFile;
-        bool saving = engine.State == EngineState.Saving;
 
-        StateDot.Fill = saving ? BlueDot : recording ? RedDot : running ? GreenDot : GrayDot;
-        StateText.Text = engine.State switch
-        {
-            EngineState.Saving => $"Сохраняю клип… {engine.SaveProgress * 100:0}%",
-            _ when recording => "Идёт запись в файл",
-            EngineState.Running => "Instant Replay пишет буфер",
-            _ => "Выключено"
-        };
-        StateSub.Text = StateSubtitle(settings, running, saving);
-        UpdateQuickActions(settings, running, recording);
-
-        // Буфер: сколько уже накоплено из заданной длины
         int buffered = (int)engine.BufferedDuration.TotalSeconds;
         int target = Math.Max(1, settings.ReplayLengthSeconds);
+
         BufferBar.Value = running ? Math.Clamp(buffered * 100.0 / target, 0, 100) : 0;
-        BufferLabel.Text = running
-            ? $"Буфер повтора · до {FormatSeconds(target)}"
-            : "Буфер повтора";
+        BufferLabel.Text = running ? $"Буфер повтора · до {FormatSeconds(target)}" : "Буфер повтора";
         BufferText.Text = running
             ? $"{FormatSeconds(buffered)} · {ByteSize.Format(engine.BufferedBytes)}"
             : "пуст";
-
-        // Игру опрашиваем раз в две секунды: определение лезет в процесс переднего окна
-        if (_tick++ % 2 == 0) UpdateGame();
-    }
-
-    // ---------------- Быстрые действия ----------------
-
-    private void UpdateQuickActions(AppSettings settings, bool running, bool recording)
-    {
-        bool canSave = Services.Engine.State == EngineState.Running;
-        SaveReplayBtn.IsEnabled = canSave;
-        Save30Btn.IsEnabled = canSave;
-
-        SaveReplayHint.Text = HotkeyHint(settings.HotkeySaveReplay, $"весь буфер · {FormatSeconds(settings.ReplayLengthSeconds)}");
-        Save30Hint.Text = HotkeyHint(settings.HotkeySaveLast30, "короткий клип");
-
-        RecordText.Text = recording ? "Остановить запись" : "Начать запись";
-        RecordHint.Text = HotkeyHint(
-            recording ? settings.HotkeyStopRecording : settings.HotkeyStartRecording,
-            recording ? "идёт запись в файл" : "обычная запись в файл");
-        RecordDot.Fill = recording ? RedDot : GrayDot;
-    }
-
-    private static string HotkeyHint(string combo, string fallback) =>
-        string.IsNullOrWhiteSpace(combo) ? fallback : Pretty(combo);
-
-    private void SaveReplay_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay();
-
-    private void SaveLast30_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay(30);
-
-    private void Record_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (Services.Engine.IsRecordingToFile) Services.Engine.StopRecordingToFile();
-            else Services.Engine.StartRecordingToFile();
-        }
-        catch (Exception ex)
-        {
-            _ = new ContentDialog
-            {
-                Title = "Не удалось начать запись",
-                Content = ex.Message,
-                CloseButtonText = "OK",
-                XamlRoot = XamlRoot
-            }.ShowAsync();
-        }
-        Refresh();
-    }
-
-    private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
-
-    /// <summary>Подпись под статусом: подсказывает следующий шаг, а не повторяет статус.</summary>
-    private static string StateSubtitle(AppSettings settings, bool running, bool saving)
-    {
-        if (saving) return "Клип дописывается на диск — запись буфера продолжается";
-        if (!running) return "Включите переключатель в шапке окна, чтобы копить последние минуты игры";
-
-        string hotkey = settings.HotkeySaveReplay.Trim();
-        return hotkey.Length > 0
-            ? $"Последние {FormatSeconds(settings.ReplayLengthSeconds)} сохранятся по {Pretty(hotkey)}"
-            : $"Последние {FormatSeconds(settings.ReplayLengthSeconds)} можно сохранить кнопкой в шапке окна";
-    }
-
-    private static string Pretty(string combo) =>
-        string.Join(" + ", combo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
-
-    private void UpdateGame()
-    {
-        GameText.Text = GameDetector.DetectForegroundGame();
     }
 
     // ---------------- Хранилище ----------------
@@ -260,6 +165,8 @@ public sealed partial class OverviewPage : Page
     }
 
     private void OpenClips_Click(object sender, RoutedEventArgs e) => OpenClips();
+
+    private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
 
     private static void OpenClips() => (WindowTracker.Main as MainWindow)?.SelectTab(typeof(ClipsPage));
 
