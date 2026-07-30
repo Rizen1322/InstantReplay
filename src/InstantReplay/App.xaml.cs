@@ -241,9 +241,11 @@ public partial class App : Application
             string game = Core.GameDetection.GameDetector.DetectForegroundGame();
             string dir = s.GroupByGame ? Path.Combine(s.SaveRootPath, game) : s.SaveRootPath;
             string file = Path.Combine(dir, $"screenshot {DateTime.Now:yyyy-MM-dd - HH-mm-ss}.png");
-            // Кадр берём у работающего буфера, если он включён (см. ScreenshotService)
-            await Core.Capture.ScreenshotService.CaptureAsync(
-                s.MonitorIndex, file, s.RecordCursor, Services.Engine.TryUseLiveFrame);
+
+            // Целиком в фоне: и ожидание кадра, и сжатие PNG на 2560×1440 — работа
+            // на сотни миллисекунд, в UI-потоке от неё окно просто замирает.
+            await Task.Run(() => Core.Capture.ScreenshotService.CaptureAsync(
+                s.MonitorIndex, file, s.RecordCursor, Services.Engine.TryUseLiveFrame));
             Services.Storage.RegisterSaved(file); // индекс папки записей
             Services.Notifications.Show(NotificationKind.Screenshot, Loc.T("shot_saved"));
         }

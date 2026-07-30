@@ -210,57 +210,68 @@ public static class ReplaySaver
                           $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +
                           $"финализация {total - tAudio}); {fileBytes / (1024 * 1024)} МБ, " +
                           $"{(total > 0 ? fileBytes / 1024.0 / 1024 / (total / 1000.0) : 0):F0} МБ/с; " +
-                          $"темп подачи ждал {drain.WaitedMs} мс (из них очередь писателя {drain.QueueWaitMs} мс)");
+                          $"{drain.Report}");
         progress?.Invoke(1);
     }
 
     /// <summary>
     /// Темп подачи сэмплов в SinkWriter.
     ///
-    /// Базовый механизм — равномерная подача ~220 МБ/с. Он простой и проверенный:
-    /// писатель успевает сливать данные по ходу записи, финализация остаётся
-    /// мгновенной, а игра не встаёт от залпового ввода-вывода.
+    /// Тормозим подачу ТОЛЬКО когда писатель реально не успевает — по его собственной
+    /// очереди (IMFSinkWriter::GetStatistics, ByteCountQueued). Именно эта очередь
+    /// раздувала память на гигабайтных клипах: писатель принимал сэмплы быстрее, чем
+    /// сливал на диск, копил их в RAM, а потом полминуты разгребал в Finalize.
     ///
-    /// ГРАБЛИ, которые тут уже собрали: пробовали вместо таймера смотреть на РАЗМЕР
-    /// ФАЙЛА (FileStream.Length по своему дескриптору) и ждать, пока диск догонит.
-    /// Оказалось, что размер растущего файла обновляется рывками и сильно отстаёт от
-    /// реально записанного — механизм считал, что диск не успевает, и ждал на каждой
-    /// проверке до потолка. Результат в логе: клип 317 МБ сохранялся 102 секунды,
-    /// из них 102.4 с — чистое ожидание на пустом месте. Больше на размер файла
-    /// не смотрим.
+    /// ДВОЕ ГРАБЕЛЬ, на которые тут уже наступили:
     ///
-    /// Дополнительная страховка — очередь ВНУТРИ писателя (IMFSinkWriter::GetStatistics,
-    /// ByteCountQueued): именно она раздувала память на гигабайтных клипах. Ожидание
-    /// по ней жёстко ограничено сверху (см. MaxQueueWaitMs), поэтому даже если
-    /// статистика недоступна или врёт, сохранение не может стать медленнее базового
-    /// темпа больше чем на пару секунд.
+    /// 1. Фиксированный потолок «220 МБ/с». Число угадано под медленный диск, а на
+    ///    замерах писатель держит ~870 МБ/с: из 4.3 секунды сохранения 811 МБ
+    ///    3.4 секунды были чистым сном пейсера при пустой очереди.
+    ///
+    /// 2. Обратная связь по РАЗМЕРУ ФАЙЛА (FileStream.Length своим дескриптором).
+    ///    Размер растущего файла обновляется рывками и сильно отстаёт от реально
+    ///    записанного, поэтому механизм постоянно считал, что диск не успевает:
+    ///    клип 317 МБ сохранялся 102 секунды, из них 102.4 с — ожидание на пустом месте.
+    ///
+    /// 3. Запасная равномерная подача «когда очередь не видна». На практике обёртка
+    ///    Vortice статистику как раз не отдаёт, и вместо страховки это стало основным
+    ///    режимом: из 3.4 секунды сохранения 626 МБ 2.8 секунды поток просто спал.
+    ///
+    /// Отсюда правило: тормозить только по очереди писателя и только если она реально
+    /// видна и реально переполнена; суммарное ожидание ограничено бюджетом «как если бы
+    /// диск давал 60 МБ/с». Нет сигнала — не тормозим вообще: память при этом защищена
+    /// тем, что кадры возвращаются в пул сразу после записи, а не копятся до конца.
     /// </summary>
     private sealed class WriteDrain
     {
-        /// <summary>Базовый темп подачи.</summary>
-        private const double TargetBytesPerMs = 220.0 * 1024 * 1024 / 1000.0;
         /// <summary>Как часто сверяться с писателем.</summary>
         private const long CheckEveryBytes = 4L * 1024 * 1024;
         /// <summary>Сколько данных писателю позволено держать в очереди.</summary>
         private const long QueueLimitBytes = 64L * 1024 * 1024;
-        /// <summary>Потолок ожидания очереди за одну сверку.</summary>
-        private const int MaxQueueWaitPerCheckMs = 200;
-        /// <summary>Суммарный потолок ожидания очереди за всё сохранение.</summary>
-        private const long MaxQueueWaitMs = 2000;
+        /// <summary>Потолок ожидания за одну сверку.</summary>
+        private const int MaxWaitPerCheckMs = 500;
+        /// <summary>
+        /// Бюджет ожидания считаем от «медленного диска» 60 МБ/с: тормозить сохранение
+        /// сильнее этого мы не имеем права ни при каких показаниях очереди.
+        /// </summary>
+        private const double BudgetBytesPerMs = 60.0 * 1024 * 1024 / 1000.0;
 
         private readonly IMFSinkWriter _writer;
         private readonly int _stream;
         private readonly long _total;
+        private readonly long _waitBudgetMs;
         private readonly Action<double>? _progress;
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
-        private long _submitted, _lastCheck, _lastProgressMs;
+        private long _submitted, _lastCheck, _lastProgressMs, _maxQueued;
         private bool _statsAvailable = true;
 
-        /// <summary>Сколько ждали писателя (диагностика в логе).</summary>
+        /// <summary>Сколько всего ждали писателя (диагностика в логе).</summary>
         public long WaitedMs { get; private set; }
-        /// <summary>Сколько из этого ушло на переполненную очередь писателя.</summary>
-        public long QueueWaitMs { get; private set; }
+
+        public string Report => _statsAvailable
+            ? $"очередь писателя: пик {Storage.ByteSize.Format(_maxQueued)}, ждали {WaitedMs} мс"
+            : "очередь писателя не видна — подача без ограничений";
 
         public WriteDrain(IMFSinkWriter writer, int probeStream, long totalBytes, Action<double>? progress)
         {
@@ -268,6 +279,7 @@ public static class ReplaySaver
             _stream = probeStream;
             _total = Math.Max(1, totalBytes);
             _progress = progress;
+            _waitBudgetMs = Math.Max(3000, (long)(_total / BudgetBytesPerMs));
         }
 
         public void Submitted(int bytes)
@@ -277,33 +289,29 @@ public static class ReplaySaver
             if (_submitted - _lastCheck < CheckEveryBytes) return;
             _lastCheck = _submitted;
 
+            if (!_statsAvailable) return; // очередь писателя не видна — просто не тормозим
+
             long start = _clock.ElapsedMilliseconds;
-            PaceByRate();
             WaitForQueue();
             WaitedMs += _clock.ElapsedMilliseconds - start;
         }
 
-        /// <summary>Базовый равномерный темп: не быстрее TargetBytesPerMs.</summary>
-        private void PaceByRate()
-        {
-            double aheadMs = _submitted / TargetBytesPerMs - _clock.ElapsedMilliseconds;
-            if (aheadMs > 5) Thread.Sleep((int)Math.Min(aheadMs, 200));
-        }
-
-        /// <summary>Придержать подачу, если писатель накопил слишком много неразобранного.</summary>
+        /// <summary>
+        /// Ждём, только если писатель реально не успевает разбирать очередь.
+        /// Пока успевает — не тормозим ни на миллисекунду: на замерах он держит
+        /// ~870 МБ/с, и любой фиксированный потолок тут только растягивал сохранение.
+        /// </summary>
         private void WaitForQueue()
         {
-            if (!_statsAvailable || QueueWaitMs >= MaxQueueWaitMs) return;
-
             long start = _clock.ElapsedMilliseconds;
-            while (_clock.ElapsedMilliseconds - start < MaxQueueWaitPerCheckMs
-                   && QueueWaitMs + (_clock.ElapsedMilliseconds - start) < MaxQueueWaitMs)
+            while (_clock.ElapsedMilliseconds - start < MaxWaitPerCheckMs && WaitedMs < _waitBudgetMs)
             {
                 long queued = QueuedBytes();
-                if (queued < 0 || queued <= QueueLimitBytes) break;
+                if (queued < 0) return; // статистика отвалилась прямо сейчас
+                if (queued > _maxQueued) _maxQueued = queued;
+                if (queued <= QueueLimitBytes) break;
                 Thread.Sleep(5);
             }
-            QueueWaitMs += _clock.ElapsedMilliseconds - start;
         }
 
         /// <summary>Байты в очереди писателя; -1 — статистика недоступна.</summary>

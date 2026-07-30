@@ -382,6 +382,12 @@ public sealed class ReplayEngine : IDisposable
             var self = Thread.CurrentThread;
             var previousPriority = self.Priority;
             self.Priority = ThreadPriority.BelowNormal;
+
+            // В игре запись клипа уходит в фоновый режим Windows: приоритет дисковых
+            // операций падает, и залп в сотни мегабайт не отбирает ввод-вывод у игры.
+            // На рабочем столе тормозить сохранение незачем — там пишем в полную силу.
+            bool inGame = !string.Equals(game, "Desktop", StringComparison.OrdinalIgnoreCase);
+            using var backgroundIo = Saving.BackgroundIoScope.BeginIf(inGame);
             try
             {
                 // Автоочистка сканирует всю папку записей рекурсивно — на большой

@@ -1,5 +1,6 @@
 using Vortice.Direct3D11;
 using Windows.Graphics.Imaging;
+using Windows.Storage.Streams;
 using InstantReplay.Core.Logging;
 
 namespace InstantReplay.Core.Capture;
@@ -44,17 +45,31 @@ public static class ScreenshotService
 
         var (bgra, width, height) = shot.Value;
 
-        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-        using (var fs = new FileStream(filePath, FileMode.Create, FileAccess.ReadWrite))
-        {
-            var encoder = await BitmapEncoder.CreateAsync(
-                BitmapEncoder.PngEncoderId, fs.AsRandomAccessStream());
-            encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
-                (uint)width, (uint)height, 96, 96, bgra);
-            await encoder.FlushAsync();
-        }
+        // Кодируем в память, а на диск пишем готовые байты одним куском.
+        // Раньше энкодер писал прямо в FileStream через AsRandomAccessStream: обёртка
+        // живёт своей жизнью, и порядок закрытия «сначала FileStream, потом обёртка»
+        // мог оставить файл недописанным. Плюс сжатие 2560×1440 — это заметные
+        // сотни миллисекунд, и делать их в UI-потоке нельзя.
+        var memory = new InMemoryRandomAccessStream();
+        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, memory);
+        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
+            (uint)width, (uint)height, 96, 96, bgra);
+        await encoder.FlushAsync();
 
-        Log.Info("Screenshot", $"Сохранён: {filePath} ({width}x{height})");
+        memory.Seek(0);
+        var bytes = new byte[memory.Size];
+        using (var reader = memory.AsStreamForRead())
+        using (var buffer = new MemoryStream())
+        {
+            await reader.CopyToAsync(buffer);
+            bytes = buffer.ToArray();
+        }
+        memory.Dispose();
+
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+        await File.WriteAllBytesAsync(filePath, bytes);
+
+        Log.Info("Screenshot", $"Сохранён: {filePath} ({width}x{height}, {bytes.Length / 1024} КБ)");
         return filePath;
     }
 

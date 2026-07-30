@@ -27,6 +27,14 @@ public sealed partial class ClipsPage : Page
 {
     private readonly List<ClipItem> _all = [];
 
+    /// <summary>Все секции текущего фильтра и те из них, что уже отданы в разметку.</summary>
+    private readonly List<ClipGroup> _sections = [];
+    private readonly System.Collections.ObjectModel.ObservableCollection<ClipGroup> _visibleSections = [];
+    private int _sectionsShown;
+
+    /// <summary>Сколько секций показываем сразу и сколько добавляем при прокрутке.</summary>
+    private const int InitialSections = 3;
+
     /// <summary>Элемент под курсором на момент правого клика — для контекстного меню.</summary>
     private ClipItem? _contextItem;
 
@@ -41,6 +49,11 @@ public sealed partial class ClipsPage : Page
 
         TypeBox.SelectedIndex = 0;
         SortBox.SelectedIndex = 0;
+
+        // Секции доезжают по мере прокрутки: на коллекции в полторы сотни клипов
+        // разметка всех секций сразу — это тысячи элементов за один проход.
+        Sections.ItemsSource = _visibleSections;
+        Scroller.ViewChanged += (_, _) => ShowMoreIfNeeded();
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -155,7 +168,12 @@ public sealed partial class ClipsPage : Page
             : list.Count > 0 ? [new ClipGroup(sort == 2 ? "Самые крупные" : "По названию", list)]
             : [];
 
-        Sections.ItemsSource = sections;
+        _sections.Clear();
+        _sections.AddRange(sections);
+        _visibleSections.Clear();
+        _sectionsShown = 0;
+        AddSections(InitialSections);
+
         Scroller.ChangeView(null, 0, null, true); // после смены фильтра — к началу списка
 
         // Первый экран грузим сразу, не дожидаясь событий вьюпорта: карточки только
@@ -165,6 +183,25 @@ public sealed partial class ClipsPage : Page
 
         UpdateSummary(list.Count);
         UpdateEmptyState(list.Count);
+    }
+
+    /// <summary>Отдать в разметку следующие секции.</summary>
+    private void AddSections(int count)
+    {
+        for (int i = 0; i < count && _sectionsShown < _sections.Count; i++)
+            _visibleSections.Add(_sections[_sectionsShown++]);
+    }
+
+    /// <summary>
+    /// Подъехали к концу списка — показать следующую секцию. По одной за событие:
+    /// каждая добавленная секция меняет высоту содержимого и вызывает ViewChanged
+    /// снова, так что список догрузится сам, но без залпа на тысячи элементов.
+    /// </summary>
+    private void ShowMoreIfNeeded()
+    {
+        if (_sectionsShown >= _sections.Count) return;
+        if (Scroller.ScrollableHeight - Scroller.VerticalOffset > 1200) return;
+        AddSections(1);
     }
 
     private void UpdateSummary(int shown)
@@ -270,11 +307,23 @@ public sealed partial class ClipsPage : Page
     private ClipItem? ItemOf(object sender) =>
         (sender as FrameworkElement)?.DataContext as ClipItem ?? _contextItem;
 
-    /// <summary>Открыть файл тем, что назначено в системе для .mp4 / .png.</summary>
+    /// <summary>
+    /// Открыть файл тем, что назначено в системе.
+    ///
+    /// Через explorer.exe, а НЕ прямым ShellExecute: приложение работает с правами
+    /// администратора (так требует манифест), а из процесса с повышенными правами
+    /// упакованные приложения Windows 11 — «Фотографии», «Медиаплеер» — активируются
+    /// криво и показывают «не удаётся найти этот файл», хотя файл на месте.
+    /// Explorer запускает обработчик с обычными правами пользователя, и всё открывается.
+    /// </summary>
     private static void Open(ClipItem? item)
     {
         if (item is null) return;
-        try { Process.Start(new ProcessStartInfo(item.FullPath) { UseShellExecute = true }); }
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{item.FullPath}\"")
+            { UseShellExecute = true });
+        }
         catch (Exception ex) { Log.Warn("Library", $"Открытие «{item.FileName}»: {ex.Message}"); }
     }
 

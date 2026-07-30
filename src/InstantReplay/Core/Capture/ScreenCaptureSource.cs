@@ -59,13 +59,64 @@ public sealed class ScreenCaptureSource : IScreenCapture
         _winrtDevice = CaptureInterop.CreateWinRtDevice(D3DDevice);
     }
 
-    /// <summary>
-    /// WGC собственную копию кадра не держит (лишняя копия на кадр — прямой расход
-    /// в горячем пути), да и вторая сессия захвата здесь разрешена — скриншот
-    /// спокойно делает свою. Ограничение «одна дупликация на монитор» есть только
-    /// у Desktop Duplication, там кадр и переиспользуется.
-    /// </summary>
-    public bool TryUseLatestFrame(Action<ID3D11Texture2D> use) => false;
+    // ---------------- Кадр для скриншота ----------------
+    // Постоянную копию каждого кадра не держим: это лишняя копия в горячем пути.
+    // Вместо этого копия делается ПО ЗАПРОСУ — скриншот поднимает флаг, ближайший
+    // кадр копируется в переиспользуемую текстуру, и вызывающий получает её.
+    //
+    // Раньше здесь стоял просто `=> false`, и скриншот на Windows 11 каждый раз
+    // поднимал ВТОРУЮ сессию WGC: создание устройства, пула кадров и сессии, ожидание
+    // кадра и снос всего этого — на глазах у пользователя приложение подвисало
+    // на секунды. На Windows 10 (Desktop Duplication) кадр отдавался сразу, поэтому
+    // там проблемы и не было.
+    private readonly object _copyLock = new();
+    private ID3D11Texture2D? _frameCopy;
+    private readonly ManualResetEventSlim _copyReady = new(false);
+    private volatile bool _copyRequested;
+
+    public bool TryUseLatestFrame(Action<ID3D11Texture2D> use)
+    {
+        _copyReady.Reset();
+        _copyRequested = true;
+
+        // Полсекунды — с запасом на кадр даже при 2 fps на статичном экране
+        if (!_copyReady.Wait(500))
+        {
+            _copyRequested = false;
+            return false;
+        }
+
+        lock (_copyLock)
+        {
+            if (_frameCopy is null) return false;
+            use(_frameCopy);
+            return true;
+        }
+    }
+
+    /// <summary>Скопировать кадр в собственную текстуру (вызывается только по запросу).</summary>
+    private void CaptureCopy(ID3D11Texture2D source)
+    {
+        lock (_copyLock)
+        {
+            var desc = source.Description;
+            if (_frameCopy is null || _frameCopy.Description.Width != desc.Width
+                                   || _frameCopy.Description.Height != desc.Height)
+            {
+                _frameCopy?.Dispose();
+                _frameCopy = D3DDevice.CreateTexture2D(desc with
+                {
+                    Usage = ResourceUsage.Default,
+                    BindFlags = BindFlags.ShaderResource,
+                    CPUAccessFlags = CpuAccessFlags.None,
+                    MiscFlags = ResourceOptionFlags.None
+                });
+            }
+            D3DContext.CopyResource(_frameCopy, source);
+            D3DContext.Flush();
+        }
+        _copyReady.Set();
+    }
 
     /// <summary>Буферов в пуле: на 4K кадр весит ~33 МБ, там пул меньше.</summary>
     private static int PoolSizeFor(int height) => height > 1440 ? 6 : 12;
@@ -175,6 +226,15 @@ public sealed class ScreenCaptureSource : IScreenCapture
 
             Interlocked.Increment(ref _framesAccepted);
             using var texture = CaptureInterop.GetTexture(frame.Surface);
+
+            // Скриншот попросил кадр — копируем его себе, пока текстура ещё жива
+            if (_copyRequested)
+            {
+                _copyRequested = false;
+                try { CaptureCopy(texture); }
+                catch (Exception ex) { Log.Warn("Capture", $"Копия кадра для скриншота: {ex.Message}"); }
+            }
+
             FrameArrived?.Invoke(texture, ticks);
             // texture освобождается на каждой итерации; получатель обязан скопировать её
             // (GPU-copy в свою NV12-текстуру) внутри колбэка.
@@ -196,6 +256,8 @@ public sealed class ScreenCaptureSource : IScreenCapture
     public void Dispose()
     {
         Stop();
+        lock (_copyLock) { _frameCopy?.Dispose(); _frameCopy = null; }
+        _copyReady.Dispose();
         _winrtDevice?.Dispose();
         D3DContext.Dispose();
         D3DDevice.Dispose();

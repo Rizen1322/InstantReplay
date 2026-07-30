@@ -89,6 +89,20 @@ internal static partial class NativeMethods
     [DllImport("kernel32.dll")]
     internal static extern IntPtr GetCurrentProcess();
 
+    // ---------------- Фоновый режим потока (низкий приоритет ввода-вывода) ----------------
+    // THREAD_MODE_BACKGROUND_BEGIN опускает потоку и процессорный приоритет, и приоритет
+    // ДИСКОВЫХ операций. Именно это нужно потоку сохранения клипа, пока идёт игра:
+    // сотни мегабайт уходят на диск «по остаточному принципу» и не отбирают ввод-вывод
+    // у игры. Обычный ThreadPriority.BelowNormal на дисковую очередь не влияет.
+    internal const int THREAD_MODE_BACKGROUND_BEGIN = 0x00010000;
+    internal const int THREAD_MODE_BACKGROUND_END = 0x00020000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetThreadPriority(IntPtr hThread, int nPriority);
+    [DllImport("kernel32.dll")]
+    internal static extern IntPtr GetCurrentThread();
+
     // ---------------- winmm (разрешение системного таймера) ----------------
     // Без timeBeginPeriod(1) Thread.Sleep квантуется по 15.6 мс — аудио-микшер и
     // конвейер записи получают рваный темп (так же делают OBS/ShadowPlay).

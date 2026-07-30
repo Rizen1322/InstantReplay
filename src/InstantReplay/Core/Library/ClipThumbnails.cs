@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Graphics.Imaging;
 using Windows.Storage;
 using Windows.Storage.FileProperties;
+using Windows.Storage.Streams;
 using InstantReplay.Core.Logging;
 using InstantReplay.Core.Settings;
 
@@ -11,30 +13,44 @@ namespace InstantReplay.Core.Library;
 /// Миниатюры и метаданные (длительность, разрешение) для карточек библиотеки.
 ///
 /// Кадр берём у системного поставщика миниатюр (та же картинка, что показывает
-/// проводник) — это дешевле, чем поднимать свой декодер ради одного кадра, и
-/// работает для любого контейнера, который система умеет читать.
+/// проводник) — это дешевле, чем поднимать свой декодер ради одного кадра.
 ///
-/// Результат кладём в %LocalAppData%\InstantReplay\thumbs: при повторном открытии
-/// вкладки сетка заполняется мгновенно и без обращений к shell. Ключ кэша включает
-/// время изменения и размер файла — переименование/перезапись не отдаст старый кадр.
+/// Два правила, выстраданных на коллекции из полутора сотен клипов:
+///
+/// 1. ВСЯ работа с диском и системой — в фоновом потоке. Раньше продолжения
+///    возвращались в UI-поток, и прокрутка панорамы намертво вешала окно: каждый
+///    видимый клип тянул за собой обращение к shell, чтение кэша и декодирование.
+///    В UI-поток возвращаемся только чтобы создать BitmapImage.
+///
+/// 2. В кэше храним JPEG, а не то, что отдала система. Системный поставщик отдаёт
+///    несжатый BMP — 600+ КБ на кадр; на 150 клипов это сотни мегабайт чтения и
+///    декодирования. JPEG того же размера весит ~40 КБ.
 /// </summary>
 public static class ClipThumbnails
 {
     private static readonly string CacheDir = Path.Combine(SettingsManager.Dir, "thumbs");
 
     /// <summary>Ширина миниатюры в кэше: с запасом под карточку 288 px и HiDPI.</summary>
-    private const uint ThumbWidth = 480;
+    private const uint ThumbWidth = 420;
 
     /// <summary>
-    /// Не больше трёх одновременных запросов: shell-провайдер миниатюр для видео
+    /// Не больше двух одновременных обращений к системе: поставщик миниатюр для видео
     /// сам по себе не бесплатный, а сетка при быстрой прокрутке просит десятки штук.
     /// </summary>
-    private static readonly SemaphoreSlim Gate = new(3);
+    private static readonly SemaphoreSlim Gate = new(2);
+
+    /// <summary>
+    /// Сколько запросов ждёт очереди. При быстрой прокрутке заявок набегает больше,
+    /// чем есть смысла выполнять: экран уже уехал. Лишние отбрасываем — карточка
+    /// попросит кадр заново, когда снова окажется в поле зрения.
+    /// </summary>
+    private static int _pending;
+    private const int MaxPending = 16;
 
     /// <summary>Чем закончилась попытка получить кадр.</summary>
     public enum ThumbResult
     {
-        /// <summary>Уже запрашивали для этого файла.</summary>
+        /// <summary>Уже запрашивали для этого файла или очередь переполнена.</summary>
         Skipped,
         /// <summary>Кадр получен.</summary>
         Ok,
@@ -43,94 +59,50 @@ public static class ClipThumbnails
         Failed
     }
 
+    /// <summary>Результат фоновой части: байты картинки и метаданные.</summary>
+    private sealed record Payload(byte[]? Image, TimeSpan? Duration, string? Resolution, bool NoDecoder);
+
     /// <summary>
-    /// Догрузить миниатюру и метаданные элемента. Вызывать из UI-потока: продолжения
-    /// возвращаются на него, и BitmapImage создаётся там, где положено.
+    /// Догрузить миниатюру и метаданные элемента. Вызывать из UI-потока: тяжёлая часть
+    /// уедет в фон сама, а вернувшись, метод создаст BitmapImage там, где положено.
     /// Ошибки не пробрасываются — карточка просто останется с заглушкой.
     /// </summary>
     public static async Task<ThumbResult> LoadAsync(ClipItem item)
     {
         if (item.ThumbRequested) return ThumbResult.Skipped;
+
+        // Очередь переполнена — не помечаем элемент запрошенным, попросит позже
+        if (Volatile.Read(ref _pending) >= MaxPending) return ThumbResult.Skipped;
+
         item.ThumbRequested = true;
-        bool noDecoder = false;
+        Interlocked.Increment(ref _pending);
+
+        Payload payload;
+        try
+        {
+            payload = await Task.Run(() => FetchAsync(item));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Library", $"Миниатюра «{item.FileName}»: {ex.Message}");
+            return ThumbResult.Failed;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _pending);
+        }
+
+        if (payload.Duration is not null) item.Duration = payload.Duration;
+        if (payload.Resolution is not null) item.Resolution = payload.Resolution;
+
+        if (payload.Image is null || payload.Image.Length == 0)
+            return payload.NoDecoder ? ThumbResult.NoDecoder : ThumbResult.Failed;
 
         try
         {
-            string key = CacheKey(item);
-            string thumbFile = Path.Combine(CacheDir, key + ".thumb");
-            string metaFile = Path.Combine(CacheDir, key + ".meta");
-
-            byte[]? bytes = null;
-            TimeSpan? duration = null;
-            string? resolution = null;
-
-            await Gate.WaitAsync().ConfigureAwait(true);
-            try
-            {
-                if (File.Exists(thumbFile))
-                {
-                    bytes = await File.ReadAllBytesAsync(thumbFile);
-                    if (File.Exists(metaFile))
-                        ParseMeta(await File.ReadAllTextAsync(metaFile), ref duration, ref resolution);
-                }
-                else
-                {
-                    var file = await StorageFile.GetFileFromPathAsync(item.FullPath);
-
-                    if (item.IsScreenshot)
-                    {
-                        try
-                        {
-                            var props = await file.Properties.GetImagePropertiesAsync();
-                            if (props.Width > 0) resolution = $"{props.Width}×{props.Height}";
-                        }
-                        catch { }
-                    }
-                    else
-                    {
-                        try
-                        {
-                            var props = await file.Properties.GetVideoPropertiesAsync();
-                            if (props.Duration > TimeSpan.Zero) duration = props.Duration;
-                            if (props.Width > 0) resolution = $"{props.Width}×{props.Height}";
-                        }
-                        catch { }
-                    }
-
-                    using var thumb = await file.GetThumbnailAsync(
-                        item.IsScreenshot ? ThumbnailMode.PicturesView : ThumbnailMode.VideosView,
-                        ThumbWidth, ThumbnailOptions.ResizeThumbnail);
-
-                    // ThumbnailType.Icon — это generic-иконка файла: система не смогла
-                    // декодировать видео (у HEVC такое бывает без «HEVC Video Extensions»).
-                    // В сетке иконка смотрится хуже нашей заглушки, поэтому не берём её,
-                    // но запоминаем причину — страница подскажет пользователю, что делать.
-                    if (thumb is not null && thumb.Size > 0 && thumb.Type == ThumbnailType.Image)
-                    {
-                        using var source = thumb.AsStreamForRead();
-                        using var buffer = new MemoryStream();
-                        await source.CopyToAsync(buffer);
-                        bytes = buffer.ToArray();
-                    }
-                    else if (!item.IsScreenshot)
-                    {
-                        noDecoder = true;
-                    }
-
-                    Directory.CreateDirectory(CacheDir);
-                    if (bytes is not null) await File.WriteAllBytesAsync(thumbFile, bytes);
-                    await File.WriteAllTextAsync(metaFile, BuildMeta(duration, resolution));
-                }
-            }
-            finally { Gate.Release(); }
-
-            if (duration is not null) item.Duration = duration;
-            if (resolution is not null) item.Resolution = resolution;
-            if (bytes is null || bytes.Length == 0)
-                return noDecoder ? ThumbResult.NoDecoder : ThumbResult.Failed;
-
+            // Единственная часть, которой нужен UI-поток
             var image = new BitmapImage { DecodePixelWidth = (int)ThumbWidth };
-            using var memory = new MemoryStream(bytes);
+            using var memory = new MemoryStream(payload.Image);
             await image.SetSourceAsync(memory.AsRandomAccessStream());
             item.Thumbnail = image;
             return ThumbResult.Ok;
@@ -140,6 +112,95 @@ public static class ClipThumbnails
             Log.Warn("Library", $"Миниатюра «{item.FileName}»: {ex.Message}");
             return ThumbResult.Failed;
         }
+    }
+
+    /// <summary>Фоновая часть: кэш или система. UI-потока здесь нет вообще.</summary>
+    private static async Task<Payload> FetchAsync(ClipItem item)
+    {
+        string key = CacheKey(item);
+        string thumbFile = Path.Combine(CacheDir, key + ".thumb");
+        string metaFile = Path.Combine(CacheDir, key + ".meta");
+
+        TimeSpan? duration = null;
+        string? resolution = null;
+
+        if (File.Exists(thumbFile))
+        {
+            byte[] cached = await File.ReadAllBytesAsync(thumbFile).ConfigureAwait(false);
+            if (File.Exists(metaFile))
+                ParseMeta(await File.ReadAllTextAsync(metaFile).ConfigureAwait(false), ref duration, ref resolution);
+            return new Payload(cached, duration, resolution, false);
+        }
+
+        await Gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var file = await StorageFile.GetFileFromPathAsync(item.FullPath).AsTask().ConfigureAwait(false);
+
+            if (item.IsScreenshot)
+            {
+                try
+                {
+                    var props = await file.Properties.GetImagePropertiesAsync().AsTask().ConfigureAwait(false);
+                    if (props.Width > 0) resolution = $"{props.Width}×{props.Height}";
+                }
+                catch { }
+            }
+            else
+            {
+                try
+                {
+                    var props = await file.Properties.GetVideoPropertiesAsync().AsTask().ConfigureAwait(false);
+                    if (props.Duration > TimeSpan.Zero) duration = props.Duration;
+                    if (props.Width > 0) resolution = $"{props.Width}×{props.Height}";
+                }
+                catch { }
+            }
+
+            byte[]? bytes = null;
+            bool noDecoder = false;
+
+            using (var thumb = await file.GetThumbnailAsync(
+                       item.IsScreenshot ? ThumbnailMode.PicturesView : ThumbnailMode.VideosView,
+                       ThumbWidth, ThumbnailOptions.ResizeThumbnail).AsTask().ConfigureAwait(false))
+            {
+                // ThumbnailType.Icon — generic-иконка файла: система не смогла декодировать
+                // видео (у HEVC такое бывает без «HEVC Video Extensions»). В сетке иконка
+                // смотрится хуже нашей заглушки, поэтому не берём её, но запоминаем причину.
+                if (thumb is not null && thumb.Size > 0 && thumb.Type == ThumbnailType.Image)
+                    bytes = await ToJpegAsync(thumb).ConfigureAwait(false);
+                else if (!item.IsScreenshot)
+                    noDecoder = true;
+            }
+
+            Directory.CreateDirectory(CacheDir);
+            if (bytes is not null) await File.WriteAllBytesAsync(thumbFile, bytes).ConfigureAwait(false);
+            await File.WriteAllTextAsync(metaFile, BuildMeta(duration, resolution)).ConfigureAwait(false);
+
+            return new Payload(bytes, duration, resolution, noDecoder);
+        }
+        finally { Gate.Release(); }
+    }
+
+    /// <summary>Пережать кадр в JPEG: системный поставщик отдаёт несжатый BMP.</summary>
+    private static async Task<byte[]> ToJpegAsync(IRandomAccessStream source)
+    {
+        source.Seek(0);
+        var decoder = await BitmapDecoder.CreateAsync(source).AsTask().ConfigureAwait(false);
+        var pixels = await decoder.GetPixelDataAsync().AsTask().ConfigureAwait(false);
+
+        using var output = new InMemoryRandomAccessStream();
+        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, output).AsTask().ConfigureAwait(false);
+        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore,
+            decoder.PixelWidth, decoder.PixelHeight,
+            decoder.DpiX, decoder.DpiY, pixels.DetachPixelData());
+        await encoder.FlushAsync().AsTask().ConfigureAwait(false);
+
+        output.Seek(0);
+        using var reader = output.AsStreamForRead();
+        using var buffer = new MemoryStream();
+        await reader.CopyToAsync(buffer).ConfigureAwait(false);
+        return buffer.ToArray();
     }
 
     /// <summary>
