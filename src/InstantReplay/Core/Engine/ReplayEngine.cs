@@ -34,7 +34,13 @@ public sealed class ReplayEngine : IDisposable
 
     public EngineState State { get; private set; } = EngineState.Stopped;
     public event Action<EngineState>? StateChanged;
-    /// <summary>Успешное сохранение: путь к файлу + фактическая длительность (сек).</summary>
+    /// <summary>
+    /// Снимок буфера сделан — клип уже гарантирован, дальше только запись файла.
+    /// Аргумент — длительность клипа в секундах. Именно по этому событию показывается
+    /// уведомление: ждать конца записи, чтобы сказать «сохранено», незачем.
+    /// </summary>
+    public event Action<int>? ReplayCaptured;
+    /// <summary>Файл дописан на диск: путь + фактическая длительность (сек).</summary>
     public event Action<string, int>? ReplaySaved;
     public event Action<string>? SaveFailed;
     /// <summary>Сообщение о нештатной ситуации для пользователя (потеря GPU, восстановление).</summary>
@@ -369,7 +375,12 @@ public sealed class ReplayEngine : IDisposable
         var mediaType = _encoder.OutputMediaType;
         int seconds = (int)Math.Round(TimeSpan.FromTicks(video[^1].PtsTicks - video[0].PtsTicks).TotalSeconds);
 
+        // Данные уже вырваны из кольцевого буфера и никуда не денутся — говорим об этом
+        // пользователю сразу. Раньше уведомление ждало, пока сотни мегабайт доедут
+        // до диска, и на длинном клипе это выглядело как «хоткей не сработал».
         SaveProgress = 0;
+        ReplayCaptured?.Invoke(Math.Max(seconds, 1));
+
         SetState(EngineState.Saving);
         Task.Run(() =>
         {

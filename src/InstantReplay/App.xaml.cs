@@ -169,11 +169,10 @@ public partial class App : Application
                 n.Show(NotificationKind.Stopped, Loc.T("replay_off"));
             prevState = st;
         };
-        e.ReplaySaved += (file, seconds) =>
-        {
-            n.Show(NotificationKind.Saved, Loc.T("saved", Loc.Duration(seconds)));
-            AfterFileSaved(file);
-        };
+        // Уведомление — по снимку буфера, а не по завершению записи файла: клип в этот
+        // момент уже гарантирован, а диск догоняет в фоне.
+        e.ReplayCaptured += seconds => n.Show(NotificationKind.Saved, Loc.T("saved", Loc.Duration(seconds)));
+        e.ReplaySaved += (file, _) => AfterFileSaved(file);
         e.SaveFailed += msg => n.Show(NotificationKind.Warning, Loc.T("save_failed") + ": " + msg);
         // Потеря GPU-устройства и восстановление после неё — пользователь должен знать,
         // что запись прерывалась, а не догадываться по дыре в клипе.

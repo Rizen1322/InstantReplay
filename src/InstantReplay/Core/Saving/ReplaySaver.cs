@@ -97,10 +97,16 @@ public static class ReplaySaver
         // то есть 77% всех сэмплов были аудио. Секундные куски сокращают их до 180
         // на дорожку. AAC-энкодер сам режет PCM на свои кадры, качество не меняется.
         const int BlocksPerChunk = 100;                       // 100 × 10 мс = 1 секунда
-        // Буфер СВОЙ на каждую дорожку: они накапливаются параллельно
+        // Буфер СВОЙ на каждую дорожку: они накапливаются параллельно.
+        // Второй буфер (в байтах) переиспользуется вместо ToArray() на каждый кусок:
+        // раньше это давало 138 МБ мусора на трёхминутный клип с двумя дорожками.
         var chunkBuf = new float[audioStreams.Count][];
+        var chunkBytes = new byte[audioStreams.Count][];
         for (int s = 0; s < audioStreams.Count; s++)
+        {
             chunkBuf[s] = new float[BlocksPerChunk * blockSamples];
+            chunkBytes[s] = new byte[BlocksPerChunk * blockSamples * sizeof(float)];
+        }
         var chunkFill = new int[audioStreams.Count];           // сколько блоков накоплено
         var chunkStart = new long[audioStreams.Count];         // pts первого блока куска
 
@@ -109,11 +115,12 @@ public static class ReplaySaver
         {
             if (chunkFill[s] == 0) return;
             int floats = chunkFill[s] * blockSamples;
-            var bytes = MemoryMarshal.AsBytes<float>(chunkBuf[s].AsSpan(0, floats)).ToArray();
+            int byteCount = floats * sizeof(float);
+            MemoryMarshal.AsBytes<float>(chunkBuf[s].AsSpan(0, floats)).CopyTo(chunkBytes[s]);
             using var sample = MfMp4Writer.CreateSample(
-                bytes, bytes.Length, chunkStart[s], chunkFill[s] * 100_000L);
+                chunkBytes[s], byteCount, chunkStart[s], chunkFill[s] * 100_000L);
             writer.WriteSample(audioStreams[s].Index, sample);
-            drain.Submitted(bytes.Length);
+            drain.Submitted(byteCount);
             chunkFill[s] = 0;
         }
 
