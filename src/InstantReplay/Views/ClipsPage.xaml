@@ -22,7 +22,7 @@
                  проставляет его сам (данные идут через сгенерированный код привязок).
                  Из-за этого обработчики, читающие DataContext, получали null — карточки
                  рисовались, но не открывались и не запрашивали миниатюру. -->
-            <Button Style="{StaticResource ClipCardStyle}" Width="288"
+            <Button Style="{StaticResource ClipCardStyle}" Width="288" Margin="0,0,16,18"
                     DataContext="{x:Bind}"
                     Click="Card_Click"
                     PointerEntered="Card_PointerEntered"
@@ -120,28 +120,18 @@
             </Button>
         </DataTemplate>
 
-        <!-- Секция одного дня: заголовок + сетка карточек -->
-        <DataTemplate x:Key="ClipSectionTemplate" x:DataType="lib:ClipGroup">
-            <StackPanel Margin="0,0,0,12">
-                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,10">
-                    <Rectangle Width="3" Height="16" RadiusX="2" RadiusY="2" VerticalAlignment="Center"
-                               Fill="{StaticResource AccentGreenBrush}"/>
-                    <TextBlock Text="{x:Bind Title}" FontSize="15" FontWeight="SemiBold"
-                               VerticalAlignment="Center"/>
-                    <TextBlock Text="{x:Bind Subtitle}" FontSize="12" VerticalAlignment="Center"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                </StackPanel>
-
-                <ItemsRepeater ItemsSource="{x:Bind Items}"
-                               ItemTemplate="{StaticResource ClipCardTemplate}">
-                    <ItemsRepeater.Layout>
-                        <UniformGridLayout MinItemWidth="288" MinItemHeight="215"
-                                           MinColumnSpacing="16" MinRowSpacing="14"
-                                           ItemsJustification="Start"/>
-                    </ItemsRepeater.Layout>
-                </ItemsRepeater>
+        <!-- Заголовок дня над сеткой -->
+        <DataTemplate x:Key="ClipSectionHeader" x:DataType="lib:ClipGroup">
+            <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,10,0,10">
+                <Rectangle Width="3" Height="16" RadiusX="2" RadiusY="2" VerticalAlignment="Center"
+                           Fill="{StaticResource AccentGreenBrush}"/>
+                <TextBlock Text="{x:Bind Title}" FontSize="15" FontWeight="SemiBold"
+                           VerticalAlignment="Center"/>
+                <TextBlock Text="{x:Bind Subtitle}" FontSize="12" VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
         </DataTemplate>
+
     </Page.Resources>
 
     <Grid>
@@ -209,15 +199,49 @@
             </InfoBar.ActionButton>
         </InfoBar>
 
-        <!-- Секции по датам, внутри каждой — сетка карточек -->
-        <ScrollViewer x:Name="Scroller" Grid.Row="2" Padding="28,0,20,20"
-                      VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
-            <ItemsRepeater x:Name="Sections" ItemTemplate="{StaticResource ClipSectionTemplate}">
-                <ItemsRepeater.Layout>
-                    <StackLayout Orientation="Vertical" Spacing="0"/>
-                </ItemsRepeater.Layout>
-            </ItemsRepeater>
-        </ScrollViewer>
+        <!-- Секции по датам, внутри каждой — сетка карточек.
+             Сгруппированный GridView, а не вложенные ItemsRepeater: он виртуализирует
+             ОБА уровня и переиспользует карточки. Вложенные репитеры на коллекции в
+             полторы сотни клипов разворачивали всю секцию целиком и вешали прокрутку. -->
+        <GridView x:Name="ClipsGrid" Grid.Row="2" Padding="28,0,16,20"
+                  SelectionMode="None" IsItemClickEnabled="True" ItemClick="Clip_Click"
+                  ItemTemplate="{StaticResource ClipCardTemplate}"
+                  ScrollViewer.HorizontalScrollMode="Disabled"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  ScrollViewer.VerticalScrollMode="Enabled"
+                  ScrollViewer.VerticalScrollBarVisibility="Auto">
+
+            <!-- Группы стопкой сверху вниз, карточки внутри группы — переносом по строкам.
+                 Без явных панелей сгруппированный GridView раскладывает ГРУППЫ по
+                 горизонтали, и «Сегодня»/«Вчера» встают рядом, а не друг под другом. -->
+            <GridView.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <ItemsStackPanel Orientation="Vertical" GroupPadding="0,0,0,6"/>
+                </ItemsPanelTemplate>
+            </GridView.ItemsPanel>
+
+            <GridView.ItemContainerStyle>
+                <Style TargetType="GridViewItem">
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="Margin" Value="0"/>
+                    <Setter Property="MinWidth" Value="0"/>
+                    <Setter Property="MinHeight" Value="0"/>
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                </Style>
+            </GridView.ItemContainerStyle>
+
+            <GridView.GroupStyle>
+                <GroupStyle HidesIfEmpty="True" HeaderTemplate="{StaticResource ClipSectionHeader}">
+                    <GroupStyle.Panel>
+                        <ItemsPanelTemplate>
+                            <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="-1"/>
+                        </ItemsPanelTemplate>
+                    </GroupStyle.Panel>
+                </GroupStyle>
+            </GridView.GroupStyle>
+        </GridView>
 
         <!-- Пусто / ничего не найдено -->
         <StackPanel x:Name="EmptyState" Grid.Row="2" Spacing="10" Visibility="Collapsed"

@@ -24,6 +24,7 @@ public static class Services
     public static NotificationService Notifications { get; private set; } = null!;
     public static UpdateService Updates { get; } = new();
     public static NvidiaDriverService Nvidia { get; } = new();
+    public static DriverWatch DriverWatch { get; private set; } = null!;
     public static DispatcherQueueHolder Dispatcher { get; private set; } = null!;
 
     public static void Init(DispatcherQueue uiQueue)
@@ -33,6 +34,7 @@ public static class Services
         Engine = new ReplayEngine(Settings, Storage);
         Hotkeys = new HotkeyService(Settings);
         Notifications = new NotificationService(Settings, Dispatcher);
+        DriverWatch = new DriverWatch(Settings, Nvidia);
     }
 }
 
@@ -105,6 +107,12 @@ public partial class App : Application
 
         if (Services.Settings.Current.CheckForUpdates)
             _ = CheckUpdatesAsync();
+
+        // Раз в неделю тихо смотрим, не вышел ли новый драйвер NVIDIA.
+        // Первая проверка — через 45 секунд после старта, чтобы не мешать запуску записи.
+        Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
+            NotificationKind.Warning, Loc.T("driver_found", version));
+        Services.DriverWatch.Start();
     }
 
     /// <summary>Сигнал уже работающей копии: «покажи окно». Ошибки не важны — мы всё равно выходим.</summary>

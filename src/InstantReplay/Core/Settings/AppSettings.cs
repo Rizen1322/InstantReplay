@@ -106,6 +106,17 @@ public sealed class AppSettings
     /// <summary>Автоматически включать Instant Replay при запуске приложения.</summary>
     public bool AutoStartReplayBuffer { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;
+
+    // ---------- Драйвер NVIDIA ----------
+    /// <summary>Проверять новый драйвер NVIDIA примерно раз в неделю.</summary>
+    public bool CheckNvidiaDriver { get; set; } = true;
+    /// <summary>Когда проверяли в последний раз (UTC). Раньше срока не дёргаем сеть.</summary>
+    public DateTime LastDriverCheckUtc { get; set; } = DateTime.MinValue;
+    /// <summary>
+    /// О какой версии драйвера уже сообщили. Пока не выйдет следующая — молчим,
+    /// чтобы уведомление не всплывало каждую неделю про один и тот же драйвер.
+    /// </summary>
+    public string? NotifiedDriverVersion { get; set; }
     // Репозиторий обновлений больше не настройка, а константа UpdateService.Repo:
     // релизы берутся только из официального репозитория проекта. Раньше пустое
     // значение в сохранённом settings.json молча отключало проверку обновлений.

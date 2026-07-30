@@ -29,6 +29,11 @@ public sealed partial class AppPage : Page
         TrayStartToggle.IsOn = s.StartMinimizedToTray;
         AutoBufferToggle.IsOn = s.AutoStartReplayBuffer;
         UpdatesToggle.IsOn = s.CheckForUpdates;
+        DriverToggle.IsOn = s.CheckNvidiaDriver;
+        DriverCheckSub.Text = s.LastDriverCheckUtc == DateTime.MinValue
+            ? "Проверка раз в неделю в фоне; про одну версию сообщаем один раз"
+            : $"Последняя проверка: {s.LastDriverCheckUtc.ToLocalTime():d MMMM, HH:mm}" +
+              (s.NotifiedDriverVersion is { Length: > 0 } v ? $" · последняя известная версия {v}" : "");
 
         NotifyToggle.IsOn = s.ShowNotifications;
         SelectByTag(NotifyPosBox, s.NotificationPosition.ToString());
@@ -184,6 +189,7 @@ public sealed partial class AppPage : Page
         s.StartMinimizedToTray = TrayStartToggle.IsOn;
         s.AutoStartReplayBuffer = AutoBufferToggle.IsOn;
         s.CheckForUpdates = UpdatesToggle.IsOn;
+        s.CheckNvidiaDriver = DriverToggle.IsOn;
         s.ShowNotifications = NotifyToggle.IsOn;
         if (Enum.TryParse(TagOf(NotifyPosBox), out NotificationPosition np)) s.NotificationPosition = np;
         s.OpenFolderAfterSave = OpenAfterToggle.IsOn;

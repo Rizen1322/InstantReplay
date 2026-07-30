@@ -160,6 +160,20 @@
                         <ToggleSwitch x:Name="UpdatesToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
                                       HorizontalAlignment="Right" MinWidth="0" Toggled="System_Changed"/>
                     </Grid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Следить за драйвером NVIDIA" Style="{StaticResource RowLabel}"/>
+                            <TextBlock x:Name="DriverCheckSub" Style="{StaticResource RowSub}"
+                                       Text="Проверка раз в неделю в фоне; про одну версию сообщаем один раз"/>
+                        </StackPanel>
+                        <ToggleSwitch x:Name="DriverToggle" Grid.Column="1" OnContent="Вкл." OffContent="Откл."
+                                      HorizontalAlignment="Right" MinWidth="0" Toggled="System_Changed"/>
+                    </Grid>
                 </StackPanel>
             </Grid>
 

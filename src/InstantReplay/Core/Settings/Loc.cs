@@ -26,6 +26,8 @@ public static class Loc
         ["tip_off"]        = ("Instant Replay — выключено", "Instant Replay — off"),
         ["update_found"]   = ("Доступно обновление {0} — вкладка «Приложение»",
                               "Update {0} available — see the App tab"),
+        ["driver_found"]   = ("Вышел драйвер NVIDIA {0} — вкладка «Характеристики»",
+                              "NVIDIA driver {0} is out — see the Hardware tab"),
         ["rec_started"]    = ("Идёт запись", "Recording started"),
         ["rec_saved"]      = ("Запись сохранена ({0})", "Recording saved ({0})"),
         ["shot_saved"]     = ("Скриншот сохранён", "Screenshot saved"),

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Numerics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Windows.ApplicationModel.DataTransfer;
@@ -27,13 +28,12 @@ public sealed partial class ClipsPage : Page
 {
     private readonly List<ClipItem> _all = [];
 
-    /// <summary>Все секции текущего фильтра и те из них, что уже отданы в разметку.</summary>
-    private readonly List<ClipGroup> _sections = [];
-    private readonly System.Collections.ObjectModel.ObservableCollection<ClipGroup> _visibleSections = [];
-    private int _sectionsShown;
-
-    /// <summary>Сколько секций показываем сразу и сколько добавляем при прокрутке.</summary>
-    private const int InitialSections = 3;
+    /// <summary>Группировка для GridView: секции по датам.</summary>
+    private readonly CollectionViewSource _view = new()
+    {
+        IsSourceGrouped = true,
+        ItemsPath = new PropertyPath("Items")
+    };
 
     /// <summary>Элемент под курсором на момент правого клика — для контекстного меню.</summary>
     private ClipItem? _contextItem;
@@ -49,11 +49,6 @@ public sealed partial class ClipsPage : Page
 
         TypeBox.SelectedIndex = 0;
         SortBox.SelectedIndex = 0;
-
-        // Секции доезжают по мере прокрутки: на коллекции в полторы сотни клипов
-        // разметка всех секций сразу — это тысячи элементов за один проход.
-        Sections.ItemsSource = _visibleSections;
-        Scroller.ViewChanged += (_, _) => ShowMoreIfNeeded();
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -168,13 +163,9 @@ public sealed partial class ClipsPage : Page
             : list.Count > 0 ? [new ClipGroup(sort == 2 ? "Самые крупные" : "По названию", list)]
             : [];
 
-        _sections.Clear();
-        _sections.AddRange(sections);
-        _visibleSections.Clear();
-        _sectionsShown = 0;
-        AddSections(InitialSections);
-
-        Scroller.ChangeView(null, 0, null, true); // после смены фильтра — к началу списка
+        // Источник задаём целиком: GridView сам виртуализирует и группы, и карточки
+        _view.Source = sections;
+        ClipsGrid.ItemsSource = _view.View;
 
         // Первый экран грузим сразу, не дожидаясь событий вьюпорта: карточки только
         // создаются, и первое EffectiveViewportChanged может прийти уже после того,
@@ -183,25 +174,6 @@ public sealed partial class ClipsPage : Page
 
         UpdateSummary(list.Count);
         UpdateEmptyState(list.Count);
-    }
-
-    /// <summary>Отдать в разметку следующие секции.</summary>
-    private void AddSections(int count)
-    {
-        for (int i = 0; i < count && _sectionsShown < _sections.Count; i++)
-            _visibleSections.Add(_sections[_sectionsShown++]);
-    }
-
-    /// <summary>
-    /// Подъехали к концу списка — показать следующую секцию. По одной за событие:
-    /// каждая добавленная секция меняет высоту содержимого и вызывает ViewChanged
-    /// снова, так что список догрузится сам, но без залпа на тысячи элементов.
-    /// </summary>
-    private void ShowMoreIfNeeded()
-    {
-        if (_sectionsShown >= _sections.Count) return;
-        if (Scroller.ScrollableHeight - Scroller.VerticalOffset > 1200) return;
-        AddSections(1);
     }
 
     private void UpdateSummary(int shown)
@@ -222,7 +194,7 @@ public sealed partial class ClipsPage : Page
     {
         bool empty = shown == 0;
         EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
-        Scroller.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+        ClipsGrid.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
         if (!empty) return;
 
         bool filtered = _all.Count > 0;
@@ -294,6 +266,8 @@ public sealed partial class ClipsPage : Page
 
     private void Card_Click(object sender, RoutedEventArgs e) =>
         Open((sender as FrameworkElement)?.DataContext as ClipItem);
+
+    private void Clip_Click(object sender, ItemClickEventArgs e) => Open(e.ClickedItem as ClipItem);
 
     // ---------------- Действия над файлом ----------------
 

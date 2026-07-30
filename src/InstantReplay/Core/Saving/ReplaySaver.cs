@@ -110,6 +110,11 @@ public static class ReplaySaver
         var chunkFill = new int[audioStreams.Count];           // сколько блоков накоплено
         var chunkStart = new long[audioStreams.Count];         // pts первого блока куска
 
+        // Раздельный замер: сколько времени уходит на видео (чистый remux) и сколько
+        // на аудио (там внутри WriteSample сидит AAC-кодирование). По этим двум цифрам
+        // видно, окупится ли перенос кодирования звука в момент записи.
+        long videoTicks = 0, audioTicks = 0;
+
         // Сбросить накопленный кусок дорожки s одним сэмплом
         void FlushAudio(int s)
         {
@@ -119,7 +124,9 @@ public static class ReplaySaver
             MemoryMarshal.AsBytes<float>(chunkBuf[s].AsSpan(0, floats)).CopyTo(chunkBytes[s]);
             using var sample = MfMp4Writer.CreateSample(
                 chunkBytes[s], byteCount, chunkStart[s], chunkFill[s] * 100_000L);
+            long audioStart = System.Diagnostics.Stopwatch.GetTimestamp();
             writer.WriteSample(audioStreams[s].Index, sample);
+            audioTicks += System.Diagnostics.Stopwatch.GetTimestamp() - audioStart;
             drain.Submitted(byteCount);
             chunkFill[s] = 0;
         }
@@ -155,7 +162,9 @@ public static class ReplaySaver
             using (var sample = MfMp4Writer.CreateSample(f.Data, f.Length, vpts, f.DurationTicks))
             {
                 if (f.IsKeyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
+                long videoStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 writer.WriteSample(videoStream, sample);
+                videoTicks += System.Diagnostics.Stopwatch.GetTimestamp() - videoStart;
             }
             // Данные уже скопированы в сэмпл — массив больше не нужен
             System.Buffers.ArrayPool<byte>.Shared.Return(f.Data);
@@ -217,7 +226,9 @@ public static class ReplaySaver
                           $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +
                           $"финализация {total - tAudio}); {fileBytes / (1024 * 1024)} МБ, " +
                           $"{(total > 0 ? fileBytes / 1024.0 / 1024 / (total / 1000.0) : 0):F0} МБ/с; " +
-                          $"{drain.Report}");
+                          $"{drain.Report}; " +
+                          $"WriteSample: видео {videoTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} мс, " +
+                          $"аудио+AAC {audioTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} мс");
         progress?.Invoke(1);
     }
 
