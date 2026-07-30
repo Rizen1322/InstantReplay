@@ -211,12 +211,17 @@
                   ScrollViewer.VerticalScrollMode="Enabled"
                   ScrollViewer.VerticalScrollBarVisibility="Auto">
 
-            <!-- Группы стопкой сверху вниз, карточки внутри группы — переносом по строкам.
-                 Без явных панелей сгруппированный GridView раскладывает ГРУППЫ по
-                 горизонтали, и «Сегодня»/«Вчера» встают рядом, а не друг под другом. -->
+            <!-- Сетку задаёт САМА ItemsPanel, а не GroupStyle.Panel.
+                 Виртуализирующая панель раскладывает и заголовки групп, и их элементы
+                 самостоятельно (для того у неё и есть GroupHeaderPlacement), а панель
+                 из GroupStyle.Panel молча игнорирует — с ItemsStackPanel карточки
+                 растягивались на всю ширину и шли столбиком.
+                 Orientation="Horizontal" = заполняем строку и переносим вниз. -->
             <GridView.ItemsPanel>
                 <ItemsPanelTemplate>
-                    <ItemsStackPanel Orientation="Vertical" GroupPadding="0,0,0,6"/>
+                    <ItemsWrapGrid Orientation="Horizontal" GroupHeaderPlacement="Top"
+                                   ItemWidth="304" ItemHeight="238"
+                                   AreStickyGroupHeadersEnabled="False"/>
                 </ItemsPanelTemplate>
             </GridView.ItemsPanel>
 
@@ -233,13 +238,7 @@
             </GridView.ItemContainerStyle>
 
             <GridView.GroupStyle>
-                <GroupStyle HidesIfEmpty="True" HeaderTemplate="{StaticResource ClipSectionHeader}">
-                    <GroupStyle.Panel>
-                        <ItemsPanelTemplate>
-                            <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="-1"/>
-                        </ItemsPanelTemplate>
-                    </GroupStyle.Panel>
-                </GroupStyle>
+                <GroupStyle HidesIfEmpty="True" HeaderTemplate="{StaticResource ClipSectionHeader}"/>
             </GridView.GroupStyle>
         </GridView>
 
