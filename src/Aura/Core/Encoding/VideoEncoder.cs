@@ -852,6 +852,12 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Буфер под сжатый кадр, переиспользуется между вызовами DrainOutput.
+    /// Живёт только на время события FrameEncoded — подписчики копируют данные себе.
+    /// </summary>
+    private byte[] _scratch = new byte[256 * 1024];
+
     private bool _outputTypeRefreshed;
 
     /// <summary>
@@ -939,10 +945,14 @@ public sealed class VideoEncoder : IDisposable
         using IMFSample sample = outBuffer.Sample!;
         using IMFMediaBuffer contiguous = sample.ConvertToContiguousBuffer();
         contiguous.Lock(out IntPtr ptr, out _, out int currentLength);
-        // ArrayPool вместо new byte[]: 60 аллокаций ~94 КБ/с — это LOH и GC-паузы,
-        // которые фризили запись. Владение массивом переходит кольцевому буферу.
-        var data = System.Buffers.ArrayPool<byte>.Shared.Rent(currentLength);
-        Marshal.Copy(ptr, data, 0, currentLength);
+        // Один переиспользуемый буфер вместо аллокации на кадр. DrainOutput зовётся
+        // только из потока событий MFT, поэтому синхронизация не нужна, а подписчики
+        // события обязаны скопировать данные себе (см. EncodedFrame) — оба так и делают.
+        // Раньше здесь брался массив из ArrayPool и уходил во владение буферу: 60
+        // массивов в секунду, каждый крупнее порога больших объектов, разных размеров.
+        if (_scratch.Length < currentLength)
+            _scratch = GC.AllocateUninitializedArray<byte>(Math.Max(currentLength, _scratch.Length * 2));
+        Marshal.Copy(ptr, _scratch, 0, currentLength);
         contiguous.Unlock();
 
         bool keyframe = false;
@@ -950,7 +960,8 @@ public sealed class VideoEncoder : IDisposable
 
         Interlocked.Increment(ref FramesEncoded);
         Diagnostics.PipelineProbe.DrainOutput.Add(drainStart, Diagnostics.PipelineProbe.Now());
-        FrameEncoded?.Invoke(new EncodedFrame(data, currentLength, sample.SampleTime, sample.SampleDuration, keyframe));
+        FrameEncoded?.Invoke(new EncodedFrame(_scratch, 0, currentLength,
+                                              sample.SampleTime, sample.SampleDuration, keyframe));
     }
 
     private static ulong PackLong(int hi, int lo) => ((ulong)(uint)hi << 32) | (uint)lo;

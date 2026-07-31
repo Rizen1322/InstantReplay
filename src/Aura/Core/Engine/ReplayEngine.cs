@@ -123,6 +123,9 @@ public sealed class ReplayEngine : IDisposable
             _audioBuffer.MaxDurationTicks = _videoBuffer.MaxDurationTicks;
             _videoBuffer.Clear();
             _audioBuffer.Clear();
+            // Арена под кадры: размер считается из длительности и битрейта, дальше
+            // память не растёт — сколько выделено, столько буфер и занимает.
+            _videoBuffer.Allocate(s.BitrateBps, s.ReplayLengthSeconds);
 
             _capture = ScreenCaptureFactory.Create();
             _capture.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
@@ -322,10 +325,10 @@ public sealed class ReplayEngine : IDisposable
     });
 
     /// <summary>
-    /// Кто занимает память. Кольцевой буфер и звук считаются точно, остальное —
-    /// разница между кучей .NET и памятью процесса: туда попадают пул массивов
-    /// (кадры берутся из ArrayPool и после возврата остаются в нём), внутренние
-    /// буферы Media Foundation и невыгруженные страницы больших объектов.
+    /// Кто занимает память. Буфер видео — это занятая часть арены, звук считается
+    /// по числу блоков. Разница с памятью процесса — нативная часть: текстуры D3D,
+    /// внутренние буферы Media Foundation, WPF и страницы, которые Windows ещё не
+    /// забрала обратно.
     /// </summary>
     private void LogMemory()
     {
@@ -449,7 +452,7 @@ public sealed class ReplayEngine : IDisposable
 
         // Снимок с очисткой: буфер начинает копиться заново, владение массивами
         // кадров переходит нам — вернём их в пул после записи файла.
-        var video = _videoBuffer.SnapshotAndClear(wanted);
+        var video = _videoBuffer.SnapshotAndClear(wanted, out long snapshotToken);
         if (video.Count == 0) { SaveFailed?.Invoke("Буфер ещё пуст"); return; }
         var audio = _audioBuffer.Snapshot(video[0].PtsTicks, video[^1].PtsTicks);
         _audioBuffer.Clear();
@@ -509,7 +512,11 @@ public sealed class ReplayEngine : IDisposable
             }
             finally
             {
-                ReplayVideoBuffer.ReturnToPool(video); // файл записан — массивы кадров в пул
+                // Файл записан — возвращаем буферу место, которое занимали кадры
+                // клипа. Новой памяти на сохранение не тратилось вовсе: всё это
+                // время клип лежал в той же арене, а запись шла в её свободную часть.
+                _videoBuffer.ReleaseSnapshot(snapshotToken);
+                video.Clear();
                 self.Priority = previousPriority;      // поток уходит обратно в пул потоков
                 SetState(State == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
             }

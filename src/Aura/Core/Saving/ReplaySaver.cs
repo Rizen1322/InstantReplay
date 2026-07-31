@@ -64,20 +64,18 @@ public static class ReplaySaver
 
         // Ноль времени клипа = pts первого видеокадра (keyframe)
         long baseTicks = video[0].PtsTicks;
-        // Запоминаем ДО записи: список кадров очищается по ходу (массивы уходят в пул)
         int frameCount = video.Count;
         double clipSeconds = (video[^1].PtsTicks - baseTicks) / 10_000_000.0;
 
         // Дорожки пишем ЧЕРЕДУЯ по времени, а не «сначала всё видео, потом всё аудио»:
         // MP4 хранит потоки вперемешку, так писателю не нужно переупорядочивать их самому.
         //
-        // И освобождаем массивы кадров ПО ХОДУ записи. Замеры показали резкую
-        // нелинейность: 367 МБ сохранялись за 0.95 с (386 МБ/с), а 950 МБ — за 20 с
-        // (47 МБ/с). Это не диск (NVMe), а нехватка памяти: снимок буфера (~1 ГБ)
-        // держался целиком до конца сохранения, столько же копилось внутри писателя,
-        // а рядом игра занимает большую часть ОЗУ — система уходила в подкачку.
-        // CreateSample копирует данные в буфер Media Foundation, поэтому наш массив
-        // можно вернуть в пул сразу же.
+        // Кадры снимка лежат в блоках арены кольцевого буфера и освобождаются все
+        // разом, когда движок отпустит список. Раньше здесь массивы возвращались в
+        // пул по ходу записи — это лечило нелинейность на гигабайтных клипах
+        // (367 МБ за 0.95 с против 950 МБ за 20 с: система уходила в подкачку).
+        // С ареной проблемы нет: снимок — это те же блоки, что буфер уже занимал,
+        // новой памяти сохранение не просит вовсе.
         // Ограничение темпа подачи (см. WriteDrain): равномерно ~220 МБ/с плюс
         // страховка по очереди внутри писателя. Без ограничения писатель принимает
         // сэмплы быстрее, чем сливает их на диск, копит клип в памяти и потом
@@ -123,7 +121,7 @@ public static class ReplaySaver
             int byteCount = floats * sizeof(float);
             MemoryMarshal.AsBytes<float>(chunkBuf[s].AsSpan(0, floats)).CopyTo(chunkBytes[s]);
             using var sample = MfMp4Writer.CreateSample(
-                chunkBytes[s], byteCount, chunkStart[s], chunkFill[s] * 100_000L);
+                chunkBytes[s], 0, byteCount, chunkStart[s], chunkFill[s] * 100_000L);
             long audioStart = System.Diagnostics.Stopwatch.GetTimestamp();
             writer.WriteSample(audioStreams[s].Index, sample);
             audioTicks += System.Diagnostics.Stopwatch.GetTimestamp() - audioStart;
@@ -132,9 +130,6 @@ public static class ReplaySaver
         }
 
         var audioPos = new int[audioStreams.Count];
-        int released = 0;
-        try
-        {
         for (int fi = 0; fi < video.Count; fi++)
         {
             var f = video[fi];
@@ -159,26 +154,14 @@ public static class ReplaySaver
                 }
             }
 
-            using (var sample = MfMp4Writer.CreateSample(f.Data, f.Length, vpts, f.DurationTicks))
+            using (var sample = MfMp4Writer.CreateSample(f.Data, f.Offset, f.Length, vpts, f.DurationTicks))
             {
                 if (f.IsKeyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
                 long videoStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 writer.WriteSample(videoStream, sample);
                 videoTicks += System.Diagnostics.Stopwatch.GetTimestamp() - videoStart;
             }
-            // Данные уже скопированы в сэмпл — массив больше не нужен
-            System.Buffers.ArrayPool<byte>.Shared.Return(f.Data);
-            released = fi + 1;
             drain.Submitted(f.Length);
-        }
-        }
-        finally
-        {
-            // Если запись оборвалась — вернуть в пул то, до чего не дошли,
-            // и очистить список, чтобы движок не вернул те же массивы повторно.
-            for (int i = released; i < video.Count; i++)
-                System.Buffers.ArrayPool<byte>.Shared.Return(video[i].Data);
-            video.Clear();
         }
         tVideo = sw.ElapsedMilliseconds;
 
@@ -287,9 +270,26 @@ public static class ReplaySaver
         /// <summary>Сколько всего ждали писателя (диагностика в логе).</summary>
         public long WaitedMs { get; private set; }
 
+        /// <summary>
+        /// Темп подачи, когда очередь писателя не видна.
+        ///
+        /// Не тормозить вовсе оказалось нельзя: писатель принимает сэмплы намного
+        /// быстрее, чем сливает их на диск, и держит клип в нативной памяти. В
+        /// замерах сохранение 800 МБ поднимало память процесса с 1.2 до 2.2 ГБ,
+        /// причём куча .NET не менялась вовсе — то есть весь гигабайт был внутри
+        /// Media Foundation.
+        ///
+        /// 300 МБ/с — вдвое ниже реальной скорости диска в замерах (537 МБ/с),
+        /// поэтому писатель успевает сливать по мере поступления и ничего не копит.
+        /// Клип на 800 МБ пишется 2.7 секунды вместо 1.4 — пользователь этого не
+        /// замечает: уведомление показывается сразу после снимка буфера, а не после
+        /// записи файла.
+        /// </summary>
+        private const double PacedBytesPerMs = 300.0 * 1024 * 1024 / 1000.0;
+
         public string Report => _statsAvailable
             ? $"очередь писателя: пик {Storage.ByteSize.Format(_maxQueued)}, ждали {WaitedMs} мс"
-            : "очередь писателя не видна — подача без ограничений";
+            : $"очередь писателя не видна — подача с темпом 300 МБ/с, ждали {WaitedMs} мс";
 
         public WriteDrain(IMFSinkWriter writer, int probeStream, long totalBytes, Action<double>? progress)
         {
@@ -307,10 +307,9 @@ public static class ReplaySaver
             if (_submitted - _lastCheck < CheckEveryBytes) return;
             _lastCheck = _submitted;
 
-            if (!_statsAvailable) return; // очередь писателя не видна — просто не тормозим
-
             long start = _clock.ElapsedMilliseconds;
-            WaitForQueue();
+            if (_statsAvailable) WaitForQueue();
+            else PaceByRate();
             WaitedMs += _clock.ElapsedMilliseconds - start;
         }
 
@@ -330,6 +329,17 @@ public static class ReplaySaver
                 if (queued <= QueueLimitBytes) break;
                 Thread.Sleep(5);
             }
+        }
+
+        /// <summary>
+        /// Держим средний темп подачи: столько времени «должно» было пройти на уже
+        /// отданный объём. Ждём только если опережаем график, и не дольше потолка
+        /// одной сверки — так медленный диск не превращает сохранение в вечность.
+        /// </summary>
+        private void PaceByRate()
+        {
+            int ahead = (int)(_submitted / PacedBytesPerMs - _clock.ElapsedMilliseconds);
+            if (ahead > 0) Thread.Sleep(Math.Min(ahead, MaxWaitPerCheckMs));
         }
 
         /// <summary>Байты в очереди писателя; -1 — статистика недоступна.</summary>

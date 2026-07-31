@@ -448,8 +448,13 @@ public partial class CapturePage : PageBase
 
     private void ShowRam()
     {
+        // Столько же считает ReplayVideoBuffer.Allocate: длительность плюс запас на
+        // GOP и всплески битрейта, округлённые вверх до блоков по 64 МБ. Показываем
+        // именно занимаемое, а не полезное — иначе цифра в настройках расходится
+        // с тем, что видно в диспетчере задач.
         int seconds = ParseLength();
-        double megabytes = (int)Bitrate.Value * 0.125 * seconds + 8;
+        double wanted = (int)Bitrate.Value * 0.125 * (seconds + 15) * 1.05;
+        double megabytes = Math.Ceiling(Math.Max(wanted, 64) / 64) * 64;
         RamEstimate.Text = $"≈ {megabytes:0} МБ памяти";
     }
 

@@ -98,11 +98,15 @@ internal static class MfMp4Writer
         return streams;
     }
 
-    public static IMFSample CreateSample(byte[] data, int length, long ptsTicks, long durationTicks)
+    /// <summary>
+    /// Сэмпл из куска чужого массива: кадры лежат в арене кольцевого буфера
+    /// вплотную друг за другом, поэтому нужны и смещение, и длина.
+    /// </summary>
+    public static IMFSample CreateSample(byte[] data, int offset, int length, long ptsTicks, long durationTicks)
     {
         var buffer = MediaFactory.MFCreateMemoryBuffer(length);
         buffer.Lock(out IntPtr ptr, out _, out _);
-        Marshal.Copy(data, 0, ptr, length);
+        Marshal.Copy(data, offset, ptr, length);
         buffer.Unlock();
         buffer.CurrentLength = length;
 

@@ -115,10 +115,11 @@ public sealed class ManualRecorder : IDisposable
             Volatile.Write(ref _baseTicks, f.PtsTicks);
         }
 
-        // Массив кадра принадлежит кольцевому буферу и вернётся в пул по вытеснению —
-        // держать его в своей очереди нельзя, делаем копию (100 КБ на кадр, 6 МБ/с).
+        // Буфер кадра живёт только на время события энкодера — копируем себе
+        // (100 КБ на кадр, 6 МБ/с). Копия короткоживущая: писатель вернёт её в пул
+        // сразу после WriteSample, поэтому пул держит лишь несколько массивов.
         var copy = ArrayPool<byte>.Shared.Rent(f.Length);
-        Buffer.BlockCopy(f.Data, 0, copy, 0, f.Length);
+        Buffer.BlockCopy(f.Data, f.Offset, copy, 0, f.Length);
         Enqueue(new Item(copy, f.Length, f.PtsTicks - _baseTicks, f.DurationTicks, -1, f.IsKeyframe));
     }
 
@@ -230,7 +231,7 @@ public sealed class ManualRecorder : IDisposable
 
             long pts = item.Pts - _segmentBase;
             if (pts < 0) return;
-            using var sample = MfMp4Writer.CreateSample(item.Buffer, item.Length, pts, item.Duration);
+            using var sample = MfMp4Writer.CreateSample(item.Buffer, 0, item.Length, pts, item.Duration);
             if (item.Keyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
             _writer.WriteSample(_videoStream, sample);
         }
@@ -239,7 +240,7 @@ public sealed class ManualRecorder : IDisposable
             if (_writer is null || item.Stream >= _audioStreams.Count) return;
             long pts = item.Pts - _segmentBase;
             if (pts < 0) return;
-            using var sample = MfMp4Writer.CreateSample(item.Buffer, item.Length, pts, item.Duration);
+            using var sample = MfMp4Writer.CreateSample(item.Buffer, 0, item.Length, pts, item.Duration);
             _writer.WriteSample(_audioStreams[item.Stream].Index, sample);
         }
         long before = _segmentBytes;
