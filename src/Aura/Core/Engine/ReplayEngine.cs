@@ -331,7 +331,10 @@ public sealed class ReplayEngine : IDisposable
     {
         _watchdog?.Dispose(); _watchdog = null;
         _statsTimer?.Dispose(); _statsTimer = null;
-        if (_recorder is not null) StopRecordingToFile(); // корректно закрываем файл записи
+        // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
+        // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
+        // а записи нет».
+        if (_recorder is not null) StopRecordingToFile(wait: true);
         if (_capture is not null) _capture.FrameArrived -= OnFrame;
         _audio.BlockReady -= _audioBuffer.Add;
         _audio.Stop();
@@ -453,26 +456,40 @@ public sealed class ReplayEngine : IDisposable
         var s = _settings.Current;
         string game = GameDetector.DetectForegroundGame();
         _storage.EnsureSpace();
+        // Тип видеопотока берётся не сейчас, а в момент создания файла (первый keyframe):
+        // сразу после старта конвейера энкодер ещё не дописал в него заголовки кодека,
+        // и файл, открытый с таким типом, не собирается на финализации.
         var recorder = new ManualRecorder(BuildFilePath(game, "recording"),
-            _encoder.OutputMediaType, s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
+            () => _encoder?.OutputMediaType, s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
         _encoder.FrameEncoded += recorder.OnFrame;
         _audio.BlockReady += recorder.OnAudio;
         _recorder = recorder;
         RecordingChanged?.Invoke(true);
     }
 
-    /// <summary>Остановить обычную запись. Возвращает путь к файлу (null — если не писали).</summary>
-    public string? StopRecordingToFile()
+    /// <summary>
+    /// Остановить обычную запись. Возвращает путь к файлу (null — если не писали).
+    /// Дозапись хвоста и финализация контейнера идут в фоне: на десятиминутном файле
+    /// это заметное время, и держать на нём UI-поток нельзя. Событие (RecordingSaved
+    /// или SaveFailed) приходит, когда файл реально закрыт.
+    /// </summary>
+    public string? StopRecordingToFile(bool wait = false)
     {
         var recorder = _recorder;
         if (recorder is null) return null;
         _recorder = null;
         if (_encoder is not null) _encoder.FrameEncoded -= recorder.OnFrame;
         _audio.BlockReady -= recorder.OnAudio;
-        int seconds = recorder.Finish();
-        _storage.RegisterSaved(recorder.FilePath);
         RecordingChanged?.Invoke(false);
-        RecordingSaved?.Invoke(recorder.FilePath, Math.Max(seconds, 1));
+
+        var finish = Task.Run(() =>
+        {
+            var result = recorder.Finish();
+            foreach (var file in result.Files) _storage.RegisterSaved(file);
+            if (result.Ok) RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+            else SaveFailed?.Invoke(result.Error ?? "запись не закрылась");
+        });
+        if (wait) finish.Wait(TimeSpan.FromSeconds(70));
         return recorder.FilePath;
     }
 
