@@ -36,12 +36,20 @@ public sealed class ManualRecorder : IDisposable
     public sealed record Result(bool Ok, int Seconds, string? Error, IReadOnlyList<string> Files);
 
     /// <summary>
-    /// Порог разрезания файла. MP4 адресует данные 32-битными смещениями, и под
-    /// 4 ГБ контейнер перестаёт быть корректным; плюс к этому части, закрытые до
-    /// падения/выключения питания, остаются целыми — теряется максимум последняя.
-    /// 3.5 ГБ при 50 Мбит/с — это ~9 минут на часть.
+    /// Порог разрезания файла на части.
+    ///
+    /// ВРЕМЕННО ОТКЛЮЧЁН ради опыта. Причина деления — подозрение, что MP4-писатель
+    /// Media Foundation не умеет файлы больше 4 ГБ: в разобранном файле на 1 ГБ он
+    /// использует 32-битные формы (заголовок mdat и таблицы stco), а документация
+    /// молчит о том, переключается ли он на 64-битные (largesize и co64), когда
+    /// файл перерастает предел. Ровно на этот предел приходился исходный симптом
+    /// «записал минут десять — файла нет»: при 50 Мбит/с 4 ГБ набегают на 11-й минуте.
+    ///
+    /// Опыт: записать больше 4 ГБ одним куском и разобрать результат. Целый файл —
+    /// деление убираем совсем, битый — переходим на свой мультиплексор.
+    /// Вернуть рабочее значение: 3_500L * 1024 * 1024.
     /// </summary>
-    private const long MaxSegmentBytes = 3_500L * 1024 * 1024;
+    private const long MaxSegmentBytes = long.MaxValue;
 
     /// <summary>Глубина очереди к писателю: ~8 секунд видео. Дальше лучше дропнуть.</summary>
     private const int QueueCapacity = 512;
@@ -234,7 +242,14 @@ public sealed class ManualRecorder : IDisposable
             using var sample = MfMp4Writer.CreateSample(item.Buffer, item.Length, pts, item.Duration);
             _writer.WriteSample(_audioStreams[item.Stream].Index, sample);
         }
+        long before = _segmentBytes;
         _segmentBytes += item.Length;
+        // Отметка перехода через 4 ГиБ — граница 32-битной адресации в MP4.
+        // Нужна для опыта: по ней видно, в какой момент писатель либо перешёл
+        // на 64-битные заголовки, либо начал портить файл.
+        const long FourGiB = 4L * 1024 * 1024 * 1024;
+        if (before < FourGiB && _segmentBytes >= FourGiB)
+            Log.Info("Recorder", "Файл перешёл границу 4 ГиБ — дальше проверяем, справится ли MP4-писатель");
     }
 
     private void OpenSegment(long ptsBase)
