@@ -335,12 +335,21 @@ public sealed class ReplayEngine : IDisposable
         long ring = _videoBuffer.TotalBytes;
         long audio = _audioBuffer.TotalBytes;
         long heap = GC.GetTotalMemory(false);
-        long process = 0;
-        try { process = Environment.WorkingSet; } catch { }
+        long working = 0, priv = 0;
+        try
+        {
+            using var self = System.Diagnostics.Process.GetCurrentProcess();
+            working = self.WorkingSet64;
+            priv = self.PrivateMemorySize64;
+        }
+        catch { }
 
         static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";
+        // Частная память — то, что процесс занял на самом деле; рабочий набор
+        // (его показывает диспетчер задач) от неё отличается, потому что система
+        // выгружает и возвращает страницы по своему усмотрению.
         Log.Info("Engine", $"Память: буфер видео {Mb(ring)}, звук {Mb(audio)}, " +
-                           $"куча .NET {Mb(heap)}, процесс {Mb(process)}");
+                           $"куча .NET {Mb(heap)}, частная {Mb(priv)}, рабочий набор {Mb(working)}");
     }
 
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,

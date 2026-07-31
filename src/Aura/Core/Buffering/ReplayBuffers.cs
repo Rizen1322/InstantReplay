@@ -97,6 +97,7 @@ public sealed class ReplayVideoBuffer
     /// </summary>
     private readonly Stack<byte[]> _spare = new();
     private const int MaxSpareChunks = 2;
+    private int _prefetching;
 
     private bool _warnedNoKeyframes, _warnedHugeFrame, _warnedNoRoom;
 
@@ -140,6 +141,10 @@ public sealed class ReplayVideoBuffer
             _spare.Clear();
             _chunks = new byte[]?[chunks];
             _capacity = (long)chunks * ChunkBytes;
+            // Первый блок готовим прямо здесь: Allocate зовут при старте конвейера,
+            // это не горячий путь. Второй подготовит фон.
+            _spare.Push(GC.AllocateUninitializedArray<byte>(ChunkBytes));
+            EnsureSpare();
         }
 
         Log.Info("Buffer", $"Арена буфера: {chunks} × 64 МБ = {_capacity / (1024 * 1024)} МБ " +
@@ -221,6 +226,8 @@ public sealed class ReplayVideoBuffer
                 _lastHeadChunk = headChunk;
                 ReleaseUnusedChunks();
             }
+
+            EnsureSpare(); // следующий блок готовится в фоне, а не здесь
         }
     }
 
@@ -306,12 +313,39 @@ public sealed class ReplayVideoBuffer
     }
 
     /// <summary>
-    /// Блок под запись: из запаса, если он там есть. Блоки НЕ закрепляем —
-    /// закреплённая куча не уплотняется, и освобождённые сегменты остаются за
-    /// процессом даже после сжатия.
+    /// Блок под запись — из запаса. Блоки НЕ закрепляем: закреплённая куча не
+    /// уплотняется, и освобождённые сегменты остаются за процессом даже после сжатия.
     /// </summary>
     private byte[] TakeChunk() =>
         _spare.Count > 0 ? _spare.Pop() : GC.AllocateUninitializedArray<byte>(ChunkBytes);
+
+    /// <summary>
+    /// Держать готовый блок про запас, выделяя его В ФОНЕ.
+    ///
+    /// Add вызывается из потока, который забирает сжатые кадры у энкодера, и обязан
+    /// возвращаться мгновенно. Выделение блока на 64 МБ прямо в нём коммитит страницы
+    /// и может дёрнуть сборку мусора — это десятки миллисекунд, за которые энкодер
+    /// остаётся необслуженным. В замерах так и выглядело: все стадии по нулям, а
+    /// очередь энкодера забита под потолок, пейсер молчит сотни раз, кадры теряются
+    /// и в игре видны микрофризы.
+    /// </summary>
+    private void EnsureSpare()
+    {
+        if (_spare.Count > 0) return;
+        if (Interlocked.Exchange(ref _prefetching, 1) == 1) return; // уже готовим
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var chunk = GC.AllocateUninitializedArray<byte>(ChunkBytes);
+                lock (_sync)
+                    if (_spare.Count < MaxSpareChunks) _spare.Push(chunk);
+            }
+            catch (Exception ex) { Log.Warn("Buffer", $"Блок арены не выделился: {ex.Message}"); }
+            finally { Interlocked.Exchange(ref _prefetching, 0); }
+        });
+    }
 
     /// <summary>
     /// Снимок последних wantedTicks (с ближайшего keyframe не позже newest - wantedTicks)
