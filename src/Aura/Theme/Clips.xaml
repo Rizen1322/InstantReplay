@@ -25,7 +25,8 @@
          заглушка — сетка не «прыгает» и не мигает белым. -->
     <DataTemplate x:Key="ClipCard" DataType="{x:Type lib:ClipItem}">
         <Button Style="{StaticResource ClipCardButton}" Width="196" Margin="0,0,14,16"
-                ToolTip="{Binding FileName}">
+                ToolTip="{Binding FileName}"
+                c:DragFile.Path="{Binding FullPath}">
             <Button.ContextMenu>
                 <ContextMenu Style="{DynamicResource TrayMenu}">
                     <MenuItem Header="Открыть" Style="{DynamicResource TrayMenuItem}"
@@ -34,6 +35,10 @@
                               Command="{x:Static v:ClipCommands.Reveal}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Копировать путь" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.CopyPath}" CommandParameter="{Binding}"/>
+                    <MenuItem Header="Обрезать в LosslessCut" Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.Trim}" CommandParameter="{Binding}"/>
+                    <MenuItem Header="Сжать для Discord" Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.Compress}" CommandParameter="{Binding}"/>
                     <Separator Margin="8,4,8,4"/>
                     <MenuItem Header="Переименовать" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Rename}" CommandParameter="{Binding}"/>

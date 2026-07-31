@@ -35,6 +35,7 @@ public partial class FilesPage : PageBase
         MaxFolder.Text = s.MaxFolderSizeGb.ToString();
         MinFree.Text = s.MinFreeSpaceGb.ToString();
         UpdateLimitRows();
+        ShowTrimTool();
         _loading = false;
     }
 
@@ -102,6 +103,46 @@ public partial class FilesPage : PageBase
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
+
+    // ---------------- Программа для обрезки ----------------
+
+    /// <summary>
+    /// Пункт «Обрезать» в меню клипа открывает файл в LosslessCut. Путь ищется
+    /// автоматически при первом обращении, здесь его можно посмотреть и сменить.
+    /// </summary>
+    private void ShowTrimTool()
+    {
+        string? path = Services.Settings.Current.LosslessCutPath;
+        bool known = !string.IsNullOrWhiteSpace(path) && File.Exists(path);
+
+        TrimToolPath.Text = known
+            ? path!
+            : ClipCommands.FindLosslessCut() is { } found
+                ? found + "  (найден автоматически)"
+                : "не выбран — спросим при первой обрезке";
+        TrimToolClear.IsEnabled = known;
+    }
+
+    private void TrimTool_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "LosslessCut.exe",
+            Filter = "LosslessCut|LosslessCut.exe|Программы (*.exe)|*.exe"
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        Services.Settings.Current.LosslessCutPath = dialog.FileName;
+        Services.Settings.Save("tools");
+        ShowTrimTool();
+    }
+
+    private void TrimToolClear_Click(object sender, RoutedEventArgs e)
+    {
+        Services.Settings.Current.LosslessCutPath = null;
+        Services.Settings.Save("tools");
+        ShowTrimTool();
+    }
 
     /// <summary>
     /// Выбор папки системным диалогом. OpenFolderDialog из WPF (.NET 8+) —

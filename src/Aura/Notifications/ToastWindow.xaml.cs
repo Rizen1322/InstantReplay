@@ -70,7 +70,7 @@ public partial class ToastWindow : Window
 
     /// <summary>Показать уведомление. Повторный вызов заменяет содержимое.</summary>
     public void ShowToast(ToastContent content, NotificationPosition position, double seconds,
-                          Func<ImageSource?>? thumbnailSource)
+                          Func<ImageSource?>? thumbnailSource, double maxWaitSeconds = 10)
     {
         _expandTimer?.Stop();
         _hideTimer?.Stop();
@@ -115,8 +115,9 @@ public partial class ToastWindow : Window
         _pendingThumb = thumbnailSource;
 
         // Без ожидания карточка разворачивается сразу. С ожиданием ждём
-        // CompleteToast, но не дольше десяти секунд: молча висеть нельзя.
-        _expandTimer = StartTimer(busy ? 10 : 0.28, () => Expand(_pending!, seconds, thumbnailSource));
+        // CompleteToast, но не дольше отведённого срока: молча висеть нельзя.
+        _expandTimer = StartTimer(busy ? maxWaitSeconds : 0.28,
+                                  () => Expand(_pending!, seconds, thumbnailSource));
     }
 
     /// <summary>Работа закончена: капсула разворачивается в карточку с результатом.</summary>

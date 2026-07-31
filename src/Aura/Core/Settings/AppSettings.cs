@@ -86,6 +86,18 @@ public sealed class AppSettings
     /// <summary>Счётчик сохранённых повторов (для статистики).</summary>
     public int TotalReplaysSaved { get; set; }
 
+    /// <summary>
+    /// Чем открывать пункт «Обрезать» — путь к LosslessCut.exe. Пусто = ещё не
+    /// выбран: приложение сначала поищет его само, а если не найдёт — спросит.
+    /// </summary>
+    public string? LosslessCutPath { get; set; }
+
+    /// <summary>Путь к ffmpeg.exe для «Сжать для Discord». Обычно находится сам рядом с LosslessCut.</summary>
+    public string? FfmpegPath { get; set; }
+
+    /// <summary>Под какой размер вложения сжимать, МБ (у Discord без Nitro — 10).</summary>
+    public int AttachmentSizeMb { get; set; } = 10;
+
     // ---------- Уведомления / UI ----------
     public bool ShowNotifications { get; set; } = true;
     public NotificationPosition NotificationPosition { get; set; } = NotificationPosition.BottomRight;

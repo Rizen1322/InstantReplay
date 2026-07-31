@@ -260,6 +260,17 @@ public sealed class VideoEncoder : IDisposable
     }
 
     /// <summary>
+    /// Умеет ли Windows положить этот кодек в MP4.
+    ///
+    /// Кодировать AV1 видеокарта может и на Windows 10 (RTX 40+ это умеет), но
+    /// MP4-мультиплексор системы про AV1 не знает: SinkWriter падает с
+    /// MF_E_SINK_HEADERS_NOT_FOUND уже на финализации файла — то есть запись идёт,
+    /// а сохранить её невозможно. Поддержка появилась только в Windows 11.
+    /// </summary>
+    public static bool CanSaveToMp4(VideoCodec codec) =>
+        codec != VideoCodec.AV1 || Environment.OSVersion.Version.Build >= 22000;
+
+    /// <summary>
     /// Какие кодеки реально доступны аппаратно (по энумерации MFT) и чей энкодер
     /// будет выбран. Для инфопанели UI, конвейер не трогает.
     /// </summary>

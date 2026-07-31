@@ -43,8 +43,12 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
         });
     }
 
-    /// <summary>Первый этап сохранения: капсула с индикатором, без автозакрытия.</summary>
-    public void ShowSaving(string busyTitle)
+    /// <summary>
+    /// Первый этап работы: капсула с индикатором. Разворачивается по CompleteSaving,
+    /// а если его не дождались — по истечении maxWaitSeconds (сохранение повтора —
+    /// это секунды, пережатие клипа — минуты).
+    /// </summary>
+    public void ShowSaving(string busyTitle, double maxWaitSeconds = 10)
     {
         var s = settings.Current;
         if (!s.ShowNotifications) return;
@@ -54,7 +58,7 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
             var (icon, tint) = Look(NotificationKind.Saved);
             Window().ShowToast(
                 new ToastContent("Готово", "", icon, tint, BusyTitle: busyTitle, WantsThumbnail: true),
-                s.NotificationPosition, s.NotificationDurationSeconds, Thumbnail);
+                s.NotificationPosition, s.NotificationDurationSeconds, Thumbnail, maxWaitSeconds);
         });
     }
 

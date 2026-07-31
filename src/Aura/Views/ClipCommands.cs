@@ -24,6 +24,12 @@ public static class ClipCommands
     public static ICommand Rename { get; } = new ClipAction(RenameAsync);
     public static ICommand Delete { get; } = new ClipAction(DeleteAsync);
 
+    /// <summary>Открыть в LosslessCut. Для скриншотов пункт неактивен.</summary>
+    public static ICommand Trim { get; } = new ClipAction(TrimInLosslessCut, item => !item.IsScreenshot);
+
+    /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
+    public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);
+
     /// <summary>Библиотека изменилась — страницам пора перечитать список.</summary>
     public static event Action? LibraryChanged;
 
@@ -33,10 +39,11 @@ public static class ClipCommands
     /// <summary>Оставлено для совместимости вызова из App: регистрация больше не нужна.</summary>
     public static void Register() { }
 
-    private sealed class ClipAction(Action<ClipItem> action) : ICommand
+    private sealed class ClipAction(Action<ClipItem> action, Func<ClipItem, bool>? enabled = null) : ICommand
     {
         public event EventHandler? CanExecuteChanged { add { } remove { } }
-        public bool CanExecute(object? parameter) => parameter is ClipItem;
+        public bool CanExecute(object? parameter) =>
+            parameter is ClipItem item && (enabled?.Invoke(item) ?? true);
         public void Execute(object? parameter)
         {
             if (parameter is ClipItem item) action(item);
@@ -91,6 +98,164 @@ public static class ClipCommands
             LibraryChanged?.Invoke();
         }
         catch (Exception ex) { Dialogs.Say("Не удалось переименовать", ex.Message); }
+    }
+
+    // ---------------- Обрезка во внешней программе ----------------
+
+    /// <summary>
+    /// Открыть клип в LosslessCut — он режет без перекодирования, то есть быстро
+    /// и без потери качества. Путь спрашиваем один раз: сначала ищем сами по
+    /// обычным местам установки, и только если не нашли — просим показать файл.
+    /// </summary>
+    private static void TrimInLosslessCut(ClipItem item)
+    {
+        string? exe = Services.Settings.Current.LosslessCutPath;
+        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+        {
+            exe = FindLosslessCut() ?? AskForLosslessCut();
+            if (exe is null) return;
+            Services.Settings.Current.LosslessCutPath = exe;
+            Services.Settings.Save("tools");
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(exe)
+            {
+                ArgumentList = { item.FullPath },
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(exe)!
+            });
+        }
+        catch (Exception ex)
+        {
+            Dialogs.Say("Не удалось открыть LosslessCut", ex.Message);
+        }
+    }
+
+    /// <summary>Обычные места установки LosslessCut: установщик, portable, Scoop.</summary>
+    public static string? FindLosslessCut()
+    {
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string programs = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        string programsX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        var candidates = new List<string>
+        {
+            Path.Combine(local, "Programs", "losslesscut", "LosslessCut.exe"),
+            Path.Combine(local, "Programs", "LosslessCut", "LosslessCut.exe"),
+            Path.Combine(local, "LosslessCut", "LosslessCut.exe"),
+            Path.Combine(programs, "LosslessCut", "LosslessCut.exe"),
+            Path.Combine(programsX86, "LosslessCut", "LosslessCut.exe"),
+            Path.Combine(profile, "scoop", "apps", "losslesscut", "current", "LosslessCut.exe"),
+        };
+
+        foreach (string path in candidates)
+            if (File.Exists(path)) return path;
+
+        // Портативная распаковка рядом: ...\LosslessCut-win-x64\LosslessCut.exe
+        foreach (string root in new[] { Path.Combine(local, "Programs"), programs, profile })
+            try
+            {
+                if (!Directory.Exists(root)) continue;
+                foreach (string dir in Directory.EnumerateDirectories(root, "LosslessCut*"))
+                {
+                    string exe = Path.Combine(dir, "LosslessCut.exe");
+                    if (File.Exists(exe)) return exe;
+                }
+            }
+            catch { }
+
+        return null;
+    }
+
+    /// <summary>Просим показать LosslessCut.exe и объясняем, зачем это нужно.</summary>
+    private static string? AskForLosslessCut()
+    {
+        bool ok = Dialogs.Ask("Где лежит LosslessCut?",
+            "Обрезка открывается в LosslessCut — он режет видео без перекодирования. " +
+            "Покажи его файл LosslessCut.exe, дальше Aura запомнит путь.", "Выбрать");
+        if (!ok) return null;
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "LosslessCut.exe",
+            Filter = "LosslessCut|LosslessCut.exe|Программы (*.exe)|*.exe"
+        };
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
+    }
+
+    // ---------------- Сжатие под вложение ----------------
+
+    private static bool _compressing;
+
+    /// <summary>
+    /// Пережать клип так, чтобы он влез во вложение Discord. Считает битрейт по
+    /// длительности и при нехватке опускает разрешение — 1440p на 400 кбит/с
+    /// выглядит хуже, чем 720p на тех же килобитах.
+    /// </summary>
+    private static async void CompressAsync(ClipItem item)
+    {
+        if (_compressing)
+        {
+            Dialogs.Say("Уже сжимаю", "Дождись, пока закончится предыдущий клип.");
+            return;
+        }
+
+        var settings = Services.Settings.Current;
+        string? ffmpeg = Core.Tools.Ffmpeg.Find(settings.FfmpegPath, settings.LosslessCutPath);
+        if (ffmpeg is null)
+        {
+            bool ok = Dialogs.Ask("Нужен ffmpeg",
+                "Сжатие делает ffmpeg — он лежит рядом с LosslessCut. Покажи ffmpeg.exe, дальше Aura запомнит путь.",
+                "Выбрать");
+            if (!ok) return;
+
+            var dialog = new Microsoft.Win32.OpenFileDialog { Title = "ffmpeg.exe", Filter = "ffmpeg|ffmpeg.exe" };
+            if (dialog.ShowDialog() != true) return;
+            ffmpeg = dialog.FileName;
+            settings.FfmpegPath = ffmpeg;
+            Services.Settings.Save("tools");
+        }
+
+        var duration = item.Duration ?? await ReadDurationAsync(item.FullPath);
+        if (duration is null || duration.Value <= TimeSpan.Zero)
+        {
+            Dialogs.Say("Не получилось", "Не удалось определить длительность клипа.");
+            return;
+        }
+
+        int limit = Math.Max(2, settings.AttachmentSizeMb);
+        _compressing = true;
+        // Сжатие идёт минутами — капсуле нельзя разворачиваться по десятисекундному таймеру
+        Services.Notifications.ShowSaving($"Сжимаю до {limit} МБ…", maxWaitSeconds: 900);
+        try
+        {
+            string output = await Core.Tools.Ffmpeg.CompressAsync(ffmpeg, item.FullPath, duration.Value, limit);
+            long size = new FileInfo(output).Length;
+            Services.Storage.RegisterSaved(output);
+            Services.Notifications.CompleteSaving("Готово для отправки", Core.Storage.ByteSize.Format(size));
+            LibraryChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Services.Notifications.Show(Core.Notifications.NotificationKind.Warning, "Не удалось сжать", ex.Message);
+            Log.Warn("Ffmpeg", ex.Message);
+        }
+        finally { _compressing = false; }
+    }
+
+    /// <summary>Длительность файла у системы — если её ещё не подтянула карточка.</summary>
+    private static async Task<TimeSpan?> ReadDurationAsync(string path)
+    {
+        try
+        {
+            var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
+            var props = await file.Properties.GetVideoPropertiesAsync();
+            return props.Duration > TimeSpan.Zero ? props.Duration : null;
+        }
+        catch { return null; }
     }
 
     private static async void DeleteAsync(ClipItem item)

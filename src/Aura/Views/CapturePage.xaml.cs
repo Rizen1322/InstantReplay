@@ -129,7 +129,11 @@ public partial class CapturePage : PageBase
             if (!first) Codecs.Children.Add(new Border { Style = (Style)FindResource("RowSeparator"), Margin = new Thickness(52, 0, 0, 0) });
             first = false;
 
-            bool available = _supported.Contains(codec);
+            // Мало уметь кодировать — файл ещё должен собраться: AV1 на Windows 10
+            // кодируется, но в MP4 не пакуется, и сохранение падает уже после записи.
+            bool hasEncoder = _supported.Contains(codec);
+            bool canSave = VideoEncoder.CanSaveToMp4(codec);
+            bool available = hasEncoder && canSave;
             var row = new AdaptiveRow { Margin = new Thickness(16, 12, 16, 12) };
             row.Children.Add(new IconTile
             {
@@ -141,7 +145,9 @@ public partial class CapturePage : PageBase
             text.Children.Add(new TextBlock { Text = name, Style = (Style)FindResource("RowLabel") });
             text.Children.Add(new TextBlock
             {
-                Text = available ? detail : "Эта видеокарта не умеет",
+                Text = available ? detail
+                     : !hasEncoder ? "Эта видеокарта не умеет"
+                     : "Windows 10 не умеет сохранять AV1 в MP4",
                 Style = (Style)FindResource("RowSub")
             });
             row.Children.Add(text);

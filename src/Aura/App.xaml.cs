@@ -90,6 +90,7 @@ public partial class App : Application
         Services.Init();
         Views.ClipCommands.Register();
         WireEvents();
+        GuardCodec();
 
         StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
         Services.Hotkeys.Start();
@@ -112,6 +113,31 @@ public partial class App : Application
         Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
             NotificationKind.Warning, Loc.T("driver_found", version));
         Services.DriverWatch.Start();
+    }
+
+    /// <summary>
+    /// Кодек, который система не сможет упаковать в MP4, молча превращает запись
+    /// в пустоту: буфер пишется, а каждое сохранение падает. Уводим на рабочий
+    /// кодек сразу при запуске и говорим об этом вслух.
+    /// </summary>
+    private static void GuardCodec()
+    {
+        var settings = Services.Settings.Current;
+        if (Core.Encoding.VideoEncoder.CanSaveToMp4(settings.Codec)) return;
+
+        var fallback = Core.Settings.VideoCodec.H264;
+        try
+        {
+            var (_, codecs) = Core.Encoding.VideoEncoder.ProbeSupport();
+            if (codecs.Contains(Core.Settings.VideoCodec.HEVC)) fallback = Core.Settings.VideoCodec.HEVC;
+        }
+        catch { }
+
+        Log.Warn("App", $"{settings.Codec} нельзя сохранить в MP4 на этой Windows — переключаю на {fallback}");
+        settings.Codec = fallback;
+        Services.Settings.Save("video");
+        Services.Notifications.Show(NotificationKind.Warning, "AV1 здесь не сохраняется",
+                                    $"Переключил на {(fallback == Core.Settings.VideoCodec.HEVC ? "HEVC" : "H.264")}");
     }
 
     /// <summary>GPU-приоритет повыше: команды записи не ждут в очереди за игрой.</summary>

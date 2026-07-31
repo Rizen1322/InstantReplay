@@ -96,11 +96,19 @@ public partial class SystemPage : PageBase
         List<VideoCodec> supported = [];
         try { (_, supported) = VideoEncoder.ProbeSupport(); } catch { }
 
+        // У AV1 два условия: энкодер в видеокарте и поддержка контейнера в системе.
+        // Windows 10 кодирует, но не сохраняет — об этом честнее написать прямо.
+        bool av1Encoder = supported.Contains(VideoCodec.AV1);
+        bool av1Save = VideoEncoder.CanSaveToMp4(VideoCodec.AV1);
+        string av1Detail = av1Encoder && av1Save ? "есть"
+                         : !av1Encoder ? "нет в этой видеокарте"
+                         : "Windows 10 не сохранит";
+
         (string Name, string Detail, bool Ok)[] items =
         [
             ("H.264", "самый совместимый", supported.Contains(VideoCodec.H264)),
             ("HEVC", "файлы меньше", supported.Contains(VideoCodec.HEVC)),
-            ("AV1", "нужна новая карта", supported.Contains(VideoCodec.AV1)),
+            ("AV1", av1Detail, av1Encoder && av1Save),
             ("Звук AAC", "48 кГц стерео", true)
         ];
 
