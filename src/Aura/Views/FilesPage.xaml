@@ -1,0 +1,103 @@
+<views:PageBase x:Class="Aura.Views.FilesPage"
+                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                xmlns:c="clr-namespace:Aura.Controls"
+                xmlns:views="clr-namespace:Aura.Views">
+
+    <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
+        <StackPanel>
+            <TextBlock Text="Файлы" Style="{StaticResource PageTitle}"/>
+            <TextBlock Text="Куда складывать записи и когда чистить старые." Style="{StaticResource Lede}"/>
+
+            <!-- Сколько занято -->
+            <Border Style="{StaticResource CardSoft}" Padding="18">
+                <StackPanel>
+                    <UniformGrid Rows="1" Columns="3">
+                        <StackPanel>
+                            <TextBlock x:Name="CountText" Text="—" Style="{StaticResource Numeral}"/>
+                            <TextBlock Text="записей сохранено" Style="{StaticResource Caption}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock x:Name="UsedText" Text="—" Style="{StaticResource Numeral}"/>
+                            <TextBlock Text="занято" Style="{StaticResource Caption}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock x:Name="FreeText" Text="—" Style="{StaticResource Numeral}"/>
+                            <TextBlock Text="свободно на диске" Style="{StaticResource Caption}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </UniformGrid>
+
+                    <Grid x:Name="UsageBar" Margin="0,16,0,0">
+                        <Border Height="6" CornerRadius="3" Background="{DynamicResource TrackBrush}"/>
+                        <Border x:Name="UsedFill" Height="6" CornerRadius="3" Width="0" HorizontalAlignment="Left"
+                                Background="{DynamicResource AccentBrush}"/>
+                    </Grid>
+                    <TextBlock x:Name="UsageText" Style="{StaticResource RowSub}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Папка -->
+            <TextBlock Text="Папка записей" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Куда сохранять" Style="{StaticResource RowLabel}"/>
+                            <TextBlock x:Name="PathText" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Открыть" Click="OpenFolder_Click" Margin="0,0,8,0"/>
+                            <Button Content="Выбрать…" Click="Browse_Click"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Раскладывать по папкам игр" Style="{StaticResource RowLabel}"/>
+                            <TextBlock x:Name="GroupSub" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Switch x:Name="GroupByGame" Click="Setting_Changed"/>
+                    </c:AdaptiveRow>
+                </StackPanel>
+            </Border>
+
+            <!-- Автоочистка -->
+            <TextBlock Text="Автоочистка" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Удалять старые записи автоматически" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Иначе папка растёт, пока не кончится место на диске"
+                                       Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Switch x:Name="AutoDelete" Click="AutoDelete_Changed"/>
+                    </c:AdaptiveRow>
+
+                    <Border x:Name="LimitSeparator" Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow x:Name="LimitRow" Margin="16,12,16,12">
+                        <TextBlock Text="Лимит папки" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBox x:Name="MaxFolder" Width="72" TextAlignment="Center" LostFocus="Number_Changed"/>
+                            <TextBlock Text="ГБ" Style="{StaticResource RowValue}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <Border x:Name="FreeSeparator" Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow x:Name="FreeRow" Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Оставлять свободными" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Чистка начнётся раньше, если места на диске мало"
+                                       Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBox x:Name="MinFree" Width="72" TextAlignment="Center" LostFocus="Number_Changed"/>
+                            <TextBlock Text="ГБ" Style="{StaticResource RowValue}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</views:PageBase>

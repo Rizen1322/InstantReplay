@@ -1,0 +1,17 @@
+<Application x:Class="Aura.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- ВАЖНО: палитра идёт первой — приложение подменяет именно
+                     MergedDictionaries[0] при смене темы. -->
+                <ResourceDictionary Source="Theme/Palette.Dark.xaml"/>
+                <ResourceDictionary Source="Theme/Icons.xaml"/>
+                <ResourceDictionary Source="Theme/Base.xaml"/>
+                <ResourceDictionary Source="Theme/Controls.xaml"/>
+                <ResourceDictionary Source="Theme/Clips.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

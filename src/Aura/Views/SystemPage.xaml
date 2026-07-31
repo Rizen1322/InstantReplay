@@ -1,0 +1,65 @@
+<views:PageBase x:Class="Aura.Views.SystemPage"
+                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                xmlns:c="clr-namespace:Aura.Controls"
+                xmlns:views="clr-namespace:Aura.Views">
+
+    <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
+        <StackPanel>
+            <TextBlock Text="Система" Style="{StaticResource PageTitle}"/>
+            <TextBlock Text="На чём работает запись." Style="{StaticResource Lede}"/>
+
+            <!-- Видеокарта -->
+            <Border Style="{StaticResource CardSoft}" Padding="18">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Width="44" Height="44" CornerRadius="13">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0.6,1">
+                                <GradientStop Color="#FF5CF07C" Offset="0"/>
+                                <GradientStop Color="#FF12A53C" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <c:Icon Data="{DynamicResource Ico.Cpu}" Size="23" Foreground="White"
+                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="15,0,15,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="GpuName" Text="Определяю…" FontFamily="{DynamicResource DispFont}"
+                                   FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="GpuSub" Style="{StaticResource RowSub}"/>
+                    </StackPanel>
+                    <Border x:Name="DriverPill" Grid.Column="2" Style="{StaticResource Pill}"
+                            Background="{DynamicResource AccentSoftBrush}" Visibility="Collapsed">
+                        <StackPanel Orientation="Horizontal">
+                            <c:Icon Data="{DynamicResource Ico.Shield}" Size="12"
+                                    Foreground="{DynamicResource AccentTxBrush}" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="DriverPillText" Style="{StaticResource PillText}"
+                                       Foreground="{DynamicResource AccentTxBrush}" Margin="6,0,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                <Button x:Name="DriverButton" Content="Проверить драйвер" Click="CheckDriver_Click"/>
+                <Button x:Name="DownloadDriverButton" Content="Скачать обновление" Style="{StaticResource BtnPri}"
+                        Margin="8,0,0,0" Visibility="Collapsed" Click="DownloadDriver_Click"/>
+                <TextBlock x:Name="DriverStatus" Style="{StaticResource RowValue}" Margin="12,0,0,0"/>
+            </StackPanel>
+
+            <!-- Кодеки -->
+            <TextBlock Text="Что умеет видеокарта" Style="{StaticResource GroupLabel}"/>
+            <UniformGrid x:Name="Matrix" Rows="1" Columns="4"/>
+
+            <!-- Компьютер -->
+            <TextBlock Text="Компьютер" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel x:Name="Specs"/>
+            </Border>
+        </StackPanel>
+    </Grid>
+</views:PageBase>

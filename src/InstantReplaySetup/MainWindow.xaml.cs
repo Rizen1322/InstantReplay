@@ -11,9 +11,19 @@ namespace InstantReplaySetup;
 
 public partial class MainWindow : Window
 {
-    private const string AppName = "Instant Replay";
-    private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\InstantReplay";
+    private const string AppName = "Aura";
+    private const string ExeName = "Aura.exe";
+    private const string ProcessName = "Aura";
+    private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Aura";
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    // Имя файла установщика (InstantReplaySetup.exe) менять НЕЛЬЗЯ: установленные
+    // версии 1.0.x ищут в релизе именно его. Всё остальное — папки, ярлыки, процесс,
+    // задача автозапуска — переезжает на Aura, а старые следы убираются.
+    private const string OldAppName = "Instant Replay";
+    private const string OldProcessName = "InstantReplay";
+    private const string OldUninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\InstantReplay";
+    private const string OldTaskName = "InstantReplay";
 
     private SoundPlayer? _music;
     private bool _muted;
@@ -25,7 +35,7 @@ public partial class MainWindow : Window
     {
         _root = PathBox.Text.Trim();
         _appDir = Path.Combine(_root, "app");
-        _mainExe = Path.Combine(_appDir, "InstantReplay.exe");
+        _mainExe = Path.Combine(_appDir, ExeName);
     }
 
     public MainWindow()
@@ -33,7 +43,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         PathBox.Text = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Programs", "InstantReplay");
+            "Programs", "Aura");
 
         long payload = GetPayloadSize();
         SizeText.Text = payload > 0 ? $"потребуется ~{payload * 2.2 / (1024 * 1024):0} МБ" : "";
@@ -58,7 +68,7 @@ public partial class MainWindow : Window
             PathBox.Text = App.UpdateTarget!;
         SnapshotPaths();
 
-        Title = "Обновление Instant Replay";
+        Title = "Обновление Aura";
         TitleMode.Text = "· обновление";
         ProgressTitle.Text = "Обновление…";
         PageOptions.Visibility = Visibility.Collapsed;
@@ -79,7 +89,7 @@ public partial class MainWindow : Window
         {
             Log($"Обновление не удалось: {ex.Message}");
             MessageBox.Show(this,
-                $"Не удалось обновить Instant Replay:\n\n{ex.Message}\n\nПрежняя версия осталась на месте.",
+                $"Не удалось обновить Aura:\n\n{ex.Message}\n\nПрежняя версия осталась на месте.",
                 "Ошибка обновления", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         Close();
@@ -92,7 +102,7 @@ public partial class MainWindow : Window
         {
             string file = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "InstantReplay", "settings.json");
+                "Aura", "settings.json");
             if (!File.Exists(file)) return false;
             var node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file));
             return node?["AutoStartWithWindows"]?.GetValue<bool>() ?? false;
@@ -156,7 +166,7 @@ public partial class MainWindow : Window
     {
         var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Папка установки" };
         if (dlg.ShowDialog() == true)
-            PathBox.Text = Path.Combine(dlg.FolderName, "InstantReplay");
+            PathBox.Text = Path.Combine(dlg.FolderName, "Aura");
     }
 
     private async void Install_Click(object sender, RoutedEventArgs e)
@@ -189,9 +199,13 @@ public partial class MainWindow : Window
     {
         SetStatus("Подготовка…", 2);
 
-        // Если приложение запущено — мягко закрываем
-        foreach (var p in Process.GetProcessesByName("InstantReplay"))
-            try { p.Kill(); p.WaitForExit(3000); } catch { }
+        // Закрываем и новое приложение, и старое: при обновлении с 1.0.x работает
+        // ещё InstantReplay.exe и держит файлы в папке установки.
+        foreach (string name in new[] { ProcessName, OldProcessName })
+            foreach (var p in Process.GetProcessesByName(name))
+                try { p.Kill(); p.WaitForExit(3000); } catch { }
+
+        MigrateFromInstantReplay();
 
         Directory.CreateDirectory(_root);
 
@@ -242,7 +256,7 @@ public partial class MainWindow : Window
             {
                 key.SetValue("DisplayName", AppName);
                 key.SetValue("DisplayVersion", InstalledVersion());
-                key.SetValue("Publisher", "InstantReplay");
+                key.SetValue("Publisher", "Aura");
                 key.SetValue("DisplayIcon", _mainExe);
                 key.SetValue("InstallLocation", _root);
                 key.SetValue("UninstallString", $"\"{uninstaller}\" /uninstall");
@@ -259,9 +273,11 @@ public partial class MainWindow : Window
             try
             {
                 using var run = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
-                run?.DeleteValue("InstantReplay", throwOnMissingValue: false);
+                run?.DeleteValue(OldProcessName, throwOnMissingValue: false);
+                run?.DeleteValue(ProcessName, throwOnMissingValue: false);
             }
             catch { }
+            RemoveOldTraces();
             SyncAutostartSetting(autostart);
         }
         SetStatus("Готово", 100);
@@ -291,7 +307,7 @@ public partial class MainWindow : Window
         try
         {
             string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InstantReplay");
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura");
             Directory.CreateDirectory(dir);
             string file = Path.Combine(dir, "settings.json");
 
@@ -305,6 +321,59 @@ public partial class MainWindow : Window
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         }
         catch { /* не критично для установки */ }
+    }
+
+    /// <summary>
+    /// Переезд с прежней версии: настройки и кэш миниатюр лежали в
+    /// %LocalAppData%\InstantReplay. Копируем их в %LocalAppData%\Aura, если там
+    /// ещё пусто — иначе после обновления человек увидел бы чистое приложение
+    /// с настройками по умолчанию и не своей папкой записей.
+    /// </summary>
+    private static void MigrateFromInstantReplay()
+    {
+        try
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string old = Path.Combine(local, "InstantReplay");
+            string now = Path.Combine(local, "Aura");
+            if (!Directory.Exists(old)) return;
+            if (File.Exists(Path.Combine(now, "settings.json"))) return;   // уже переехали
+
+            Directory.CreateDirectory(now);
+            foreach (string file in Directory.GetFiles(old))
+                File.Copy(file, Path.Combine(now, Path.GetFileName(file)), overwrite: false);
+
+            string oldThumbs = Path.Combine(old, "thumbs");
+            if (Directory.Exists(oldThumbs))
+            {
+                string newThumbs = Path.Combine(now, "thumbs");
+                Directory.CreateDirectory(newThumbs);
+                foreach (string file in Directory.GetFiles(oldThumbs))
+                    File.Copy(file, Path.Combine(newThumbs, Path.GetFileName(file)), overwrite: false);
+            }
+            Log("Настройки перенесены из InstantReplay");
+        }
+        catch (Exception ex) { Log($"Перенос настроек: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Следы прежней версии: ярлыки «Instant Replay», запись в «Установленных
+    /// программах» и задача автозапуска. Файлы приложения чистить не нужно —
+    /// папка app\ пересоздаётся с нуля при каждой установке.
+    /// </summary>
+    private void RemoveOldTraces()
+    {
+        TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                               "Programs", $"{OldAppName}.lnk"));
+        TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                               $"{OldAppName}.lnk"));
+        try { Registry.CurrentUser.DeleteSubKeyTree(OldUninstallKey, throwOnMissingSubKey: false); } catch { }
+        try
+        {
+            Process.Start(new ProcessStartInfo("schtasks.exe", $"/Delete /TN \"{OldTaskName}\" /F")
+            { UseShellExecute = false, CreateNoWindow = true })?.WaitForExit(5000);
+        }
+        catch { }
     }
 
     private void CreateShortcut(string lnkPath)
@@ -332,7 +401,7 @@ public partial class MainWindow : Window
         try
         {
             string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InstantReplay");
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura");
             Directory.CreateDirectory(dir);
             File.AppendAllText(Path.Combine(dir, "setup.log"),
                 $"{DateTime.Now:HH:mm:ss} {message}{Environment.NewLine}");
@@ -358,11 +427,11 @@ public partial class MainWindow : Window
     private void SwitchToUninstall()
     {
         TitleMode.Text = "· удаление";
-        Title = "Удаление Instant Replay";
+        Title = "Удаление Aura";
         SubTitle.Text = "Приложение будет удалено. Ваши записи останутся на месте.";
         PageOptions.Visibility = Visibility.Collapsed;
         PageDone.Visibility = Visibility.Visible;
-        DoneTitle.Text = "Удалить Instant Replay?";
+        DoneTitle.Text = "Удалить Aura?";
         DoneText.Text = "Записи и настройки не удаляются.";
         DoneBtn.Content = "Удалить";
         DoneBtn.Click -= Done_Click;
@@ -379,28 +448,35 @@ public partial class MainWindow : Window
         await Task.Run(() =>
         {
             SetStatus("Закрытие приложения…", 15);
-            foreach (var p in Process.GetProcessesByName("InstantReplay"))
-                try { p.Kill(); p.WaitForExit(3000); } catch { }
+            foreach (string name in new[] { ProcessName, OldProcessName })
+                foreach (var p in Process.GetProcessesByName(name))
+                    try { p.Kill(); p.WaitForExit(3000); } catch { }
 
             SetStatus("Удаление ярлыков…", 40);
-            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs", $"{AppName}.lnk"));
-            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), $"{AppName}.lnk"));
+            foreach (string name in new[] { AppName, OldAppName })
+            {
+                TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs", $"{name}.lnk"));
+                TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), $"{name}.lnk"));
+            }
 
             SetStatus("Очистка реестра…", 60);
             try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
+            try { Registry.CurrentUser.DeleteSubKeyTree(OldUninstallKey, throwOnMissingSubKey: false); } catch { }
             try
             {
                 using var run = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
-                run?.DeleteValue("InstantReplay", throwOnMissingValue: false);
+                run?.DeleteValue(ProcessName, throwOnMissingValue: false);
+                run?.DeleteValue(OldProcessName, throwOnMissingValue: false);
             }
             catch { }
-            // Задача автозапуска в Планировщике
-            try
-            {
-                Process.Start(new ProcessStartInfo("schtasks.exe", "/Delete /TN \"InstantReplay\" /F")
-                { UseShellExecute = false, CreateNoWindow = true })?.WaitForExit(5000);
-            }
-            catch { }
+            // Задачи автозапуска в Планировщике — и новая, и от прежней версии
+            foreach (string task in new[] { AppName, OldTaskName })
+                try
+                {
+                    Process.Start(new ProcessStartInfo("schtasks.exe", $"/Delete /TN \"{task}\" /F")
+                    { UseShellExecute = false, CreateNoWindow = true })?.WaitForExit(5000);
+                }
+                catch { }
 
             SetStatus("Удаление файлов…", 80);
             try { Directory.Delete(Path.Combine(root, "app"), recursive: true); } catch { }

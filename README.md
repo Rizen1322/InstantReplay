@@ -1,16 +1,75 @@
-# Instant Replay
+# Aura
 
-Аналог NVIDIA ShadowPlay Instant Replay: постоянная фоновая запись экрана в кольцевой буфер RAM, сохранение последних N минут по хоткею. C# / .NET 9 / WinUI 3, отдельное unpackaged-приложение, без Steam и сторонних сервисов.
+Аналог NVIDIA ShadowPlay Instant Replay: постоянная фоновая запись экрана в кольцевой буфер RAM, сохранение последних N минут по хоткею. C# / .NET 9 / WPF, отдельное приложение, без Steam и сторонних сервисов.
+
+`src/Aura` — актуальное приложение. `src/InstantReplay` — прежняя версия на WinUI 3, оставлена
+для сверки на время переезда; ядро (захват, кодировщик, звук, хоткеи, хранилище) у них общее
+по происхождению, но правки вносятся только в `src/Aura`.
 
 ## Сборка
 
-Требуется **Windows 10 2004+ / Windows 11**, Visual Studio 2022 (workload «Разработка классических приложений .NET» + Windows App SDK) или .NET 9 SDK.
+Требуется **Windows 10 2004+ / Windows 11** и .NET 9 SDK (или Visual Studio 2022 с рабочей
+нагрузкой «Разработка классических приложений .NET»).
 
 ```
-dotnet build -c Release -r win-x64 src/InstantReplay/InstantReplay.csproj
+dotnet build -c Release -r win-x64 src/Aura/Aura.csproj
 ```
 
-Приложение self-contained по Windows App SDK (`WindowsAppSDKSelfContained=true`) — рантайм ставить не нужно.
+Windows App SDK больше не нужен: WPF даёт интерфейс, а проекции WinRT
+(`Windows.Graphics.Capture`, `Windows.Storage`) приходят из самого TFM
+`net9.0-windows10.0.22621.0`.
+
+Для отладки вёрстки без запроса прав администратора собирается вариант с обычным манифестом,
+и можно открыть приложение сразу на нужном разделе:
+
+```
+dotnet build src/Aura/Aura.csproj -p:ApplicationManifest=app.debug.manifest -o <папка>
+```
+```
+Aura.exe --dev --page capture
+```
+
+`--dev` поднимает копию рядом с уже запущенной (обычно вторая копия просто показывает
+окно первой), `--page <раздел>` открывает нужный раздел сразу: `overview`, `clips`,
+`capture`, `keys`, `files`, `app`, `system`.
+
+## Интерфейс
+
+| Что | Где |
+|---|---|
+| Палитра (тёмная и светлая, ключи совпадают) | `Theme/Palette.Dark.xaml`, `Theme/Palette.Light.xaml` |
+| Типографика, карточки, строки списков | `Theme/Base.xaml` |
+| Шаблоны элементов (переключатель, сегменты, кнопки, ползунок, список) | `Theme/Controls.xaml` |
+| Иконки (контуры 24×24) | `Theme/Icons.xaml` |
+| Карточка записи | `Theme/Clips.xaml` |
+| Свои элементы (`Icon`, `IconTile`, `Switch`, `Segmented`, `KeyCaps`) | `Controls/Primitives.cs` |
+| Окно: своя шапка, боковая колонка, масштаб, навигация | `MainWindow.xaml(.cs)` |
+| Разделы | `Views/*Page.xaml(.cs)` |
+| Уведомление поверх игры | `Notifications/ToastWindow.xaml(.cs)` |
+
+Решения, которые важно не потерять:
+
+- **Шрифты вшиты в сборку** (`Fonts/*.ttf`): Golos Text для интерфейса и Onest для заголовков —
+  у обеих кириллица нарисована, а не растянута из латиницы. Статические начертания нарезаны из
+  вариативных, потому что WPF вариативные оси не поддерживает и показал бы всё одним весом.
+- **Тема меняется подменой `MergedDictionaries[0]`**, поэтому все стили ссылаются на цвета
+  через `DynamicResource`. `StaticResource` в теме сломает переключение на лету.
+- **Масштаб интерфейса** — `ScaleTransform` на корневой сетке окна (`--page` `Приложение` →
+  «Размер интерфейса»). Значение 0 в настройках = подобрать по высоте экрана: Full HD обычный,
+  2K крупнее, 4K ещё крупнее.
+- **Компактный режим** включается по ширине ОКНА (< 880 px), а не экрана: боковая колонка
+  сворачивается в иконки, подписи групп превращаются в разделители.
+- **Ползунки подписываются в конструкторе, а не в разметке**: присвоение `Minimum` при разборе
+  XAML уже поднимает `ValueChanged`, и обработчик падал на элементах, которых ещё нет.
+- **`SelectionChanged` и `Click` требуют разных делегатов** — на одну логику заведены две обёртки.
+- **Раздел, который не собрался, показывает ошибку, а не пустой экран** (`Views/BrokenPage.cs`).
+- **Строки настроек — `Controls/AdaptiveRow.cs`**: когда окно сужается, управление уезжает под
+  подпись, а не обрезается краем. Свёрнутая боковая колонка ужимает поля, иначе переключатель
+  шириной 44 px не влезал в 64 px колонки.
+- **Плашка «есть несохранённое» живёт в окне** (`MainWindow.ShowApplyBar`), а не в конце
+  страницы: до неё не нужно долистывать.
+- **`GlobalUsings.cs` вместо `ImplicitUsings`**: временный проект, который MSBuild собирает под
+  XAML (`Aura_*_wpftmp.csproj`), неявные using'и наследует не полностью.
 
 ## Архитектура конвейера
 
@@ -66,14 +125,14 @@ SinkWriter, видео passthrough (remux без перекодирования)
 | Saving/Mux | `Core/Saving/ReplaySaver.cs` |
 | Оркестратор | `Core/Engine/ReplayEngine.cs` |
 | Hotkeys | `Core/Hotkeys/HotkeyService.cs` |
-| Notifications/Overlay | `Core/Notifications/NotificationService.cs` |
+| Notifications/Overlay | `Core/Notifications/NotificationService.cs` + `Notifications/ToastWindow.xaml` |
 | Game Detection | `Core/GameDetection/GameDetector.cs` |
 | Storage Manager | `Core/Storage/StorageManager.cs` + `ClipIndex.cs` (индекс папки), `FileNaming.cs`, `ByteSize.cs` |
 | Библиотека клипов | `Core/Library/*` (сканирование папки, миниатюры через shell + дисковый кэш в `thumbs\`) |
 | Settings Manager | `Core/Settings/*` |
 | Характеристики | `Core/Hardware/HardwareServices.cs` (WMI + GeForce lookup API + ZenitH-AT/nvidia-data) |
 | Система | `Core/System/*` (автозапуск, автообновление) |
-| UI | `MainWindow`, `Views/*` (Mica, Fluent, тёмная тема, NavigationView) |
+| UI | `MainWindow`, `Views/*`, `Theme/*` (своя шапка окна, тёмная и светлая темы) |
 | Обзор (первая вкладка) | `Views/OverviewPage.xaml(.cs)` — состояние, буфер, быстрые действия с подсказками хоткеев, последние клипы, хранилище |
 | Панорама записей | `Views/ClipsPage.xaml(.cs)` — секции по датам, сетка миниатюр, фильтры; клик открывает файл в системном плеере |
 | Клавиши и файлы | `Views/KeysFilesPage.xaml(.cs)` — горячие клавиши с проверкой конфликтов + папка записей и автоочистка |

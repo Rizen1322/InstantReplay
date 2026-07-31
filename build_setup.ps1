@@ -1,5 +1,9 @@
-﻿# Сборка установщика Instant Replay.
+﻿# Сборка установщика Aura.
 # Результат: dist\InstantReplaySetup.exe (один файл: приложение + музыка внутри).
+#
+# Имя файла установщика оставлено прежним НАМЕРЕННО: установленные версии 1.0.x
+# (ещё под именем Instant Replay) ищут в GitHub-релизе именно InstantReplaySetup.exe
+# и обновляются по нему. Переименуем — старые копии перестанут видеть обновления.
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $dist = Join-Path $root "dist"
@@ -7,12 +11,12 @@ $publish = Join-Path $dist "app_publish"
 
 Write-Host "== 1/5 Публикация приложения =="
 if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
-dotnet publish (Join-Path $root "src\InstantReplay\InstantReplay.csproj") `
+dotnet publish (Join-Path $root "src\Aura\Aura.csproj") `
     -c Release -r win-x64 --self-contained true -o $publish
 if ($LASTEXITCODE -ne 0) { throw "publish приложения не удался" }
 
 Write-Host "== 2/5 Чистка поставки =="
-# Языковые .mui-папки WindowsAppSDK (~100 штук, 11 МБ) — оставляем только английские.
+# Языковые папки сторонних пакетов — оставляем только английские.
 $keep = @("en-US", "en", "Assets")
 $removed = 0
 Get-ChildItem $publish -Directory | Where-Object { $keep -notcontains $_.Name } | ForEach-Object {
@@ -24,6 +28,8 @@ Get-ChildItem $publish -Include *.pdb, *.xml -Recurse -File | Remove-Item -Force
 $files = (Get-ChildItem $publish -Recurse -File).Count
 $sizeMb = ((Get-ChildItem $publish -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB
 Write-Host ("   удалено языковых папок: {0}; итог: {1} файлов, {2:0} МБ" -f $removed, $files, $sizeMb)
+
+if (-not (Test-Path (Join-Path $publish "Aura.exe"))) { throw "в поставке нет Aura.exe" }
 
 Write-Host "== 3/5 Упаковка payload.zip =="
 Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="InstantReplay.App"/>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10/11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+
+  <!--
+    Права администратора нужны для глобальных хоткеев ПОВЕРХ ИГР.
+    Низкоуровневый хук клавиатуры (WH_KEYBOARD_LL) из обычного процесса не
+    получает клавиши от окон с более высокими правами (Windows UIPI) — а CS2,
+    Valorant и другие игры с анти-читом работают именно так. Без elevation
+    хоткеи «мертвы» в игре, хотя срабатывают на рабочем столе.
+    requireAdministrator: запуск ВСЕГДА от администратора. Раньше стоял
+    highestAvailable — на обычном аккаунте он молча стартовал без прав, и хоткеи
+    в играх не работали без единого намёка на причину. Плата: ручной запуск
+    всегда показывает запрос UAC (автозапуск через Планировщик задач — нет,
+    там RunLevel=Highest, см. StartupManager).
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- Per-Monitor V2 DPI: критично для корректного захвата и оверлея -->
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

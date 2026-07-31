@@ -1,12 +1,18 @@
-﻿# Выпуск новой версии одной командой:
-#   .\release.ps1                  — патч (1.0.2 → 1.0.3)
-#   .\release.ps1 -Bump minor      — 1.0.2 → 1.1.0
-#   .\release.ps1 -Bump major      — 1.0.2 → 2.0.0
+﻿# Выпуск новой версии Aura одной командой:
+#   .\release.ps1                  — патч (1.1.0 → 1.1.1)
+#   .\release.ps1 -Bump minor      — 1.1.0 → 1.2.0
+#   .\release.ps1 -Bump major      — 1.1.0 → 2.0.0
 #   .\release.ps1 -Notes "текст"   — описание релиза
 #   .\release.ps1 -DryRun          — показать план, ничего не менять
 #
 # Делает всё: поднимает версию в csproj, собирает установщик, коммитит, ставит тег,
 # пушит и создаёт GitHub-релиз с приложенным InstantReplaySetup.exe.
+#
+# ПОЧЕМУ ФАЙЛ РЕЛИЗА ВСЁ ЕЩЁ InstantReplaySetup.exe: установленные версии 1.0.x
+# скачивают из релиза первый подходящий asset и запускают его с ключом /update.
+# Они выпущены под именем Instant Replay и ищут именно этот файл — переименуем,
+# и старые копии останутся без обновлений навсегда. Внутри уже Aura: установщик
+# ставит Aura.exe, переносит настройки и убирает следы прежней версии.
 [CmdletBinding()]
 param(
     [ValidateSet('patch', 'minor', 'major')]
@@ -17,8 +23,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$csproj = Join-Path $root 'src\InstantReplay\InstantReplay.csproj'
+$csproj = Join-Path $root 'src\Aura\Aura.csproj'
 $setupExe = Join-Path $root 'dist\InstantReplaySetup.exe'
+$appExe = Join-Path $root 'dist\app_publish\Aura.exe'
 
 function Step($text) { Write-Host "`n== $text ==" -ForegroundColor Cyan }
 function Fail($text) { Write-Host "ОШИБКА: $text" -ForegroundColor Red; exit 1 }
@@ -76,8 +83,11 @@ try {
 
     # Запущенное приложение держит файлы в dist\app_publish, и публикация не сможет
     # их перезаписать. Молча это приводит к установщику со СТАРОЙ версией внутри.
-    if (Get-Process InstantReplay -ErrorAction SilentlyContinue) {
-        Fail "Instant Replay запущен — закрой его через трей, иначе соберётся старая версия"
+    # Проверяем и прежнее имя процесса: на машине может ещё стоять версия 1.0.x.
+    foreach ($name in @('Aura', 'InstantReplay')) {
+        if (Get-Process $name -ErrorAction SilentlyContinue) {
+            Fail "$name запущен — закрой его через трей, иначе соберётся старая версия"
+        }
     }
     Write-Host "   git в порядке, тег $tag свободен, приложение закрыто"
 }
@@ -98,9 +108,9 @@ Step "3/6 Сборка установщика"
 if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { Fail "Сборка не удалась" }
 if (-not (Test-Path $setupExe)) { Fail "Установщик не собрался: $setupExe" }
 
-$built = (Get-Item (Join-Path $root 'dist\app_publish\InstantReplay.exe')).VersionInfo.FileVersion
+$built = (Get-Item $appExe).VersionInfo.FileVersion
 if ($built -ne $assembly) { Fail "В собранном exe версия $built, ожидалась $assembly" }
-Write-Host "   Проверено: в exe версия $built"
+Write-Host "   Проверено: в Aura.exe версия $built"
 
 # ---------- Коммит и тег ----------
 Step "4/6 Коммит и тег"
@@ -125,7 +135,7 @@ finally { Pop-Location }
 
 # ---------- Релиз ----------
 Step "6/6 Создание релиза"
-if (-not $Notes) { $Notes = "Instant Replay $new" }
+if (-not $Notes) { $Notes = "Aura $new" }
 & $gh release create $tag $setupExe --title $tag --notes $Notes
 if ($LASTEXITCODE -ne 0) { Fail "Не удалось создать релиз (тег уже отправлен — можно повторить вручную)" }
 

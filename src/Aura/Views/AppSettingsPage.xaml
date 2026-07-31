@@ -1,0 +1,221 @@
+<views:PageBase x:Class="Aura.Views.AppSettingsPage"
+                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                xmlns:c="clr-namespace:Aura.Controls"
+                xmlns:views="clr-namespace:Aura.Views">
+
+    <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
+        <StackPanel>
+            <TextBlock Text="Приложение" Style="{StaticResource PageTitle}"/>
+            <TextBlock Text="Запуск, уведомления, оформление и обновления." Style="{StaticResource Lede}"/>
+
+            <!-- ============ ЗАПУСК ============ -->
+            <TextBlock Text="Запуск" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Rocket}" Background="{DynamicResource GrayBrush}"/>
+                        <TextBlock Text="Запускать вместе с Windows" Style="{StaticResource RowLabel}"
+                                   VerticalAlignment="Center" Margin="16,0,16,0"/>
+                        <c:Switch x:Name="AutoStart" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Down}" Background="{DynamicResource GrayBrush}"/>
+                        <TextBlock Text="Стартовать свёрнутым в трей" Style="{StaticResource RowLabel}"
+                                   VerticalAlignment="Center" Margin="16,0,16,0"/>
+                        <c:Switch x:Name="StartInTray" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Rec}" Background="{DynamicResource AccentBrush}"/>
+                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <TextBlock Text="Включать мгновенный повтор при старте" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Запись начинается сразу после запуска" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Switch x:Name="AutoBuffer" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+            <TextBlock Text="Уведомления" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Bell}" Background="{DynamicResource PinkBrush}"/>
+                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <TextBlock Text="Показывать поверх игры" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Не отбирают фокус и пропускают клики насквозь" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Switch x:Name="ShowNotifications" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Где показывать" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Выбери угол экрана" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <Border Width="112" Height="68" CornerRadius="11"
+                                Background="{DynamicResource TrackBrush}" BorderBrush="{DynamicResource HairBrush}"
+                                BorderThickness="1" Padding="5">
+                            <UniformGrid x:Name="PositionGrid" Rows="2" Columns="3"/>
+                        </Border>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <TextBlock Text="Сколько держать на экране" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="DurationValue" Style="{StaticResource RowValue}" Width="48"
+                                       TextAlignment="Right" Margin="0,0,10,0"/>
+                            <Slider x:Name="Duration" Minimum="1" Maximum="10" TickFrequency="0.5" IsSnapToTickEnabled="True"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Звук при сохранении" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Сигнал, что запись легла на диск" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="Sound" MinWidth="150" SelectionChanged="Sound_Changed">
+                                <ComboBoxItem Content="Мягкий" Tag="Soft"/>
+                                <ComboBoxItem Content="Classic" Tag="Classic"/>
+                                <ComboBoxItem Content="Свой файл…" Tag="Custom"/>
+                                <ComboBoxItem Content="Без звука" Tag="None"/>
+                            </ComboBox>
+                            <Button Style="{StaticResource BtnSquare}" Margin="8,0,0,0" Click="PlaySound_Click"
+                                    ToolTip="Прослушать">
+                                <c:Icon Data="{DynamicResource Ico.Play}" Size="13" Filled="True"
+                                        Foreground="{DynamicResource TxBrush}"/>
+                            </Button>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Как выглядит уведомление" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Посмотри, не выходя из настроек" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Повтор" Click="DemoReplay_Click" Margin="0,0,8,0"/>
+                            <Button Content="Скриншот" Click="DemoShot_Click"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <TextBlock Text="Открывать папку после сохранения" Style="{StaticResource RowLabel}"
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                        <c:Switch x:Name="OpenAfterSave" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ ОФОРМЛЕНИЕ ============ -->
+            <TextBlock Text="Оформление" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Sun}" Background="{DynamicResource OrangeBrush}"/>
+                        <TextBlock Text="Тема" Style="{StaticResource RowLabel}"
+                                   VerticalAlignment="Center" Margin="16,0,16,0"/>
+                        <c:Segmented x:Name="Theme" SelectionChanged="Theme_Changed">
+                            <ListBoxItem Content="Тёмная" Tag="Dark"/>
+                            <ListBoxItem Content="Светлая" Tag="Light"/>
+                            <ListBoxItem Content="Как в системе" Tag="System"/>
+                        </c:Segmented>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Monitor}" Background="{DynamicResource TealBrush}"/>
+                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <TextBlock Text="Размер интерфейса" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Крупнее на 2K и 4K, компактнее на Full HD" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Segmented x:Name="Scale" SelectionChanged="Scale_Changed">
+                            <ListBoxItem Content="Авто" Tag="0"/>
+                            <ListBoxItem Content="Компактный" Tag="0.9"/>
+                            <ListBoxItem Content="Обычный" Tag="1"/>
+                            <ListBoxItem Content="Крупный" Tag="1.15"/>
+                            <ListBoxItem Content="Очень крупный" Tag="1.35"/>
+                        </c:Segmented>
+                    </c:AdaptiveRow>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ ОБНОВЛЕНИЯ ============ -->
+            <TextBlock Text="Обновления" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Down}" Background="{DynamicResource BlueBrush}"/>
+                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <TextBlock x:Name="VersionText" Style="{StaticResource RowLabel}"/>
+                            <TextBlock x:Name="UpdateStatus" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="CheckButton" Content="Проверить" Click="Check_Click"/>
+                            <Button x:Name="InstallButton" Content="Обновить" Style="{StaticResource BtnPri}"
+                                    Margin="8,0,0,0" Visibility="Collapsed" Click="Install_Click"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <ProgressBar x:Name="UpdateProgress" Margin="16,0,16,12" Visibility="Collapsed" Maximum="1"/>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <TextBlock Text="Проверять обновления при запуске" Style="{StaticResource RowLabel}"
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
+                        <c:Switch x:Name="CheckUpdates" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Следить за драйвером видеокарты" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Проверка раз в неделю в фоне" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Switch x:Name="DriverWatch" Click="System_Changed"/>
+                    </c:AdaptiveRow>
+                </StackPanel>
+            </Border>
+
+            <!-- ============ ОБСЛУЖИВАНИЕ ============ -->
+            <TextBlock Text="Обслуживание" Style="{StaticResource GroupLabel}"/>
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <Button Style="{StaticResource RowButton}" Click="OpenLogs_Click">
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <TextBlock Text="Открыть папку с логами" Style="{StaticResource RowLabel}"/>
+                            <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
+                                    Foreground="{DynamicResource Tx3Brush}"/>
+                        </c:AdaptiveRow>
+                    </Button>
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <Button Style="{StaticResource RowButton}" Click="OpenSettings_Click">
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <TextBlock Text="Открыть settings.json" Style="{StaticResource RowLabel}"/>
+                            <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
+                                    Foreground="{DynamicResource Tx3Brush}"/>
+                        </c:AdaptiveRow>
+                    </Button>
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <Button Style="{StaticResource RowButton}" Click="Reset_Click">
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <TextBlock Text="Сбросить все настройки" Style="{StaticResource RowLabel}"
+                                       Foreground="{DynamicResource RecBrush}"/>
+                            <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
+                                    Foreground="{DynamicResource Tx3Brush}"/>
+                        </c:AdaptiveRow>
+                    </Button>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</views:PageBase>
