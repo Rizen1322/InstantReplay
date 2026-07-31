@@ -83,6 +83,10 @@ public sealed class ReplayEngine : IDisposable
     // ---- Обычная запись в файл («Начать запись») ----
     private ManualRecorder? _recorder;
     public bool IsRecordingToFile => _recorder is not null;
+    /// <summary>Сколько идёт обычная запись; null — не пишем.</summary>
+    public TimeSpan? RecordingElapsed => _recorder is { } r ? DateTime.Now - r.StartedAt : null;
+    /// <summary>Номер текущей части файла (файл режется по достижении предела MP4).</summary>
+    public int RecordingPart => _recorder?.PartCount ?? 0;
     public event Action<bool>? RecordingChanged;
     /// <summary>Успешное завершение обычной записи: путь + длительность (сек).</summary>
     public event Action<string, int>? RecordingSaved;

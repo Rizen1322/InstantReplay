@@ -71,6 +71,8 @@ public sealed class ManualRecorder : IDisposable
 
     public string FilePath => _files.Count > 0 ? _files[0] : _firstFilePath;
     public DateTime StartedAt { get; } = DateTime.Now;
+    /// <summary>Сколько частей файла уже создано (для показа в интерфейсе).</summary>
+    public int PartCount { get { lock (_files) return _files.Count; } }
 
     public ManualRecorder(string filePath, Func<IMFMediaType?> videoType,
         AudioTrackMode trackMode, bool hasGame, bool hasMic)

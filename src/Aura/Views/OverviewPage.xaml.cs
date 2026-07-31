@@ -89,6 +89,16 @@ public partial class OverviewPage : PageBase
         double part = target > 0 ? Math.Min(1, buffered.TotalSeconds / target) : 0;
         AnimateWidth(BufferFill, part, BufferFill.ActualWidth);
 
+        // Идущая запись: показываем её длительность рядом со значком, а если файл
+        // уже перевалил за предел MP4 и продолжается во второй части — и её номер.
+        if (engine.RecordingElapsed is { } elapsed)
+        {
+            int filePart = engine.RecordingPart;
+            RecTimer.Text = filePart > 1 ? $"{Format(elapsed)} · ч.{filePart}" : Format(elapsed);
+            RecTimer.Visibility = Visibility.Visible;
+        }
+        else RecTimer.Visibility = Visibility.Collapsed;
+
         RecName.Text = engine.IsRecordingToFile ? "Остановить запись" : "Начать запись";
         RecTile.Data = (Geometry)FindResource(engine.IsRecordingToFile ? "Ico.Stop" : "Ico.Rec");
         RecTile.Background = (Brush)FindResource(engine.IsRecordingToFile ? "GrayBrush" : "RecBrush");
