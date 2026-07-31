@@ -167,7 +167,7 @@ public sealed class VideoEncoder : IDisposable
         // Часть ключей ICodecAPI энкодер принимает только ДО установки типов —
         // после он отвечает E_INVALIDARG. Здесь ровно те, что меняют структуру
         // потока (B-кадры), остальные настраиваются ниже, после типов.
-        ConfigureCodecApiEarly();
+        ConfigureCodecApiEarly(bitrateBps);
 
         // --- Выходной (сжатый) тип: у энкодеров задаётся ПЕРВЫМ ---
         var outType = MediaFactory.MFCreateMediaType();
@@ -357,7 +357,7 @@ public sealed class VideoEncoder : IDisposable
     /// После SetOutputType этот ключ NVIDIA отвечает E_INVALIDARG — структура
     /// потока к тому моменту уже зафиксирована.
     /// </summary>
-    private void ConfigureCodecApiEarly()
+    private void ConfigureCodecApiEarly(long bitrateBps)
     {
         IntPtr pCodecApi = IntPtr.Zero;
         try
@@ -369,6 +369,12 @@ public sealed class VideoEncoder : IDisposable
             // на её энкодере B-кадры и так выключены режимом низкой задержки.
             // Оставлено ради Intel/AMD, где ключ работает.
             SetCodecValue(codecApi, CodecApiGuids.AVEncMPVDefaultBPictureCount, 0u, optional: true);
+
+            // Буфер VBV — тоже структурный параметр. Заданный ПОСЛЕ медиатипов он
+            // принимается без ошибки, но энкодер продолжает жить со своим: в замерах
+            // читалось 3 Мбит при заданных 40 (и с режимом низкой задержки, и без него).
+            // Пробуем до типов — по той же причине, по которой сюда попали B-кадры.
+            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
         }
         catch (Exception ex)
         {
@@ -401,9 +407,6 @@ public sealed class VideoEncoder : IDisposable
             // NVIDIA App на тех же настройках (она пишет CBR).
             SetCodecValue(codecApi, CodecApiGuids.AVEncCommonRateControlMode, 0u /* CBR */);
             SetCodecValue(codecApi, CodecApiGuids.AVEncCommonMeanBitRate, (uint)bitrateBps);
-            // Буфер VBV на секунду: в CBR это запас, из которого энкодер берёт биты
-            // на резкое усложнение картинки, не разваливая её в блоки.
-            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
             SetCodecValue(codecApi, CodecApiGuids.AVEncMPVGOPSize, (uint)(fps * 2));
             // AVEncCommonLowLatency энкодер NVIDIA отвергает с E_INVALIDARG в ЛЮБОМ
             // виде (пробовали и VT_BOOL, и VT_UI4) — в логе это годами висело как
@@ -412,8 +415,19 @@ public sealed class VideoEncoder : IDisposable
             // а до NVENC добираемся двумя другими ключами ниже.
             SetCodecValue(codecApi, CodecApiGuids.AVEncCommonLowLatency, true, optional: true);
 
-            // Тот самый режим низкой задержки, который понимают MFT-энкодеры.
+            // Режим низкой задержки: под чужой нагрузкой (рядом стримит Discord) он
+            // поднял пропускную способность энкодера с 26 до 42 кадров в секунду.
+            // Подозревали, что он же ужимает буфер VBV до 3 Мбит — проверили с ним и
+            // без него, буфер был одинаковый. Дело было в другом: VBV принимается
+            // только ДО установки медиатипов (см. ConfigureCodecApiEarly).
             SetCodecValue(codecApi, CodecApiGuids.AVLowLatencyMode, true);
+
+            // Буфер VBV — запас, из которого энкодер берёт биты на резкое усложнение
+            // картинки, не разваливая её в блоки. Задаётся СТРОГО ПОСЛЕ режима низкой
+            // задержки: тот выставляет свой крошечный буфер (в замере — 3 Мбит при
+            // 40 Мбит/с, меньше пяти кадров), и наше значение, выставленное раньше,
+            // затиралось. Секунда — как у ShadowPlay.
+            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
 
             // Баланс качество/скорость (0..100). Было жёстко 25 — быстрый пресет NVENC,
             // выбранный когда энкодер не вытягивал 60 fps под нагрузкой. Причина той
@@ -858,11 +872,46 @@ public sealed class VideoEncoder : IDisposable
             // Это одна COM-обёртка за сеанс — дешевле, чем гонка при сохранении.
             OutputMediaType = current; // присваивание ссылки атомарно
             Log.Info("Encoder", "Выходной тип обновлён из энкодера (с заголовками кодека)");
+            LogColorInfo(current);
         }
         catch (Exception ex)
         {
             Log.Warn("Encoder", $"Не удалось получить актуальный выходной тип: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Цветовые метаданные ФАКТИЧЕСКОГО выходного типа энкодера.
+    ///
+    /// Мы задаём BT.709 limited при инициализации, но MFT вправе выставить в своём
+    /// типе что угодно, а в MP4 уезжает именно он (ReplaySaver и ManualRecorder
+    /// открывают поток этим типом). Расхождение здесь не ломает файл, но плеер
+    /// растянет или сожмёт диапазон яркости — картинка будет выглядеть хуже при
+    /// том же битрейте. Поэтому пишем фактические значения в лог.
+    /// </summary>
+    private static void LogColorInfo(IMFMediaType type)
+    {
+        static string Name(IMFMediaType t, Guid key, string[] names)
+        {
+            try
+            {
+                uint v = t.GetUInt32(key);
+                return v < names.Length ? $"{names[v]}" : $"код {v}";
+            }
+            catch { return "не задано"; }
+        }
+
+        string range = Name(type, MediaTypeAttributeKeys.VideoNominalRange,
+            ["неизвестно", "0-255 full", "16-235 limited", "48-208", "64-127"]);
+        string primaries = Name(type, MediaTypeAttributeKeys.VideoPrimaries,
+            ["неизвестно", "reserved", "BT.709", "BT.470-2 M", "BT.470-2 BG", "SMPTE170M", "SMPTE240M"]);
+        string transfer = Name(type, MediaTypeAttributeKeys.TransferFunction,
+            ["неизвестно", "linear", "gamma 1.8", "gamma 2.0", "gamma 2.2", "BT.709", "SMPTE240M", "sRGB"]);
+        string matrix = Name(type, MfMtYuvMatrix,
+            ["неизвестно", "BT.709", "BT.601", "SMPTE240M"]);
+
+        Log.Info("Encoder", $"Цвет в выходном типе: диапазон {range}, матрица {matrix}, " +
+                            $"первичные {primaries}, гамма {transfer}");
     }
 
     private void DrainOutput()

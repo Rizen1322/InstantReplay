@@ -81,6 +81,19 @@ public sealed class VideoProcessorNv12 : IDisposable
                 Nominal_Range = 1 // D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235
             });
 
+            // Драйверная «автообработка» кадра — шумодав, повышение резкости и прочее,
+            // что вендор включает по умолчанию для ВОСПРОИЗВЕДЕНИЯ видео. Для записи
+            // это чужеродная постобработка: она мылит или перешарпливает картинку ещё
+            // до энкодера, и мы платим за это битрейтом. Выключаем явно (так же
+            // поступает OBS). Ошибка не фатальна — не все драйверы дают этот вызов.
+            try { _videoContext.VideoProcessorSetStreamAutoProcessingMode(_processor, 0, false); }
+            catch (Exception ex) { Logging.Log.Warn("Capture", $"Автообработка видеопроцессора: {ex.Message}"); }
+
+            if (srcWidth != OutWidth || srcHeight != OutHeight)
+                Logging.Log.Info("Capture", $"Масштабирование {srcWidth}x{srcHeight} → {OutWidth}x{OutHeight} " +
+                                            "выполняет видеопроцессор драйвера (алгоритм выбирает он сам). " +
+                                            "Запись в родном разрешении монитора этот шаг убирает.");
+
             _pool = new ID3D11Texture2D?[PoolSize];
             _outputViews = new ID3D11VideoProcessorOutputView?[PoolSize];
             for (int i = 0; i < PoolSize; i++)
