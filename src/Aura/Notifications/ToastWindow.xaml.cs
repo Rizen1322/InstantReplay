@@ -85,6 +85,7 @@ public partial class ToastWindow : Window
         bool busy = content.BusyTitle is not null;
         TitleText.Text = content.BusyTitle ?? content.Title;
         SubText.Text = busy ? "секунду…" : content.Subtitle;
+        ApplyTitleLayout();
         HintText.Text = content.Hint ?? "";
         ArtIcon.Data = content.Icon;
         Art.Background = content.Tint;
@@ -151,6 +152,7 @@ public partial class ToastWindow : Window
 
         TitleText.Text = content.Title;
         SubText.Text = content.Subtitle;
+        ApplyTitleLayout();
 
         Card.BeginAnimation(WidthProperty, new DoubleAnimation(WideWidth, grow) { EasingFunction = ease });
         Card.BeginAnimation(HeightProperty, new DoubleAnimation(WideHeight, grow) { EasingFunction = ease });
@@ -194,6 +196,18 @@ public partial class ToastWindow : Window
     }
 
     /// <summary>Окно прижимается к нужному углу рабочего стола, карточка — к тому же углу внутри.</summary>
+    /// <summary>
+    /// Заголовок без второй строки набирается крупнее и стоит по центру карточки.
+    /// Уведомления вроде «Запись началась» второй строкой ничего не добавляли —
+    /// мелкая подпись под заголовком только дробила карточку.
+    /// </summary>
+    private void ApplyTitleLayout()
+    {
+        bool hasSubtitle = !string.IsNullOrWhiteSpace(SubText.Text);
+        SubText.Visibility = hasSubtitle ? Visibility.Visible : Visibility.Collapsed;
+        TitleText.FontSize = hasSubtitle ? 12.5 : 14.5;
+    }
+
     private void Place(NotificationPosition position)
     {
         var area = SystemParameters.WorkArea;

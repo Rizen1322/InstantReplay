@@ -164,6 +164,16 @@ public sealed class ReplayAudioBuffer
 
     public long MaxDurationTicks { get; set; }
 
+    /// <summary>Сколько байт занимают накопленные блоки — для диагностики памяти.</summary>
+    public long TotalBytes
+    {
+        get { lock (_sync) return _blocks.Count * (long)(BlockBytes); }
+    }
+
+    /// <summary>Две дорожки float32 по 10 мс: 480 фреймов × 2 канала × 4 байта × 2.</summary>
+    private const int BlockBytes = Audio.AudioCaptureSource.SampleRate / 100
+                                   * Audio.AudioCaptureSource.Channels * sizeof(float) * 2;
+
     public void Add(AudioBlock block)
     {
         lock (_sync)

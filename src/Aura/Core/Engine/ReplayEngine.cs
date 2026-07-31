@@ -286,10 +286,58 @@ public sealed class ReplayEngine : IDisposable
         string probe = Diagnostics.PipelineProbe.TakeReport();
         if (probe.Length > 0) Log.Info("Engine", probe);
 
+        LogMemory();
+
         _lastSubmitted = s; _lastEncoded = e; _lastDropped = d; _lastDuplicated = dup;
         _lastReceived = rcv; _lastAccepted = acc;
         _lastRequests = req; _lastPacerBlocked = blocked;
         _statsWindowStart = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Вернуть память системе после остановки.
+    ///
+    /// Пока идёт запись, включён SustainedLowLatency — сборщик избегает блокирующих
+    /// сборок второго поколения, чтобы не давать пауз в конвейере. Плата за это:
+    /// массивы кадров (каждый крупнее порога больших объектов) освобождаются, но
+    /// куча под них не сжимается и системе не возвращается — процесс продолжает
+    /// занимать гигабайты уже после выключения буфера.
+    ///
+    /// После остановки торопиться некуда: сжимаем кучу больших объектов один раз.
+    /// В фоне, потому что на многогигабайтной куче это заметная пауза, а зовут нас
+    /// из потока интерфейса.
+    /// </summary>
+    private static void ReleaseMemory() => Task.Run(() =>
+    {
+        try
+        {
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+            Log.Info("Engine", $"Память возвращена: куча {GC.GetTotalMemory(false) / (1024 * 1024)} МБ, " +
+                               $"процесс {Environment.WorkingSet / (1024 * 1024)} МБ");
+        }
+        catch (Exception ex) { Log.Warn("Engine", $"Сжатие кучи: {ex.Message}"); }
+    });
+
+    /// <summary>
+    /// Кто занимает память. Кольцевой буфер и звук считаются точно, остальное —
+    /// разница между кучей .NET и памятью процесса: туда попадают пул массивов
+    /// (кадры берутся из ArrayPool и после возврата остаются в нём), внутренние
+    /// буферы Media Foundation и невыгруженные страницы больших объектов.
+    /// </summary>
+    private void LogMemory()
+    {
+        long ring = _videoBuffer.TotalBytes;
+        long audio = _audioBuffer.TotalBytes;
+        long heap = GC.GetTotalMemory(false);
+        long process = 0;
+        try { process = Environment.WorkingSet; } catch { }
+
+        static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";
+        Log.Info("Engine", $"Память: буфер видео {Mb(ring)}, звук {Mb(audio)}, " +
+                           $"куча .NET {Mb(heap)}, процесс {Mb(process)}");
     }
 
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,
@@ -377,6 +425,7 @@ public sealed class ReplayEngine : IDisposable
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive;
         SetState(EngineState.Stopped);
         Log.Info("Engine", "Instant Replay выключен");
+        ReleaseMemory();
     }
 
     public void Toggle()

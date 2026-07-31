@@ -37,7 +37,11 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
         {
             var (icon, tint) = Look(kind);
             Window().ShowToast(
-                new ToastContent(message, detail ?? Hint(kind), icon, tint,
+                // Второй строки по умолчанию нет: у включения повтора и старта записи
+                // заголовок самодостаточен, а подпись вроде «идёт запись в файл» только
+                // дробила карточку. Без неё заголовок крупнее и стоит по центру
+                // (см. ToastWindow.ApplyTitleLayout).
+                new ToastContent(message, detail ?? "", icon, tint,
                                  WantsThumbnail: kind is NotificationKind.Saved or NotificationKind.Screenshot),
                 s.NotificationPosition, s.NotificationDurationSeconds, Thumbnail);
         });
@@ -73,14 +77,6 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
 
     private ToastWindow Window() => _window ??= new ToastWindow();
 
-    /// <summary>Вторая строка. Коротко: в карточку влезает ~34 символа.</summary>
-    private static string Hint(NotificationKind kind) => kind switch
-    {
-        NotificationKind.ReplayOn  => "буфер пишется",
-        NotificationKind.Stopped   => "буфер остановлен",
-        NotificationKind.Recording => "идёт запись в файл",
-        _ => ""
-    };
 
     /// <summary>Иконка и цвет плитки под каждый повод.</summary>
     private static (Geometry? Icon, Brush Tint) Look(NotificationKind kind)
