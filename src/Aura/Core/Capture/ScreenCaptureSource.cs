@@ -56,6 +56,8 @@ public sealed class ScreenCaptureSource : IScreenCapture
         using var mt = D3DDevice.QueryInterface<ID3D11Multithread>();
         mt.SetMultithreadProtected(true);
 
+        GpuPriority.TryRaise(D3DDevice);
+
         _winrtDevice = CaptureInterop.CreateWinRtDevice(D3DDevice);
     }
 

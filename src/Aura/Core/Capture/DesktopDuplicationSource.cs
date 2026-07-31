@@ -154,6 +154,8 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             // Кодировщик и захват работают в разных потоках
             using var mt = _device.QueryInterface<ID3D11Multithread>();
             mt.SetMultithreadProtected(true);
+
+            GpuPriority.TryRaise(_device);
         }
 
         _output = targetOutput.QueryInterface<IDXGIOutput1>();

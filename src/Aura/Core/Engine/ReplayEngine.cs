@@ -235,31 +235,57 @@ public sealed class ReplayEngine : IDisposable
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
     private System.Threading.Timer? _statsTimer;
     private long _lastSubmitted, _lastEncoded, _lastDropped, _lastDuplicated, _lastReceived, _lastAccepted;
+    private long _lastRequests, _lastPacerBlocked;
 
     private void StartStatsTimer()
     {
         _lastSubmitted = _lastEncoded = _lastDropped = _lastDuplicated = _lastReceived = _lastAccepted = 0;
+        _lastRequests = _lastPacerBlocked = 0;
+        _statsWindowStart = DateTime.UtcNow;
         _statsTimer?.Dispose();
-        _statsTimer = new System.Threading.Timer(_ =>
-        {
-            var enc = _encoder;
-            var cap = _capture;
-            if (enc is null || State == EngineState.Stopped) return;
-            long s = enc.FramesSubmitted, e = enc.FramesEncoded,
-                 d = enc.FramesDroppedQueue, dup = enc.FramesDuplicated;
-            long rcv = cap?.FramesReceived ?? 0, acc = cap?.FramesAccepted ?? 0;
-            Log.Info("Engine", $"Конвейер за минуту: WGC {rcv - _lastReceived}/{acc - _lastAccepted} " +
-                $"(получено/принято), захвачено {s - _lastSubmitted}, " +
-                $"дубликатов {dup - _lastDuplicated}, закодировано {e - _lastEncoded}, " +
-                $"дропнуто {d - _lastDropped} (буфер {(int)BufferedDuration.TotalSeconds} сек)");
+        _statsTimer = new System.Threading.Timer(_ => DumpStats("за минуту"),
+            null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
 
-            // Где именно уходит бюджет кадра (16.7 мс при 60 fps)
-            string probe = Diagnostics.PipelineProbe.TakeReport();
-            if (probe.Length > 0) Log.Info("Engine", probe);
+    private DateTime _statsWindowStart = DateTime.UtcNow;
 
-            _lastSubmitted = s; _lastEncoded = e; _lastDropped = d; _lastDuplicated = dup;
-            _lastReceived = rcv; _lastAccepted = acc;
-        }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    /// <summary>
+    /// Счётчики конвейера с прошлой выгрузки в лог. Зовётся раз в минуту, а ещё
+    /// при сохранении повтора и остановке буфера: короткие сеансы (записал 20 секунд,
+    /// сохранил, выключил) до минутного тика не доживали, и разбирать провал fps
+    /// было не по чему.
+    /// </summary>
+    private void DumpStats(string label)
+    {
+        var enc = _encoder;
+        var cap = _capture;
+        if (enc is null || State == EngineState.Stopped) return;
+
+        long s = enc.FramesSubmitted, e = enc.FramesEncoded,
+             d = enc.FramesDroppedQueue, dup = enc.FramesDuplicated;
+        long req = enc.InputRequests, blocked = enc.PacerBlocked;
+        long rcv = cap?.FramesReceived ?? 0, acc = cap?.FramesAccepted ?? 0;
+        double seconds = Math.Max((DateTime.UtcNow - _statsWindowStart).TotalSeconds, 0.001);
+        if (seconds < 2) return; // только что выгружали — нечего показывать
+
+        // fps по каждой стадии: сразу видно, кто именно не дотягивает до настроенного.
+        Log.Info("Engine", $"Конвейер {label} ({seconds:F0} с): WGC {rcv - _lastReceived}/{acc - _lastAccepted} " +
+            $"(получено/принято), захвачено {s - _lastSubmitted}, " +
+            $"дубликатов {dup - _lastDuplicated}, закодировано {e - _lastEncoded}, " +
+            $"дропнуто {d - _lastDropped} (буфер {(int)BufferedDuration.TotalSeconds} сек) | " +
+            $"fps: WGC {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
+            $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
+            $", пресет {enc.QualityPreset}" +
+            (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (очередь полна)" : ""));
+
+        // Где именно уходит бюджет кадра (16.7 мс при 60 fps)
+        string probe = Diagnostics.PipelineProbe.TakeReport();
+        if (probe.Length > 0) Log.Info("Engine", probe);
+
+        _lastSubmitted = s; _lastEncoded = e; _lastDropped = d; _lastDuplicated = dup;
+        _lastReceived = rcv; _lastAccepted = acc;
+        _lastRequests = req; _lastPacerBlocked = blocked;
+        _statsWindowStart = DateTime.UtcNow;
     }
 
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,
@@ -329,6 +355,7 @@ public sealed class ReplayEngine : IDisposable
 
     public void Stop()
     {
+        DumpStats("на выключении");
         _watchdog?.Dispose(); _watchdog = null;
         _statsTimer?.Dispose(); _statsTimer = null;
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
@@ -361,6 +388,8 @@ public sealed class ReplayEngine : IDisposable
     public void SaveReplay(int? secondsOverride = null)
     {
         if (State != EngineState.Running || _encoder?.OutputMediaType is null) return;
+
+        DumpStats("к моменту сохранения"); // короткий сеанс тоже должен оставить следы в логе
 
         var s = _settings.Current;
         long wanted = TimeSpan.FromSeconds(secondsOverride ?? s.ReplayLengthSeconds).Ticks;

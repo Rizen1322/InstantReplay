@@ -120,6 +120,19 @@ public sealed class VideoEncoder : IDisposable
     public long FramesDuplicated;
     public long FramesDroppedQueue;
     public long FramesEncoded;
+    /// <summary>
+    /// Сколько раз MFT попросил кадр (METransformNeedInput). Это ПОТОЛОК скорости
+    /// кодирования: подать больше, чем у нас попросили, нельзя. Если запросов 26 в
+    /// секунду при настроенных 60 — упирается именно энкодер, а не захват и не диск,
+    /// причём по времени ProcessInput этого не видно (сам вызов быстрый).
+    /// </summary>
+    public long InputRequests;
+    /// <summary>
+    /// Сколько раз пейсер отказался ставить дубликат из-за переполненной очереди.
+    /// Пока счётчик растёт, жёсткого CFR нет: в файле окажется меньше 60 кадров в
+    /// секунду, и запись будет «дёргаться» независимо от того, что показывает игра.
+    /// </summary>
+    public long PacerBlocked;
 
     private static long NowQpcTicks() =>
         (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
@@ -150,6 +163,11 @@ public sealed class VideoEncoder : IDisposable
         attrs.Set(TransformAttributeKeys.TransformAsyncUnlock, 1u);
         // Отдаём MFT наш D3D-девайс: вход принимается прямо как GPU-текстуры
         _transform.ProcessMessage(TMessageType.MessageSetD3DManager, (nuint)(nint)_deviceManager.NativePointer);
+
+        // Часть ключей ICodecAPI энкодер принимает только ДО установки типов —
+        // после он отвечает E_INVALIDARG. Здесь ровно те, что меняют структуру
+        // потока (B-кадры), остальные настраиваются ниже, после типов.
+        ConfigureCodecApiEarly();
 
         // --- Выходной (сжатый) тип: у энкодеров задаётся ПЕРВЫМ ---
         var outType = MediaFactory.MFCreateMediaType();
@@ -330,6 +348,38 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Ключи ICodecAPI, которые задаются ДО установки медиатипов.
+    ///
+    /// B-кадры — главная причина, по которой энкодер держит кадры в себе и реже
+    /// присылает NeedInput: чтобы сжать B-кадр, нужен следующий за ним опорный.
+    /// Для записи геймплея они не нужны, а задержку конвейера дают прямую.
+    /// После SetOutputType этот ключ NVIDIA отвечает E_INVALIDARG — структура
+    /// потока к тому моменту уже зафиксирована.
+    /// </summary>
+    private void ConfigureCodecApiEarly()
+    {
+        IntPtr pCodecApi = IntPtr.Zero;
+        try
+        {
+            Guid iid = typeof(ICodecAPI).GUID;
+            Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
+            var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
+            // NVIDIA этот ключ не поддерживает ни до, ни после установки типов;
+            // на её энкодере B-кадры и так выключены режимом низкой задержки.
+            // Оставлено ради Intel/AMD, где ключ работает.
+            SetCodecValue(codecApi, CodecApiGuids.AVEncMPVDefaultBPictureCount, 0u, optional: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Encoder", $"ICodecAPI (до типов) недоступен: {ex.Message}");
+        }
+        finally
+        {
+            if (pCodecApi != IntPtr.Zero) Marshal.Release(pCodecApi);
+        }
+    }
+
     /// <summary>Тюнинг через ICodecAPI: CBR, GOP = 2 сек, low-latency. Ошибки не фатальны.</summary>
     private void ConfigureCodecApi(int fps, long bitrateBps)
     {
@@ -340,13 +390,57 @@ public sealed class VideoEncoder : IDisposable
             Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
             var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
 
-            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonRateControlMode, 3u /* CBR */);
+            // eAVEncCommonRateControlMode: 0 = CBR, 1 = PeakConstrainedVBR,
+            // 2 = UnconstrainedVBR, 3 = Quality.
+            //
+            // Здесь стояло 3 с комментарием «CBR». Тройка — это режим ПО КАЧЕСТВУ:
+            // энкодер сам выбирает битрейт под свой внутренний уровень качества, а
+            // заданный пользователем игнорирует. В замерах по сохранённым клипам
+            // фактический битрейт гулял от 15.0 до 58.1 Мбит/с при настройке 50 —
+            // на простой сцене энкодер опускался втрое, и запись заметно проигрывала
+            // NVIDIA App на тех же настройках (она пишет CBR).
+            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonRateControlMode, 0u /* CBR */);
             SetCodecValue(codecApi, CodecApiGuids.AVEncCommonMeanBitRate, (uint)bitrateBps);
+            // Буфер VBV на секунду: в CBR это запас, из которого энкодер берёт биты
+            // на резкое усложнение картинки, не разваливая её в блоки.
+            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
             SetCodecValue(codecApi, CodecApiGuids.AVEncMPVGOPSize, (uint)(fps * 2));
-            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonLowLatency, true);
-            // Скорость важнее качества (0..100): под 100% загрузкой GPU игрой энкодер
-            // на «качественном» пресете не вытягивает 60 fps — кадры дропаются.
-            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonQualityVsSpeed, 25u);
+            // AVEncCommonLowLatency энкодер NVIDIA отвергает с E_INVALIDARG в ЛЮБОМ
+            // виде (пробовали и VT_BOOL, и VT_UI4) — в логе это годами висело как
+            // «ICodecAPI 9d3ecd55…: Value does not fall within the expected range».
+            // Оставляем документированный VT_BOOL для тех MFT, где ключ работает,
+            // а до NVENC добираемся двумя другими ключами ниже.
+            SetCodecValue(codecApi, CodecApiGuids.AVEncCommonLowLatency, true, optional: true);
+
+            // Тот самый режим низкой задержки, который понимают MFT-энкодеры.
+            SetCodecValue(codecApi, CodecApiGuids.AVLowLatencyMode, true);
+
+            // Баланс качество/скорость (0..100). Было жёстко 25 — быстрый пресет NVENC,
+            // выбранный когда энкодер не вытягивал 60 fps под нагрузкой. Причина той
+            // просадки оказалась другой (не применялся AVLowLatencyMode), а на быстром
+            // пресете при том же битрейте картинка заметно грубее в движении.
+            // Теперь стартуем с качественного пресета, а на 25 уходим сами, если
+            // энкодер перестаёт успевать (см. AdaptQuality).
+            //
+            // Ключ есть не у всех: NVIDIA на IsSupported отвечает «нет» (при этом
+            // SetValue молча проглатывает значение — то есть прежняя жёсткая 25 у неё
+            // никогда ни на что не влияла). Ставим и адаптируем только там, где он есть.
+            Guid qvs = CodecApiGuids.AVEncCommonQualityVsSpeed;
+            bool hasQualityVsSpeed = false;
+            try { hasQualityVsSpeed = codecApi.IsSupported(ref qvs) == 0; } catch { }
+            if (hasQualityVsSpeed)
+            {
+                SetCodecValue(codecApi, CodecApiGuids.AVEncCommonQualityVsSpeed, QualityBalanced);
+            }
+            else
+            {
+                _adaptUnavailable = true;
+                Log.Info("Encoder", "Пресет качество/скорость этот энкодер не поддерживает — " +
+                                    "адаптация под нагрузку выключена, качество определяется битрейтом");
+            }
+
+            LogEffectiveRateControl(codecApi);
+            LogSupport(codecApi);
         }
         catch (Exception ex)
         {
@@ -358,10 +452,161 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
-    private static void SetCodecValue(ICodecAPI api, Guid guid, object value)
+    // ---------------- Адаптивный пресет качества ----------------
+
+    /// <summary>Качественный пресет — режим по умолчанию.</summary>
+    private const uint QualityBalanced = 50;
+    /// <summary>Быстрый пресет: включается сам, когда энкодер не успевает.</summary>
+    private const uint QualityFast = 25;
+    /// <summary>Окно оценки. Короче — дёргано, длиннее — поздно реагируем.</summary>
+    private const int AdaptWindowMs = 5000;
+    /// <summary>Сколько спокойных окон подряд нужно, чтобы вернуться к качеству (30 с).</summary>
+    private const int AdaptRecoveryWindows = 6;
+
+    /// <summary>Текущий пресет качество/скорость — показывается в статистике конвейера.</summary>
+    public uint QualityPreset { get; private set; } = QualityBalanced;
+
+    private readonly System.Diagnostics.Stopwatch _adaptClock = System.Diagnostics.Stopwatch.StartNew();
+    private long _adaptNextCheckMs = AdaptWindowMs;
+    private long _adaptEncoded, _adaptBlocked, _adaptDropped;
+    private int _adaptCalmWindows;
+    private bool _adaptUnavailable;
+
+    /// <summary>
+    /// Раз в 5 секунд смотрим, справляется ли энкодер, и переключаем пресет.
+    ///
+    /// Признак «упирается ЭНКОДЕР» — именно пара условий: закодировано заметно меньше
+    /// целевого fps И при этом очередь переполнялась (пейсер молчал или кадры дропались).
+    /// Одного отставания по fps мало: когда голодает захват (WGC отдаёт 18 кадров в
+    /// секунду), кадров просто нет, и ронять качество тут незачем — быстрее не станет.
+    ///
+    /// Слабая видеокарта попадает сюда сама собой: у неё окно «не справляется»
+    /// наступает в первые же секунды записи.
+    /// </summary>
+    private void AdaptQuality()
+    {
+        if (_adaptUnavailable || _adaptClock.ElapsedMilliseconds < _adaptNextCheckMs) return;
+        _adaptNextCheckMs = _adaptClock.ElapsedMilliseconds + AdaptWindowMs;
+
+        long encoded = Interlocked.Read(ref FramesEncoded);
+        long blocked = Interlocked.Read(ref PacerBlocked);
+        long dropped = Interlocked.Read(ref FramesDroppedQueue);
+        long dEncoded = encoded - _adaptEncoded, dBlocked = blocked - _adaptBlocked, dDropped = dropped - _adaptDropped;
+        _adaptEncoded = encoded; _adaptBlocked = blocked; _adaptDropped = dropped;
+
+        double target = Fps * (AdaptWindowMs / 1000.0);
+        bool encoderBound = dEncoded < target * 0.9 && (dBlocked > 0 || dDropped > 0);
+
+        if (encoderBound)
+        {
+            _adaptCalmWindows = 0;
+            if (QualityPreset != QualityFast)
+                ApplyQualityPreset(QualityFast,
+                    $"энкодер не успевает ({dEncoded / (AdaptWindowMs / 1000.0):F0} из {Fps} fps)");
+        }
+        else if (QualityPreset != QualityBalanced && ++_adaptCalmWindows >= AdaptRecoveryWindows)
+        {
+            _adaptCalmWindows = 0;
+            ApplyQualityPreset(QualityBalanced, "нагрузка спала");
+        }
+    }
+
+    private void ApplyQualityPreset(uint value, string reason)
+    {
+        IntPtr pCodecApi = IntPtr.Zero;
+        try
+        {
+            Guid iid = typeof(ICodecAPI).GUID;
+            Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
+            var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
+            Guid guid = CodecApiGuids.AVEncCommonQualityVsSpeed;
+            object boxed = value;
+            codecApi.SetValue(ref guid, ref boxed);
+            QualityPreset = value;
+            Log.Info("Encoder", $"Пресет качества → {value} ({reason})");
+        }
+        catch (Exception ex)
+        {
+            // Энкодер не даёт менять пресет на лету — больше не дёргаем его каждые 5 сек.
+            _adaptUnavailable = true;
+            Log.Info("Encoder", $"Пресет качества на лету не меняется ({ex.Message}) — остаётся {QualityPreset}");
+        }
+        finally
+        {
+            if (pCodecApi != IntPtr.Zero) Marshal.Release(pCodecApi);
+        }
+    }
+
+    /// <summary>
+    /// Читаем настройки битрейта ОБРАТНО из энкодера. SetValue может вернуть успех и
+    /// при этом ничего не изменить (так у NVIDIA проходит неподдерживаемый ключ), а
+    /// режим управления битрейтом — как раз то место, где мы уже ошиблись: там годами
+    /// стоял режим Quality под комментарием «CBR», и заданный битрейт игнорировался.
+    /// Теперь в логе видно фактическое состояние, а не наши намерения.
+    /// </summary>
+    private static void LogEffectiveRateControl(ICodecAPI api)
+    {
+        try
+        {
+            string mode = ReadValue(api, CodecApiGuids.AVEncCommonRateControlMode) is uint m
+                ? m switch
+                {
+                    0 => "CBR", 1 => "VBR с потолком", 2 => "VBR без ограничений",
+                    3 => "по качеству (битрейт игнорируется!)", 4 => "VBR низкой задержки",
+                    _ => $"режим {m}"
+                }
+                : "не читается";
+            string mean = ReadValue(api, CodecApiGuids.AVEncCommonMeanBitRate) is uint b
+                ? $"{b / 1_000_000.0:F0} Мбит/с" : "не читается";
+            string buffer = ReadValue(api, CodecApiGuids.AVEncCommonBufferSize) is uint bs
+                ? $"{bs / 1_000_000.0:F0} Мбит" : "по умолчанию";
+            Log.Info("Encoder", $"Битрейт по факту: {mode}, {mean}, буфер {buffer}");
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Encoder", $"Настройки битрейта не читаются обратно: {ex.Message}");
+        }
+    }
+
+    private static object? ReadValue(ICodecAPI api, Guid guid)
+    {
+        try { api.GetValue(ref guid, out object value); return value; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Что из ICodecAPI этот энкодер вообще умеет. Пишем один раз при старте:
+    /// набор у NVIDIA, AMD и Intel разный, и без этой строки любая настройка —
+    /// гадание (так мы уже потеряли время на B-кадрах, которых у NVENC нет).
+    /// </summary>
+    private static void LogSupport(ICodecAPI api)
+    {
+        var yes = new List<string>();
+        var no = new List<string>();
+        foreach (var (name, guid) in CodecApiGuids.Probe)
+        {
+            Guid g = guid;
+            bool supported;
+            try { supported = api.IsSupported(ref g) == 0; } catch { supported = false; }
+            (supported ? yes : no).Add(name);
+        }
+        Log.Info("Encoder", $"ICodecAPI поддерживает: {string.Join(", ", yes)}");
+        if (no.Count > 0) Log.Info("Encoder", $"ICodecAPI НЕ поддерживает: {string.Join(", ", no)}");
+    }
+
+    /// <summary>
+    /// optional — ключ, который часть энкодеров не поддерживает штатно (и отвечает
+    /// E_INVALIDARG). Такие пишем в лог как INF: два вечных WRN в каждом запуске
+    /// мешают искать в нём настоящие проблемы.
+    /// </summary>
+    private static void SetCodecValue(ICodecAPI api, Guid guid, object value, bool optional = false)
     {
         try { api.SetValue(ref guid, ref value); }
-        catch (Exception ex) { Log.Warn("Encoder", $"ICodecAPI {guid}: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            if (optional) Log.Info("Encoder", $"ICodecAPI {guid} не поддерживается энкодером");
+            else Log.Warn("Encoder", $"ICodecAPI {guid}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -475,6 +720,7 @@ public sealed class VideoEncoder : IDisposable
         while (_running)
         {
             Thread.Sleep(4);
+            AdaptQuality(); // вне _cfrLock: смена пресета не должна держать подачу кадров
             lock (_cfrLock)
             {
                 if (_lastSubmittedTex is null || _cfrBase < 0 || _context is null) continue;
@@ -487,9 +733,16 @@ public sealed class VideoEncoder : IDisposable
                 int catchUp = 0;
                 while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 4)
                 {
-                    lock (_queueLock)
-                        if (_inputQueue.Count >= _maxInputQueue - 1)
-                            break; // очередь и так полна — дубликаты в неё не пихаем
+                    bool queueFull;
+                    lock (_queueLock) queueFull = _inputQueue.Count >= _maxInputQueue - 1;
+                    if (queueFull)
+                    {
+                        // Очередь и так полна — дубликаты в неё не пихаем. Но это значит,
+                        // что сетка CFR рвётся: считаем такие случаи, иначе провал fps
+                        // в файле выглядит как «непонятно почему».
+                        Interlocked.Increment(ref PacerBlocked);
+                        break;
+                    }
 
                     long pts = _lastCfrPts + _frameDurationTicks;
                     _lastCfrPts = pts;
@@ -519,7 +772,10 @@ public sealed class VideoEncoder : IDisposable
                 var type = ev.EventType;
 
                 if (type == MediaEventTypes.TransformNeedInput)
+                {
+                    Interlocked.Increment(ref InputRequests);
                     _needInput.Release();
+                }
                 else if (type == MediaEventTypes.TransformHaveOutput)
                     DrainOutput();
             }
@@ -707,12 +963,53 @@ internal interface ICodecAPI
     void SetValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] ref object value);
 }
 
-/// <summary>GUID'ы ICodecAPI, которых может не быть в обёртке.</summary>
+/// <summary>
+/// GUID'ы ICodecAPI, которых может не быть в обёртке.
+/// Значения сверены с codecapi.h из Windows SDK (10.0.19041.0).
+/// </summary>
 internal static class CodecApiGuids
 {
     public static readonly Guid AVEncCommonRateControlMode = new("1c0608e9-370c-4710-8a58-cb6181c42423");
     public static readonly Guid AVEncCommonMeanBitRate     = new("f7222374-2144-4815-b550-a37f8e12ee52");
+    public static readonly Guid AVEncCommonBufferSize      = new("0db96574-b6a4-4c8b-8106-3773de0310cd");
     public static readonly Guid AVEncMPVGOPSize            = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
     public static readonly Guid AVEncCommonLowLatency      = new("9d3ecd55-89e8-490a-970a-0c9548d5a56e");
+    public static readonly Guid AVLowLatencyMode           = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
+    public static readonly Guid AVEncMPVDefaultBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
+    public static readonly Guid AVEncCommonMaxBitRate      = new("9651eae4-39b9-4ebf-85ef-d7f444ec7465");
+    public static readonly Guid AVEncCommonQuality         = new("fcbf57a3-7ea5-4b0c-9644-69b40c39c391");
+    public static readonly Guid AVEncVideoEncodeQP         = new("2cb5696b-23fb-4ce1-a0f9-ef5b90fd55ca");
+    public static readonly Guid AVEncVideoMinQP            = new("0ee22c6a-a37c-4568-b5f1-9d4c2b3ab886");
+    public static readonly Guid AVEncVideoMaxQP            = new("3daf6f66-a6a7-45e0-a8e5-f2743f46a3a2");
+    public static readonly Guid AVEncVideoForceKeyFrame    = new("398c1b98-8353-475a-9ef2-8f265d260345");
+    public static readonly Guid AVEncNumWorkerThreads      = new("b0c8bf60-16f7-4951-a30b-1db1609293d6");
+    public static readonly Guid AVEncAdaptiveMode          = new("4419b185-da1f-4f53-bc76-097d0c1efb1e");
     public static readonly Guid AVEncCommonQualityVsSpeed  = new("98332df8-03cd-476b-89fa-3f9e442dec9f");
+
+    /// <summary>
+    /// Человекочитаемые имена для лога поддержки ключей.
+    /// ВНИМАНИЕ: объявление обязано идти ПОСЛЕ всех Guid-полей выше. Статические
+    /// инициализаторы выполняются в порядке объявления, и поле, объявленное ниже,
+    /// попадёт сюда как Guid.Empty — опрос тогда честно ответит «не поддерживается»
+    /// про пустой GUID. Один раз уже наступили: так «пропала» поддержка QualityVsSpeed.
+    /// </summary>
+    public static readonly (string Name, Guid Guid)[] Probe =
+    [
+        ("RateControlMode", AVEncCommonRateControlMode),
+        ("MeanBitRate", AVEncCommonMeanBitRate),
+        ("MaxBitRate", AVEncCommonMaxBitRate),
+        ("BufferSize", AVEncCommonBufferSize),
+        ("Quality", AVEncCommonQuality),
+        ("QualityVsSpeed", AVEncCommonQualityVsSpeed),
+        ("LowLatency", AVEncCommonLowLatency),
+        ("LowLatencyMode", AVLowLatencyMode),
+        ("GOPSize", AVEncMPVGOPSize),
+        ("BPictureCount", AVEncMPVDefaultBPictureCount),
+        ("EncodeQP", AVEncVideoEncodeQP),
+        ("MinQP", AVEncVideoMinQP),
+        ("MaxQP", AVEncVideoMaxQP),
+        ("ForceKeyFrame", AVEncVideoForceKeyFrame),
+        ("WorkerThreads", AVEncNumWorkerThreads),
+        ("AdaptiveMode", AVEncAdaptiveMode),
+    ];
 }
