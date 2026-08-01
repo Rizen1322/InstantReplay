@@ -74,7 +74,17 @@ public partial class AppSettingsPage : PageBase
         CheckUpdates.IsChecked = s.CheckForUpdates;
         DriverWatch.IsChecked = s.CheckNvidiaDriver;
         VersionText.Text = $"Версия {typeof(App).Assembly.GetName().Version?.ToString(3)}";
-        if (UpdateStatus.Text.Length == 0) UpdateStatus.Text = "Обновлений не искали";
+        // Обновление могли уже найти при запуске — показываем его сразу, вместе
+        // с кнопкой установки. Иначе переход по карточке «Есть обновление»
+        // приводил на страницу, где ничего про обновление не сказано.
+        if (Services.Updates.Available is { } found)
+        {
+            UpdateStatus.Text = $"Доступна версия {found.Version}";
+            UpdateStatus.Foreground = (Brush)FindResource("AccentTxBrush");
+            InstallButton.Visibility = Visibility.Visible;
+            InstallButton.Tag = found;
+        }
+        else if (UpdateStatus.Text.Length == 0) UpdateStatus.Text = "Обновлений не искали";
 
         _loading = false;
     }

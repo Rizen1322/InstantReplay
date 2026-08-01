@@ -49,6 +49,15 @@ internal static unsafe class ArenaMediaBuffer
 
     private static readonly IntPtr SharedVtbl = BuildVtbl();
 
+    /// <summary>
+    /// Сколько наших буферов ещё живо. Пока счётчик не ноль, память, на которую они
+    /// смотрят, трогать нельзя: писатель отпускает сэмплы асинхронно и вполне может
+    /// додержать часть после того, как его самого освободили.
+    /// </summary>
+    private static int _alive;
+
+    public static int Alive => Volatile.Read(ref _alive);
+
     private static IntPtr BuildVtbl()
     {
         // Порядок строго по mfobjects.h: три метода IUnknown, затем пять своих.
@@ -76,6 +85,7 @@ internal static unsafe class ArenaMediaBuffer
         instance->Data = data;
         instance->MaxLength = (uint)length;
         instance->CurrentLength = (uint)length;
+        Interlocked.Increment(ref _alive);
         return (IntPtr)instance;
     }
 
@@ -106,7 +116,11 @@ internal static unsafe class ArenaMediaBuffer
     private static uint Release(Instance* self)
     {
         int left = Interlocked.Decrement(ref self->RefCount);
-        if (left == 0) NativeMemory.Free(self); // саму арену не трогаем — она не наша
+        if (left == 0)
+        {
+            NativeMemory.Free(self); // саму арену не трогаем — она не наша
+            Interlocked.Decrement(ref _alive);
+        }
         return (uint)Math.Max(left, 0);
     }
 

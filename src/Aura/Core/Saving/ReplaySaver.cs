@@ -20,6 +20,43 @@ public static class ReplaySaver
 {
     private const int MfESinkHeadersNotFound = unchecked((int)0xC00D4A45);
 
+    /// <summary>
+    /// Открепить блоки арены — но только когда писатель отпустит ВСЕ наши буферы.
+    ///
+    /// Сэмплы ссылаются прямо на память арены, и Dispose писателя не гарантирует,
+    /// что он отпустил их немедленно: в замерах он удерживал 6781 сэмпл из 7067.
+    /// Если открепить раньше времени, кольцо перезапишет эти байты, а сборщик может
+    /// собрать блок целиком — и Media Foundation обратится к чужой памяти. Именно так
+    /// приложение и падало молча через несколько секунд после сохранения.
+    ///
+    /// Ждём в фоне, чтобы не задерживать вызывающего: закрепление лишних блоков на
+    /// пару секунд ничего не стоит, а обращение к освобождённой памяти стоит краха.
+    /// </summary>
+    private static void UnpinWhenWriterDone(List<System.Runtime.InteropServices.GCHandle> handles)
+    {
+        if (handles.Count == 0) return;
+
+        Task.Run(() =>
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (ArenaMediaBuffer.Alive > 0 && clock.Elapsed < TimeSpan.FromSeconds(30))
+                Thread.Sleep(20);
+
+            if (ArenaMediaBuffer.Alive > 0)
+            {
+                // Так быть не должно. Блоки оставляем закреплёнными навсегда: утечка
+                // нескольких десятков мегабайт безопаснее обращения к чужой памяти.
+                Log.Warn("Saver", $"Писатель не отпустил {ArenaMediaBuffer.Alive} буферов за 30 секунд — " +
+                                  "блоки арены остаются закреплёнными");
+                return;
+            }
+
+            foreach (var handle in handles) handle.Free();
+            if (clock.ElapsedMilliseconds > 50)
+                Log.Info("Saver", $"Писатель отпустил буферы через {clock.ElapsedMilliseconds} мс после закрытия");
+        });
+    }
+
     /// <summary>Имя кодека из подтипа медиатипа — для понятных сообщений об ошибке.</summary>
     private static string VideoCodecName(IMFMediaType type)
     {
@@ -237,8 +274,8 @@ public static class ReplaySaver
         }
         finally
         {
-            writer.Dispose();                       // отпускает удержанные сэмплы
-            foreach (var handle in handles) handle.Free();
+            writer.Dispose();  // отпускает удержанные сэмплы
+            UnpinWhenWriterDone(handles);
         }
     }
 

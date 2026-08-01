@@ -26,6 +26,15 @@ public sealed class UpdateService
     /// </summary>
     public const string Repo = "Rizen1322/InstantReplay";
 
+    /// <summary>
+    /// Найденное обновление — чтобы страница настроек показала его сразу, без
+    /// повторной проверки. Раньше результат проверки терялся: карточка «Есть
+    /// обновление» вела на страницу, где было написано «Обновлений не искали»,
+    /// а кнопка установки оставалась скрытой — со стороны выглядело так, будто
+    /// нажатие ничего не делает.
+    /// </summary>
+    public UpdateInfo? Available { get; private set; }
+
     public async Task<UpdateInfo?> CheckAsync(string repo = Repo)
     {
         if (string.IsNullOrWhiteSpace(repo) || !repo.Contains('/')) return null;
@@ -37,14 +46,15 @@ public sealed class UpdateService
 
             var remote = ParseVersion(release.TagName);
             var local = typeof(UpdateService).Assembly.GetName().Version ?? new Version(1, 0, 0);
-            if (remote is null || remote <= local) return null;
+            if (remote is null || remote <= local) { Available = null; return null; }
 
             string? asset = release.Assets?.FirstOrDefault(a =>
                 a.Name?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true ||
                 a.Name?.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) == true ||
                 a.Name?.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) == true)?.BrowserDownloadUrl;
 
-            return new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "");
+            Available = new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "");
+            return Available;
         }
         catch (Exception ex)
         {
