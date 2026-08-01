@@ -41,8 +41,17 @@ public readonly record struct AudioBlock(float[] Game, float[] Mic, long PtsTick
 /// </summary>
 public sealed class ReplayVideoBuffer
 {
-    /// <summary>Размер блока арены. Кадр никогда не лежит на границе двух блоков.</summary>
-    private const int ChunkBytes = 64 << 20;
+    /// <summary>
+    /// Размер блока арены. Кадр никогда не лежит на границе двух блоков.
+    ///
+    /// 16 МБ, а не 64: арена рассчитывается на ЗАДАННЫЙ битрейт, а реальный поток
+    /// часто заметно меньше (простая картинка, низкая частота захвата). Занято при
+    /// этом столько блоков, сколько нужно под живые кадры, — и чем мельче блок, тем
+    /// точнее это «сколько нужно». В замере на чужой машине буфер держал 146 МБ
+    /// данных при арене на 832 МБ; с блоками по 64 МБ округление съедало заметную
+    /// часть разницы.
+    /// </summary>
+    private const int ChunkBytes = 16 << 20;
 
     /// <summary>
     /// Потолок арены. Настройки допускают 30 минут при 80 Мбит/с — это 18 ГБ,
@@ -58,9 +67,9 @@ public sealed class ReplayVideoBuffer
     /// Запас под запись файла. Пока сохраняется клип, его кадры остаются в арене
     /// (см. <see cref="ReleaseSnapshot"/>), а запись продолжается — новым кадрам
     /// нужно куда-то ложиться. Файл пишется около полутора секунд, то есть при
-    /// 40 Мбит/с ему хватило бы 8 МБ; блока с запасом достаточно.
+    /// 40 Мбит/с ему хватило бы 8 МБ; 64 МБ — запас с большим избытком.
     /// </summary>
-    private const long SaveHeadroomBytes = ChunkBytes;
+    private const long SaveHeadroomBytes = 64L << 20;
 
     private const long KeyframeSafetyTicks = 100_000_000; // 10 сек сверх лимита
 
@@ -96,7 +105,7 @@ public sealed class ReplayVideoBuffer
     /// Двух запасных хватает: кольцо потребляет их не быстрее, чем отпускает.
     /// </summary>
     private readonly Stack<byte[]> _spare = new();
-    private const int MaxSpareChunks = 2;
+    private const int MaxSpareChunks = 4;
     private int _prefetching;
 
     private bool _warnedNoKeyframes, _warnedHugeFrame, _warnedNoRoom;
@@ -147,7 +156,7 @@ public sealed class ReplayVideoBuffer
             EnsureSpare();
         }
 
-        Log.Info("Buffer", $"Арена буфера: {chunks} × 64 МБ = {_capacity / (1024 * 1024)} МБ " +
+        Log.Info("Buffer", $"Арена буфера: {chunks} × {ChunkBytes / (1024 * 1024)} МБ = {_capacity / (1024 * 1024)} МБ " +
                            $"на {seconds} сек при {bitrateBps / 1_000_000} Мбит/с");
         if (capped < wanted)
             Log.Warn("Buffer", $"Для {seconds} сек при {bitrateBps / 1_000_000} Мбит/с нужно " +

@@ -282,7 +282,7 @@ public sealed class ReplayEngine : IDisposable
             $"дропнуто {d - _lastDropped} (буфер {(int)BufferedDuration.TotalSeconds} сек) | " +
             $"fps: WGC {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
             $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
-            $", пресет {enc.QualityPreset}" +
+            $", пресет {enc.QualityPreset}, кадров внутри MFT до {Interlocked.Exchange(ref enc.MaxInFlight, 0)}" +
             (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (очередь полна)" : ""));
 
         // Где именно уходит бюджет кадра (16.7 мс при 60 fps)

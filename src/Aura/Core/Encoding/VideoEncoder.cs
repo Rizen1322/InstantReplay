@@ -128,6 +128,15 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     public long InputRequests;
     /// <summary>
+    /// Сколько кадров одновременно находится ВНУТРИ энкодера: отдали в ProcessInput,
+    /// но ещё не забрали из ProcessOutput. Если ProcessInput подвисает на сотни
+    /// миллисекунд и в этот момент число упирается в константу — значит он ждёт
+    /// освобождения внутренней поверхности MFT, а не очереди команд GPU. Это две
+    /// разные болезни с разным лечением.
+    /// </summary>
+    public long MaxInFlight;
+    private int _inFlight;
+    /// <summary>
     /// Сколько раз пейсер отказался ставить дубликат из-за переполненной очереди.
     /// Пока счётчик растёт, жёсткого CFR нет: в файле окажется меньше 60 кадров в
     /// секунду, и запись будет «дёргаться» независимо от того, что показывает игра.
@@ -832,6 +841,11 @@ public sealed class VideoEncoder : IDisposable
                     item = _inputQueue.Dequeue();
                 }
 
+                int inFlight = Interlocked.Increment(ref _inFlight);
+                long peak;
+                while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
+                    if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
+
                 long piStart = Diagnostics.PipelineProbe.Now();
                 using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(
                     typeof(ID3D11Texture2D).GUID, item.tex, 0, false);
@@ -939,6 +953,7 @@ public sealed class VideoEncoder : IDisposable
 
         var hr = _transform.ProcessOutput(ProcessOutputFlags.None, 1, ref outBuffer, out _);
         if (hr.Failure) { ourSample?.Dispose(); return; }
+        Interlocked.Decrement(ref _inFlight);
 
         RefreshOutputTypeOnce();
 
