@@ -54,7 +54,13 @@ public static class ReplaySaver
         // throttling ОТКЛЮЧЁН. Пробовали включить — фаза записи выросла с 0.6 до 33 с:
         // Media Foundation тормозит вызывающего искусственными паузами, рассчитанными
         // на запись в реальном времени, а мы пишем готовый снимок буфера.
-        using IMFSinkWriter writer = MfMp4Writer.Create(filePath);
+        MfMp4Writer.ResetSampleCounters();
+        // Писатель освобождается ЯВНО и строго раньше, чем открепляются блоки арены:
+        // сэмплы ссылаются на них напрямую, и пока писатель жив, память трогать нельзя.
+        IMFSinkWriter writer = MfMp4Writer.Create(filePath);
+        var handles = new List<System.Runtime.InteropServices.GCHandle>();
+        try
+        {
 
         int videoStream = MfMp4Writer.AddPassthroughVideoStream(writer, videoType);
         var audioStreams = MfMp4Writer.AddAudioStreams(writer, trackMode, hasGame, hasMic);
@@ -67,6 +73,19 @@ public static class ReplaySaver
         int frameCount = video.Count;
         double clipSeconds = (video[^1].PtsTicks - baseTicks) / 10_000_000.0;
 
+        // Блоки арены, в которых лежат кадры клипа, закрепляем на время записи:
+        // сэмплы будут ссылаться прямо на них, без копирования, а писатель держит
+        // сэмплы у себя ещё какое-то время после WriteSample. Блоков единицы —
+        // по одному на каждые 64 МБ клипа.
+        var pinned = new Dictionary<byte[], IntPtr>(ReferenceEqualityComparer.Instance as IEqualityComparer<byte[]>);
+        foreach (var f in video)
+        {
+            if (pinned.ContainsKey(f.Data)) continue;
+            var handle = System.Runtime.InteropServices.GCHandle.Alloc(f.Data, System.Runtime.InteropServices.GCHandleType.Pinned);
+            handles.Add(handle);
+            pinned[f.Data] = handle.AddrOfPinnedObject();
+        }
+
         // Дорожки пишем ЧЕРЕДУЯ по времени, а не «сначала всё видео, потом всё аудио»:
         // MP4 хранит потоки вперемешку, так писателю не нужно переупорядочивать их самому.
         //
@@ -76,11 +95,10 @@ public static class ReplaySaver
         // (367 МБ за 0.95 с против 950 МБ за 20 с: система уходила в подкачку).
         // С ареной проблемы нет: снимок — это те же блоки, что буфер уже занимал,
         // новой памяти сохранение не просит вовсе.
-        // Ограничение темпа подачи (см. WriteDrain): равномерно ~220 МБ/с плюс
-        // страховка по очереди внутри писателя. Без ограничения писатель принимает
-        // сэмплы быстрее, чем сливает их на диск, копит клип в памяти и потом
-        // разгребает его десятками секунд, попутно вываливая гигабайт грязных
-        // страниц — от этого и фризы в игре.
+        // Ограничение темпа подачи (см. WriteDrain) работает только когда писатель
+        // отдаёт статистику своей очереди. Фиксированный темп пробовали и отказались:
+        // ни 300, ни 180 МБ/с на память не повлияли (прирост нативной части всё равно
+        // равен объёму клипа), а сохранение растянулось с 2.6 до 5.5 секунды.
         int blockSamples = audio.Count > 0 ? audio[0].Game.Length : 960;
         long totalBytes = 0;
         foreach (var f in video) totalBytes += f.Length;
@@ -154,12 +172,14 @@ public static class ReplaySaver
                 }
             }
 
-            using (var sample = MfMp4Writer.CreateSample(f.Data, f.Offset, f.Length, vpts, f.DurationTicks))
             {
+                var sample = MfMp4Writer.CreateSampleNoCopy(
+                    pinned[f.Data] + f.Offset, f.Length, vpts, f.DurationTicks);
                 if (f.IsKeyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
                 long videoStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 writer.WriteSample(videoStream, sample);
                 videoTicks += System.Diagnostics.Stopwatch.GetTimestamp() - videoStart;
+                MfMp4Writer.ReleaseSample(sample);
             }
             drain.Submitted(f.Length);
         }
@@ -205,6 +225,7 @@ public static class ReplaySaver
 
         Log.Info("Saver", $"Сохранено: {filePath} ({frameCount} кадров за {clipSeconds:F1} с{fps}, " +
                           $"{audio.Count} аудиоблоков)");
+        Log.Info("Saver", MfMp4Writer.SampleReport);
         Log.Info("Saver", $"Запись файла заняла {total} мс " +
                           $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +
                           $"финализация {total - tAudio}); {fileBytes / (1024 * 1024)} МБ, " +
@@ -213,6 +234,12 @@ public static class ReplaySaver
                           $"WriteSample: видео {videoTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} мс, " +
                           $"аудио+AAC {audioTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} мс");
         progress?.Invoke(1);
+        }
+        finally
+        {
+            writer.Dispose();                       // отпускает удержанные сэмплы
+            foreach (var handle in handles) handle.Free();
+        }
     }
 
     /// <summary>
@@ -279,17 +306,9 @@ public static class ReplaySaver
         /// причём куча .NET не менялась вовсе — то есть весь гигабайт был внутри
         /// Media Foundation.
         ///
-        /// 300 МБ/с — вдвое ниже реальной скорости диска в замерах (537 МБ/с),
-        /// поэтому писатель успевает сливать по мере поступления и ничего не копит.
-        /// Клип на 800 МБ пишется 2.7 секунды вместо 1.4 — пользователь этого не
-        /// замечает: уведомление показывается сразу после снимка буфера, а не после
-        /// записи файла.
-        /// </summary>
-        private const double PacedBytesPerMs = 300.0 * 1024 * 1024 / 1000.0;
-
         public string Report => _statsAvailable
             ? $"очередь писателя: пик {Storage.ByteSize.Format(_maxQueued)}, ждали {WaitedMs} мс"
-            : $"очередь писателя не видна — подача с темпом 300 МБ/с, ждали {WaitedMs} мс";
+            : "очередь писателя не видна — подача без ограничений";
 
         public WriteDrain(IMFSinkWriter writer, int probeStream, long totalBytes, Action<double>? progress)
         {
@@ -307,9 +326,10 @@ public static class ReplaySaver
             if (_submitted - _lastCheck < CheckEveryBytes) return;
             _lastCheck = _submitted;
 
+            if (!_statsAvailable) return; // очередь писателя не видна — не тормозим
+
             long start = _clock.ElapsedMilliseconds;
-            if (_statsAvailable) WaitForQueue();
-            else PaceByRate();
+            WaitForQueue();
             WaitedMs += _clock.ElapsedMilliseconds - start;
         }
 
@@ -329,17 +349,6 @@ public static class ReplaySaver
                 if (queued <= QueueLimitBytes) break;
                 Thread.Sleep(5);
             }
-        }
-
-        /// <summary>
-        /// Держим средний темп подачи: столько времени «должно» было пройти на уже
-        /// отданный объём. Ждём только если опережаем график, и не дольше потолка
-        /// одной сверки — так медленный диск не превращает сохранение в вечность.
-        /// </summary>
-        private void PaceByRate()
-        {
-            int ahead = (int)(_submitted / PacedBytesPerMs - _clock.ElapsedMilliseconds);
-            if (ahead > 0) Thread.Sleep(Math.Min(ahead, MaxWaitPerCheckMs));
         }
 
         /// <summary>Байты в очереди писателя; -1 — статистика недоступна.</summary>

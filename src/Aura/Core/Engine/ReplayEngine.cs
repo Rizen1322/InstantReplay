@@ -318,8 +318,16 @@ public sealed class ReplayEngine : IDisposable
                 System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
-            Log.Info("Engine", $"Память возвращена: куча {GC.GetTotalMemory(false) / (1024 * 1024)} МБ, " +
-                               $"процесс {Environment.WorkingSet / (1024 * 1024)} МБ");
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+
+            using var self = System.Diagnostics.Process.GetCurrentProcess();
+            long gcCommitted = GC.GetGCMemoryInfo().TotalCommittedBytes;
+            long priv = self.PrivateMemorySize64;
+            static string Mb(long b) => $"{b / (1024 * 1024)} МБ";
+            Log.Info("Engine", $"Память возвращена: живых объектов {Mb(GC.GetTotalMemory(false))}, " +
+                               $"коммит сборщика {Mb(gcCommitted)}, нативная ~{Mb(Math.Max(0, priv - gcCommitted))}, " +
+                               $"частная всего {Mb(priv)}");
+            Diagnostics.MemoryMap.Log("после остановки");
         }
         catch (Exception ex) { Log.Warn("Engine", $"Сжатие кучи: {ex.Message}"); }
     });
@@ -344,12 +352,20 @@ public sealed class ReplayEngine : IDisposable
         }
         catch { }
 
+        // Сколько памяти держит закоммиченной сам сборщик мусора. Ключевая цифра:
+        // разница между ней и частной памятью процесса — это нативная часть
+        // (D3D, Media Foundation, WPF, драйвер). Без этого разделения спор
+        // «кто занял гигабайт» не решается.
+        long gcCommitted = GC.GetGCMemoryInfo().TotalCommittedBytes;
+
         static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";
-        // Частная память — то, что процесс занял на самом деле; рабочий набор
-        // (его показывает диспетчер задач) от неё отличается, потому что система
-        // выгружает и возвращает страницы по своему усмотрению.
+        // Частная память — то, что процесс закоммитил и обязан освободить сам;
+        // рабочий набор (его показывает диспетчер задач) система урезает по своему
+        // усмотрению, поэтому судить по нему нельзя.
         Log.Info("Engine", $"Память: буфер видео {Mb(ring)}, звук {Mb(audio)}, " +
-                           $"куча .NET {Mb(heap)}, частная {Mb(priv)}, рабочий набор {Mb(working)}");
+                           $"живых объектов {Mb(heap)}, коммит сборщика {Mb(gcCommitted)}, " +
+                           $"нативная ~{Mb(Math.Max(0, priv - gcCommitted))}, " +
+                           $"частная всего {Mb(priv)}, рабочий набор {Mb(working)}");
     }
 
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,
@@ -487,6 +503,8 @@ public sealed class ReplayEngine : IDisposable
             // успевает переполниться: в замерах пик очереди 66 из 66 и 523 дропнутых
             // кадра ровно в минуту сохранения, при этом сам ProcessInput не тормозил.
             // Лишние полсекунды на запись файла не заметит никто, потерянные кадры — да.
+            Diagnostics.MemoryMap.Log("до сохранения");
+
             var self = Thread.CurrentThread;
             var previousPriority = self.Priority;
             self.Priority = ThreadPriority.BelowNormal;
@@ -526,6 +544,9 @@ public sealed class ReplayEngine : IDisposable
                 // время клип лежал в той же арене, а запись шла в её свободную часть.
                 _videoBuffer.ReleaseSnapshot(snapshotToken);
                 video.Clear();
+                // Писатель закрыт — сводим освободившиеся нативные блоки вместе,
+                // иначе память, занятая под клип, остаётся за процессом до выхода.
+                Diagnostics.MemoryMap.Log("после сохранения");
                 self.Priority = previousPriority;      // поток уходит обратно в пул потоков
                 SetState(State == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
             }

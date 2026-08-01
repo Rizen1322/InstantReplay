@@ -153,4 +153,28 @@ internal static partial class NativeMethods
     // ---------------- d3d11 (WinRT Direct3D interop) ----------------
     [LibraryImport("d3d11.dll")]
     internal static partial int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);
+
+    // ---------------- kernel32 (карта адресного пространства) ----------------
+    /// <summary>Описание области адресного пространства (см. MEMORY_BASIC_INFORMATION).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MemoryBasicInformation
+    {
+        public IntPtr BaseAddress;
+        public IntPtr AllocationBase;
+        public uint AllocationProtect;
+        public uint Alignment1;
+        public nuint RegionSize;
+        public uint State;
+        public uint Protect;
+        public uint Type;
+        public uint Alignment2;
+    }
+
+    internal const uint MemCommit = 0x1000;
+    internal const uint MemPrivate = 0x20000;
+    internal const uint MemMapped = 0x40000;
+    internal const uint MemImage = 0x1000000;
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial nuint VirtualQuery(IntPtr address, out MemoryBasicInformation buffer, nuint length);
 }
