@@ -8,7 +8,7 @@ namespace Aura.Core.Saving;
 /// <summary>
 /// Общие куски для записи MP4 через SinkWriter: используются и мгновенным
 /// сохранением повтора (ReplaySaver), и обычной записью в файл (ManualRecorder).
-/// Видео всегда passthrough сжатого битстрима, аудио — AAC из float32 PCM.
+/// Видео всегда passthrough сжатого битстрима, аудио — AAC из PCM16.
 /// </summary>
 internal static class MfMp4Writer
 {
@@ -42,7 +42,7 @@ internal static class MfMp4Writer
         return index;
     }
 
-    /// <summary>AAC-LC 48k stereo 192 kbps; на вход — float32 PCM из микшера.</summary>
+    /// <summary>AAC-LC 48k stereo 192 kbps; на вход — PCM16 из микшера.</summary>
     public static int AddAacStream(IMFSinkWriter writer)
     {
         using var outType = MediaFactory.MFCreateMediaType();
@@ -56,12 +56,12 @@ internal static class MfMp4Writer
 
         using var inType = MediaFactory.MFCreateMediaType();
         inType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio);
-        inType.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Float);
+        inType.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Pcm);
         inType.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, SampleRate);
         inType.Set(MediaTypeAttributeKeys.AudioNumChannels, Channels);
-        inType.Set(MediaTypeAttributeKeys.AudioBitsPerSample, 32);
-        inType.Set(MediaTypeAttributeKeys.AudioBlockAlignment, Channels * 4);
-        inType.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, SampleRate * Channels * 4);
+        inType.Set(MediaTypeAttributeKeys.AudioBitsPerSample, 16);
+        inType.Set(MediaTypeAttributeKeys.AudioBlockAlignment, Channels * 2);
+        inType.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, SampleRate * Channels * 2);
         writer.SetInputMediaType(idx, inType, null);
         return idx;
     }
@@ -69,10 +69,10 @@ internal static class MfMp4Writer
     /// <summary>
     /// Аудиопотоки по режиму дорожек: список (индекс потока, селектор PCM из блока).
     /// </summary>
-    public static List<(int Index, Func<AudioBlock, float[]> Selector)> AddAudioStreams(
+    public static List<(int Index, Func<AudioBlock, short[]> Selector)> AddAudioStreams(
         IMFSinkWriter writer, AudioTrackMode trackMode, bool hasGame, bool hasMic)
     {
-        var streams = new List<(int, Func<AudioBlock, float[]>)>();
+        var streams = new List<(int, Func<AudioBlock, short[]>)>();
         bool wantGame = hasGame && trackMode is not AudioTrackMode.MicOnly;
         bool wantMic = hasMic && trackMode is not AudioTrackMode.GameOnly;
         if (!wantGame && !wantMic) return streams;
@@ -88,9 +88,11 @@ internal static class MfMp4Writer
             {
                 if (!wantMic) return b.Game;
                 if (!wantGame) return b.Mic;
-                var mixed = new float[b.Game.Length];
+                // Сводим в int и зажимаем по границам short: сумма двух дорожек
+                // легко выходит за диапазон, а переполнение слышно как треск.
+                var mixed = new short[b.Game.Length];
                 for (int i = 0; i < mixed.Length; i++)
-                    mixed[i] = Math.Clamp(b.Game[i] + b.Mic[i], -1f, 1f);
+                    mixed[i] = (short)Math.Clamp(b.Game[i] + b.Mic[i], short.MinValue, short.MaxValue);
                 return mixed;
             }
             ));

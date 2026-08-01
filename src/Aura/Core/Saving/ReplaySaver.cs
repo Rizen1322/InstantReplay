@@ -13,7 +13,7 @@ namespace Aura.Core.Saving;
 /// Видео уже сжато (H264/HEVC/AV1) — SinkWriter работает в passthrough-режиме
 /// (input type == output type == сжатый), т.е. это чистый remux: сохранение
 /// 5-минутного клипа занимает доли секунды и не грузит GPU/CPU.
-/// Аудио — PCM float 48k из микшера, кодируется в AAC самим SinkWriter.
+/// Аудио — PCM16 48k из микшера, кодируется в AAC самим SinkWriter.
 /// Режим дорожек (Mixed/Separate/GameOnly/MicOnly) применяется здесь.
 /// </summary>
 public static class ReplaySaver
@@ -139,7 +139,7 @@ public static class ReplaySaver
         int blockSamples = audio.Count > 0 ? audio[0].Game.Length : 960;
         long totalBytes = 0;
         foreach (var f in video) totalBytes += f.Length;
-        totalBytes += (long)audio.Count * blockSamples * sizeof(float) * audioStreams.Count;
+        totalBytes += (long)audio.Count * blockSamples * sizeof(short) * audioStreams.Count;
 
         var drain = new WriteDrain(writer, videoStream, totalBytes, progress);
 
@@ -153,12 +153,12 @@ public static class ReplaySaver
         // Буфер СВОЙ на каждую дорожку: они накапливаются параллельно.
         // Второй буфер (в байтах) переиспользуется вместо ToArray() на каждый кусок:
         // раньше это давало 138 МБ мусора на трёхминутный клип с двумя дорожками.
-        var chunkBuf = new float[audioStreams.Count][];
+        var chunkBuf = new short[audioStreams.Count][];
         var chunkBytes = new byte[audioStreams.Count][];
         for (int s = 0; s < audioStreams.Count; s++)
         {
-            chunkBuf[s] = new float[BlocksPerChunk * blockSamples];
-            chunkBytes[s] = new byte[BlocksPerChunk * blockSamples * sizeof(float)];
+            chunkBuf[s] = new short[BlocksPerChunk * blockSamples];
+            chunkBytes[s] = new byte[BlocksPerChunk * blockSamples * sizeof(short)];
         }
         var chunkFill = new int[audioStreams.Count];           // сколько блоков накоплено
         var chunkStart = new long[audioStreams.Count];         // pts первого блока куска
@@ -172,9 +172,9 @@ public static class ReplaySaver
         void FlushAudio(int s)
         {
             if (chunkFill[s] == 0) return;
-            int floats = chunkFill[s] * blockSamples;
-            int byteCount = floats * sizeof(float);
-            MemoryMarshal.AsBytes<float>(chunkBuf[s].AsSpan(0, floats)).CopyTo(chunkBytes[s]);
+            int samples = chunkFill[s] * blockSamples;
+            int byteCount = samples * sizeof(short);
+            MemoryMarshal.AsBytes<short>(chunkBuf[s].AsSpan(0, samples)).CopyTo(chunkBytes[s]);
             using var sample = MfMp4Writer.CreateSample(
                 chunkBytes[s], 0, byteCount, chunkStart[s], chunkFill[s] * 100_000L);
             long audioStart = System.Diagnostics.Stopwatch.GetTimestamp();

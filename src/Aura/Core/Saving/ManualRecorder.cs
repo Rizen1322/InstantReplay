@@ -65,8 +65,8 @@ public sealed class ManualRecorder : IDisposable
     private readonly List<string> _files = [];
 
     private readonly object _audioSync = new();
-    private List<(int Index, Func<AudioBlock, float[]> Selector)> _audioStreams = [];
-    private float[][] _chunkBuf = [];
+    private List<(int Index, Func<AudioBlock, short[]> Selector)> _audioStreams = [];
+    private short[][] _chunkBuf = [];
     private int[] _chunkFill = [];
     private long[] _chunkStart = [];
     private int _blockSamples;
@@ -153,10 +153,10 @@ public sealed class ManualRecorder : IDisposable
         int fill = _chunkFill[s];
         _chunkFill[s] = 0;
 
-        int floats = fill * _blockSamples;
-        int byteCount = floats * sizeof(float);
+        int samples = fill * _blockSamples;
+        int byteCount = samples * sizeof(short);
         var bytes = ArrayPool<byte>.Shared.Rent(byteCount);
-        MemoryMarshal.AsBytes<float>(_chunkBuf[s].AsSpan(0, floats)).CopyTo(bytes);
+        MemoryMarshal.AsBytes<short>(_chunkBuf[s].AsSpan(0, samples)).CopyTo(bytes);
         return new Item(bytes, byteCount, _chunkStart[s], fill * 100_000L, s, false);
     }
 
@@ -276,11 +276,11 @@ public sealed class ManualRecorder : IDisposable
             if (_chunkBuf.Length != audioStreams.Count)
             {
                 _blockSamples = AudioBlockSamples;
-                _chunkBuf = new float[audioStreams.Count][];
+                _chunkBuf = new short[audioStreams.Count][];
                 _chunkFill = new int[audioStreams.Count];
                 _chunkStart = new long[audioStreams.Count];
                 for (int s = 0; s < audioStreams.Count; s++)
-                    _chunkBuf[s] = new float[BlocksPerChunk * _blockSamples];
+                    _chunkBuf[s] = new short[BlocksPerChunk * _blockSamples];
             }
             else Array.Clear(_chunkFill); // копившееся для прошлой части не тащим в новую
         }

@@ -194,6 +194,7 @@ public partial class CapturePage : PageBase
         CustomLength.Text = s.ReplayLengthSeconds.ToString();
         HighlightLength(s.ReplayLengthSeconds);
         ShowRam();
+        ShowBitrate();   // вес повтора считается от длины буфера — она задана только сейчас
 
         GameAudio.IsChecked = s.CaptureGameAudio;
         MicAudio.IsChecked = s.CaptureMicrophone;
@@ -371,6 +372,7 @@ public partial class CapturePage : PageBase
         CustomLength.Text = seconds.ToString();
         HighlightLength(seconds);
         ShowRam();
+        ShowBitrate();   // вес повтора считается от длины буфера
         SetDirty(true);
     }
 
@@ -380,6 +382,7 @@ public partial class CapturePage : PageBase
         CustomLength.Text = seconds.ToString();
         HighlightLength(seconds);
         ShowRam();
+        ShowBitrate();   // вес повтора считается от длины буфера
         SetDirty(true);
     }
 
@@ -443,18 +446,40 @@ public partial class CapturePage : PageBase
     {
         int value = (int)Bitrate.Value;
         BitrateValue.Text = $"{value} Мбит/с";
-        BitrateSub.Text = $"Минута записи весит около {value * 7.5:0} МБ";
+
+        // Показываем вес именно ВАШЕГО повтора, а не абстрактной минуты: длина
+        // буфера задаётся рядом, и человек хочет знать, во что обойдётся файл,
+        // который он сохранит хоткеем. Плюс, для ориентира, вес часа обычной записи.
+        int seconds = ParseLength();
+        double clipMb = value * 0.125 * seconds;
+        double hourGb = value * 0.125 * 3600 / 1024;
+        BitrateSub.Text = $"Повтор на {LengthWords(seconds)} весит около {clipMb:0} МБ · " +
+                          $"час записи ≈ {hourGb:0.0} ГБ";
+    }
+
+    /// <summary>«30 секунд», «2 минуты», «3 мин 30 сек» — как человек это произносит.</summary>
+    private static string LengthWords(int seconds)
+    {
+        if (seconds < 60) return $"{seconds} сек";
+        int minutes = seconds / 60, rest = seconds % 60;
+        string m = (minutes % 10, minutes % 100) switch
+        {
+            (1, not 11) => $"{minutes} минуту",
+            (2 or 3 or 4, not (12 or 13 or 14)) => $"{minutes} минуты",
+            _ => $"{minutes} минут"
+        };
+        return rest == 0 ? m : $"{m} {rest} сек";
     }
 
     private void ShowRam()
     {
         // Столько же считает ReplayVideoBuffer.Allocate: длительность плюс запас на
-        // GOP и всплески битрейта, округлённые вверх до блоков по 64 МБ. Показываем
-        // именно занимаемое, а не полезное — иначе цифра в настройках расходится
-        // с тем, что видно в диспетчере задач.
+        // GOP и всплески битрейта, плюс блок под сохранение, округлённые вверх до
+        // блоков по 16 МБ. Показываем именно занимаемое, а не полезное — иначе цифра
+        // в настройках расходится с тем, что видно в диспетчере задач.
         int seconds = ParseLength();
-        double wanted = (int)Bitrate.Value * 0.125 * (seconds + 15) * 1.05;
-        double megabytes = Math.Ceiling(Math.Max(wanted, 64) / 64) * 64;
+        double wanted = (int)Bitrate.Value * 0.125 * (seconds + 15) * 1.05 + 64;
+        double megabytes = Math.Ceiling(Math.Max(wanted, 16) / 16) * 16;
         RamEstimate.Text = $"≈ {megabytes:0} МБ памяти";
     }
 

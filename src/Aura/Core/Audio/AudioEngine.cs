@@ -186,15 +186,20 @@ public sealed class AudioMixerEngine : IDisposable
                 gate = _gateEnvelope;
             }
 
-            var gameOut = new float[BlockSamples];
-            var micOut = new float[BlockSamples];
+            // Считаем в float (шумодав и пики требуют дробной точности), а отдаём
+            // 16 бит: буфер хранит часы звука, и вчетверо более широкий формат там
+            // ничего не добавляет — дальше всё равно AAC.
+            var gameOut = new short[BlockSamples];
+            var micOut = new short[BlockSamples];
             float gPeak = 0, mPeak = 0;
             for (int i = 0; i < BlockSamples; i++)
             {
-                gameOut[i] = Math.Clamp(gameBuf[i], -1f, 1f);
-                micOut[i] = Math.Clamp(micBuf[i] * gate, -1f, 1f);
-                float ga = Math.Abs(gameOut[i]); if (ga > gPeak) gPeak = ga;
-                float ma = Math.Abs(micOut[i]); if (ma > mPeak) mPeak = ma;
+                float g = Math.Clamp(gameBuf[i], -1f, 1f);
+                float m = Math.Clamp(micBuf[i] * gate, -1f, 1f);
+                gameOut[i] = ToPcm16(g);
+                micOut[i] = ToPcm16(m);
+                float ga = Math.Abs(g); if (ga > gPeak) gPeak = ga;
+                float ma = Math.Abs(m); if (ma > mPeak) mPeak = ma;
             }
             GamePeak = gPeak;
             MicPeak = mPeak;
@@ -209,6 +214,12 @@ public sealed class AudioMixerEngine : IDisposable
             else if (wait < -1_000_000) { nextDeadline = NowTicks(); pts = nextDeadline; } // сильно отстали — ресинхрон
         }
     }
+
+    /// <summary>
+    /// float −1…1 → PCM16. Умножаем на 32767, а не на 32768: иначе ровно +1.0
+    /// переполняет short и громкий звук щёлкает.
+    /// </summary>
+    private static short ToPcm16(float value) => (short)MathF.Round(value * 32767f);
 
     public void Stop()
     {

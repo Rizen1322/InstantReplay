@@ -14,8 +14,17 @@ namespace Aura.Core.Buffering;
 public readonly record struct EncodedFrame(
     byte[] Data, int Offset, int Length, long PtsTicks, long DurationTicks, bool IsKeyframe);
 
-/// <summary>Блок аудио 10 мс: две дорожки float interleaved stereo 48 кГц (по 960 сэмплов).</summary>
-public readonly record struct AudioBlock(float[] Game, float[] Mic, long PtsTicks);
+/// <summary>
+/// Блок аудио 10 мс: две дорожки interleaved stereo 48 кГц по 960 сэмплов.
+///
+/// 16 бит, а не float32. Микшер считает в float (шумодав, пики, сведение), но в
+/// буфере хранить вчетверо более широкий формат незачем: дальше звук всё равно
+/// уходит в AAC, а 16 бит — это то, в чём поставляется любая музыка и кино.
+/// Динамический диапазон 96 дБ, потолок AAC при 192 кбит/с намного ниже, так что
+/// на слух разницы нет. Память буфера при этом падает вдвое: 132 МБ на три минуты
+/// двух дорожек превращаются в 66 МБ.
+/// </summary>
+public readonly record struct AudioBlock(short[] Game, short[] Mic, long PtsTicks);
 
 /// <summary>
 /// Кольцевой буфер сжатого видео в оперативной памяти.
@@ -461,12 +470,12 @@ public sealed class ReplayAudioBuffer
     }
 
     /// <summary>
-    /// Две дорожки float32 по 10 мс: 480 фреймов × 2 канала × 4 байта × 2 дорожки.
+    /// Две дорожки по 10 мс: 480 фреймов × 2 канала × 2 байта × 2 дорожки.
     /// Размер блока задаёт микшер (AudioMixerEngine.BlockFrames); здесь он записан
     /// числом намеренно — файл не должен тянуть за собой аудиоподсистему с NAudio,
     /// иначе его не подключить к тестам.
     /// </summary>
-    private const int BlockBytes = 480 * 2 * sizeof(float) * 2;
+    private const int BlockBytes = 480 * 2 * sizeof(short) * 2;
 
     public void Add(AudioBlock block)
     {
