@@ -71,13 +71,28 @@ public partial class App : Application
             return;
         }
 
+        Log.Init();
+
+        // Ловим падения ВСЕХ потоков, а не только интерфейсного. Конвейер записи
+        // живёт в своих потоках (события MFT, питатель, пейсер, писатель файла), и
+        // необработанное исключение в любом из них убивает процесс мгновенно — без
+        // единой строки в логе, потому что обычные записи уходят через фоновую
+        // очередь и не успевают дойти до диска. Отсюда были «молчаливые» падения.
         DispatcherUnhandledException += (_, args) =>
         {
-            Log.Error("App", args.Exception);
-            args.Handled = true;
+            Log.Fatal("App", $"Исключение в потоке интерфейса: {args.Exception}");
+            args.Handled = true; // интерфейс переживёт, движок продолжит писать
         };
 
-        Log.Init();
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            Log.Fatal("App", $"Необработанное исключение{(args.IsTerminating ? " (процесс завершается)" : "")}: " +
+                             $"{args.ExceptionObject}");
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            Log.Fatal("App", $"Исключение в фоновой задаче: {args.Exception}");
+            args.SetObserved();
+        };
         Core.Interop.NativeMethods.timeBeginPeriod(1); // точный Sleep для конвейера записи и звука
         RaiseGpuPriority();
 

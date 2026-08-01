@@ -25,6 +25,26 @@ public static class Log
         Info("App", $"===== Instant Replay запущен, PID {Environment.ProcessId} =====");
     }
 
+    /// <summary>
+    /// Запись НАПРЯМУЮ в файл, минуя фоновую очередь.
+    ///
+    /// Обычные строки пишет отдельный поток, и при аварийном завершении последние из
+    /// них теряются — именно поэтому падения приложения не оставляли в логе ни следа.
+    /// Для предсмертных сообщений это неприемлемо: пишем сразу, пусть и медленнее.
+    /// </summary>
+    public static void Fatal(string tag, string msg)
+    {
+        var line = $"{DateTime.Now:HH:mm:ss.fff} [FTL] [{tag}] {msg}";
+        System.Diagnostics.Debug.WriteLine(line);
+        try
+        {
+            if (_dir.Length > 0)
+                File.AppendAllText(Path.Combine(_dir, $"app-{DateTime.Now:yyyy-MM-dd}.log"),
+                                   line + Environment.NewLine);
+        }
+        catch { }
+    }
+
     public static void Info(string tag, string msg)  => Enqueue("INF", tag, msg);
     public static void Warn(string tag, string msg)  => Enqueue("WRN", tag, msg);
     public static void Error(string tag, string msg) => Enqueue("ERR", tag, msg);
