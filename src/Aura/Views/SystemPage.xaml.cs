@@ -101,7 +101,7 @@ public partial class SystemPage : PageBase
         bool av1Encoder = supported.Contains(VideoCodec.AV1);
         bool av1Save = VideoEncoder.CanSaveToMp4(VideoCodec.AV1);
         string av1Detail = av1Encoder && av1Save ? "современный кодек"
-                         : !av1Encoder ? "видеокарта не поддерживается"
+                         : !av1Encoder ? "не поддерживается"
                          : "Windows не поддерживается";
 
         (string Name, string Detail, bool Ok)[] items =
