@@ -100,9 +100,9 @@ public partial class SystemPage : PageBase
         // Windows 10 кодирует, но не сохраняет — об этом честнее написать прямо.
         bool av1Encoder = supported.Contains(VideoCodec.AV1);
         bool av1Save = VideoEncoder.CanSaveToMp4(VideoCodec.AV1);
-        string av1Detail = av1Encoder && av1Save ? "есть"
-                         : !av1Encoder ? "нет в этой видеокарте"
-                         : "Windows 10 не сохранит";
+        string av1Detail = av1Encoder && av1Save ? "современный кодек"
+                         : !av1Encoder ? "видеокарта не поддерживается"
+                         : "Windows не поддерживается";
 
         (string Name, string Detail, bool Ok)[] items =
         [

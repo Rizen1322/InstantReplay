@@ -58,7 +58,7 @@
                 <TextBlock x:Name="EmptyTitle" Text="Здесь пока пусто" FontFamily="{DynamicResource DispFont}"
                            FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,0"/>
                 <TextBlock x:Name="EmptyHint" Style="{StaticResource RowSub}" TextAlignment="Center" MaxWidth="360"
-                           Text="Включи мгновенный повтор и сохрани момент горячей клавишей — запись появится здесь."/>
+                           Text="Включи мгновенный повтор и сохрани момент — запись появится здесь."/>
             </StackPanel>
         </StackPanel>
     </Grid>

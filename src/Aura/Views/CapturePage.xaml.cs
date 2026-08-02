@@ -146,8 +146,8 @@ public partial class CapturePage : PageBase
             text.Children.Add(new TextBlock
             {
                 Text = available ? detail
-                     : !hasEncoder ? "Эта видеокарта не умеет"
-                     : "Windows 10 не умеет сохранять AV1 в MP4",
+                     : !hasEncoder ? "Видеокарта не поддерживается"
+                     : "Данная Windows не поддерживает AV1",
                 Style = (Style)FindResource("RowSub")
             });
             row.Children.Add(text);

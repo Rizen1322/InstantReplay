@@ -78,7 +78,7 @@ public partial class ClipsPage : PageBase
         long bytes = items.Sum(i => i.SizeBytes);
         Summary.Text = items.Count == 0
             ? "Пока ничего не сохранено."
-            : $"{items.Count} записей, {ByteSize.Format(bytes)}. Клик открывает файл в плеере.";
+            : $"{items.Count} записей, {ByteSize.Format(bytes)}.";
 
         EmptyState.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (items.Count == 0)
@@ -87,7 +87,7 @@ public partial class ClipsPage : PageBase
             EmptyTitle.Text = filtered ? "Ничего не найдено" : "Здесь пока пусто";
             EmptyHint.Text = filtered
                 ? "Попробуй убрать фильтры."
-                : "Включи мгновенный повтор и сохрани момент горячей клавишей — запись появится здесь.";
+                : "Включи мгновенный повтор и сохрани момент — запись появится здесь.";
             return;
         }
 
