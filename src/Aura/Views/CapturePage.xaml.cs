@@ -196,6 +196,13 @@ public partial class CapturePage : PageBase
         ShowRam();
         ShowBitrate();   // вес повтора считается от длины буфера — она задана только сейчас
 
+        // Битрейт не совпал ни с одним уровнем — значит его задавали вручную,
+        // и прятать ползунок нельзя: человек не поймёт, куда делось его число.
+        bool manual = QualityForCurrent() is null;
+        ManualBitrate.IsChecked = manual;
+        Bitrate.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+        BitrateValue.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+
         GameAudio.IsChecked = s.CaptureGameAudio;
         MicAudio.IsChecked = s.CaptureMicrophone;
         NoiseGate.IsChecked = s.MicNoiseSuppression;
@@ -295,6 +302,10 @@ public partial class CapturePage : PageBase
     private void Video_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
+        // Разрешение или частота изменились — держимся выбранного УРОВНЯ качества,
+        // а не числа: 30 Мбит/с это «высокое» для 1080p и «лёгкое» для 4K.
+        if (ManualBitrate.IsChecked != true && (QualitySeg.SelectedItem as ListBoxItem)?.Tag is string quality)
+            Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps());
         HighlightPreset();
         ShowRam();
         SetDirty(true);
@@ -442,6 +453,44 @@ public partial class CapturePage : PageBase
         }
     }
 
+    /// <summary>
+    /// Битрейт под разрешение и частоту для каждого уровня качества, Мбит/с.
+    ///
+    /// Ползунок 10–80 сам по себе не подсказывал ничего: человек ставил 45 на 1080p,
+    /// потому что «больше — лучше», и получал гигабайт памяти под буфер и вдвое
+    /// более тяжёлые файлы без видимой разницы. Числа здесь — те, на которых
+    /// картинка перестаёт улучшаться на глаз для соответствующего разрешения.
+    /// </summary>
+    private static int BitrateFor(string quality, int height, int fps)
+    {
+        int baseline = height switch
+        {
+            <= 720  => quality switch { "light" => 6,  "normal" => 10, "high" => 16, _ => 24 },
+            <= 1080 => quality switch { "light" => 10, "normal" => 18, "high" => 30, _ => 45 },
+            <= 1440 => quality switch { "light" => 18, "normal" => 30, "high" => 50, _ => 70 },
+            _       => quality switch { "light" => 30, "normal" => 45, "high" => 65, _ => 80 }
+        };
+        // Частота кадров меняет объём почти линейно, но не совсем: на 30 кадрах
+        // хватает меньшего битрейта, на 120+ нужен не вдвое больший.
+        double byFps = fps switch { <= 30 => 0.7, <= 60 => 1.0, <= 120 => 1.35, _ => 1.5 };
+        return Math.Clamp((int)Math.Round(baseline * byFps), 10, 80);
+    }
+
+    /// <summary>Какому уровню соответствует текущий битрейт; null — ни одному.</summary>
+    private string? QualityForCurrent()
+    {
+        int height = SelectedHeight(), fps = SelectedFps(), value = (int)Bitrate.Value;
+        foreach (string quality in new[] { "light", "normal", "high", "max" })
+            if (BitrateFor(quality, height, fps) == value) return quality;
+        return null;
+    }
+
+    private int SelectedHeight() =>
+        int.TryParse((ResolutionSeg.SelectedItem as ListBoxItem)?.Tag?.ToString(), out int h) ? h : 1080;
+
+    private int SelectedFps() =>
+        int.TryParse((FpsSeg.SelectedItem as ListBoxItem)?.Tag?.ToString(), out int f) ? f : 60;
+
     private void ShowBitrate()
     {
         int value = (int)Bitrate.Value;
@@ -453,8 +502,41 @@ public partial class CapturePage : PageBase
         int seconds = ParseLength();
         double clipMb = value * 0.125 * seconds;
         double hourGb = value * 0.125 * 3600 / 1024;
-        BitrateSub.Text = $"Повтор на {LengthWords(seconds)} весит около {clipMb:0} МБ · " +
+        BitrateSub.Text = $"{value} Мбит/с · повтор на {LengthWords(seconds)} ≈ {clipMb:0} МБ · " +
                           $"час записи ≈ {hourGb:0.0} ГБ";
+
+        // Уровень подсвечиваем по текущему числу: так после ручной правки видно,
+        // попали вы в готовый уровень или ушли в своё значение.
+        string? quality = QualityForCurrent();
+        _loading = true;
+        QualitySeg.SelectedItem = null;
+        if (quality is not null)
+            foreach (ListBoxItem item in QualitySeg.Items)
+                if ((string)item.Tag == quality) { QualitySeg.SelectedItem = item; break; }
+        _loading = false;
+    }
+
+    private void Quality_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading) return;
+        if ((QualitySeg.SelectedItem as ListBoxItem)?.Tag is not string quality) return;
+        Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps());
+    }
+
+    /// <summary>
+    /// Ручной режим прячет ползунок за переключателем. Смысл: число битрейта само
+    /// по себе ничего не подсказывает, и человек ставит побольше «на всякий случай».
+    /// </summary>
+    private void ManualBitrate_Changed(object sender, RoutedEventArgs e)
+    {
+        bool manual = ManualBitrate.IsChecked == true;
+        Bitrate.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+        BitrateValue.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
+
+        // Выключили ручной режим, а число ни в один уровень не попадает —
+        // возвращаем ближайший осмысленный, чтобы не остаться без выделения.
+        if (!manual && QualityForCurrent() is null)
+            Bitrate.Value = BitrateFor("high", SelectedHeight(), SelectedFps());
     }
 
     /// <summary>«30 секунд», «2 минуты», «3 мин 30 сек» — как человек это произносит.</summary>

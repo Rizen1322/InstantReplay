@@ -43,22 +43,33 @@
                         <Border Style="{StaticResource RowSeparator}"/>
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Битрейт" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Качество записи" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="BitrateSub" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Segmented x:Name="QualitySeg" HorizontalAlignment="Right"
+                                         SelectionChanged="Quality_Changed">
+                                <ListBoxItem Content="Лёгкое" Tag="light"/>
+                                <ListBoxItem Content="Обычное" Tag="normal"/>
+                                <ListBoxItem Content="Высокое" Tag="high"/>
+                                <ListBoxItem Content="Максимум" Tag="max"/>
+                            </c:Segmented>
+                        </c:AdaptiveRow>
+
+                        <Border Style="{StaticResource RowSeparator}"/>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Задать битрейт вручную" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Если знаете, какое число вам нужно" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <TextBlock x:Name="BitrateValue" Style="{StaticResource RowValue}" Width="76"
-                                           TextAlignment="Right" Margin="0,0,10,0"/>
-                                <Slider x:Name="Bitrate" Minimum="10" Maximum="80" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                                           TextAlignment="Right" Margin="0,0,10,0" Visibility="Collapsed"/>
+                                <Slider x:Name="Bitrate" Minimum="10" Maximum="80" TickFrequency="1"
+                                        IsSnapToTickEnabled="True" Visibility="Collapsed"/>
+                                <c:Switch x:Name="ManualBitrate" Click="ManualBitrate_Changed" Margin="10,0,0,0"/>
                             </StackPanel>
                         </c:AdaptiveRow>
                     </StackPanel>
-                </Border>
-
-                <!-- ==================== КОДЕК ==================== -->
-                <TextBlock Text="Кодек" Style="{StaticResource GroupLabel}"/>
-                <Border Style="{StaticResource Card}">
-                    <StackPanel x:Name="Codecs"/>
                 </Border>
 
                 <!-- ==================== ДЛИНА ПОВТОРА ==================== -->
@@ -81,6 +92,12 @@
                             </Border>
                         </StackPanel>
                     </StackPanel>
+                </Border>
+
+                <!-- ==================== КОДЕК ==================== -->
+                <TextBlock Text="Кодек" Style="{StaticResource GroupLabel}"/>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel x:Name="Codecs"/>
                 </Border>
 
                 <!-- ==================== ЗВУК ==================== -->

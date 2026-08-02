@@ -1,4 +1,5 @@
 using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using Aura.Core.Buffering;
@@ -121,9 +122,19 @@ public sealed class AudioMixerEngine : IDisposable
 
     public event Action<AudioBlock>? BlockReady;
 
+    // Настройки последнего запуска — по ним пересоздаём источник, если система
+    // сменила устройство по умолчанию.
+    private bool _wantGame, _wantMic;
+    private string? _renderDeviceId, _captureDeviceId;
+    private MMDeviceEnumerator? _deviceWatchEnumerator;
+    private DefaultDeviceWatcher? _deviceWatcher;
+
     public void Start(bool captureGame, bool captureMic, string? renderDeviceId, string? captureDeviceId)
     {
         Stop();
+
+        _wantGame = captureGame; _wantMic = captureMic;
+        _renderDeviceId = renderDeviceId; _captureDeviceId = captureDeviceId;
 
         if (captureGame)
             try { _game = new AudioCaptureSource(loopback: true, renderDeviceId); }
@@ -132,9 +143,93 @@ public sealed class AudioMixerEngine : IDisposable
             try { _mic = new AudioCaptureSource(loopback: false, captureDeviceId); }
             catch (Exception ex) { Log.Error("Audio", $"Микрофон недоступен: {ex.Message}"); }
 
+        WatchDefaultDevices();
+
         _running = true;
         _thread = new Thread(MixLoop) { IsBackground = true, Name = "AudioMixer", Priority = ThreadPriority.Highest };
         _thread.Start();
+    }
+
+    /// <summary>
+    /// Следим за сменой устройства по умолчанию.
+    ///
+    /// Источник привязывается к устройству один раз и сам о подмене не узнаёт:
+    /// воткнули наушники, выдернули гарнитуру, Windows переключила вывод — а
+    /// loopback продолжает слушать старое устройство. Запись при этом идёт дальше,
+    /// индикаторы показывают тишину, и человек обнаруживает немой клип потом,
+    /// когда уже ничего не вернуть. Поэтому пересоздаём источник на лету.
+    ///
+    /// Следим только за теми источниками, которые взяты «по умолчанию»: если
+    /// устройство выбрано в настройках явно, подменять его нельзя.
+    /// </summary>
+    private void WatchDefaultDevices()
+    {
+        try
+        {
+            _deviceWatchEnumerator = new MMDeviceEnumerator();
+            _deviceWatcher = new DefaultDeviceWatcher(flow =>
+            {
+                bool affectsGame = flow == DataFlow.Render && _wantGame && _renderDeviceId is null;
+                bool affectsMic = flow == DataFlow.Capture && _wantMic && _captureDeviceId is null;
+                if (affectsGame || affectsMic) RestartSource(flow);
+            });
+            _deviceWatchEnumerator.RegisterEndpointNotificationCallback(_deviceWatcher);
+        }
+        catch (Exception ex) { Log.Warn("Audio", $"Слежение за устройствами недоступно: {ex.Message}"); }
+    }
+
+    private readonly object _restartSync = new();
+
+    private void RestartSource(DataFlow flow)
+    {
+        // Windows шлёт уведомление до того, как новое устройство готово принимать
+        // клиентов, поэтому даём ему мгновение и уходим с потока уведомлений.
+        Task.Run(() =>
+        {
+            Thread.Sleep(300);
+            lock (_restartSync)
+            {
+                if (!_running) return;
+                try
+                {
+                    if (flow == DataFlow.Render)
+                    {
+                        var replacement = new AudioCaptureSource(loopback: true, null);
+                        var old = _game;
+                        _game = replacement;
+                        old?.Dispose();
+                        Log.Info("Audio", "Устройство вывода сменилось — источник звука игры пересоздан");
+                    }
+                    else
+                    {
+                        var replacement = new AudioCaptureSource(loopback: false, null);
+                        var old = _mic;
+                        _mic = replacement;
+                        old?.Dispose();
+                        Log.Info("Audio", "Устройство ввода сменилось — микрофон пересоздан");
+                    }
+                }
+                catch (Exception ex) { Log.Error("Audio", $"Не удалось пересоздать источник: {ex.Message}"); }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Уведомления WASAPI. Интересует единственное событие — смена устройства по
+    /// умолчанию для роли Multimedia; остальное реализовано пустышками, так как
+    /// интерфейс требует все методы.
+    /// </summary>
+    private sealed class DefaultDeviceWatcher(Action<DataFlow> onDefaultChanged) : IMMNotificationClient
+    {
+        public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+        {
+            if (role == Role.Multimedia) onDefaultChanged(flow);
+        }
+
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+        public void OnDeviceAdded(string pwstrDeviceId) { }
+        public void OnDeviceRemoved(string deviceId) { }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
     }
 
     private void MixLoop()
@@ -223,6 +318,16 @@ public sealed class AudioMixerEngine : IDisposable
 
     public void Stop()
     {
+        try
+        {
+            if (_deviceWatcher is not null && _deviceWatchEnumerator is not null)
+                _deviceWatchEnumerator.UnregisterEndpointNotificationCallback(_deviceWatcher);
+        }
+        catch { }
+        _deviceWatcher = null;
+        _deviceWatchEnumerator?.Dispose();
+        _deviceWatchEnumerator = null;
+
         _running = false;
         _thread?.Join(500); _thread = null;
         _game?.Dispose(); _game = null;

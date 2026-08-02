@@ -151,6 +151,7 @@ public sealed class ReplayEngine : IDisposable
             SetState(EngineState.Running);
             StartStatsTimer();
             StartCaptureWatchdog();
+            StartGameTracker();
             Log.Info("Engine", "Instant Replay включен");
         }
         catch (Exception ex)
@@ -368,6 +369,62 @@ public sealed class ReplayEngine : IDisposable
                            $"частная всего {Mb(priv)}, рабочий набор {Mb(working)}");
     }
 
+    // ---------------- Какая игра была в буфере ----------------
+
+    /// <summary>
+    /// Игра берётся не в момент нажатия хоткея, а по тому, что было на экране,
+    /// ПОКА КОПИЛСЯ БУФЕР. Иначе достаточно свернуться в Discord, вспомнить про
+    /// момент и нажать — и трёхминутный клип из игры уезжает в папку «Discord».
+    /// Держим отметки за длину буфера и выбираем ту игру, что занимала больше всего
+    /// времени; рабочий стол засчитывается только если другого не было вовсе.
+    /// </summary>
+    private readonly Queue<(long Ticks, string Game)> _gameSamples = new();
+    private readonly object _gameSync = new();
+    private System.Threading.Timer? _gameTimer;
+
+    private void StartGameTracker()
+    {
+        lock (_gameSync) _gameSamples.Clear();
+        _gameTimer?.Dispose();
+        _gameTimer = new System.Threading.Timer(_ =>
+        {
+            if (State == EngineState.Stopped) return;
+            try
+            {
+                string game = GameDetector.DetectForegroundGame();
+                long now = DateTime.UtcNow.Ticks;
+                lock (_gameSync)
+                {
+                    _gameSamples.Enqueue((now, game));
+                    long oldest = now - _videoBuffer.MaxDurationTicks;
+                    while (_gameSamples.Count > 0 && _gameSamples.Peek().Ticks < oldest)
+                        _gameSamples.Dequeue();
+                }
+            }
+            catch { }
+        }, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+    }
+
+    /// <summary>Игра, под которую сохранять клип: самая частая за время буфера.</summary>
+    private string GameForClip()
+    {
+        lock (_gameSync)
+        {
+            if (_gameSamples.Count == 0) return GameDetector.DetectForegroundGame();
+
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (_, game) in _gameSamples)
+                counts[game] = counts.GetValueOrDefault(game) + 1;
+
+            // Рабочий стол — это «ничего не запущено», он не должен побеждать игру,
+            // даже если её свернули на половину буфера.
+            var best = counts
+                .OrderByDescending(p => string.Equals(p.Key, "Desktop", StringComparison.OrdinalIgnoreCase) ? -1 : p.Value)
+                .First();
+            return best.Key;
+        }
+    }
+
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,
     // сброс драйвера) — сессия захвата может умереть насовсем. Буфер при этом жив
     // (пейсер дублирует последний кадр), но реальная картинка не вернётся сама.
@@ -436,6 +493,7 @@ public sealed class ReplayEngine : IDisposable
     public void Stop()
     {
         DumpStats("на выключении");
+        _gameTimer?.Dispose(); _gameTimer = null;
         _watchdog?.Dispose(); _watchdog = null;
         _statsTimer?.Dispose(); _statsTimer = null;
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
@@ -482,8 +540,8 @@ public sealed class ReplayEngine : IDisposable
         var audio = _audioBuffer.Snapshot(video[0].PtsTicks, video[^1].PtsTicks);
         _audioBuffer.Clear();
 
-        // Игра определяется В МОМЕНТ сохранения по активному процессу
-        string game = GameDetector.DetectForegroundGame();
+        // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip)
+        string game = GameForClip();
         string file = BuildFilePath(game, "replay");
         var mediaType = _encoder.OutputMediaType;
         int seconds = (int)Math.Round(TimeSpan.FromTicks(video[^1].PtsTicks - video[0].PtsTicks).TotalSeconds);
