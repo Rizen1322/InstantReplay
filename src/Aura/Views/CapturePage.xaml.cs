@@ -502,7 +502,9 @@ public partial class CapturePage : PageBase
         int seconds = ParseLength();
         double clipMb = value * 0.125 * seconds;
         double hourGb = value * 0.125 * 3600 / 1024;
-        BitrateSub.Text = $"{value} Мбит/с · повтор на {LengthWords(seconds)} ≈ {clipMb:0} МБ · " +
+        // Явно пишем, что за мегабайты: рядом в интерфейсе есть оценка памяти,
+        // и два числа без пометок читаются как одно и то же.
+        BitrateSub.Text = $"{value} Мбит/с · файл повтора ≈ {clipMb:0} МБ · " +
                           $"час записи ≈ {hourGb:0.0} ГБ";
 
         // Уровень подсвечиваем по текущему числу: так после ручной правки видно,
@@ -562,7 +564,7 @@ public partial class CapturePage : PageBase
         int seconds = ParseLength();
         double wanted = (int)Bitrate.Value * 0.125 * (seconds + 15) * 1.05 + 64;
         double megabytes = Math.Ceiling(Math.Max(wanted, 16) / 16) * 16;
-        RamEstimate.Text = $"≈ {megabytes:0} МБ памяти";
+        RamEstimate.Text = $"≈ {megabytes:0} МБ RAM";
     }
 
     private void ShowLevels()
