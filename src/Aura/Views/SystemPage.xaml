@@ -7,7 +7,6 @@
     <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
         <StackPanel>
             <TextBlock Text="Система" Style="{StaticResource PageTitle}"/>
-            <TextBlock Text="На чём работает запись." Style="{StaticResource Lede}"/>
 
             <!-- Видеокарта -->
             <Border Style="{StaticResource CardSoft}" Padding="18">

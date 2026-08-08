@@ -151,7 +151,7 @@
                         <Border Style="{StaticResource RowSeparator}"/>
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="Шумодав микрофона" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Шумоподавление микрофона" Style="{StaticResource RowLabel}"/>
                                 <TextBlock Text="Убирает фоновый гул в паузах между фразами" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <c:Switch x:Name="NoiseGate" Click="NoiseGate_Changed"/>

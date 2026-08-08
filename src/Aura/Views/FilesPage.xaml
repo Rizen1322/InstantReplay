@@ -7,7 +7,7 @@
     <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
         <StackPanel>
             <TextBlock Text="Файлы" Style="{StaticResource PageTitle}"/>
-            <TextBlock Text="Куда складывать записи и когда чистить старые." Style="{StaticResource Lede}"/>
+            <TextBlock Text="Куда складывать записи." Style="{StaticResource Lede}"/>
 
             <!-- Сколько занято -->
             <Border Style="{StaticResource CardSoft}" Padding="18">
