@@ -29,15 +29,14 @@
                 c:DragFile.Path="{Binding FullPath}">
             <Button.ContextMenu>
                 <ContextMenu Style="{DynamicResource TrayMenu}">
-                    <MenuItem Header="Выделить" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.SelectItem}" CommandParameter="{Binding}"/>
-                    <Separator Margin="8,4,8,4"/>
                     <MenuItem Header="Открыть" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Open}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Показать в папке" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Reveal}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Копировать путь" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.CopyPath}" CommandParameter="{Binding}"/>
+                    <MenuItem Header="Выделить" Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.SelectItem}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Обрезать в LosslessCut" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Trim}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Сжать для Discord" Style="{DynamicResource TrayMenuItem}"
@@ -59,12 +58,7 @@
                 </ContextMenu>
             </Button.ContextMenu>
             <StackPanel>
-                <Border x:Name="SelectionRing" Height="122" CornerRadius="16" Margin="-3"
-                        BorderThickness="2" BorderBrush="{DynamicResource AccentBrush}"
-                        Background="Transparent" Opacity="0" IsHitTestVisible="False"
-                        Panel.ZIndex="2"/>
                 <Border x:Name="Shot" Height="122" CornerRadius="14" ClipToBounds="True"
-                        Margin="0,-122,0,0"
                         RenderTransformOrigin="0.5,0.5">
                     <Border.RenderTransform>
                         <TransformGroup>
@@ -95,6 +89,13 @@
                             </Border.Background>
                         </Border>
                         <Border BorderThickness="1" BorderBrush="#22FFFFFF" CornerRadius="14" IsHitTestVisible="False"/>
+
+                        <!-- Рамка выделения: в том же Grid и с тем же скруглением, что
+                             и превью, поэтому ложится ровно по краю кадра при любом
+                             размере карточки и вместе с ним же масштабируется. -->
+                        <Border x:Name="SelectionRing" Opacity="0" IsHitTestVisible="False"
+                                BorderThickness="2.5" BorderBrush="{DynamicResource AccentBrush}"
+                                CornerRadius="14"/>
 
                         <!-- Галочка выделения: рамки мало, когда карточек много -->
                         <Border x:Name="Check" Visibility="Collapsed" IsHitTestVisible="False"

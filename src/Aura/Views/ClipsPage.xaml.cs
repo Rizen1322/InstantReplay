@@ -245,14 +245,15 @@ public partial class ClipsPage : PageBase
     private void UpdateSelectionBar()
     {
         var selected = SelectedItems();
-        // Панель висит, пока включён режим: иначе, сняв последнюю галочку, человек
-        // терял бы и кнопку выхода, и подсказку о том, что клики сейчас выделяют.
+
+        // Сняли последнюю галочку — режим выключается сам. Отдельная кнопка выхода
+        // для пустого выделения не нужна: снять всё и означает «я закончил».
+        if (_selecting && selected.Count == 0) { _selecting = false; _anchor = null; }
+
         SelectionBar.Visibility = _selecting ? Visibility.Visible : Visibility.Collapsed;
         if (!_selecting) return;
 
-        SelectionText.Text = selected.Count == 0
-            ? "Нажимай на записи, чтобы выделить"
-            : $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
+        SelectionText.Text = $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
     }
 
     // ---------------- Действия над выделением ----------------
