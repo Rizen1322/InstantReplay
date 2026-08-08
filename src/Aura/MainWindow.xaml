@@ -107,7 +107,7 @@
                                 <Border.RenderTransform><TranslateTransform x:Name="Indicator1Shift"/></Border.RenderTransform>
                             </Border>
                             <StackPanel x:Name="Nav1">
-                                <RadioButton Style="{StaticResource NavButton}" Tag="overview" IsChecked="True" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="overview" IsChecked="True" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Gauge}" Background="{DynamicResource AccentBrush}"/>
                                         <TextBlock Text="Обзор" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
@@ -115,7 +115,7 @@
                                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" Tag="clips" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="clips" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Film}" Background="{DynamicResource BlueBrush}"/>
                                         <TextBlock Text="Клипы" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
@@ -138,7 +138,7 @@
                                 <Border.RenderTransform><TranslateTransform x:Name="Indicator2Shift"/></Border.RenderTransform>
                             </Border>
                             <StackPanel x:Name="Nav2">
-                                <RadioButton Style="{StaticResource NavButton}" Tag="capture" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="capture" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Sliders}" Background="{DynamicResource PurpleBrush}"/>
                                         <TextBlock Text="Захват" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
@@ -146,7 +146,7 @@
                                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" Tag="keys" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="keys" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Keyboard}" Background="{DynamicResource TealBrush}"/>
                                         <TextBlock Text="Клавиши" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
@@ -154,7 +154,7 @@
                                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" Tag="files" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="files" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Folder}" Background="{DynamicResource OrangeBrush}"/>
                                         <TextBlock Text="Файлы" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
@@ -162,7 +162,7 @@
                                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" Tag="app" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="app" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Cog}" Background="{DynamicResource GrayBrush}"/>
                                         <TextBlock Text="Приложение" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
@@ -170,7 +170,7 @@
                                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" Tag="system" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="system" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
                                         <c:IconTile Data="{DynamicResource Ico.Cpu}" Background="{DynamicResource IndigoBrush}"/>
                                         <TextBlock Text="Система" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"

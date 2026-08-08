@@ -28,15 +28,23 @@ public partial class CapturePage : PageBase
     public override string Title => "Захват";
 
     /// <summary>Готовый набор: одним нажатием ставит разрешение, кадры, битрейт и кодек.</summary>
-    private sealed record Preset(string Name, string Detail, int Height, int Fps, int Bitrate, VideoCodec Codec);
+    /// <summary>
+    /// Готовый набор задаёт УРОВЕНЬ качества, а не число битрейта: иначе набор и
+    /// строка «Качество записи» ниже жили каждый своей жизнью, и «Обычный» ставил
+    /// 35 Мбит/с там, где таблица считает 25.
+    /// </summary>
+    private sealed record Preset(string Name, string Detail, int Height, int Fps, string Quality, VideoCodec Codec);
 
     private static readonly Preset[] AllPresets =
     [
-        new("Экономный", "720p · 30 · меньше всего места", 720, 30, 12, VideoCodec.H264),
-        new("Обычный", "1080p · 60 · для стримов и клипов", 1080, 60, 35, VideoCodec.H264),
-        new("Высокий", "1440p · 60 · чёткая картинка", 1440, 60, 55, VideoCodec.HEVC),
-        new("Максимум", "4K · 60 · для монтажа", 2160, 60, 75, VideoCodec.HEVC)
+        new("Экономный", "720p · 30 · меньше всего места", 720, 30, "light", VideoCodec.H264),
+        new("Обычный", "1080p · 60 · для стримов и клипов", 1080, 60, "normal", VideoCodec.H264),
+        new("Высокий", "1440p · 60 · чёткая картинка", 1440, 60, "high", VideoCodec.HEVC),
+        new("Максимум", "4K · 60 · для монтажа", 2160, 60, "max", VideoCodec.HEVC)
     ];
+
+    /// <summary>Битрейт набора — по той же таблице, что и уровни качества.</summary>
+    private static int PresetBitrate(Preset p) => BitrateFor(p.Quality, p.Height, p.Fps, p.Codec);
 
     public CapturePage()
     {
@@ -82,7 +90,8 @@ public partial class CapturePage : PageBase
                         new TextBlock { Text = preset.Name, FontSize = 13.5, FontWeight = FontWeights.SemiBold },
                         new TextBlock
                         {
-                            Text = preset.Detail, Style = (Style)FindResource("RowSub"),
+                            Text = $"{preset.Detail} · {PresetBitrate(preset)} Мбит/с",
+                            Style = (Style)FindResource("RowSub"),
                             Margin = new Thickness(0, 4, 0, 0)
                         }
                     }
@@ -196,12 +205,6 @@ public partial class CapturePage : PageBase
         ShowRam();
         ShowBitrate();   // вес повтора считается от длины буфера — она задана только сейчас
 
-        // Битрейт не совпал ни с одним уровнем — значит его задавали вручную,
-        // и прятать ползунок нельзя: человек не поймёт, куда делось его число.
-        bool manual = QualityForCurrent() is null;
-        ManualBitrate.IsChecked = manual;
-        Bitrate.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
-        BitrateValue.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
 
         GameAudio.IsChecked = s.CaptureGameAudio;
         MicAudio.IsChecked = s.CaptureMicrophone;
@@ -302,10 +305,10 @@ public partial class CapturePage : PageBase
     private void Video_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
-        // Разрешение или частота изменились — держимся выбранного УРОВНЯ качества,
+        // Разрешение или частота изменились — держимся того же УРОВНЯ качества,
         // а не числа: 30 Мбит/с это «высокое» для 1080p и «лёгкое» для 4K.
-        if (ManualBitrate.IsChecked != true && (QualitySeg.SelectedItem as ListBoxItem)?.Tag is string quality)
-            Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps());
+        if (QualityForCurrent() is string quality)
+            Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps(), CurrentCodec());
         HighlightPreset();
         ShowRam();
         SetDirty(true);
@@ -358,7 +361,7 @@ public partial class CapturePage : PageBase
         _loading = true;
         Select(ResolutionSeg, preset.Height.ToString());
         Select(FpsSeg, preset.Fps.ToString());
-        Bitrate.Value = preset.Bitrate;
+        Bitrate.Value = PresetBitrate(preset);
         if (_supported.Contains(preset.Codec)) Services.Settings.Current.Codec = preset.Codec;
         BuildCodecs();
         ShowBitrate();
@@ -373,6 +376,15 @@ public partial class CapturePage : PageBase
         if (((Button)sender).Tag is not VideoCodec codec) return;
         Services.Settings.Current.Codec = codec;
         BuildCodecs();
+
+        // H.264 на том же битрейте заметно хуже HEVC, поэтому при смене кодека
+        // число пересчитывается под тот же уровень качества.
+        if (QualityForCurrent() is string quality)
+        {
+            Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps(), codec);
+            ShowRam();
+        }
+
         HighlightPreset();
         SetDirty(true);
     }
@@ -446,7 +458,7 @@ public partial class CapturePage : PageBase
         foreach (Button button in Presets.Children)
         {
             var preset = (Preset)button.Tag;
-            bool active = preset.Height == height && preset.Fps == fps && preset.Bitrate == bitrate;
+            bool active = preset.Height == height && preset.Fps == fps && PresetBitrate(preset) == bitrate;
             button.BorderBrush = active ? (Brush)FindResource("AccentBrush") : null;
             if (button.Content is StackPanel panel && panel.Children[0] is TextBlock title)
                 title.Foreground = (Brush)FindResource(active ? "AccentTxBrush" : "TxBrush");
@@ -461,8 +473,9 @@ public partial class CapturePage : PageBase
     /// более тяжёлые файлы без видимой разницы. Числа здесь — те, на которых
     /// картинка перестаёт улучшаться на глаз для соответствующего разрешения.
     /// </summary>
-    private static int BitrateFor(string quality, int height, int fps)
+    private static int BitrateFor(string quality, int height, int fps, VideoCodec codec)
     {
+        // Таблица откалибрована под HEVC — это тот кодек, ради которого его и выбирают.
         int baseline = height switch
         {
             <= 720  => quality switch { "light" => 6,  "normal" => 10, "high" => 16, _ => 24 },
@@ -470,18 +483,26 @@ public partial class CapturePage : PageBase
             <= 1440 => quality switch { "light" => 18, "normal" => 30, "high" => 50, _ => 70 },
             _       => quality switch { "light" => 30, "normal" => 45, "high" => 65, _ => 80 }
         };
+
         // Частота кадров меняет объём почти линейно, но не совсем: на 30 кадрах
         // хватает меньшего битрейта, на 120+ нужен не вдвое больший.
         double byFps = fps switch { <= 30 => 0.7, <= 60 => 1.0, <= 120 => 1.35, _ => 1.5 };
-        return Math.Clamp((int)Math.Round(baseline * byFps), 10, 80);
+
+        // H.264 на том же битрейте заметно хуже — ему нужно примерно в полтора раза
+        // больше, чтобы картинка не отличалась. AV1, наоборот, экономнее HEVC.
+        double byCodec = codec switch { VideoCodec.H264 => 1.4, VideoCodec.AV1 => 0.8, _ => 1.0 };
+
+        return Math.Clamp((int)Math.Round(baseline * byFps * byCodec), 10, 80);
     }
+
+    private static VideoCodec CurrentCodec() => Services.Settings.Current.Codec;
 
     /// <summary>Какому уровню соответствует текущий битрейт; null — ни одному.</summary>
     private string? QualityForCurrent()
     {
         int height = SelectedHeight(), fps = SelectedFps(), value = (int)Bitrate.Value;
         foreach (string quality in new[] { "light", "normal", "high", "max" })
-            if (BitrateFor(quality, height, fps) == value) return quality;
+            if (BitrateFor(quality, height, fps, CurrentCodec()) == value) return quality;
         return null;
     }
 
@@ -507,38 +528,6 @@ public partial class CapturePage : PageBase
         BitrateSub.Text = $"{value} Мбит/с · файл повтора ≈ {clipMb:0} МБ · " +
                           $"час записи ≈ {hourGb:0.0} ГБ";
 
-        // Уровень подсвечиваем по текущему числу: так после ручной правки видно,
-        // попали вы в готовый уровень или ушли в своё значение.
-        string? quality = QualityForCurrent();
-        _loading = true;
-        QualitySeg.SelectedItem = null;
-        if (quality is not null)
-            foreach (ListBoxItem item in QualitySeg.Items)
-                if ((string)item.Tag == quality) { QualitySeg.SelectedItem = item; break; }
-        _loading = false;
-    }
-
-    private void Quality_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading) return;
-        if ((QualitySeg.SelectedItem as ListBoxItem)?.Tag is not string quality) return;
-        Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps());
-    }
-
-    /// <summary>
-    /// Ручной режим прячет ползунок за переключателем. Смысл: число битрейта само
-    /// по себе ничего не подсказывает, и человек ставит побольше «на всякий случай».
-    /// </summary>
-    private void ManualBitrate_Changed(object sender, RoutedEventArgs e)
-    {
-        bool manual = ManualBitrate.IsChecked == true;
-        Bitrate.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
-        BitrateValue.Visibility = manual ? Visibility.Visible : Visibility.Collapsed;
-
-        // Выключили ручной режим, а число ни в один уровень не попадает —
-        // возвращаем ближайший осмысленный, чтобы не остаться без выделения.
-        if (!manual && QualityForCurrent() is null)
-            Bitrate.Value = BitrateFor("high", SelectedHeight(), SelectedFps());
     }
 
     /// <summary>«30 секунд», «2 минуты», «3 мин 30 сек» — как человек это произносит.</summary>

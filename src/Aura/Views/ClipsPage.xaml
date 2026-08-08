@@ -49,9 +49,11 @@
             </Grid>
 
             <!-- Панель выделения: появляется, когда что-то выбрано -->
-            <Border x:Name="SelectionBar" Visibility="Collapsed" Margin="0,0,8,14"
+            <Border x:Name="SelectionBar" Visibility="Collapsed" Margin="0,0,8,14" Panel.ZIndex="10"
+                    RenderTransformOrigin="0,0"
                     Background="{DynamicResource CardBrush}" CornerRadius="12" Padding="14,10,10,10"
                     BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1">
+                <Border.RenderTransform><TranslateTransform x:Name="SelectionBarShift"/></Border.RenderTransform>
                 <Grid>
                     <TextBlock x:Name="SelectionText" VerticalAlignment="Center" FontWeight="SemiBold"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">

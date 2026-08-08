@@ -20,6 +20,25 @@ public partial class MainWindow : Window
 
     /// <summary>С какого раздела открыться (аргумент --page для отладки вёрстки).</summary>
     public string StartPage { get; set; } = "overview";
+
+    /// <summary>
+    /// Закрытие окна прячет его в трей, а не уничтожает.
+    ///
+    /// Крестик в шапке приложения и так звал Hide(), но у окна есть и другие пути
+    /// закрытия — Alt+F4, системное меню, «Закрыть» на панели задач. По ним окно
+    /// закрывалось по-настоящему, приложение продолжало жить в трее, а следующий
+    /// клик по иконке звал Show() у закрытого окна и ронял процесс:
+    /// «Cannot set Visibility or call Show after a Window has closed».
+    ///
+    /// Выйти по-настоящему можно через меню трея — оно зовёт App.ExitApp,
+    /// который завершает процесс, не полагаясь на закрытие окна.
+    /// </summary>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        e.Cancel = true;
+        Hide();
+        base.OnClosing(e);
+    }
     private PageBase? _current;
     private string _currentKey = "";
 
@@ -138,7 +157,11 @@ public partial class MainWindow : Window
 
     public void Navigate(string key)
     {
-        if (_currentKey == key) return;
+        // Отметку синхронизируем ДО раннего выхода: разделы лежат в двух панелях,
+        // это две независимые группы переключателей, и нажатие в одной не снимает
+        // отметку в другой. Если уйти отсюда раньше, подсветка останется на чужом.
+        SyncNavChecks(key);
+        if (_currentKey == key) { MoveIndicator(); return; }
 
         if (!_pages.TryGetValue(key, out var page))
         {

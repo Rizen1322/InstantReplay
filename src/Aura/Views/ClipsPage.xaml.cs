@@ -52,6 +52,39 @@ public partial class ClipsPage : PageBase
     public override void OnShown()
     {
         if (!_loaded) _ = ReloadAsync();
+        HookScroll();
+    }
+
+    /// <summary>
+    /// Панель выделения должна оставаться на виду при прокрутке: выделяют обычно
+    /// не первые карточки, и уезжающая вверх панель заставляла бы скроллить обратно
+    /// ради каждой кнопки. Страница целиком лежит в общей прокрутке окна, поэтому
+    /// панель не «прилипает» сама — сдвигаем её ровно на столько, на сколько
+    /// содержимое ушло вверх.
+    /// </summary>
+    private ScrollViewer? _scroll;
+
+    private void HookScroll()
+    {
+        if (_scroll is not null) return;
+        DependencyObject? node = this;
+        while (node is not null and not ScrollViewer) node = VisualTreeHelper.GetParent(node);
+        if (node is not ScrollViewer scroll) return;
+
+        _scroll = scroll;
+        _scroll.ScrollChanged += (_, _) => UpdateSelectionBarOffset();
+    }
+
+    private void UpdateSelectionBarOffset()
+    {
+        if (_scroll is null || SelectionBar.Visibility != Visibility.Visible) return;
+        try
+        {
+            double barTop = SelectionBar.TranslatePoint(new Point(0, 0), this).Y - SelectionBarShift.Y;
+            double hidden = _scroll.VerticalOffset - barTop;
+            SelectionBarShift.Y = hidden > 0 ? hidden : 0;
+        }
+        catch { }
     }
 
     public override void OnHidden() => _thumbs?.Cancel();
@@ -198,7 +231,13 @@ public partial class ClipsPage : PageBase
     {
         if (e.OriginalSource is not FrameworkElement { DataContext: ClipItem clip }) return;
 
-        if (!_selecting) { Open(clip.FullPath); return; }
+        // Ctrl+ЛКМ включает выделение сразу, без захода в меню.
+        if (!_selecting)
+        {
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { BeginSelection(clip); return; }
+            Open(clip.FullPath);
+            return;
+        }
 
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && _anchor is not null)
         {
@@ -251,7 +290,8 @@ public partial class ClipsPage : PageBase
         if (_selecting && selected.Count == 0) { _selecting = false; _anchor = null; }
 
         SelectionBar.Visibility = _selecting ? Visibility.Visible : Visibility.Collapsed;
-        if (!_selecting) return;
+        if (!_selecting) { SelectionBarShift.Y = 0; return; }
+        UpdateSelectionBarOffset();
 
         SelectionText.Text = $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
     }

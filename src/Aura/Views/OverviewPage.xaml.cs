@@ -10,7 +10,7 @@ using Aura.Core.Storage;
 namespace Aura.Views;
 
 /// <summary>
-/// Главный экран: что происходит прямо сейчас, четыре частых действия,
+/// Главный экран: что происходит прямо сейчас, два частых действия,
 /// три цифры о состоянии и последние записи.
 /// </summary>
 public partial class OverviewPage : PageBase
@@ -43,7 +43,7 @@ public partial class OverviewPage : PageBase
             // Узкое окно — плитки в две колонки, совсем узкое — в одну.
             // Rows остаётся нулём: строки UniformGrid считает сам по числу колонок.
             double width = ActualWidth;
-            Actions.Columns = width < 460 ? 1 : width < 720 ? 2 : 4;
+            Actions.Columns = width < 460 ? 1 : 2;
             Stats.Columns = width < 560 ? 1 : width < 760 ? 2 : 3;
         };
 
@@ -180,8 +180,6 @@ public partial class OverviewPage : PageBase
     {
         var s = Services.Settings.Current;
         SaveCombo.Combo = ComboSave.Combo = s.HotkeySaveReplay;
-        Combo30.Combo = s.HotkeySaveLast30;
-        ComboShot.Combo = s.HotkeyScreenshot;
         ComboRec.Combo = Services.Engine.IsRecordingToFile ? s.HotkeyStopRecording : s.HotkeyStartRecording;
     }
 
@@ -240,15 +238,7 @@ public partial class OverviewPage : PageBase
         Services.Engine.SaveReplay();
     }
 
-    private void SaveLast30_Click(object sender, RoutedEventArgs e)
-    {
-        Services.Engine.SaveReplay(30);
-    }
 
-    private async void Screenshot_Click(object sender, RoutedEventArgs e)
-    {
-        await App.TakeScreenshotAsync();
-    }
 
     private void Record_Click(object sender, RoutedEventArgs e)
     {

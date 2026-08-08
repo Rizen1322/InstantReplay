@@ -422,6 +422,11 @@ public partial class App : Application
 
     public void ShowMainWindow() => Services.Ui.Enqueue(() =>
     {
+        // Страховка на случай, если окно всё же оказалось закрытым: показать такое
+        // нельзя, WPF бросает исключение прямо из обработчика сообщения окна — оно
+        // не проходит через диспетчер и убивает процесс. Проверяем и пересоздаём.
+        if (_main is not null && IsClosed(_main)) _main = null;
+
         _main ??= new MainWindow();
         MainWindow = _main;
         _main.Show();
@@ -438,6 +443,20 @@ public partial class App : Application
         }
         catch { }
     });
+
+    /// <summary>Закрыто ли окно: у WPF нет публичного признака, спрашиваем по-другому.</summary>
+    private static bool IsClosed(Window window)
+    {
+        try
+        {
+            // У закрытого окна источник представления уже уничтожен, а хендл сброшен.
+            var source = System.Windows.PresentationSource.FromVisual(window);
+            if (source is not null) return false;
+            return new System.Windows.Interop.WindowInteropHelper(window).Handle == IntPtr.Zero
+                   && !window.IsLoaded;
+        }
+        catch { return true; }
+    }
 
     public void ExitApp()
     {
