@@ -39,7 +39,6 @@ public sealed class DesktopDuplicationSource : IScreenCapture
     private IDXGIOutputDuplication? _duplication;
 
     private Thread? _thread;
-    private volatile bool _running;
     private int _monitorIndex;
     private readonly object _sync = new();
 
@@ -95,7 +94,6 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             // два потока на одной дупликации — гарантированный крах.
             var token = new RunToken();
             _run = token;
-            _running = true;
             _thread = new Thread(() => CaptureLoop(token))
             {
                 IsBackground = true,
@@ -308,7 +306,6 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     private void StopInternal()
     {
-        _running = false;
         if (_run is not null) _run.Running = false;
         _run = null;
 
