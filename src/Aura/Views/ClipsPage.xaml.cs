@@ -22,6 +22,13 @@ public partial class ClipsPage : PageBase
     private List<ClipItem> _shown = [];
     private ClipItem? _anchor;
 
+    /// <summary>
+    /// Режим выделения. Включается пунктом «Выделить» в меню карточки; пока он
+    /// включён, обычный клик выделяет, а не открывает файл. Выключается кнопкой
+    /// «Готово» на панели или когда снято последнее выделение.
+    /// </summary>
+    private bool _selecting;
+
     public override string Title => "Клипы";
 
     public override UIElement[] ToolbarActions
@@ -39,6 +46,7 @@ public partial class ClipsPage : PageBase
         InitializeComponent();
         Loaded += (_, _) => { if (!_loaded) _ = ReloadAsync(); };
         ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = ReloadAsync());
+        ClipCommands.SelectRequested += clip => Dispatcher.BeginInvoke(() => BeginSelection(clip));
     }
 
     public override void OnShown()
@@ -182,32 +190,34 @@ public partial class ClipsPage : PageBase
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
 
     /// <summary>
-    /// Обычный клик по-прежнему открывает файл — это главное действие, и менять
-    /// его на «выделить» значило бы ломать привычку ради редкой операции.
-    /// Выделение навешано на модификаторы, как в проводнике: Ctrl добавляет по
-    /// одной, Shift берёт диапазон от последней тронутой карточки.
+    /// Вне режима выделения клик открывает файл — это главное действие карточки.
+    /// В режиме выделения тот же клик отмечает запись, а Shift берёт диапазон
+    /// от предыдущей отмеченной.
     /// </summary>
     private void Card_Click(object sender, RoutedEventArgs e)
     {
         if (e.OriginalSource is not FrameworkElement { DataContext: ClipItem clip }) return;
 
-        var keys = Keyboard.Modifiers;
-        if (keys.HasFlag(ModifierKeys.Control))
+        if (!_selecting) { Open(clip.FullPath); return; }
+
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) && _anchor is not null)
         {
-            clip.IsSelected = !clip.IsSelected;
-            _anchor = clip;
-            UpdateSelectionBar();
-            return;
-        }
-        if (keys.HasFlag(ModifierKeys.Shift))
-        {
-            SelectRange(_anchor ?? clip, clip);
+            SelectRange(_anchor, clip);
             return;
         }
 
-        // Клик без модификаторов по выделенному — снимаем выделение и открываем.
-        if (SelectedItems().Count > 0) ClearSelection();
-        Open(clip.FullPath);
+        clip.IsSelected = !clip.IsSelected;
+        _anchor = clip;
+        UpdateSelectionBar();
+    }
+
+    /// <summary>Пункт «Выделить» из меню карточки: включаем режим и берём её первой.</summary>
+    private void BeginSelection(ClipItem clip)
+    {
+        _selecting = true;
+        clip.IsSelected = true;
+        _anchor = clip;
+        UpdateSelectionBar();
     }
 
     private void SelectRange(ClipItem from, ClipItem to)
@@ -227,6 +237,7 @@ public partial class ClipsPage : PageBase
     {
         foreach (var item in _shown) item.IsSelected = false;
         _anchor = null;
+        _selecting = false;
         UpdateSelectionBar();
     }
 
@@ -234,10 +245,14 @@ public partial class ClipsPage : PageBase
     private void UpdateSelectionBar()
     {
         var selected = SelectedItems();
-        SelectionBar.Visibility = selected.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (selected.Count == 0) return;
+        // Панель висит, пока включён режим: иначе, сняв последнюю галочку, человек
+        // терял бы и кнопку выхода, и подсказку о том, что клики сейчас выделяют.
+        SelectionBar.Visibility = _selecting ? Visibility.Visible : Visibility.Collapsed;
+        if (!_selecting) return;
 
-        SelectionText.Text = $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
+        SelectionText.Text = selected.Count == 0
+            ? "Нажимай на записи, чтобы выделить"
+            : $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
     }
 
     // ---------------- Действия над выделением ----------------
@@ -263,28 +278,19 @@ public partial class ClipsPage : PageBase
     }
 
     /// <summary>
-    /// Правый клик: если карточка не в выделении, она становится единственной
-    /// выделенной — иначе меню действовало бы не на то, на что человек нажал.
-    /// Пункты «для выделенных» показываются только когда выделено больше одной.
+    /// Правый клик ничего не выделяет — он только показывает меню. Пункты для
+    /// пачки появляются, лишь когда выделение уже есть.
     /// </summary>
     private void Card_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
-        if (e.OriginalSource is not FrameworkElement { DataContext: ClipItem clip } source) return;
-
-        if (!clip.IsSelected)
-        {
-            ClearSelection();
-            clip.IsSelected = true;
-            _anchor = clip;
-            UpdateSelectionBar();
-        }
+        if (e.OriginalSource is not FrameworkElement source) return;
 
         var selected = SelectedItems();
         var menu = (source as FrameworkElement)?.ContextMenu
                    ?? (FindCard(source) as FrameworkElement)?.ContextMenu;
         if (menu is null) return;
 
-        bool many = selected.Count > 1;
+        bool many = selected.Count > 0;
         foreach (var element in menu.Items)
         {
             if (element is not FrameworkElement named) continue;

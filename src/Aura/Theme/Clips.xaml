@@ -29,6 +29,9 @@
                 c:DragFile.Path="{Binding FullPath}">
             <Button.ContextMenu>
                 <ContextMenu Style="{DynamicResource TrayMenu}">
+                    <MenuItem Header="Выделить" Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.SelectItem}" CommandParameter="{Binding}"/>
+                    <Separator Margin="8,4,8,4"/>
                     <MenuItem Header="Открыть" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Open}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Показать в папке" Style="{DynamicResource TrayMenuItem}"

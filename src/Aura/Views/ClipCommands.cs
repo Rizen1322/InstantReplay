@@ -30,6 +30,15 @@ public static class ClipCommands
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
     public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);
 
+    /// <summary>
+    /// «Выделить» из меню карточки: включает режим выделения и берёт эту запись
+    /// первой. Дальше обычные клики выделяют, а не открывают файл.
+    /// </summary>
+    public static ICommand SelectItem { get; } = new ClipAction(item => SelectRequested?.Invoke(item));
+
+    /// <summary>Страница клипов слушает это, чтобы войти в режим выделения.</summary>
+    public static event Action<ClipItem>? SelectRequested;
+
     // ---------- Действия над ВЫДЕЛЕНИЕМ ----------
     //
     // Отдельные команды, а не те же самые: у групповых операций другой вопрос

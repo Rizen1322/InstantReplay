@@ -58,7 +58,7 @@
                         <Button Content="Выбрать всё" Click="SelectAll_Click"/>
                         <Button Content="Копировать пути" Margin="8,0,0,0" Click="CopySelectedPaths_Click"/>
                         <Button Content="Удалить" Margin="8,0,0,0" Click="DeleteSelected_Click"/>
-                        <Button Content="Снять" Margin="8,0,0,0" Click="ClearSelection_Click"/>
+                        <Button Content="Готово" Margin="8,0,0,0" Click="ClearSelection_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>
