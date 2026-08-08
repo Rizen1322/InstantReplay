@@ -90,8 +90,13 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             if (captureCursor)
                 Log.Info("Capture", "Аппаратный курсор в записи не отображается (особенность Windows 10)");
 
+            // Признак работы СВОЙ у каждого потока, а не общее поле. Иначе брошенный
+            // поток (не успевший выйти к моменту перезапуска) оживал бы вместе с новым:
+            // два потока на одной дупликации — гарантированный крах.
+            var token = new RunToken();
+            _run = token;
             _running = true;
-            _thread = new Thread(CaptureLoop)
+            _thread = new Thread(() => CaptureLoop(token))
             {
                 IsBackground = true,
                 Name = "DesktopDuplication",
@@ -165,16 +170,22 @@ public sealed class DesktopDuplicationSource : IScreenCapture
         _duplication = _output.DuplicateOutput(_device!);
     }
 
-    private void CaptureLoop()
+    /// <summary>Признак «этому потоку ещё работать». Свой на каждый запуск захвата.</summary>
+    private sealed class RunToken { public volatile bool Running = true; }
+    private RunToken? _run;
+
+    private void CaptureLoop(RunToken token)
     {
-        while (_running)
+        while (token.Running)
         {
             IDXGIResource? resource = null;
             bool frameHeld = false;
+            IDXGIOutputDuplication? dupHeld = null;
             try
             {
                 var dup = _duplication;
                 if (dup is null) { Thread.Sleep(50); continue; }
+                dupHeld = dup;
 
                 // Ритм захвата: ждём слот сетки ДО обращения к системе.
                 // Иначе на 240-Гц мониторе мы забираем ~200 кадров/с вместо 60 —
@@ -197,7 +208,7 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                 {
                     // Смена режима/полноэкранное приложение/UAC — пересоздаём дупликацию
                     Log.Warn("Capture", "Дупликация потеряна (смена режима?) — восстанавливаю");
-                    RecreateDuplication();
+                    RecreateDuplication(token);
                     continue;
                 }
                 result.CheckError();
@@ -252,32 +263,35 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                 Diagnostics.PipelineProbe.CaptureCopy.Add(copyStart, Diagnostics.PipelineProbe.Now());
 
                 resource.Dispose(); resource = null;
-                try { _duplication?.ReleaseFrame(); } catch { }
+                // Освобождаем кадр у ТОЙ дупликации, у которой его взяли: между
+                // захватом и освобождением она могла быть пересоздана.
+                try { dup.ReleaseFrame(); } catch { }
                 frameHeld = false;
 
                 FrameArrived?.Invoke(_frameCopy!, ticks);
             }
             catch (Exception ex)
             {
-                if (!_running) break;
+                if (!token.Running) break;
                 Log.Error("Capture", ex);
                 Thread.Sleep(50);
             }
             finally
             {
                 resource?.Dispose();
-                if (frameHeld) { try { _duplication?.ReleaseFrame(); } catch { } }
+                if (frameHeld && dupHeld is not null) { try { dupHeld.ReleaseFrame(); } catch { } }
             }
         }
     }
 
-    private void RecreateDuplication()
+    private void RecreateDuplication(RunToken token)
     {
         try
         {
             _duplication?.Dispose(); _duplication = null;
             _output?.Dispose(); _output = null;
             Thread.Sleep(200); // системе нужно время на смену режима
+            if (!token.Running) return; // захват уже останавливают — не создаём заново
             CreateDeviceAndDuplication();
         }
         catch (Exception ex)
@@ -295,8 +309,30 @@ public sealed class DesktopDuplicationSource : IScreenCapture
     private void StopInternal()
     {
         _running = false;
-        _thread?.Join(1500);
+        if (_run is not null) _run.Running = false;
+        _run = null;
+
+        var thread = _thread;
         _thread = null;
+
+        // Ждём дольше прежних 1.5 секунды: пересоздание дупликации само по себе
+        // занимает 200 мс сна плюс перебор адаптеров и создание устройства, и под
+        // нагрузкой это укладывалось не всегда.
+        if (thread is not null && !thread.Join(5000))
+        {
+            // Поток не вышел. Освобождать дупликацию и выход НЕЛЬЗЯ: он прямо сейчас
+            // ими пользуется, а обращение к освобождённому COM-объекту роняет процесс
+            // мгновенно и без единой строки в логе — ровно так приложение и падало
+            // после «Дупликация потеряна». Отпускаем ссылки и оставляем сборщику:
+            // утечка нескольких объектов безопаснее краха.
+            Log.Warn("Capture", "Поток захвата не завершился за 5 секунд — " +
+                                "объекты дупликации оставлены сборщику, чтобы не уронить процесс");
+            _duplication = null;
+            _output = null;
+            lock (_frameLock) _frameCopy = null;
+            return;
+        }
+
         _duplication?.Dispose(); _duplication = null;
         _output?.Dispose(); _output = null;
         lock (_frameLock) { _frameCopy?.Dispose(); _frameCopy = null; }
