@@ -63,6 +63,18 @@ public sealed class ClipItem : INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Выделена ли карточка. Живёт в модели, а не в списке страницы, потому что
+    /// карточки перерисовываются при смене фильтра и сортировки — привязка сама
+    /// возвращает подсветку тем же файлам.
+    /// </summary>
+    private bool _isSelected;
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { if (_isSelected == value) return; _isSelected = value; Raise(nameof(IsSelected)); }
+    }
+
     // ---------- Догружается в фоне ----------
 
     private ImageSource? _thumbnail;

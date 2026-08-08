@@ -44,10 +44,24 @@
                               Command="{x:Static v:ClipCommands.Rename}" CommandParameter="{Binding}"/>
                     <MenuItem Header="Удалить в корзину" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Delete}" CommandParameter="{Binding}"/>
+
+                    <!-- Пункты для выделенной пачки: появляются, когда выделено больше одной -->
+                    <Separator x:Name="ManySeparator" Margin="8,4,8,4" Visibility="Collapsed"/>
+                    <MenuItem x:Name="CopyPathsItem" Header="Копировать пути выделенных" Visibility="Collapsed"
+                              Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.CopyPathsMany}"/>
+                    <MenuItem x:Name="DeleteManyItem" Header="Удалить выделенные" Visibility="Collapsed"
+                              Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.DeleteMany}"/>
                 </ContextMenu>
             </Button.ContextMenu>
             <StackPanel>
+                <Border x:Name="SelectionRing" Height="122" CornerRadius="16" Margin="-3"
+                        BorderThickness="2" BorderBrush="{DynamicResource AccentBrush}"
+                        Background="Transparent" Opacity="0" IsHitTestVisible="False"
+                        Panel.ZIndex="2"/>
                 <Border x:Name="Shot" Height="122" CornerRadius="14" ClipToBounds="True"
+                        Margin="0,-122,0,0"
                         RenderTransformOrigin="0.5,0.5">
                     <Border.RenderTransform>
                         <TransformGroup>
@@ -78,6 +92,15 @@
                             </Border.Background>
                         </Border>
                         <Border BorderThickness="1" BorderBrush="#22FFFFFF" CornerRadius="14" IsHitTestVisible="False"/>
+
+                        <!-- Галочка выделения: рамки мало, когда карточек много -->
+                        <Border x:Name="Check" Visibility="Collapsed" IsHitTestVisible="False"
+                                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                                Width="24" Height="24" CornerRadius="12"
+                                Background="{DynamicResource AccentBrush}">
+                            <c:Icon Data="{DynamicResource Ico.Check}" Size="13" Foreground="White"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
 
                         <!-- «Новое» у только что сохранённых -->
                         <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8"
@@ -113,6 +136,10 @@
         </Button>
 
         <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                <Setter TargetName="SelectionRing" Property="Opacity" Value="1"/>
+                <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+            </DataTrigger>
             <Trigger SourceName="Shot" Property="IsMouseOver" Value="True">
                 <Trigger.EnterActions>
                     <BeginStoryboard>

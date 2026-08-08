@@ -30,6 +30,18 @@ public static class ClipCommands
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
     public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);
 
+    // ---------- Действия над ВЫДЕЛЕНИЕМ ----------
+    //
+    // Отдельные команды, а не те же самые: у групповых операций другой вопрос
+    // пользователю («удалить 7 записей» вместо имени файла) и другая цена ошибки.
+
+    /// <summary>Удалить все выделенные записи в корзину — один вопрос на всех.</summary>
+    public static ICommand DeleteMany { get; } = new ClipsAction(DeleteManyAsync);
+
+    /// <summary>Скопировать пути выделенных записей, по одному на строку.</summary>
+    public static ICommand CopyPathsMany { get; } = new ClipsAction(items =>
+        CopyToClipboard(string.Join(Environment.NewLine, items.Select(i => i.FullPath))));
+
     /// <summary>Библиотека изменилась — страницам пора перечитать список.</summary>
     public static event Action? LibraryChanged;
 
@@ -38,6 +50,16 @@ public static class ClipCommands
 
     /// <summary>Оставлено для совместимости вызова из App: регистрация больше не нужна.</summary>
     public static void Register() { }
+
+    private sealed class ClipsAction(Action<IReadOnlyList<ClipItem>> action) : ICommand
+    {
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => parameter is IReadOnlyList<ClipItem> { Count: > 0 };
+        public void Execute(object? parameter)
+        {
+            if (parameter is IReadOnlyList<ClipItem> items && items.Count > 0) action(items);
+        }
+    }
 
     private sealed class ClipAction(Action<ClipItem> action, Func<ClipItem, bool>? enabled = null) : ICommand
     {
@@ -276,4 +298,44 @@ public static class ClipCommands
         }
         catch (Exception ex) { Dialogs.Say("Не удалось удалить", ex.Message); }
     }
+
+    /// <summary>
+    /// Удаление выделенного. Вопрос задаётся один раз на всю пачку, а список
+    /// перечитывается тоже один раз — иначе страница перестраивалась бы на каждом
+    /// файле, и на трёх десятках записей это заметная судорога.
+    /// </summary>
+    private static async void DeleteManyAsync(IReadOnlyList<ClipItem> items)
+    {
+        long bytes = items.Sum(i => i.SizeBytes);
+        bool ok = Dialogs.Ask($"Удалить {Plural(items.Count)}?",
+            $"{Core.Storage.ByteSize.Format(bytes)} уедут в корзину — оттуда их можно вернуть.", "Удалить");
+        if (!ok) return;
+
+        var failed = new List<string>();
+        foreach (var item in items)
+        {
+            try
+            {
+                var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(item.FullPath);
+                await file.DeleteAsync(Windows.Storage.StorageDeleteOption.Default);
+                ClipThumbnails.Forget(item);
+                Services.Storage.Forget(item.FullPath);
+            }
+            catch { failed.Add(item.FileName); }
+        }
+
+        LibraryChanged?.Invoke();
+        if (failed.Count > 0)
+            Dialogs.Say("Удалились не все",
+                $"Осталось {failed.Count}: {string.Join(", ", failed.Take(5))}" +
+                (failed.Count > 5 ? " и другие" : ""));
+    }
+
+    /// <summary>«7 записей» / «1 запись» / «2 записи» — по-русски.</summary>
+    private static string Plural(int count) => (count % 10, count % 100) switch
+    {
+        (1, not 11) => $"{count} запись",
+        (2 or 3 or 4, not (12 or 13 or 14)) => $"{count} записи",
+        _ => $"{count} записей"
+    };
 }

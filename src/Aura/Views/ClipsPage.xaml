@@ -48,6 +48,21 @@
                 </Button>
             </Grid>
 
+            <!-- Панель выделения: появляется, когда что-то выбрано -->
+            <Border x:Name="SelectionBar" Visibility="Collapsed" Margin="0,0,8,14"
+                    Background="{DynamicResource CardBrush}" CornerRadius="12" Padding="14,10,10,10"
+                    BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1">
+                <Grid>
+                    <TextBlock x:Name="SelectionText" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Выбрать всё" Click="SelectAll_Click"/>
+                        <Button Content="Копировать пути" Margin="8,0,0,0" Click="CopySelectedPaths_Click"/>
+                        <Button Content="Удалить" Margin="8,0,0,0" Click="DeleteSelected_Click"/>
+                        <Button Content="Снять" Margin="8,0,0,0" Click="ClearSelection_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
             <!-- Группы по датам -->
             <StackPanel x:Name="Groups"/>
 
