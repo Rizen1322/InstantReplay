@@ -103,4 +103,59 @@
     </GeometryGroup>
     <PathGeometry x:Key="Ico.Bolt" Figures="M13.6 2.2 5 13.1c-.4.5 0 1.3.6 1.3h4.3l-1 7.3c-.1.8.9 1.2 1.4.5l8.6-10.9c.4-.5 0-1.3-.6-1.3h-4.3l1-7.3c.1-.8-.9-1.2-1.4-.5z"/>
 
+    <!-- ============================================================
+         Второй набор: действия в меню и на кнопках.
+         Раньше иконку получала только часть кнопок — соседние строки
+         выглядели как разные приложения. Эти контуры закрывают все
+         действия, которые есть в интерфейсе, в той же манере 24×24.
+         ============================================================ -->
+
+    <!-- переименовать -->
+    <GeometryGroup x:Key="Ico.Pencil">
+        <PathGeometry Figures="M4.4 19.6l.8-4 11-11a2.2 2.2 0 0 1 3.2 3.2l-11 11z"/>
+        <PathGeometry Figures="M14.6 6.2l3.2 3.2"/>
+    </GeometryGroup>
+
+    <!-- копировать -->
+    <GeometryGroup x:Key="Ico.Copy">
+        <RectangleGeometry Rect="9,9,11,11" RadiusX="2.4" RadiusY="2.4"/>
+        <PathGeometry Figures="M5.6 15h-.4A1.7 1.7 0 0 1 3.5 13.3V5.2A1.7 1.7 0 0 1 5.2 3.5h8.1A1.7 1.7 0 0 1 15 5.2v.4"/>
+    </GeometryGroup>
+
+    <!-- сжать в файл поменьше -->
+    <GeometryGroup x:Key="Ico.Box">
+        <PathGeometry Figures="M3.4 7.7 12 3.4l8.6 4.3v8.6L12 20.6 3.4 16.3z"/>
+        <PathGeometry Figures="M3.4 7.7 12 12l8.6-4.3 M12 12v8.6"/>
+    </GeometryGroup>
+
+    <!-- выделить -->
+    <GeometryGroup x:Key="Ico.CheckSquare">
+        <RectangleGeometry Rect="3.6,3.6,16.8,16.8" RadiusX="3.4" RadiusY="3.4"/>
+        <PathGeometry Figures="M8 12.2l2.9 2.9 5.4-5.6"/>
+    </GeometryGroup>
+
+    <!-- открыть папку / показать в папке -->
+    <PathGeometry x:Key="Ico.FolderOpen" Figures="M3 9.4V7.6A2.6 2.6 0 0 1 5.6 5h3.1l2 2.7h7.7A2.6 2.6 0 0 1 21 10.3v1.1 M3 9.4h17.1a1.2 1.2 0 0 1 1.2 1.5l-1.9 6.7a2.2 2.2 0 0 1-2.1 1.6H5.2A2.2 2.2 0 0 1 3 17.1z"/>
+
+    <!-- открыть во внешней программе -->
+    <PathGeometry x:Key="Ico.External" Figures="M13.8 4.2h6v6 M19.8 4.2 11.4 12.6 M17.2 14.2v4a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 18.2V8.6a1.8 1.8 0 0 1 1.8-1.8h4"/>
+
+    <!-- указатель мыши -->
+    <PathGeometry x:Key="Ico.Cursor" Figures="M6 3.4 18.4 11.2l-5.6 1.3 2.5 5.5-2.6 1.2-2.5-5.5-4.2 3.6z"/>
+
+    <!-- сортировка -->
+    <PathGeometry x:Key="Ico.Sort" Figures="M5 6.6h14 M5 12h9.5 M5 17.4h5.5"/>
+
+    <!-- фильтр -->
+    <PathGeometry x:Key="Ico.Filter" Figures="M3.8 5.4h16.4l-6.5 7.7v5.5l-3.4 1.7v-7.2z"/>
+
+    <!-- вернуть как было -->
+    <PathGeometry x:Key="Ico.Undo" Figures="M3.8 12a8.2 8.2 0 1 0 2.7-6.1 M3.6 4.2v4.6h4.6"/>
+
+    <!-- выбрать файл -->
+    <GeometryGroup x:Key="Ico.File">
+        <PathGeometry Figures="M13.4 3.4H7a2.2 2.2 0 0 0-2.2 2.2v12.8A2.2 2.2 0 0 0 7 20.6h10a2.2 2.2 0 0 0 2.2-2.2V9.2z"/>
+        <PathGeometry Figures="M13.4 3.4v5.8h5.8"/>
+    </GeometryGroup>
+
 </ResourceDictionary>

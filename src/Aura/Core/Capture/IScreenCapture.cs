@@ -57,24 +57,33 @@ public static class ScreenCaptureFactory
     /// </summary>
     public static IScreenCapture Create()
     {
-        // Принудительный выбор для диагностики: INSTANTREPLAY_CAPTURE=dda | wgc
-        string? forced = Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE")?.Trim().ToLowerInvariant();
-        if (forced == "dda")
+        if (UsesWgc)
         {
-            Logging.Log.Info("Capture", "Принудительно: Desktop Duplication");
-            return new DesktopDuplicationSource();
-        }
-        if (forced == "wgc")
-        {
-            Logging.Log.Info("Capture", "Принудительно: Windows Graphics Capture");
+            Logging.Log.Info("Capture", "Захват через Windows Graphics Capture");
             return new ScreenCaptureSource();
         }
 
-        bool win11 = Environment.OSVersion.Version.Build >= 22000;
-        if (win11 && CaptureAccess.IsBorderControlSupported)
-            return new ScreenCaptureSource();
-
-        Logging.Log.Info("Capture", "Windows 10: захват через Desktop Duplication (рамки записи нет)");
+        Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет, курсора тоже)");
         return new DesktopDuplicationSource();
+    }
+
+    /// <summary>
+    /// Достанется ли захвату WGC. Вынесено отдельно от <see cref="Create"/>, потому
+    /// что от этого зависит не только источник кадров: аппаратный курсор умеет класть
+    /// в кадр только WGC, и настройкам нужно знать это ДО запуска движка, чтобы не
+    /// обещать курсор там, где его не будет.
+    /// </summary>
+    public static bool UsesWgc
+    {
+        get
+        {
+            // Принудительный выбор для диагностики: INSTANTREPLAY_CAPTURE=dda | wgc
+            string? forced = Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE")?.Trim().ToLowerInvariant();
+            if (forced == "dda") return false;
+            if (forced == "wgc") return true;
+
+            bool win11 = Environment.OSVersion.Version.Build >= 22000;
+            return win11 && CaptureAccess.IsBorderControlSupported;
+        }
     }
 }

@@ -2,6 +2,8 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:c="clr-namespace:Aura.Controls">
 
+    <c:NotNullToVisibility x:Key="HasIcon"/>
+
     <!-- ============================================================
          ИКОНКА
          Контур живёт в квадрате 24×24, Viewbox приводит его к нужному
@@ -215,9 +217,25 @@
                             CornerRadius="10" Padding="{TemplateBinding Padding}"
                             RenderTransformOrigin="0.5,0.5" SnapsToDevicePixels="True">
                         <Border.RenderTransform><ScaleTransform x:Name="S" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <!-- Иконка слева от подписи. Её нет — колонка схлопывается,
+                             и кнопка выглядит ровно как раньше. -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <c:Icon x:Name="Lead" Size="15" Margin="0,0,7,0"
+                                    Data="{Binding (c:Deco.Icon), RelativeSource={RelativeSource TemplatedParent}}"
+                                    Filled="{Binding (c:Deco.Filled), RelativeSource={RelativeSource TemplatedParent}}"
+                                    Foreground="{TemplateBinding Foreground}"
+                                    Visibility="{Binding (c:Deco.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource HasIcon}}"/>
+                            <ContentPresenter x:Name="Body" VerticalAlignment="Center"/>
+                        </StackPanel>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <!-- Кнопка без подписи (только иконка) — отступ справа не нужен -->
+                        <Trigger Property="Content" Value="{x:Null}">
+                            <Setter TargetName="Lead" Property="Margin" Value="0"/>
+                        </Trigger>
+                        <Trigger Property="Content" Value="">
+                            <Setter TargetName="Lead" Property="Margin" Value="0"/>
+                        </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="B" Property="Background" Value="{DynamicResource PressBrush}"/>
                         </Trigger>
@@ -316,7 +334,13 @@
         </Setter>
     </Style>
 
-    <!-- Пункт бокового меню -->
+    <!-- Пункт бокового меню.
+
+         Фона у отмеченного пункта НЕТ намеренно: подсветку рисует одна переезжающая
+         плашка на всю колонку (Indicator в MainWindow). Пока фон был ещё и здесь,
+         подсветка могла оказаться на двух разделах сразу — на том, куда переехала
+         плашка, и на том, у которого почему-либо осталась отметка. Теперь подсвеченный
+         пункт ровно один по построению: плашка в единственном экземпляре. -->
     <Style x:Key="NavButton" TargetType="RadioButton">
         <Setter Property="Height" Value="34"/>
         <Setter Property="Cursor" Value="Hand"/>
@@ -334,7 +358,6 @@
                             <Setter Property="Foreground" Value="{DynamicResource TxBrush}"/>
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="B" Property="Background" Value="{DynamicResource PressBrush}"/>
                             <Setter Property="Foreground" Value="{DynamicResource TxBrush}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -694,8 +717,18 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="MenuItem">
-                    <Border x:Name="B" Background="Transparent" CornerRadius="8" Padding="12,7,14,8" Margin="4,1,4,1">
-                        <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+                    <Border x:Name="B" Background="Transparent" CornerRadius="8" Padding="12,7,12,8" Margin="4,1,4,1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="22"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <!-- Колонка под иконку держится всегда: пункты с иконкой и без
+                                 неё иначе разъезжались бы по левому краю. -->
+                            <ContentPresenter ContentSource="Icon" VerticalAlignment="Center"
+                                              HorizontalAlignment="Left"/>
+                            <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center"/>
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">

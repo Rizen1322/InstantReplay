@@ -301,7 +301,9 @@ public static class ClipCommands
             // Default вместо PermanentDelete — файл уходит в корзину
             await file.DeleteAsync(Windows.Storage.StorageDeleteOption.Default);
 
-            ClipThumbnails.Forget(item);
+            // Кэш миниатюры, обрывки .part/.tmp и опустевшая папка игры уходят следом:
+            // иначе от удалённой записи остаётся невидимый хвост на диске.
+            ClipCleanup.RemoveTraces(item, Services.Settings.Current.SaveRootPath);
             Services.Storage.Forget(item.FullPath);      // индекс папки и статистика
             LibraryChanged?.Invoke();
         }
@@ -320,6 +322,7 @@ public static class ClipCommands
             $"{Core.Storage.ByteSize.Format(bytes)} уедут в корзину — оттуда их можно вернуть.", "Удалить");
         if (!ok) return;
 
+        string root = Services.Settings.Current.SaveRootPath;
         var failed = new List<string>();
         foreach (var item in items)
         {
@@ -327,7 +330,7 @@ public static class ClipCommands
             {
                 var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(item.FullPath);
                 await file.DeleteAsync(Windows.Storage.StorageDeleteOption.Default);
-                ClipThumbnails.Forget(item);
+                ClipCleanup.RemoveTraces(item, root);
                 Services.Storage.Forget(item.FullPath);
             }
             catch { failed.Add(item.FileName); }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using Aura.Core.Library;
@@ -36,6 +37,7 @@ public partial class ClipsPage : PageBase
         get
         {
             var button = new Button { Content = "Открыть папку" };
+            Controls.Deco.SetIcon(button, (Geometry)FindResource("Ico.FolderOpen"));
             button.Click += OpenFolder_Click;
             return [button];
         }
@@ -44,7 +46,14 @@ public partial class ClipsPage : PageBase
     public ClipsPage()
     {
         InitializeComponent();
-        Loaded += (_, _) => { if (!_loaded) _ = ReloadAsync(); };
+        // Прокрутку ищем именно в Loaded: OnShown зовётся сразу после присвоения
+        // содержимого окну, когда визуального дерева над страницей ещё нет и
+        // подниматься к ScrollViewer просто не по чему.
+        Loaded += (_, _) =>
+        {
+            if (!_loaded) _ = ReloadAsync();
+            HookScroll();
+        };
         ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = ReloadAsync());
         ClipCommands.SelectRequested += clip => Dispatcher.BeginInvoke(() => BeginSelection(clip));
     }
@@ -53,6 +62,41 @@ public partial class ClipsPage : PageBase
     {
         if (!_loaded) _ = ReloadAsync();
         HookScroll();
+
+        // Клавиши вешаем на окно и снимаем при уходе: у страницы своего фокуса нет,
+        // курсор обычно стоит в прокрутке, и KeyDown до карточек просто не дошёл бы.
+        if (Window.GetWindow(this) is Window window)
+        {
+            window.PreviewKeyDown -= Keys_Down;
+            window.PreviewKeyDown += Keys_Down;
+        }
+    }
+
+    /// <summary>
+    /// Ctrl+A — выделить всё, Delete — удалить выделенное, Esc — снять выделение.
+    /// В файловых панелях это те же клавиши, и рука тянется к ним сама.
+    /// </summary>
+    private void Keys_Down(object sender, KeyEventArgs e)
+    {
+        // В поле ввода (поиск, переименование) клавиши принадлежат полю
+        if (Keyboard.FocusedElement is TextBoxBase) return;
+
+        switch (e.Key)
+        {
+            case Key.A when Keyboard.Modifiers == ModifierKeys.Control && _shown.Count > 0:
+                _selecting = true;
+                SelectAll_Click(this, e);
+                e.Handled = true;
+                break;
+            case Key.Delete when _selecting:
+                DeleteSelected_Click(this, e);
+                e.Handled = true;
+                break;
+            case Key.Escape when _selecting:
+                ClearSelection();
+                e.Handled = true;
+                break;
+        }
     }
 
     /// <summary>
@@ -60,19 +104,20 @@ public partial class ClipsPage : PageBase
     /// не первые карточки, и уезжающая вверх панель заставляла бы скроллить обратно
     /// ради каждой кнопки. Страница целиком лежит в общей прокрутке окна, поэтому
     /// панель не «прилипает» сама — сдвигаем её ровно на столько, на сколько
-    /// содержимое ушло вверх.
+    /// содержимое ушло вверх, и не дальше конца списка карточек.
     /// </summary>
     private ScrollViewer? _scroll;
 
     private void HookScroll()
     {
         if (_scroll is not null) return;
-        DependencyObject? node = this;
+        DependencyObject? node = VisualTreeHelper.GetParent(this);
         while (node is not null and not ScrollViewer) node = VisualTreeHelper.GetParent(node);
         if (node is not ScrollViewer scroll) return;
 
         _scroll = scroll;
         _scroll.ScrollChanged += (_, _) => UpdateSelectionBarOffset();
+        UpdateSelectionBarOffset();
     }
 
     private void UpdateSelectionBarOffset()
@@ -80,14 +125,26 @@ public partial class ClipsPage : PageBase
         if (_scroll is null || SelectionBar.Visibility != Visibility.Visible) return;
         try
         {
+            // Собственное место панели на странице — то, где она была бы без сдвига.
             double barTop = SelectionBar.TranslatePoint(new Point(0, 0), this).Y - SelectionBarShift.Y;
-            double hidden = _scroll.VerticalOffset - barTop;
-            SelectionBarShift.Y = hidden > 0 ? hidden : 0;
+
+            // Ниже последней карточки панели делать нечего: там она висела бы
+            // над пустотой, оторванная от того, к чему относится.
+            double listBottom = Groups.TranslatePoint(new Point(0, 0), this).Y + Groups.ActualHeight;
+            double room = Math.Max(0, listBottom - barTop - SelectionBar.ActualHeight);
+
+            double shift = Math.Clamp(_scroll.VerticalOffset - barTop, 0, room);
+            SelectionBarShift.Y = shift;
+            SelectionBar.Effect = shift > 0.5 ? (System.Windows.Media.Effects.Effect)FindResource("ToastShadow") : null;
         }
         catch { }
     }
 
-    public override void OnHidden() => _thumbs?.Cancel();
+    public override void OnHidden()
+    {
+        _thumbs?.Cancel();
+        if (Window.GetWindow(this) is Window window) window.PreviewKeyDown -= Keys_Down;
+    }
 
     // ---------------- Загрузка ----------------
 
@@ -99,6 +156,11 @@ public partial class ClipsPage : PageBase
 
         FillGameFilter();
         Render();
+
+        // Свежий список — лучший момент для уборки кэша: всё, чего в нём нет,
+        // осталось от записей, удалённых автоочисткой или мимо приложения.
+        var snapshot = _all.ToList();
+        _ = Task.Run(() => ClipThumbnails.PruneOrphans(snapshot));
     }
 
     private void FillGameFilter()
@@ -290,8 +352,11 @@ public partial class ClipsPage : PageBase
         if (_selecting && selected.Count == 0) { _selecting = false; _anchor = null; }
 
         SelectionBar.Visibility = _selecting ? Visibility.Visible : Visibility.Collapsed;
-        if (!_selecting) { SelectionBarShift.Y = 0; return; }
-        UpdateSelectionBarOffset();
+        if (!_selecting) { SelectionBarShift.Y = 0; SelectionBar.Effect = null; return; }
+
+        // Только что показанная панель ещё не размечена — её место на странице
+        // известно лишь после раскладки, поэтому сдвиг считаем следующим заходом.
+        Dispatcher.BeginInvoke(UpdateSelectionBarOffset, System.Windows.Threading.DispatcherPriority.Loaded);
 
         SelectionText.Text = $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
     }

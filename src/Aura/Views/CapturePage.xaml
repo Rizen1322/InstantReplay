@@ -179,12 +179,35 @@
                         </c:AdaptiveRow>
                         <Border Style="{StaticResource RowSeparator}"/>
                         <c:AdaptiveRow Margin="16,12,16,12">
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <c:IconTile Data="{DynamicResource Ico.Cursor}" Background="{DynamicResource TealBrush}"/>
+                            <StackPanel VerticalAlignment="Center" Margin="16,0,16,0">
                                 <TextBlock Text="Курсор мыши" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="В шутерах обычно не нужен" Style="{StaticResource RowSub}"/>
+                                <TextBlock x:Name="CursorSub" Text="В шутерах обычно не нужен" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <c:Switch x:Name="CursorSwitch" Click="Video_Changed"/>
                         </c:AdaptiveRow>
+
+                        <!-- На Windows 10 захват идёт через Desktop Duplication, а он
+                             аппаратный курсор в кадр не кладёт. Переключатель там ничего
+                             не меняет, и честнее сказать это прямо, чем оставлять человека
+                             гадать, почему курсора нет в записи. -->
+                        <Border x:Name="CursorWarnRow" Visibility="Collapsed"
+                                Background="{DynamicResource WarnSoftBrush}" CornerRadius="10"
+                                Margin="16,0,16,14" Padding="12,10,12,10">
+                            <!-- Grid, а не горизонтальный StackPanel: в стопке текст получает
+                                 бесконечную ширину и вылезает за карточку вместо переноса. -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <c:Icon Data="{DynamicResource Ico.Alert}" Size="16" VerticalAlignment="Top"
+                                        Foreground="{DynamicResource OrangeBrush}" Margin="0,1,0,0"/>
+                                <TextBlock Grid.Column="1" Margin="10,0,0,0" TextWrapping="Wrap"
+                                           Style="{StaticResource RowSub}"
+                                           Text="На Windows 10 курсор мыши в запись не попадает — так работает системный захват экрана. Переключатель ни на что не влияет, пока вы не перейдёте на Windows 11."/>
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </Border>
             </StackPanel>

@@ -133,6 +133,11 @@ public sealed class StorageManager
             {
                 File.Delete(file.Path);
                 _index.Remove(file.Path);
+                // Хвосты уходят вместе с записью: .part от прерванного сохранения и
+                // папка игры, если этот клип был в ней последним. Кэш миниатюр здесь
+                // не трогаем — ключ считается по файлу, которого уже нет; его подберёт
+                // ClipThumbnails.PruneOrphans при следующем открытии панорамы.
+                Library.ClipCleanup.RemoveTraces(file.Path, root);
                 folderBytes -= file.SizeBytes;
                 free += file.SizeBytes;
                 deleted++;

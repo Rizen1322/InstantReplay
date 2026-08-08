@@ -17,7 +17,6 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <c:Segmented x:Name="TypeFilter" SelectionChanged="Filter_Changed">
@@ -37,30 +36,32 @@
                     <ComboBoxItem Content="По названию"/>
                 </ComboBox>
 
-                <Button Grid.Column="4" Style="{StaticResource BtnSquare}" Click="Refresh_Click" ToolTip="Обновить">
-                    <c:Icon Data="{DynamicResource Ico.Refresh}" Size="15" Foreground="{DynamicResource TxBrush}"/>
-                </Button>
-                <Button Grid.Column="5" Margin="8,0,0,0" Click="OpenFolder_Click">
-                    <StackPanel Orientation="Horizontal">
-                        <c:Icon Data="{DynamicResource Ico.Folder}" Size="15" Foreground="{DynamicResource TxBrush}"/>
-                        <TextBlock Text="Папка" Margin="7,0,0,0"/>
-                    </StackPanel>
-                </Button>
+                <!-- Кнопки «Папка» здесь нет: то же самое действие уже живёт в шапке
+                     окна («Открыть папку») и дублировать его в фильтрах незачем. -->
+                <Button Grid.Column="4" Style="{StaticResource BtnSquare}" Click="Refresh_Click" ToolTip="Обновить список"
+                        c:Deco.Icon="{DynamicResource Ico.Refresh}"/>
             </Grid>
 
-            <!-- Панель выделения: появляется, когда что-то выбрано -->
+            <!-- Панель выделения: появляется, когда что-то выбрано, и едет вместе
+                 с прокруткой — кнопки нужны там, где сейчас глаза, а не в начале
+                 списка. Тень включается, только когда панель «оторвалась» от своего
+                 места: так видно, что она лежит поверх карточек. -->
             <Border x:Name="SelectionBar" Visibility="Collapsed" Margin="0,0,8,14" Panel.ZIndex="10"
                     RenderTransformOrigin="0,0"
-                    Background="{DynamicResource CardBrush}" CornerRadius="12" Padding="14,10,10,10"
+                    Background="{DynamicResource GlassBrush}" CornerRadius="12" Padding="14,10,10,10"
                     BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1">
                 <Border.RenderTransform><TranslateTransform x:Name="SelectionBarShift"/></Border.RenderTransform>
                 <Grid>
                     <TextBlock x:Name="SelectionText" VerticalAlignment="Center" FontWeight="SemiBold"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="Выбрать всё" Click="SelectAll_Click"/>
-                        <Button Content="Копировать пути" Margin="8,0,0,0" Click="CopySelectedPaths_Click"/>
-                        <Button Content="Удалить" Margin="8,0,0,0" Click="DeleteSelected_Click"/>
-                        <Button Content="Готово" Margin="8,0,0,0" Click="ClearSelection_Click"/>
+                        <Button Content="Выбрать всё" Click="SelectAll_Click"
+                                c:Deco.Icon="{DynamicResource Ico.CheckSquare}"/>
+                        <Button Content="Копировать пути" Margin="8,0,0,0" Click="CopySelectedPaths_Click"
+                                c:Deco.Icon="{DynamicResource Ico.Copy}"/>
+                        <Button Content="Удалить" Margin="8,0,0,0" Click="DeleteSelected_Click"
+                                Style="{StaticResource BtnDanger}" c:Deco.Icon="{DynamicResource Ico.Trash}"/>
+                        <Button Content="Готово" Margin="8,0,0,0" Click="ClearSelection_Click"
+                                Style="{StaticResource BtnPri}" c:Deco.Icon="{DynamicResource Ico.Check}"/>
                     </StackPanel>
                 </Grid>
             </Border>

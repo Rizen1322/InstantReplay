@@ -46,8 +46,10 @@
                             <TextBlock x:Name="PathText" Style="{StaticResource RowSub}"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
-                            <Button Content="Открыть" Click="OpenFolder_Click" Margin="0,0,8,0"/>
-                            <Button Content="Выбрать…" Click="Browse_Click"/>
+                            <Button Content="Открыть" Click="OpenFolder_Click" Margin="0,0,8,0"
+                                    c:Deco.Icon="{DynamicResource Ico.FolderOpen}"/>
+                            <Button Content="Выбрать…" Click="Browse_Click"
+                                    c:Deco.Icon="{DynamicResource Ico.Folder}"/>
                         </StackPanel>
                     </c:AdaptiveRow>
 
@@ -71,8 +73,10 @@
                         <TextBlock x:Name="TrimToolPath" Style="{StaticResource RowSub}"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal">
-                        <Button x:Name="TrimToolClear" Content="Забыть" Click="TrimToolClear_Click" Margin="0,0,8,0"/>
-                        <Button Content="Выбрать…" Click="TrimTool_Click"/>
+                        <Button x:Name="TrimToolClear" Content="Забыть" Click="TrimToolClear_Click" Margin="0,0,8,0"
+                                c:Deco.Icon="{DynamicResource Ico.X}"/>
+                        <Button Content="Выбрать…" Click="TrimTool_Click"
+                                c:Deco.Icon="{DynamicResource Ico.File}"/>
                     </StackPanel>
                 </c:AdaptiveRow>
             </Border>

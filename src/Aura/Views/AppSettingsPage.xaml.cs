@@ -86,7 +86,32 @@ public partial class AppSettingsPage : PageBase
         }
         else if (UpdateStatus.Text.Length == 0) UpdateStatus.Text = "Обновлений не искали";
 
+        ShowThumbCacheSize();
         _loading = false;
+    }
+
+    // ---------------- Кэш превью ----------------
+
+    /// <summary>Размер кэша считаем в фоне: это обход папки, иногда на тысячи файлов.</summary>
+    private void ShowThumbCacheSize()
+    {
+        ThumbCacheSize.Text = "считаю…";
+        _ = Task.Run(() =>
+        {
+            long bytes = Core.Library.ClipThumbnails.CacheBytes();
+            Dispatcher.BeginInvoke(() => ThumbCacheSize.Text = bytes == 0
+                ? "кэш пуст"
+                : $"{Core.Storage.ByteSize.Format(bytes)} — кадры карточек, соберутся заново");
+        });
+    }
+
+    private void ClearThumbs_Click(object sender, RoutedEventArgs e)
+    {
+        _ = Task.Run(() =>
+        {
+            Core.Library.ClipThumbnails.ClearCache();
+            Dispatcher.BeginInvoke(ShowThumbCacheSize);
+        });
     }
 
     private static void SelectTag(ItemsControl control, string tag)

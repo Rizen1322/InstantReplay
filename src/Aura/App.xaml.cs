@@ -128,7 +128,29 @@ public partial class App : Application
         Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
             NotificationKind.Warning, Loc.T("driver_found", version));
         Services.DriverWatch.Start();
+
+        CleanLeftovers();
     }
+
+    /// <summary>
+    /// Разовая уборка при запуске: кэш миниатюр от записей, которых больше нет.
+    ///
+    /// Его не чистил вообще никто — ни при автоочистке по лимиту папки, ни при
+    /// удалении файлов из проводника. За полгода игры это сотни мегабайт кадров
+    /// от клипов, удалённых давным-давно. Панорама делает то же самое при каждом
+    /// открытии, но открывают её не все, поэтому один заход при старте — в фоне
+    /// и с самым низким приоритетом, чтобы не мешать разгону конвейера записи.
+    /// </summary>
+    private static void CleanLeftovers() => Task.Run(() =>
+    {
+        try
+        {
+            Thread.CurrentThread.Priority = ThreadPriority.Lowest;
+            string root = Services.Settings.Current.SaveRootPath;
+            Core.Library.ClipThumbnails.PruneOrphans(Core.Library.ClipLibrary.Scan(root));
+        }
+        catch (Exception ex) { Log.Warn("App", $"Уборка кэша: {ex.Message}"); }
+    });
 
     /// <summary>
     /// Кодек, который система не сможет упаковать в MP4, молча превращает запись
@@ -347,21 +369,35 @@ public partial class App : Application
     private void InitTray()
     {
         var menu = new ContextMenu { Style = (Style)Resources["TrayMenu"] };
-        MenuItem Add(string header, Action click)
+
+        // Иконка у каждого пункта — как в меню карточки записи: меню в трее
+        // открывают на бегу, и по контуру нужный пункт находится быстрее, чем по
+        // тексту. Цвет по умолчанию приглушённый, у «Выхода» — красный.
+        MenuItem Add(string header, string icon, Action click, string brush = "Tx2Brush")
         {
-            var item = new MenuItem { Header = header, Style = (Style)Resources["TrayMenuItem"] };
+            var item = new MenuItem
+            {
+                Header = header,
+                Style = (Style)Resources["TrayMenuItem"],
+                Icon = new Controls.Icon
+                {
+                    Data = (System.Windows.Media.Geometry)Resources[icon],
+                    Size = 14,
+                    Foreground = (System.Windows.Media.Brush)Resources[brush]
+                }
+            };
             item.Click += (_, _) => click();
             menu.Items.Add(item);
             return item;
         }
 
-        Add("Открыть Aura", ShowMainWindow);
-        _trayToggle = Add("Включить повтор", ToggleEngine);
-        _traySave = Add("Сохранить повтор", () => Services.Engine.SaveReplay());
-        Add("Скриншот", () => _ = TakeScreenshotAsync());
-        Add("Папка с записями", OpenRecordingsFolder);
+        Add("Открыть Aura", "Ico.Aura", ShowMainWindow);
+        _trayToggle = Add("Включить повтор", "Ico.Rec", ToggleEngine);
+        _traySave = Add("Сохранить повтор", "Ico.Save", () => Services.Engine.SaveReplay());
+        Add("Скриншот", "Ico.Camera", () => _ = TakeScreenshotAsync());
+        Add("Папка с записями", "Ico.FolderOpen", OpenRecordingsFolder);
         menu.Items.Add(new Separator { Margin = new Thickness(8, 4, 8, 4) });
-        Add("Выход", ExitApp);
+        Add("Выход", "Ico.X", ExitApp, "RecBrush");
 
         _tray = new TaskbarIcon
         {

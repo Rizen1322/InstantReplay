@@ -24,7 +24,8 @@
                 <StackPanel x:Name="Rows"/>
             </Border>
 
-            <Button Content="Вернуть стандартные" HorizontalAlignment="Left" Margin="0,14,0,0" Click="Reset_Click"/>
+            <Button Content="Вернуть стандартные" HorizontalAlignment="Left" Margin="0,14,0,0" Click="Reset_Click"
+                    c:Deco.Icon="{DynamicResource Ico.Undo}"/>
         </StackPanel>
     </Grid>
 </views:PageBase>

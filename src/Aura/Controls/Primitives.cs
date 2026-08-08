@@ -151,7 +151,40 @@ public sealed class KeyCaps : ItemsControl
     }
 }
 
+/// <summary>
+/// Иконка на обычной кнопке.
+///
+/// Отдельное присоединённое свойство, а не «положите Icon в Content»: кнопок в
+/// приложении полсотни, и половина из них жила без иконки просто потому, что
+/// ради неё пришлось бы разворачивать Content в StackPanel. Одним атрибутом
+/// <c>c:Deco.Icon="{DynamicResource Ico.Trash}"</c> строка остаётся строкой,
+/// а шаблон сам ставит контур слева от текста и красит его цветом кнопки.
+/// </summary>
+public static class Deco
+{
+    public static readonly DependencyProperty IconProperty = DependencyProperty.RegisterAttached(
+        "Icon", typeof(Geometry), typeof(Deco), new FrameworkPropertyMetadata(null));
+
+    public static Geometry? GetIcon(DependencyObject d) => (Geometry?)d.GetValue(IconProperty);
+    public static void SetIcon(DependencyObject d, Geometry? value) => d.SetValue(IconProperty, value);
+
+    /// <summary>Залитая иконка (play) вместо штриховой.</summary>
+    public static readonly DependencyProperty FilledProperty = DependencyProperty.RegisterAttached(
+        "Filled", typeof(bool), typeof(Deco), new FrameworkPropertyMetadata(false));
+
+    public static bool GetFilled(DependencyObject d) => (bool)d.GetValue(FilledProperty);
+    public static void SetFilled(DependencyObject d, bool value) => d.SetValue(FilledProperty, value);
+}
+
 // ---------------- конвертеры ----------------
+
+/// <summary>Значение есть → Visible, null → Collapsed. Для иконок, которых может не быть.</summary>
+public sealed class NotNullToVisibility : IValueConverter
+{
+    public object Convert(object? value, Type t, object? p, CultureInfo c) =>
+        value is null ? Visibility.Collapsed : Visibility.Visible;
+    public object ConvertBack(object? value, Type t, object? p, CultureInfo c) => Binding.DoNothing;
+}
 
 /// <summary>true → Visible, false → Collapsed. Inverted="True" переворачивает.</summary>
 public sealed class BoolToVisibility : IValueConverter

@@ -225,6 +225,66 @@ public static class ClipThumbnails
         catch { }
     }
 
+    /// <summary>
+    /// Выбросить кэш записей, которых больше нет.
+    ///
+    /// Forget вызывается там, где удаляем мы сами, но клипы исчезают и мимо нас:
+    /// автоочистка по лимиту папки, удаление из проводника, перенос на другой диск.
+    /// Ключ кэша построен на пути, времени и размере файла, поэтому «живые» ключи
+    /// считаются прямо из свежего списка библиотеки, а всё остальное в папке —
+    /// мусор от записей, которых уже нет. Звать из фонового потока после сканирования.
+    /// </summary>
+    public static void PruneOrphans(IEnumerable<ClipItem> live)
+    {
+        try
+        {
+            if (!Directory.Exists(CacheDir)) return;
+
+            var alive = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in live) alive.Add(CacheKey(item));
+
+            int removed = 0;
+            foreach (string file in Directory.EnumerateFiles(CacheDir))
+            {
+                string key = Path.GetFileNameWithoutExtension(file);
+                if (alive.Contains(key)) continue;
+                try { File.Delete(file); removed++; } catch { }
+            }
+
+            if (removed > 0) Log.Info("Library", $"Кэш миниатюр: убрано {removed} файлов от удалённых записей");
+        }
+        catch (Exception ex) { Log.Warn("Library", $"Чистка кэша миниатюр: {ex.Message}"); }
+    }
+
+    /// <summary>Сколько весит кэш миниатюр. Для строки «Очистить кэш превью».</summary>
+    public static long CacheBytes()
+    {
+        try
+        {
+            if (!Directory.Exists(CacheDir)) return 0;
+            long total = 0;
+            foreach (string file in Directory.EnumerateFiles(CacheDir))
+                try { total += new FileInfo(file).Length; } catch { }
+            return total;
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>
+    /// Выбросить кэш целиком. Кадры соберутся заново при следующем открытии
+    /// панорамы — платой будет одна медленная прокрутка, а не потерянные данные.
+    /// </summary>
+    public static void ClearCache()
+    {
+        try
+        {
+            if (!Directory.Exists(CacheDir)) return;
+            foreach (string file in Directory.EnumerateFiles(CacheDir))
+                try { File.Delete(file); } catch { }
+        }
+        catch (Exception ex) { Log.Warn("Library", $"Очистка кэша миниатюр: {ex.Message}"); }
+    }
+
     /// <summary>Забыть кэш конкретного файла (переименование, удаление).</summary>
     public static void Forget(ClipItem item)
     {

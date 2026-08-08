@@ -44,8 +44,10 @@
             </Border>
 
             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                <Button x:Name="DriverButton" Content="Проверить драйвер" Click="CheckDriver_Click"/>
+                <Button x:Name="DriverButton" Content="Проверить драйвер" Click="CheckDriver_Click"
+                        c:Deco.Icon="{DynamicResource Ico.Shield}"/>
                 <Button x:Name="DownloadDriverButton" Content="Скачать обновление" Style="{StaticResource BtnPri}"
+                        c:Deco.Icon="{DynamicResource Ico.Down}"
                         Margin="8,0,0,0" Visibility="Collapsed" Click="DownloadDriver_Click"/>
                 <TextBlock x:Name="DriverStatus" Style="{StaticResource RowValue}" Margin="12,0,0,0"/>
             </StackPanel>

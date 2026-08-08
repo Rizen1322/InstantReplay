@@ -29,6 +29,8 @@
     <Color x:Key="IndigoColor">#FF5E5CE6</Color>
     <Color x:Key="PurpleColor">#FFBF5AF2</Color>
     <Color x:Key="OrangeColor">#FFFF9F0A</Color>
+    <!-- Подложка предупреждений: тот же оранжевый, но приглушённый до фона -->
+    <Color x:Key="WarnSoftColor">#26FF9F0A</Color>
     <Color x:Key="TealColor">#FF40C8E0</Color>
     <Color x:Key="GrayColor">#FF8E8E93</Color>
     <Color x:Key="PinkColor">#FFFF375F</Color>
@@ -59,6 +61,7 @@
     <SolidColorBrush x:Key="IndigoBrush" Color="{DynamicResource IndigoColor}"/>
     <SolidColorBrush x:Key="PurpleBrush" Color="{DynamicResource PurpleColor}"/>
     <SolidColorBrush x:Key="OrangeBrush" Color="{DynamicResource OrangeColor}"/>
+    <SolidColorBrush x:Key="WarnSoftBrush" Color="{DynamicResource WarnSoftColor}"/>
     <SolidColorBrush x:Key="TealBrush" Color="{DynamicResource TealColor}"/>
     <SolidColorBrush x:Key="GrayBrush" Color="{DynamicResource GrayColor}"/>
     <SolidColorBrush x:Key="PinkBrush" Color="{DynamicResource PinkColor}"/>

@@ -93,8 +93,19 @@
                         </Border>
                     </StackPanel>
 
-                    <!-- Разделы -->
-                    <StackPanel DockPanel.Dock="Top">
+                    <!-- Разделы.
+
+                         Подсветка активного раздела — ОДНА плашка на всю колонку, она
+                         лежит под пунктами и переезжает между ними. Плашек было две
+                         (по одной на группу), и при переходе между группами обе могли
+                         остаться видимыми: подсвечивались два раздела разом. -->
+                    <Grid x:Name="NavArea" DockPanel.Dock="Top">
+                        <Border x:Name="Indicator" Height="34" CornerRadius="9" VerticalAlignment="Top"
+                                Background="{DynamicResource PressBrush}" Opacity="0">
+                            <Border.RenderTransform><TranslateTransform x:Name="IndicatorShift"/></Border.RenderTransform>
+                        </Border>
+
+                        <StackPanel>
                         <TextBlock Text="Главное" Style="{StaticResource Caption3}" Margin="8,11,8,5"
                                    FontWeight="SemiBold"
                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
@@ -102,10 +113,6 @@
                                 Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Show}}"/>
 
                         <Grid>
-                            <Border x:Name="Indicator1" Height="34" CornerRadius="9" VerticalAlignment="Top"
-                                    Background="{DynamicResource PressBrush}" Opacity="0">
-                                <Border.RenderTransform><TranslateTransform x:Name="Indicator1Shift"/></Border.RenderTransform>
-                            </Border>
                             <StackPanel x:Name="Nav1">
                                 <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="overview" IsChecked="True" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
@@ -133,10 +140,6 @@
                                 Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Show}}"/>
 
                         <Grid>
-                            <Border x:Name="Indicator2" Height="34" CornerRadius="9" VerticalAlignment="Top"
-                                    Background="{DynamicResource PressBrush}" Opacity="0">
-                                <Border.RenderTransform><TranslateTransform x:Name="Indicator2Shift"/></Border.RenderTransform>
-                            </Border>
                             <StackPanel x:Name="Nav2">
                                 <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="capture" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
@@ -180,7 +183,8 @@
                                 </RadioButton>
                             </StackPanel>
                         </Grid>
-                    </StackPanel>
+                        </StackPanel>
+                    </Grid>
 
                     <!-- заполнитель, чтобы DockPanel растянул колонку -->
                     <Grid/>

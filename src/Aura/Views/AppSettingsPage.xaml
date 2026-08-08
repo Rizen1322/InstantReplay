@@ -88,10 +88,8 @@
                                 <ComboBoxItem Content="Без звука" Tag="None"/>
                             </ComboBox>
                             <Button Style="{StaticResource BtnSquare}" Margin="8,0,0,0" Click="PlaySound_Click"
-                                    ToolTip="Прослушать">
-                                <c:Icon Data="{DynamicResource Ico.Play}" Size="13" Filled="True"
-                                        Foreground="{DynamicResource TxBrush}"/>
-                            </Button>
+                                    ToolTip="Прослушать"
+                                    c:Deco.Icon="{DynamicResource Ico.Play}" c:Deco.Filled="True"/>
                         </StackPanel>
                     </c:AdaptiveRow>
 
@@ -102,8 +100,10 @@
                             <TextBlock Text="Посмотри, не выходя из настроек" Style="{StaticResource RowSub}"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
-                            <Button Content="Повтор" Click="DemoReplay_Click" Margin="0,0,8,0"/>
-                            <Button Content="Скриншот" Click="DemoShot_Click"/>
+                            <Button Content="Повтор" Click="DemoReplay_Click" Margin="0,0,8,0"
+                                    c:Deco.Icon="{DynamicResource Ico.Film}"/>
+                            <Button Content="Скриншот" Click="DemoShot_Click"
+                                    c:Deco.Icon="{DynamicResource Ico.Camera}"/>
                         </StackPanel>
                     </c:AdaptiveRow>
 
@@ -160,8 +160,10 @@
                             <TextBlock x:Name="UpdateStatus" Style="{StaticResource RowSub}"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
-                            <Button x:Name="CheckButton" Content="Проверить" Click="Check_Click"/>
+                            <Button x:Name="CheckButton" Content="Проверить" Click="Check_Click"
+                                    c:Deco.Icon="{DynamicResource Ico.Refresh}"/>
                             <Button x:Name="InstallButton" Content="Обновить" Style="{StaticResource BtnPri}"
+                                    c:Deco.Icon="{DynamicResource Ico.Down}"
                                     Margin="8,0,0,0" Visibility="Collapsed" Click="Install_Click"/>
                         </StackPanel>
                     </c:AdaptiveRow>
@@ -190,25 +192,51 @@
             <TextBlock Text="Обслуживание" Style="{StaticResource GroupLabel}"/>
             <Border Style="{StaticResource Card}">
                 <StackPanel>
+                    <!-- Плитка с иконкой слева — как в остальных строках приложения.
+                         Раньше «Обслуживание» было единственным блоком без них, и
+                         на общем фоне выглядело чужим. -->
                     <Button Style="{StaticResource RowButton}" Click="OpenLogs_Click">
                         <c:AdaptiveRow Margin="16,12,16,12">
-                            <TextBlock Text="Открыть папку с логами" Style="{StaticResource RowLabel}"/>
+                            <c:IconTile Data="{DynamicResource Ico.File}" Background="{DynamicResource GrayBrush}"/>
+                            <TextBlock Text="Открыть папку с логами" Style="{StaticResource RowLabel}"
+                                       Margin="16,0,16,0" VerticalAlignment="Center"/>
                             <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
                                     Foreground="{DynamicResource Tx3Brush}"/>
                         </c:AdaptiveRow>
                     </Button>
-                    <Border Style="{StaticResource RowSeparator}"/>
+                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
                     <Button Style="{StaticResource RowButton}" Click="OpenSettings_Click">
                         <c:AdaptiveRow Margin="16,12,16,12">
-                            <TextBlock Text="Открыть settings.json" Style="{StaticResource RowLabel}"/>
+                            <c:IconTile Data="{DynamicResource Ico.Cog}" Background="{DynamicResource GrayBrush}"/>
+                            <TextBlock Text="Открыть settings.json" Style="{StaticResource RowLabel}"
+                                       Margin="16,0,16,0" VerticalAlignment="Center"/>
                             <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
                                     Foreground="{DynamicResource Tx3Brush}"/>
                         </c:AdaptiveRow>
                     </Button>
-                    <Border Style="{StaticResource RowSeparator}"/>
+
+                    <!-- Кэш миниатюр: невидимая папка, которая растёт от каждой записи.
+                         Панорама подчищает его сама, но увидеть размер и убрать всё
+                         разом человек должен уметь и без неё. -->
+                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Button Style="{StaticResource RowButton}" Click="ClearThumbs_Click">
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <c:IconTile Data="{DynamicResource Ico.Box}" Background="{DynamicResource TealBrush}"/>
+                            <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                                <TextBlock Text="Очистить кэш превью" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="ThumbCacheSize" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
+                                    Foreground="{DynamicResource Tx3Brush}"/>
+                        </c:AdaptiveRow>
+                    </Button>
+
+                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
                     <Button Style="{StaticResource RowButton}" Click="Reset_Click">
                         <c:AdaptiveRow Margin="16,12,16,12">
+                            <c:IconTile Data="{DynamicResource Ico.Undo}" Background="{DynamicResource RecBrush}"/>
                             <TextBlock Text="Сбросить все настройки" Style="{StaticResource RowLabel}"
+                                       Margin="16,0,16,0" VerticalAlignment="Center"
                                        Foreground="{DynamicResource RecBrush}"/>
                             <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
                                     Foreground="{DynamicResource Tx3Brush}"/>

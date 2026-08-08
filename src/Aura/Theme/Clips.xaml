@@ -28,33 +28,86 @@
                 ToolTip="{Binding FileName}"
                 c:DragFile.Path="{Binding FullPath}">
             <Button.ContextMenu>
+                <!-- У каждого пункта своя иконка: строчки одинаковой длины без опоры
+                     для глаза читались как сплошной текст, и «Удалить» находили не
+                     с первого раза. -->
                 <ContextMenu Style="{DynamicResource TrayMenu}">
                     <MenuItem Header="Открыть" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Open}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.Open}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Play}" Size="14" Filled="True"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Показать в папке" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Reveal}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.Reveal}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.FolderOpen}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Копировать путь" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.CopyPath}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.CopyPath}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Copy}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Выделить" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.SelectItem}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.SelectItem}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.CheckSquare}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Обрезать в LosslessCut" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Trim}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.Trim}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Scissors}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Сжать для Discord" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Compress}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.Compress}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Box}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <Separator Margin="8,4,8,4"/>
                     <MenuItem Header="Переименовать" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Rename}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.Rename}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Pencil}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem Header="Удалить в корзину" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Delete}" CommandParameter="{Binding}"/>
+                              Command="{x:Static v:ClipCommands.Delete}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Trash}" Size="14"
+                                    Foreground="{DynamicResource RecBrush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
 
                     <!-- Пункты для выделенной пачки: появляются, когда выделено больше одной -->
                     <Separator x:Name="ManySeparator" Margin="8,4,8,4" Visibility="Collapsed"/>
                     <MenuItem x:Name="CopyPathsItem" Header="Копировать пути выделенных" Visibility="Collapsed"
                               Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.CopyPathsMany}"/>
+                              Command="{x:Static v:ClipCommands.CopyPathsMany}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Copy}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <MenuItem x:Name="DeleteManyItem" Header="Удалить выделенные" Visibility="Collapsed"
                               Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.DeleteMany}"/>
+                              Command="{x:Static v:ClipCommands.DeleteMany}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.Trash}" Size="14"
+                                    Foreground="{DynamicResource RecBrush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                 </ContextMenu>
             </Button.ContextMenu>
             <StackPanel>

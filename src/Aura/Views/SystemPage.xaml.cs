@@ -5,7 +5,7 @@ using System.Windows.Media;
 using Aura.Controls;
 using Aura.Core.Encoding;
 using Aura.Core.Hardware;
-using Aura.Core.Settings;
+using Aura.Core.Settings;   // VideoCodec
 
 namespace Aura.Views;
 
@@ -14,19 +14,8 @@ public partial class SystemPage : PageBase
 {
     private HardwareInfo? _info;
     private NvidiaDriverStatus? _driver;
-    private bool _loaded;
 
     public override string Title => "Система";
-
-    public override UIElement[] ToolbarActions
-    {
-        get
-        {
-            var button = new Button { Content = "Обновить" };
-            button.Click += (_, _) => { _loaded = false; _ = LoadAsync(); };
-            return [button];
-        }
-    }
 
     public SystemPage()
     {
@@ -35,10 +24,12 @@ public partial class SystemPage : PageBase
         Loaded += (_, _) => _ = LoadAsync();
     }
 
-    public override void OnShown()
-    {
-        if (!_loaded) _ = LoadAsync();
-    }
+    /// <summary>
+    /// Кнопки «Обновить» в шапке больше нет: железо между открытиями раздела не
+    /// меняется, а нажимать её было незачем. Данные перечитываются сами при каждом
+    /// заходе — этого достаточно и для замены видеокарты, и для смены драйвера.
+    /// </summary>
+    public override void OnShown() => _ = LoadAsync();
 
     /// <summary>
     /// Записью занимается дискретная видеокарта, а WMI обычно первой отдаёт
@@ -54,7 +45,6 @@ public partial class SystemPage : PageBase
     private async Task LoadAsync()
     {
         _info = await HardwareInfoService.CollectAsync();
-        _loaded = true;
 
         var gpu = MainGpu(_info);
         GpuName.Text = gpu?.Name ?? "Видеокарта не определена";
@@ -65,8 +55,9 @@ public partial class SystemPage : PageBase
         AddSpec("Оперативная память", _info.RamTotal);
         AddSpec("Материнская плата", _info.Motherboard);
         AddSpec("Система", _info.Os);
+        // Папки записей здесь нет намеренно: это не характеристика компьютера,
+        // а настройка, и живёт она в разделе «Файлы».
         AddSpec("Экран", _info.Display);
-        AddSpec("Папка записей", Services.Settings.Current.SaveRootPath);
 
         BuildMatrix();
     }

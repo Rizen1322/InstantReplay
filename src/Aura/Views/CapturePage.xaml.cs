@@ -57,8 +57,27 @@ public partial class CapturePage : PageBase
 
         BuildPresets();
         BuildLengths();
+        ShowCursorSupport();
         _levels.Tick += (_, _) => ShowLevels();
         Loaded += (_, _) => LoadFromSettings();
+    }
+
+    /// <summary>
+    /// Курсор в записи есть только на Windows 11.
+    ///
+    /// На «десятке» кадры берутся через Desktop Duplication (WGC там рисует жёлтую
+    /// рамку вокруг экрана, и убрать её нечем), а Desktop Duplication аппаратный
+    /// курсор в кадр не кладёт — его пришлось бы дорисовывать самим. Переключатель
+    /// оставляем: настройка запомнится и заработает после перехода на Windows 11.
+    /// </summary>
+    private static bool CursorSupported => ScreenCaptureFactory.UsesWgc;
+
+    private void ShowCursorSupport()
+    {
+        if (CursorSupported) return;
+        CursorWarnRow.Visibility = Visibility.Visible;
+        CursorSub.Text = "На Windows 10 не работает";
+        CursorSwitch.Opacity = 0.5;
     }
 
     public override void OnShown()

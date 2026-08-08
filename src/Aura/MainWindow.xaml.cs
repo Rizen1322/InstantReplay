@@ -221,35 +221,36 @@ public partial class MainWindow : Window
     private IEnumerable<RadioButton> NavButtons() =>
         Nav1.Children.OfType<RadioButton>().Concat(Nav2.Children.OfType<RadioButton>());
 
-    /// <summary>Подсветка активного раздела переезжает, а не мигает.</summary>
+    /// <summary>
+    /// Подсветка активного раздела переезжает, а не мигает.
+    ///
+    /// Плашка одна на всю колонку, поэтому подсвеченным может быть ровно один
+    /// раздел — даже если отметка почему-то осталась на двух переключателях.
+    /// Координата считается относительно NavArea: в неё входят и заголовки групп,
+    /// так что плашка спокойно переезжает из «Главного» в «Настройку».
+    /// </summary>
     private void MoveIndicator()
     {
-        foreach (var (panel, indicator, shift) in new[]
-                 {
-                     (Nav1, Indicator1, Indicator1Shift),
-                     (Nav2, Indicator2, Indicator2Shift)
-                 })
+        var active = NavButtons().FirstOrDefault(b => b.IsChecked == true);
+        if (active is null)
         {
-            var active = panel.Children.OfType<RadioButton>().FirstOrDefault(b => b.IsChecked == true);
-            if (active is null)
-            {
-                // Именно анимацией: локальное значение анимация бы перекрыла
-                indicator.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromSeconds(0.15)));
-                continue;
-            }
+            // Именно анимацией: локальное значение анимация бы перекрыла
+            Indicator.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromSeconds(0.15)));
+            return;
+        }
 
-            double y = active.TranslatePoint(new Point(0, 0), panel).Y;
-            if (indicator.Opacity < 0.5)
-            {
-                shift.Y = y;
-                indicator.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.2)));
-            }
-            else
-            {
-                shift.BeginAnimation(TranslateTransform.YProperty,
-                    new DoubleAnimation(y, TimeSpan.FromSeconds(0.4))
-                    { EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.25 } });
-            }
+        double y = active.TranslatePoint(new Point(0, 0), NavArea).Y;
+        if (Indicator.Opacity < 0.5)
+        {
+            IndicatorShift.BeginAnimation(TranslateTransform.YProperty, null);
+            IndicatorShift.Y = y;
+            Indicator.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.2)));
+        }
+        else
+        {
+            IndicatorShift.BeginAnimation(TranslateTransform.YProperty,
+                new DoubleAnimation(y, TimeSpan.FromSeconds(0.4))
+                { EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.25 } });
         }
     }
 
