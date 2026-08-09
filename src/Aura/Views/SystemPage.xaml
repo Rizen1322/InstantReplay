@@ -52,9 +52,21 @@
                 <TextBlock x:Name="DriverStatus" Style="{StaticResource RowValue}" Margin="12,0,0,0"/>
             </StackPanel>
 
-            <!-- Кодеки -->
-            <TextBlock Text="Что умеет видеокарта" Style="{StaticResource GroupLabel}"/>
-            <UniformGrid x:Name="Matrix" Rows="1" Columns="4"/>
+            <!-- Нагрузка сейчас.
+
+                 Живые счётчики работающего конвейера. Это единственное место, где
+                 видно, что захват отдаёт меньше кадров, чем просили, или что кадры
+                 летят в мусор из-за переполненной очереди энкодера: в логе эти же
+                 числа появляются раз в минуту и постфактум. -->
+            <Grid>
+                <TextBlock Text="Нагрузка сейчас" Style="{StaticResource GroupLabel}"/>
+                <TextBlock x:Name="LoadHint" Style="{StaticResource Caption3}"
+                           HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,4,10"/>
+            </Grid>
+            <!-- Плитки, а не строки: числа тут меняются каждую секунду, и в столбце
+                 одинаковых строк за ними неудобно следить. Плитка держит значение
+                 на одном месте, а полоска под ним показывает, далеко ли до предела. -->
+            <UniformGrid x:Name="Load" Rows="0" Columns="5"/>
 
             <!-- Компьютер -->
             <TextBlock Text="Компьютер" Style="{StaticResource GroupLabel}"/>

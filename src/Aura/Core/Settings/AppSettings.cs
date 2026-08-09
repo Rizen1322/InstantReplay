@@ -33,7 +33,12 @@ public sealed class AppSettings
     public int Fps { get; set; } = 60;
     /// <summary>Битрейт в Mbps (ползунок 10..80).</summary>
     public int BitrateMbps { get; set; } = 35;
-    public VideoCodec Codec { get; set; } = VideoCodec.H264;
+    /// <summary>
+    /// HEVC по умолчанию: файлы вдвое легче при той же картинке, и битрейты готовых
+    /// наборов рассчитаны именно под него. Если видеокарта его не умеет, запуск
+    /// сам уведёт настройку на H.264 (см. App.GuardCodec).
+    /// </summary>
+    public VideoCodec Codec { get; set; } = VideoCodec.HEVC;
     /// <summary>Индекс монитора для захвата (0 = основной).</summary>
     public int MonitorIndex { get; set; } = 0;
     /// <summary>Записывать курсор мыши.</summary>
@@ -67,11 +72,6 @@ public sealed class AppSettings
     // ---------- Хранилище ----------
     public string SaveRootPath { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Aura");
-    /// <summary>Максимальный размер папки записей, ГБ. 0 = без лимита.</summary>
-    public int MaxFolderSizeGb { get; set; } = 50;
-    /// <summary>Минимум свободного места на диске, ГБ, при котором чистим старые записи.</summary>
-    public int MinFreeSpaceGb { get; set; } = 5;
-    public bool AutoDeleteOldClips { get; set; } = false;
     /// <summary>
     /// Раскладывать записи по папкам игр (Videos\Aura\Counter-Strike 2\…).
     /// В интерфейсе переключателя нет — это поведение по умолчанию; выключить можно
@@ -107,8 +107,6 @@ public sealed class AppSettings
     public SaveSound SaveSound { get; set; } = SaveSound.Soft;
     /// <summary>Свой WAV для звука сохранения (SaveSound = Custom).</summary>
     public string? CustomSaveSoundPath { get; set; }
-    /// <summary>Открывать папку с файлом после сохранения.</summary>
-    public bool OpenFolderAfterSave { get; set; } = false;
     public AppTheme Theme { get; set; } = AppTheme.Dark;
     public AppLanguage Language { get; set; } = AppLanguage.Ru;
     /// <summary>

@@ -7,8 +7,6 @@
     <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
         <StackPanel>
             <TextBlock Text="Клавиши" Style="{StaticResource PageTitle}"/>
-            <TextBlock Text="Нажми на поле и введи новое сочетание."
-                       Style="{StaticResource Lede}"/>
 
             <Border x:Name="ConflictBar" Style="{StaticResource Card}" Padding="14,12,14,12"
                     Margin="0,0,0,12" Visibility="Collapsed"

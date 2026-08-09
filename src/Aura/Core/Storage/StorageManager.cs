@@ -6,12 +6,15 @@ namespace Aura.Core.Storage;
 public sealed record StorageStats(long FolderBytes, long FreeDiskBytes, int ClipCount, string RootPath);
 
 /// <summary>
-/// Свободное место, лимит размера папки записей и автоудаление самых старых клипов.
+/// Сколько занято в папке записей и сколько свободно на диске.
 ///
-/// Всё считается по индексу папки (<see cref="ClipIndex"/>), который перестраивается
-/// В ФОНЕ. Раньше и статистика, и автоочистка обходили папку рекурсивно прямо перед
-/// сохранением клипа — то есть в самый неудачный момент. Теперь горячий путь
-/// (<see cref="EnsureSpace"/>) складывает готовые числа.
+/// Считается по индексу папки (<see cref="ClipIndex"/>), который перестраивается
+/// В ФОНЕ: раньше статистика обходила папку рекурсивно прямо перед сохранением
+/// клипа — то есть в самый неудачный момент.
+///
+/// Автоудаления старых записей здесь больше нет: приложение не должно молча
+/// стирать чужие файлы, а «лимит папки» ничего не гарантировал — место на диске
+/// кончалось от чего угодно ещё.
 ///
 /// Индекс правится инкрементально: <see cref="RegisterSaved"/> после записи файла,
 /// <see cref="Forget"/> и <see cref="Rename"/> — при операциях из панорамы. Изменения
@@ -98,73 +101,6 @@ public sealed class StorageManager
     {
         _index.Rename(from, to);
         NotifyStats();
-    }
-
-    /// <summary>
-    /// Гарантирует место перед сохранением: если включено автоудаление и
-    /// (папка превысила лимит ИЛИ на диске мало места) — удаляем самые старые клипы.
-    /// Удаляются только видео: скриншоты пользователь складывает сам, и молча
-    /// подчищать их приложение не должно.
-    /// </summary>
-    public void EnsureSpace()
-    {
-        var s = _settings.Current;
-        if (!s.AutoDeleteOldClips) return;
-
-        string root = s.SaveRootPath;
-        if (!Directory.Exists(root)) return;
-
-        // Первый запуск за сеанс — индекса ещё нет, собираем здесь (один раз).
-        if (!_index.IsBuilt || !_index.MatchesRoot(root)) _index.Rebuild(root);
-
-        long maxFolder = s.MaxFolderSizeGb > 0 ? s.MaxFolderSizeGb * 1024L * 1024 * 1024 : long.MaxValue;
-        long minFree = s.MinFreeSpaceGb * 1024L * 1024 * 1024;
-
-        long folderBytes = _index.TotalBytes;
-        long free = FreeSpace(root);
-        if (folderBytes <= maxFolder && free >= minFree) return; // обычный случай — выходим сразу
-
-        int deleted = 0;
-        foreach (var file in _index.OldestFirst())
-        {
-            if (folderBytes <= maxFolder && free >= minFree) break;
-            if (!file.IsClip) continue;
-            try
-            {
-                File.Delete(file.Path);
-                _index.Remove(file.Path);
-                // Хвосты уходят вместе с записью: .part от прерванного сохранения и
-                // папка игры, если этот клип был в ней последним. Кэш миниатюр здесь
-                // не трогаем — ключ считается по файлу, которого уже нет; его подберёт
-                // ClipThumbnails.PruneOrphans при следующем открытии панорамы.
-                Library.ClipCleanup.RemoveTraces(file.Path, root);
-                folderBytes -= file.SizeBytes;
-                free += file.SizeBytes;
-                deleted++;
-            }
-            catch (Exception ex)
-            {
-                // Файл открыт в плеере/проводнике — пропускаем, но из индекса не убираем
-                Log.Warn("Storage", $"Не удалился {Path.GetFileName(file.Path)}: {ex.Message}");
-            }
-        }
-
-        if (deleted > 0)
-        {
-            Log.Info("Storage", $"Автоочистка: удалено {deleted} старых клипов");
-            CleanEmptyGameFolders(root);
-            NotifyStats();
-        }
-    }
-
-    private static void CleanEmptyGameFolders(string root)
-    {
-        try
-        {
-            foreach (var dir in Directory.EnumerateDirectories(root))
-                try { if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir); } catch { }
-        }
-        catch { }
     }
 
     private static long FreeSpace(string root)

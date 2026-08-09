@@ -743,6 +743,25 @@
         </Setter>
     </Style>
 
+    <!-- Разделитель в меню трея.
+
+         Штатный шаблон Separator рисует линию по ширине САМОГО ШИРОКОГО пункта, а
+         меню шире за счёт MinWidth — черта обрывалась, не доходя до правого края.
+         Свой шаблон растягивается по контейнеру и упирается в те же поля, что и
+         пункты меню. -->
+    <Style x:Key="TrayMenuSeparator" TargetType="Separator">
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="Margin" Value="8,5,8,5"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Separator">
+                    <Border Height="1" HorizontalAlignment="Stretch"
+                            Background="{DynamicResource SepBrush}" SnapsToDevicePixels="True"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="TrayMenu" TargetType="ContextMenu">
         <Setter Property="Template">
             <Setter.Value>

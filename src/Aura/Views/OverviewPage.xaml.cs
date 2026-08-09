@@ -40,10 +40,9 @@ public partial class OverviewPage : PageBase
 
         SizeChanged += (_, _) =>
         {
-            // Узкое окно — плитки в две колонки, совсем узкое — в одну.
+            // Узкое окно — цифры в две колонки, совсем узкое — в одну.
             // Rows остаётся нулём: строки UniformGrid считает сам по числу колонок.
             double width = ActualWidth;
-            Actions.Columns = width < 460 ? 1 : 2;
             Stats.Columns = width < 560 ? 1 : width < 760 ? 2 : 3;
         };
 
@@ -75,8 +74,11 @@ public partial class OverviewPage : PageBase
         MasterState.Text = on ? "Включён" : "Выключен";
         Tally.Fill = (Brush)FindResource(on ? "RecBrush" : "Tx3Brush");
 
-        string game = Core.GameDetection.GameDetector.DetectForegroundGame();
-        Eyebrow.Text = on ? $"Запись идёт · {game}" : "Повтор выключен";
+        // Названия активного окна здесь нет намеренно: определяется оно по процессу
+        // на переднем плане, а когда игра свёрнута или человек листает браузер, там
+        // оказывается «Рабочий стол» — и выглядело это как «пишется не то».
+        // На что именно смотрит захват, показывает строка «Экран N» ниже.
+        Eyebrow.Text = on ? "Запись идёт" : "Повтор выключен";
 
         var buffered = engine.BufferedDuration;
         BufferTime.Text = Format(buffered);
@@ -89,24 +91,10 @@ public partial class OverviewPage : PageBase
         double part = target > 0 ? Math.Min(1, buffered.TotalSeconds / target) : 0;
         AnimateWidth(BufferFill, part, BufferFill.ActualWidth);
 
-        // Идущая запись: показываем её длительность рядом со значком, а если файл
-        // уже перевалил за предел MP4 и продолжается во второй части — и её номер.
-        if (engine.RecordingElapsed is { } elapsed)
-        {
-            int filePart = engine.RecordingPart;
-            RecTimer.Text = filePart > 1 ? $"{Format(elapsed)} · ч.{filePart}" : Format(elapsed);
-            RecTimer.Visibility = Visibility.Visible;
-        }
-        else RecTimer.Visibility = Visibility.Collapsed;
-
-        RecName.Text = engine.IsRecordingToFile ? "Остановить запись" : "Начать запись";
-        RecTile.Data = (Geometry)FindResource(engine.IsRecordingToFile ? "Ico.Stop" : "Ico.Rec");
-        RecTile.Background = (Brush)FindResource(engine.IsRecordingToFile ? "GrayBrush" : "RecBrush");
-
         QualityText.Text = $"{settings.VerticalResolution}p · {settings.Fps}";
         QualitySub.Text = $"{Codec(settings.Codec)} · {settings.BitrateMbps} Мбит/с";
 
-        BuildPills(on, game);
+        BuildPills();
     }
 
     /// <summary>Ширина шкалы задаётся анимацией, чтобы буфер «наливался», а не прыгал.</summary>
@@ -121,7 +109,7 @@ public partial class OverviewPage : PageBase
         });
     }
 
-    private void BuildPills(bool on, string game)
+    private void BuildPills()
     {
         var settings = Services.Settings.Current;
         var items = new List<(string Icon, string Text)>
@@ -130,7 +118,6 @@ public partial class OverviewPage : PageBase
             ("", $"{settings.VerticalResolution}p · {settings.Fps} кадров"),
             ("Ico.Speaker", Sound(settings))
         };
-        if (on && game.Length > 0) items.Insert(0, ("Ico.Play", game));
 
         // Перестраиваем только при изменении состава — иначе мигало бы каждые 400 мс
         string signature = string.Join("|", items.Select(i => i.Text));
@@ -176,34 +163,12 @@ public partial class OverviewPage : PageBase
     private static string Format(TimeSpan span) =>
         span.TotalHours >= 1 ? span.ToString(@"h\:mm\:ss") : $"{(int)span.TotalMinutes}:{span.Seconds:00}";
 
-    private void SyncHotkeys()
-    {
-        var s = Services.Settings.Current;
-        SaveCombo.Combo = ComboSave.Combo = s.HotkeySaveReplay;
-        ComboRec.Combo = Services.Engine.IsRecordingToFile ? s.HotkeyStopRecording : s.HotkeyStartRecording;
-    }
+    private void SyncHotkeys() => SaveCombo.Combo = Services.Settings.Current.HotkeySaveReplay;
 
     private void ShowStats(StorageStats stats)
     {
-        var settings = Services.Settings.Current;
-        long limit = settings.MaxFolderSizeGb * 1024L * 1024 * 1024;
-        bool hasLimit = settings.AutoDeleteOldClips && limit > 0;
-
         UsedText.Text = ByteSize.Format(stats.FolderBytes);
-        FreeText.Text = hasLimit
-            ? $"из {settings.MaxFolderSizeGb} ГБ · свободно {ByteSize.Format(stats.FreeDiskBytes)}"
-            : $"свободно на диске {ByteSize.Format(stats.FreeDiskBytes)}";
-
-        // Полоса — только когда есть чем ограничиваться
-        UsedBar.Visibility = hasLimit ? Visibility.Visible : Visibility.Collapsed;
-        if (hasLimit)
-        {
-            double part = Math.Min(1, stats.FolderBytes / (double)limit);
-            UsedFill.BeginAnimation(WidthProperty,
-                new DoubleAnimation(((FrameworkElement)UsedFill.Parent).ActualWidth * part, TimeSpan.FromSeconds(0.7))
-                { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
-        }
-
+        FreeText.Text = $"свободно на диске {ByteSize.Format(stats.FreeDiskBytes)}";
         ClipCountText.Text = stats.ClipCount.ToString();
         ClipCountSub.Text = "в папке с записями";
     }
@@ -233,20 +198,7 @@ public partial class OverviewPage : PageBase
         Refresh();
     }
 
-    private void SaveReplay_Click(object sender, RoutedEventArgs e)
-    {
-        Services.Engine.SaveReplay();
-    }
-
-
-
-    private void Record_Click(object sender, RoutedEventArgs e)
-    {
-        if (Services.Engine.IsRecordingToFile) Services.Engine.StopRecordingToFile();
-        else App.SafeStartRecording();
-        Refresh();
-        SyncHotkeys();
-    }
+    private void SaveReplay_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay();
 
     private void AllClips_Click(object sender, RoutedEventArgs e) =>
         (Window.GetWindow(this) as MainWindow)?.Navigate("clips");

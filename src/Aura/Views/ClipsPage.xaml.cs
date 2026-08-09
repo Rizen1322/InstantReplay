@@ -84,8 +84,10 @@ public partial class ClipsPage : PageBase
         switch (e.Key)
         {
             case Key.A when Keyboard.Modifiers == ModifierKeys.Control && _shown.Count > 0:
+                // Ctrl+A всегда выделяет всё, а не переключает: так это работает везде
                 _selecting = true;
-                SelectAll_Click(this, e);
+                foreach (var item in _shown) item.IsSelected = true;
+                UpdateSelectionBar(keepMode: true);
                 e.Handled = true;
                 break;
             case Key.Delete when _selecting:
@@ -120,6 +122,9 @@ public partial class ClipsPage : PageBase
         UpdateSelectionBarOffset();
     }
 
+    /// <summary>Зазор между верхом окна и «прилипшей» панелью — иначе она выглядит приклеенной.</summary>
+    private const double StickyGap = 12;
+
     private void UpdateSelectionBarOffset()
     {
         if (_scroll is null || SelectionBar.Visibility != Visibility.Visible) return;
@@ -133,7 +138,7 @@ public partial class ClipsPage : PageBase
             double listBottom = Groups.TranslatePoint(new Point(0, 0), this).Y + Groups.ActualHeight;
             double room = Math.Max(0, listBottom - barTop - SelectionBar.ActualHeight);
 
-            double shift = Math.Clamp(_scroll.VerticalOffset - barTop, 0, room);
+            double shift = Math.Clamp(_scroll.VerticalOffset - barTop + StickyGap, 0, room);
             SelectionBarShift.Y = shift;
             SelectionBar.Effect = shift > 0.5 ? (System.Windows.Media.Effects.Effect)FindResource("ToastShadow") : null;
         }
@@ -342,17 +347,25 @@ public partial class ClipsPage : PageBase
         UpdateSelectionBar();
     }
 
-    /// <summary>Панель над сеткой: сколько выделено и что с этим можно сделать.</summary>
-    private void UpdateSelectionBar()
+    /// <summary>
+    /// Панель над сеткой: сколько выделено и что с этим можно сделать.
+    /// keepMode — не выключать режим на пустом выделении (нажали «Снять всё»).
+    /// </summary>
+    private void UpdateSelectionBar(bool keepMode = false)
     {
         var selected = SelectedItems();
 
         // Сняли последнюю галочку — режим выключается сам. Отдельная кнопка выхода
         // для пустого выделения не нужна: снять всё и означает «я закончил».
-        if (_selecting && selected.Count == 0) { _selecting = false; _anchor = null; }
+        if (_selecting && selected.Count == 0 && !keepMode) { _selecting = false; _anchor = null; }
 
         SelectionBar.Visibility = _selecting ? Visibility.Visible : Visibility.Collapsed;
         if (!_selecting) { SelectionBarShift.Y = 0; SelectionBar.Effect = null; return; }
+
+        // Кнопка-выключатель показывает то действие, которое сделает следующий клик
+        bool all = AllShownSelected();
+        SelectAllButton.Content = all ? "Снять всё" : "Выбрать всё";
+        Controls.Deco.SetIcon(SelectAllButton, (Geometry)FindResource(all ? "Ico.X" : "Ico.CheckSquare"));
 
         // Только что показанная панель ещё не размечена — её место на странице
         // известно лишь после раскладки, поэтому сдвиг считаем следующим заходом.
@@ -363,11 +376,26 @@ public partial class ClipsPage : PageBase
 
     // ---------------- Действия над выделением ----------------
 
+    /// <summary>
+    /// Кнопка работает как выключатель: выделено не всё — выделяем всё, выделено
+    /// всё — снимаем. Так одно и то же место отвечает за оба действия, и не нужно
+    /// искать, чем отменить случайное «выбрать всё».
+    /// </summary>
     private void SelectAll_Click(object sender, RoutedEventArgs e)
     {
-        foreach (var item in _shown) item.IsSelected = true;
-        UpdateSelectionBar();
+        if (_shown.Count == 0) return;
+
+        bool selectAll = !AllShownSelected();
+        foreach (var item in _shown) item.IsSelected = selectAll;
+
+        // Снятие последнего выделения обычно гасит режим — здесь этого не нужно:
+        // человек нажал «Снять всё», а не «Готово», и продолжает выбирать.
+        _selecting = true;
+        if (!selectAll) _anchor = null;
+        UpdateSelectionBar(keepMode: true);
     }
+
+    private bool AllShownSelected() => _shown.Count > 0 && _shown.All(i => i.IsSelected);
 
     private void ClearSelection_Click(object sender, RoutedEventArgs e) => ClearSelection();
 

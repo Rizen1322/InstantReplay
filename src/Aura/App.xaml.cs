@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -244,7 +244,6 @@ public partial class App : Application
         engine.ReplaySaved += (file, seconds) =>
         {
             n.CompleteSaving("Повтор сохранён", $"{Loc.Duration(seconds)} · {Describe(file)}");
-            AfterFileSaved(file);
             Views.ClipCommands.NotifyLibraryChanged();
         };
         engine.SaveFailed += msg => n.Show(NotificationKind.Warning, "Не удалось сохранить", msg);
@@ -254,7 +253,6 @@ public partial class App : Application
         engine.RecordingSaved += (file, seconds) =>
         {
             n.Show(NotificationKind.Saved, "Запись сохранена", $"{Loc.Duration(seconds)} · {Describe(file)}");
-            AfterFileSaved(file);
             Views.ClipCommands.NotifyLibraryChanged();
         };
 
@@ -298,13 +296,6 @@ public partial class App : Application
             return game.Length is > 0 and <= 16 ? $"{game} · {size}" : size;
         }
         catch { return ""; }
-    }
-
-    private static void AfterFileSaved(string file)
-    {
-        if (!Services.Settings.Current.OpenFolderAfterSave) return;
-        try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{file}\"") { UseShellExecute = true }); }
-        catch { }
     }
 
     // ---------------- Действия ----------------
@@ -396,7 +387,7 @@ public partial class App : Application
         _traySave = Add("Сохранить повтор", "Ico.Save", () => Services.Engine.SaveReplay());
         Add("Скриншот", "Ico.Camera", () => _ = TakeScreenshotAsync());
         Add("Папка с записями", "Ico.FolderOpen", OpenRecordingsFolder);
-        menu.Items.Add(new Separator { Margin = new Thickness(8, 4, 8, 4) });
+        menu.Items.Add(new Separator { Style = (Style)Resources["TrayMenuSeparator"] });
         Add("Выход", "Ico.X", ExitApp, "RecBrush");
 
         _tray = new TaskbarIcon

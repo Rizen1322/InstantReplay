@@ -74,7 +74,7 @@
                                     Foreground="{DynamicResource Tx2Brush}"/>
                         </MenuItem.Icon>
                     </MenuItem>
-                    <Separator Margin="8,4,8,4"/>
+                    <Separator Style="{DynamicResource TrayMenuSeparator}"/>
                     <MenuItem Header="Переименовать" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Rename}" CommandParameter="{Binding}">
                         <MenuItem.Icon>
@@ -91,7 +91,7 @@
                     </MenuItem>
 
                     <!-- Пункты для выделенной пачки: появляются, когда выделено больше одной -->
-                    <Separator x:Name="ManySeparator" Margin="8,4,8,4" Visibility="Collapsed"/>
+                    <Separator x:Name="ManySeparator" Style="{DynamicResource TrayMenuSeparator}" Visibility="Collapsed"/>
                     <MenuItem x:Name="CopyPathsItem" Header="Копировать пути выделенных" Visibility="Collapsed"
                               Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.CopyPathsMany}">

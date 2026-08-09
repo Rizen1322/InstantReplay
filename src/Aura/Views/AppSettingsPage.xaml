@@ -16,20 +16,20 @@
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Rocket}" Background="{DynamicResource GrayBrush}"/>
                         <TextBlock Text="Запускать вместе с Windows" Style="{StaticResource RowLabel}"
-                                   VerticalAlignment="Center" Margin="16,0,16,0"/>
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <c:Switch x:Name="AutoStart" Click="System_Changed"/>
                     </c:AdaptiveRow>
-                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Border Style="{StaticResource RowSeparator}"/>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Down}" Background="{DynamicResource GrayBrush}"/>
                         <TextBlock Text="Стартовать свёрнутым в трей" Style="{StaticResource RowLabel}"
-                                   VerticalAlignment="Center" Margin="16,0,16,0"/>
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <c:Switch x:Name="StartInTray" Click="System_Changed"/>
                     </c:AdaptiveRow>
-                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Border Style="{StaticResource RowSeparator}"/>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Rec}" Background="{DynamicResource AccentBrush}"/>
-                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                        <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                             <TextBlock Text="Включать мгновенный повтор при старте" Style="{StaticResource RowLabel}"/>
                             <TextBlock Text="Запись начинается сразу после запуска" Style="{StaticResource RowSub}"/>
                         </StackPanel>
@@ -39,18 +39,24 @@
             </Border>
 
             <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+            <!-- Первая строка — общий выключатель. Пока он выключен, остальные
+                 настройки не нужны и просто прячутся: настраивать угол и звук
+                 уведомлений, которых не будет, нечего. Поверх игры они показываются
+                 всегда — это единственный осмысленный режим, и отдельной настройкой
+                 он только занимал строку. -->
             <TextBlock Text="Уведомления" Style="{StaticResource GroupLabel}"/>
             <Border Style="{StaticResource Card}">
                 <StackPanel>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Bell}" Background="{DynamicResource PinkBrush}"/>
-                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
-                            <TextBlock Text="Показывать поверх игры" Style="{StaticResource RowLabel}"/>
-                            <TextBlock Text="Не отбирают фокус и пропускают клики насквозь" Style="{StaticResource RowSub}"/>
+                        <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                            <TextBlock Text="Показывать уведомления" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Всплывают поверх игры, не отбирая фокус" Style="{StaticResource RowSub}"/>
                         </StackPanel>
-                        <c:Switch x:Name="ShowNotifications" Click="System_Changed"/>
+                        <c:Switch x:Name="ShowNotifications" Click="Notifications_Changed"/>
                     </c:AdaptiveRow>
 
+                    <StackPanel x:Name="NotificationOptions">
                     <Border Style="{StaticResource RowSeparator}"/>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
@@ -106,13 +112,7 @@
                                     c:Deco.Icon="{DynamicResource Ico.Camera}"/>
                         </StackPanel>
                     </c:AdaptiveRow>
-
-                    <Border Style="{StaticResource RowSeparator}"/>
-                    <c:AdaptiveRow Margin="16,12,16,12">
-                        <TextBlock Text="Открывать папку после сохранения" Style="{StaticResource RowLabel}"
-                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
-                        <c:Switch x:Name="OpenAfterSave" Click="System_Changed"/>
-                    </c:AdaptiveRow>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
@@ -123,7 +123,7 @@
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Sun}" Background="{DynamicResource OrangeBrush}"/>
                         <TextBlock Text="Тема" Style="{StaticResource RowLabel}"
-                                   VerticalAlignment="Center" Margin="16,0,16,0"/>
+                                   VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <c:Segmented x:Name="Theme" SelectionChanged="Theme_Changed">
                             <ListBoxItem Content="Тёмная" Tag="Dark"/>
                             <ListBoxItem Content="Светлая" Tag="Light"/>
@@ -131,10 +131,10 @@
                         </c:Segmented>
                     </c:AdaptiveRow>
 
-                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Border Style="{StaticResource RowSeparator}"/>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Monitor}" Background="{DynamicResource TealBrush}"/>
-                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                        <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                             <TextBlock Text="Размер интерфейса" Style="{StaticResource RowLabel}"/>
                             <TextBlock Text="Крупнее на 2K и 4K, компактнее на Full HD" Style="{StaticResource RowSub}"/>
                         </StackPanel>
@@ -155,7 +155,7 @@
                 <StackPanel>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <c:IconTile Data="{DynamicResource Ico.Down}" Background="{DynamicResource BlueBrush}"/>
-                        <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                        <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                             <TextBlock x:Name="VersionText" Style="{StaticResource RowLabel}"/>
                             <TextBlock x:Name="UpdateStatus" Style="{StaticResource RowSub}"/>
                         </StackPanel>
@@ -199,17 +199,17 @@
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <c:IconTile Data="{DynamicResource Ico.File}" Background="{DynamicResource GrayBrush}"/>
                             <TextBlock Text="Открыть папку с логами" Style="{StaticResource RowLabel}"
-                                       Margin="16,0,16,0" VerticalAlignment="Center"/>
+                                       Margin="0,0,16,0" VerticalAlignment="Center"/>
                             <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
                                     Foreground="{DynamicResource Tx3Brush}"/>
                         </c:AdaptiveRow>
                     </Button>
-                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Border Style="{StaticResource RowSeparator}"/>
                     <Button Style="{StaticResource RowButton}" Click="OpenSettings_Click">
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <c:IconTile Data="{DynamicResource Ico.Cog}" Background="{DynamicResource GrayBrush}"/>
                             <TextBlock Text="Открыть settings.json" Style="{StaticResource RowLabel}"
-                                       Margin="16,0,16,0" VerticalAlignment="Center"/>
+                                       Margin="0,0,16,0" VerticalAlignment="Center"/>
                             <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
                                     Foreground="{DynamicResource Tx3Brush}"/>
                         </c:AdaptiveRow>
@@ -218,11 +218,11 @@
                     <!-- Кэш миниатюр: невидимая папка, которая растёт от каждой записи.
                          Панорама подчищает его сама, но увидеть размер и убрать всё
                          разом человек должен уметь и без неё. -->
-                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Border Style="{StaticResource RowSeparator}"/>
                     <Button Style="{StaticResource RowButton}" Click="ClearThumbs_Click">
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <c:IconTile Data="{DynamicResource Ico.Box}" Background="{DynamicResource TealBrush}"/>
-                            <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Очистить кэш превью" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="ThumbCacheSize" Style="{StaticResource RowSub}"/>
                             </StackPanel>
@@ -231,12 +231,12 @@
                         </c:AdaptiveRow>
                     </Button>
 
-                    <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                    <Border Style="{StaticResource RowSeparator}"/>
                     <Button Style="{StaticResource RowButton}" Click="Reset_Click">
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <c:IconTile Data="{DynamicResource Ico.Undo}" Background="{DynamicResource RecBrush}"/>
                             <TextBlock Text="Сбросить все настройки" Style="{StaticResource RowLabel}"
-                                       Margin="16,0,16,0" VerticalAlignment="Center"
+                                       Margin="0,0,16,0" VerticalAlignment="Center"
                                        Foreground="{DynamicResource RecBrush}"/>
                             <c:Icon Data="{DynamicResource Ico.Chev}" Size="14" HorizontalAlignment="Right"
                                     Foreground="{DynamicResource Tx3Brush}"/>

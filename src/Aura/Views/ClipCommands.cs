@@ -60,13 +60,28 @@ public static class ClipCommands
     /// <summary>Оставлено для совместимости вызова из App: регистрация больше не нужна.</summary>
     public static void Register() { }
 
+    /// <summary>
+    /// Выполнить действие ПОСЛЕ того, как контекстное меню закроется.
+    ///
+    /// Пункты меню выполняются, пока всплывающее окно ещё живо и держит мышь и
+    /// фокус. Действиям вроде «Открыть» это не мешает, но «Переименовать» и
+    /// «Удалить» открывают модальное окно, и оно оказывалось за меню: диалог висел
+    /// без фокуса, клики уходили в закрывающийся popup, и со стороны выглядело так,
+    /// будто пункт просто не работает. Откладываем на холостой ход диспетчера —
+    /// к этому моменту меню закрыто, и окно получает фокус нормально.
+    /// </summary>
+    private static void AfterMenuCloses(Action action) =>
+        Application.Current?.Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle, action);
+
     private sealed class ClipsAction(Action<IReadOnlyList<ClipItem>> action) : ICommand
     {
         public event EventHandler? CanExecuteChanged { add { } remove { } }
         public bool CanExecute(object? parameter) => parameter is IReadOnlyList<ClipItem> { Count: > 0 };
         public void Execute(object? parameter)
         {
-            if (parameter is IReadOnlyList<ClipItem> items && items.Count > 0) action(items);
+            if (parameter is IReadOnlyList<ClipItem> items && items.Count > 0)
+                AfterMenuCloses(() => action(items));
         }
     }
 
@@ -77,7 +92,7 @@ public static class ClipCommands
             parameter is ClipItem item && (enabled?.Invoke(item) ?? true);
         public void Execute(object? parameter)
         {
-            if (parameter is ClipItem item) action(item);
+            if (parameter is ClipItem item) AfterMenuCloses(() => action(item));
         }
     }
 

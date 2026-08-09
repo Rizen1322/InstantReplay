@@ -59,9 +59,9 @@ public partial class AppSettingsPage : PageBase
         AutoBuffer.IsChecked = s.AutoStartReplayBuffer;
 
         ShowNotifications.IsChecked = s.ShowNotifications;
+        UpdateNotificationOptions();
         Duration.Value = s.NotificationDurationSeconds;
         DurationValue.Text = $"{s.NotificationDurationSeconds:0.#} с".Replace('.', ',');
-        OpenAfterSave.IsChecked = s.OpenFolderAfterSave;
         SelectTag(Sound, s.SaveSound.ToString());
         HighlightPosition(s.NotificationPosition);
 
@@ -137,11 +137,21 @@ public partial class AppSettingsPage : PageBase
         s.StartMinimizedToTray = StartInTray.IsChecked == true;
         s.AutoStartReplayBuffer = AutoBuffer.IsChecked == true;
         s.ShowNotifications = ShowNotifications.IsChecked == true;
-        s.OpenFolderAfterSave = OpenAfterSave.IsChecked == true;
         s.CheckForUpdates = CheckUpdates.IsChecked == true;
         s.CheckNvidiaDriver = DriverWatch.IsChecked == true;
         Services.Settings.Save("system");
     }
+
+    /// <summary>Общий выключатель уведомлений заодно убирает их настройки с глаз.</summary>
+    private void Notifications_Changed(object sender, RoutedEventArgs e)
+    {
+        UpdateNotificationOptions();
+        System_Changed(sender, e);
+    }
+
+    private void UpdateNotificationOptions() =>
+        NotificationOptions.Visibility =
+            ShowNotifications.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
 
     private void Duration_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {

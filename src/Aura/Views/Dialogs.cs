@@ -106,6 +106,11 @@ public static class Dialogs
         window.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) window.DragMove(); };
         window.Loaded += (_, _) =>
         {
+            // Явно поднимаем и забираем фокус: диалог зовут из пунктов контекстного
+            // меню, и без этого он мог остаться под закрывающимся всплывающим окном.
+            window.Activate();
+            window.Focus();
+
             window.Opacity = 0;
             window.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.16)));
         };

@@ -60,33 +60,9 @@
                 </StackPanel>
             </Border>
 
-            <!-- ==================== БЫСТРЫЕ ДЕЙСТВИЯ ==================== -->
-            <UniformGrid x:Name="Actions" Rows="0" Columns="2" Margin="0,14,0,0">
-                <Button Style="{StaticResource ActionTile}" Click="SaveReplay_Click">
-                    <StackPanel>
-                        <c:IconTile Data="{DynamicResource Ico.Save}" Background="{DynamicResource AccentBrush}"
-                                    TileSize="28" IconSize="15" HorizontalAlignment="Left"/>
-                        <TextBlock Text="Сохранить повтор" FontSize="13" FontWeight="SemiBold" Margin="0,10,0,0"
-                                   TextWrapping="Wrap"/>
-                        <c:KeyCaps x:Name="ComboSave" Margin="0,8,0,0" HorizontalAlignment="Left"/>
-                    </StackPanel>
-                </Button>
-                <Button Style="{StaticResource ActionTile}" Click="Record_Click">
-                    <StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <c:IconTile x:Name="RecTile" Data="{DynamicResource Ico.Rec}" Background="{DynamicResource RecBrush}"
-                                        TileSize="28" IconSize="15" HorizontalAlignment="Left"/>
-                            <!-- Длительность идущей записи: пока не пишем — скрыта -->
-                            <TextBlock x:Name="RecTimer" Visibility="Collapsed" Margin="10,0,0,0"
-                                       VerticalAlignment="Center" FontSize="14" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource RecBrush}"/>
-                        </StackPanel>
-                        <TextBlock x:Name="RecName" Text="Начать запись" FontSize="13" FontWeight="SemiBold" Margin="0,10,0,0"
-                                   TextWrapping="Wrap"/>
-                        <c:KeyCaps x:Name="ComboRec" Margin="0,8,0,0" HorizontalAlignment="Left"/>
-                    </StackPanel>
-                </Button>
-            </UniformGrid>
+            <!-- Плиток «Сохранить повтор» и «Начать запись» здесь нет: и то и другое
+                 делается горячей клавишей, не отрывая рук от игры, а кнопка
+                 сохранения к тому же осталась в шапке окна. -->
 
             <!-- ==================== КОРОТКО ==================== -->
             <TextBlock Text="Коротко" Style="{StaticResource GroupLabel}"/>

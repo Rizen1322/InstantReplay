@@ -54,8 +54,11 @@
                 <Grid>
                     <TextBlock x:Name="SelectionText" VerticalAlignment="Center" FontWeight="SemiBold"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="Выбрать всё" Click="SelectAll_Click"
-                                c:Deco.Icon="{DynamicResource Ico.CheckSquare}"/>
+                        <!-- Одна кнопка на два действия: пока выделено не всё — «Выбрать
+                             всё», когда выделено всё — «Снять всё». Отдельная кнопка
+                             снятия рядом с «Готово» только путала. -->
+                        <Button x:Name="SelectAllButton" Content="Выбрать всё" Click="SelectAll_Click"
+                                MinWidth="150" c:Deco.Icon="{DynamicResource Ico.CheckSquare}"/>
                         <Button Content="Копировать пути" Margin="8,0,0,0" Click="CopySelectedPaths_Click"
                                 c:Deco.Icon="{DynamicResource Ico.Copy}"/>
                         <Button Content="Удалить" Margin="8,0,0,0" Click="DeleteSelected_Click"

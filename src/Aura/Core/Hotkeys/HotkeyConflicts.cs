@@ -23,7 +23,9 @@ public static class HotkeyConflicts
     [
         new(HotkeyAction.SaveReplay, "Сохранить повтор", s.HotkeySaveReplay),
         new(HotkeyAction.SaveLast30, "Сохранить последние 30 сек", s.HotkeySaveLast30),
-        new(HotkeyAction.ToggleInstantReplay, "Мгновенный повтор", s.HotkeyToggleInstantReplay),
+        // «Включить повтор», а не «Мгновенный повтор»: в списке клавиш все строки —
+        // действия, и существительное среди глаголов читалось как заголовок раздела.
+        new(HotkeyAction.ToggleInstantReplay, "Включить повтор", s.HotkeyToggleInstantReplay),
         new(HotkeyAction.StartRecording, "Начать запись", s.HotkeyStartRecording),
         new(HotkeyAction.StopRecording, "Остановить запись", s.HotkeyStopRecording),
         new(HotkeyAction.Screenshot, "Скриншот", s.HotkeyScreenshot),

@@ -1,4 +1,4 @@
-using Vortice.MediaFoundation;
+﻿using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -63,6 +63,9 @@ public sealed class ReplayEngine : IDisposable
 
     /// <summary>Размер кадра, который реально уходит в энкодер (после масштабирования).</summary>
     public (int Width, int Height) OutputSize => (_processor?.OutWidth ?? 0, _processor?.OutHeight ?? 0);
+
+    /// <summary>Сколько занимает звуковая часть буфера повтора.</summary>
+    public long BufferedAudioBytes => _audioBuffer.TotalBytes;
 
     /// <summary>Готовность текущего сохранения, 0..1 — для показа в UI вместо немой паузы.</summary>
     public double SaveProgress { get; private set; }
@@ -574,14 +577,6 @@ public sealed class ReplayEngine : IDisposable
             using var backgroundIo = Saving.BackgroundIoScope.BeginIf(inGame);
             try
             {
-                // Автоочистка сканирует всю папку записей рекурсивно — на большой
-                // коллекции или медленном диске это ощутимая пауза ПЕРЕД записью.
-                var cleanupWatch = System.Diagnostics.Stopwatch.StartNew();
-                _storage.EnsureSpace(); // чистим старые записи при нехватке места ДО записи
-                if (cleanupWatch.ElapsedMilliseconds > 200)
-                    Log.Warn("Engine", $"Проверка места заняла {cleanupWatch.ElapsedMilliseconds} мс " +
-                                       "— сохранение начинается с задержкой");
-
                 ReplaySaver.Save(file, video, audio, mediaType, s.TrackMode,
                                  s.CaptureGameAudio, s.CaptureMicrophone,
                                  p => SaveProgress = p);
@@ -632,7 +627,6 @@ public sealed class ReplayEngine : IDisposable
 
         var s = _settings.Current;
         string game = GameDetector.DetectForegroundGame();
-        _storage.EnsureSpace();
         // Тип видеопотока берётся не сейчас, а в момент создания файла (первый keyframe):
         // сразу после старта конвейера энкодер ещё не дописал в него заголовки кодека,
         // и файл, открытый с таким типом, не собирается на финализации.

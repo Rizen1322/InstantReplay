@@ -50,7 +50,7 @@
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <TextBlock x:Name="BitrateValue" Style="{StaticResource RowValue}" Width="76"
                                            TextAlignment="Right" Margin="0,0,10,0"/>
-                                <Slider x:Name="Bitrate" Minimum="10" Maximum="80" TickFrequency="1"
+                                <Slider x:Name="Bitrate" Minimum="4" Maximum="80" TickFrequency="1"
                                         IsSnapToTickEnabled="True"/>
                             </StackPanel>
                         </c:AdaptiveRow>
@@ -90,8 +90,7 @@
                 <Border Style="{StaticResource Card}">
                     <StackPanel>
                         <c:AdaptiveRow Margin="16,12,16,12">
-                            <c:IconTile Data="{DynamicResource Ico.Speaker}" Background="{DynamicResource PinkBrush}"/>
-                            <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Звук игры" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="GameDeviceName" Style="{StaticResource RowSub}"/>
                                 <Grid Margin="0,7,0,0" HorizontalAlignment="Left" Width="172">
@@ -103,10 +102,9 @@
                             <c:Switch x:Name="GameAudio" Click="Audio_Changed"/>
                         </c:AdaptiveRow>
 
-                        <Border Style="{StaticResource RowSeparator}" Margin="52,0,0,0"/>
+                        <Border Style="{StaticResource RowSeparator}"/>
                         <c:AdaptiveRow Margin="16,12,16,12">
-                            <c:IconTile Data="{DynamicResource Ico.Mic}" Background="{DynamicResource IndigoBrush}"/>
-                            <StackPanel Margin="16,0,16,0" VerticalAlignment="Center">
+                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="MicDeviceName" Style="{StaticResource RowSub}"/>
                                 <Grid Margin="0,7,0,0" HorizontalAlignment="Left" Width="172">
@@ -179,8 +177,7 @@
                         </c:AdaptiveRow>
                         <Border Style="{StaticResource RowSeparator}"/>
                         <c:AdaptiveRow Margin="16,12,16,12">
-                            <c:IconTile Data="{DynamicResource Ico.Cursor}" Background="{DynamicResource TealBrush}"/>
-                            <StackPanel VerticalAlignment="Center" Margin="16,0,16,0">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
                                 <TextBlock Text="Курсор мыши" Style="{StaticResource RowLabel}"/>
                                 <TextBlock x:Name="CursorSub" Text="В шутерах обычно не нужен" Style="{StaticResource RowSub}"/>
                             </StackPanel>
