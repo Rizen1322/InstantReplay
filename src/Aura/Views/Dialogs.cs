@@ -22,22 +22,47 @@ public static class Dialogs
     public static string? Prompt(string title, string initial, string okText = "Готово") =>
         Show(title, null, okText, cancel: true, input: initial);
 
+    /// <summary>
+    /// Годится ли окно в хозяева диалога.
+    ///
+    /// WPF бросает InvalidOperationException прямо из присваивания Owner, если окно
+    /// ещё ни разу не показывали. В Application.Current.Windows такое окно вполне
+    /// может лежать: приложение умеет стартовать свёрнутым в трей и пересоздавать
+    /// главное окно. Исключение летело в глобальный обработчик и гасилось там —
+    /// со стороны «Удалить» и «Переименовать» выглядели как неработающие кнопки.
+    /// </summary>
+    private static bool CanOwnDialog(Window window)
+    {
+        try { return PresentationSource.FromVisual(window) is not null; }
+        catch { return false; }
+    }
+
     private static string? Show(string title, string? message, string okText, bool cancel, string? input)
     {
         var app = Application.Current;
-        var owner = app?.Windows.OfType<MainWindow>().FirstOrDefault();
+
+        // Сначала видимое окно, потом любое показанное — диалог должен появиться
+        // по центру того окна, из которого его позвали.
+        var candidates = app?.Windows.OfType<MainWindow>().Where(CanOwnDialog).ToList() ?? [];
+        var owner = candidates.FirstOrDefault(w => w.IsVisible) ?? candidates.FirstOrDefault();
 
         var window = new Window
         {
             WindowStyle = WindowStyle.None,
             AllowsTransparency = true,
             Background = Brushes.Transparent,
-            ShowInTaskbar = false,
+            // Без хозяина диалог иначе никак не найти: в трее окна нет, а поверх
+            // игры он не всплывёт. Кнопка на панели задач — единственный путь к нему.
+            ShowInTaskbar = owner is null,
             SizeToContent = SizeToContent.Height,
             Width = 420,
-            Owner = owner,
             WindowStartupLocation = owner is null ? WindowStartupLocation.CenterScreen : WindowStartupLocation.CenterOwner
         };
+
+        // Присваивание всё равно в try: между проверкой и установкой окно могли закрыть.
+        if (owner is not null)
+            try { window.Owner = owner; }
+            catch { window.WindowStartupLocation = WindowStartupLocation.CenterScreen; }
 
         var panel = new StackPanel { Margin = new Thickness(22, 20, 22, 18) };
         panel.Children.Add(new TextBlock

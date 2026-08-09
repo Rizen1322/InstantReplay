@@ -72,7 +72,19 @@ public static class ClipCommands
     /// </summary>
     private static void AfterMenuCloses(Action action) =>
         Application.Current?.Dispatcher.BeginInvoke(
-            System.Windows.Threading.DispatcherPriority.ApplicationIdle, action);
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            () =>
+            {
+                // Своя обработка вместо глобальной: там исключение только пишется в
+                // лог и гасится, а человек видит кнопку, которая «ничего не делает».
+                try { action(); }
+                catch (Exception ex)
+                {
+                    Log.Error("Library", ex);
+                    Services.Notifications.Show(Core.Notifications.NotificationKind.Warning,
+                                                "Действие не выполнилось", ex.Message);
+                }
+            });
 
     private sealed class ClipsAction(Action<IReadOnlyList<ClipItem>> action) : ICommand
     {
