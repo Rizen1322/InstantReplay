@@ -1,0 +1,135 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ТЁМНО-ФИОЛЕТОВАЯ ТЕМА («Глубокая»).
+
+         Ключи здесь и в Palette.Dark.xaml / Palette.Light.xaml совпадают один в один:
+         тема меняется подменой словаря на лету, а все стили ссылаются через
+         DynamicResource. Добавили ключ сюда — добавьте и в две соседние палитры,
+         иначе на другой теме ресурс просто не найдётся.
+
+         Логика цвета: фон почти чёрный, но с фиолетовым подмесом (#06010F), все
+         накладки (карточки, разделители, наведение) — не белые полупрозрачные, а
+         сиреневые: на чёрном они дают лёгкое свечение вместо серого налёта.
+         Крупные поверхности — градиент от глубокого индиго к светлой сирени.
+         Лайм оставлен только на микро-акценты (галочки, плашки) — ровно так он
+         работает в референсе: много фиолетового поля и редкие ядовитые точки. -->
+
+    <!-- Типографика живёт в палитре: у темы своя пара гарнитур.
+         Unbounded — широкий гротеск, он хорош только крупно (заголовки, цифры);
+         набирать им строки настроек нельзя, там Onest. -->
+    <FontFamily x:Key="UiFont">pack://application:,,,/Fonts/#Onest</FontFamily>
+    <FontFamily x:Key="DispFont">pack://application:,,,/Fonts/#Unbounded</FontFamily>
+
+    <Color x:Key="CanvasColor">#FF06010F</Color>
+    <Color x:Key="GlassColor">#F2130A22</Color>
+    <Color x:Key="CardColor">#14A78BFA</Color>
+    <Color x:Key="Card2Color">#1FA78BFA</Color>
+    <Color x:Key="SepColor">#1CA78BFA</Color>
+    <Color x:Key="HairColor">#2EA78BFA</Color>
+    <Color x:Key="HoverColor">#18A78BFA</Color>
+    <Color x:Key="PressColor">#2AA78BFA</Color>
+    <Color x:Key="TrackColor">#407C63B8</Color>
+
+    <Color x:Key="TxColor">#FFF4EFFF</Color>
+    <Color x:Key="Tx2Color">#FFA89CC8</Color>
+    <Color x:Key="Tx3Color">#FF6E6294</Color>
+
+    <!-- Основной акцент — сирень, а не зелень: он лежит на переключателях,
+         шкалах и главной кнопке, то есть задаёт цвет всему интерфейсу. -->
+    <Color x:Key="AccentColor">#FF8B5CF6</Color>
+    <!-- А вот мелкий текстовый акцент — лайм: галочки и плашки должны выпрыгивать
+         из фиолетового поля, иначе на нём же они и растворяются. -->
+    <Color x:Key="AccentTxColor">#FFC8FF3D</Color>
+    <Color x:Key="AccentInkColor">#FF14022A</Color>
+    <Color x:Key="AccentSoftColor">#2C8B5CF6</Color>
+
+    <Color x:Key="RecColor">#FFFF4D6D</Color>
+    <!-- «Синий» в этой теме уведён в лаванду: он лежит на ссылках («Все клипы»)
+         и был единственным цветом, выпадавшим из фиолетовой гаммы. -->
+    <Color x:Key="BlueColor">#FFB79CFF</Color>
+    <Color x:Key="IndigoColor">#FF6C2BD9</Color>
+    <Color x:Key="PurpleColor">#FFA78BFA</Color>
+    <Color x:Key="OrangeColor">#FFFFB020</Color>
+    <Color x:Key="WarnSoftColor">#26FFB020</Color>
+    <Color x:Key="TealColor">#FF35D0C0</Color>
+    <Color x:Key="GrayColor">#FF7A6E97</Color>
+    <Color x:Key="PinkColor">#FFFF5CA8</Color>
+    <Color x:Key="KnobColor">#FFFFFFFF</Color>
+    <Color x:Key="ShadowColor">#FF0B0118</Color>
+
+    <SolidColorBrush x:Key="CanvasBrush" Color="{DynamicResource CanvasColor}"/>
+    <SolidColorBrush x:Key="GlassBrush" Color="{DynamicResource GlassColor}"/>
+    <SolidColorBrush x:Key="CardBrush" Color="{DynamicResource CardColor}"/>
+    <SolidColorBrush x:Key="Card2Brush" Color="{DynamicResource Card2Color}"/>
+    <SolidColorBrush x:Key="SepBrush" Color="{DynamicResource SepColor}"/>
+    <SolidColorBrush x:Key="HairBrush" Color="{DynamicResource HairColor}"/>
+    <SolidColorBrush x:Key="HoverBrush" Color="{DynamicResource HoverColor}"/>
+    <SolidColorBrush x:Key="PressBrush" Color="{DynamicResource PressColor}"/>
+    <SolidColorBrush x:Key="TrackBrush" Color="{DynamicResource TrackColor}"/>
+
+    <SolidColorBrush x:Key="TxBrush" Color="{DynamicResource TxColor}"/>
+    <SolidColorBrush x:Key="Tx2Brush" Color="{DynamicResource Tx2Color}"/>
+    <SolidColorBrush x:Key="Tx3Brush" Color="{DynamicResource Tx3Color}"/>
+
+    <SolidColorBrush x:Key="AccentBrush" Color="{DynamicResource AccentColor}"/>
+    <SolidColorBrush x:Key="AccentTxBrush" Color="{DynamicResource AccentTxColor}"/>
+    <SolidColorBrush x:Key="AccentInkBrush" Color="{DynamicResource AccentInkColor}"/>
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="{DynamicResource AccentSoftColor}"/>
+
+    <SolidColorBrush x:Key="RecBrush" Color="{DynamicResource RecColor}"/>
+    <SolidColorBrush x:Key="BlueBrush" Color="{DynamicResource BlueColor}"/>
+    <SolidColorBrush x:Key="IndigoBrush" Color="{DynamicResource IndigoColor}"/>
+    <SolidColorBrush x:Key="PurpleBrush" Color="{DynamicResource PurpleColor}"/>
+    <SolidColorBrush x:Key="OrangeBrush" Color="{DynamicResource OrangeColor}"/>
+    <SolidColorBrush x:Key="WarnSoftBrush" Color="{DynamicResource WarnSoftColor}"/>
+    <SolidColorBrush x:Key="TealBrush" Color="{DynamicResource TealColor}"/>
+    <SolidColorBrush x:Key="GrayBrush" Color="{DynamicResource GrayColor}"/>
+    <SolidColorBrush x:Key="PinkBrush" Color="{DynamicResource PinkColor}"/>
+    <SolidColorBrush x:Key="KnobBrush" Color="{DynamicResource KnobColor}"/>
+
+    <!-- Главная карточка «Обзора»: то самое градиентное поле из референса.
+         Диагональ, а не вертикаль: горизонт делит карточку пополам и спорит
+         с её содержимым, диагональ уводит взгляд к переключателю справа.
+
+         Светлый край намеренно приглушён и уведён в дальний угол. С яркой сиренью
+         до #A855F7 правая половина карточки выжигалась: подписи «Мгновенный повтор»
+         и «сейчас» на ней переставали читаться, а сама карточка спорила по яркости
+         с кнопкой «Сохранить повтор» в шапке. -->
+    <LinearGradientBrush x:Key="HeroBrush" StartPoint="0,0" EndPoint="1,0.95">
+        <GradientStop Color="#FF190733" Offset="0"/>
+        <GradientStop Color="#FF3A1276" Offset="0.5"/>
+        <GradientStop Color="#FF5B23B8" Offset="0.85"/>
+        <GradientStop Color="#FF6B2FCC" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Цвета ПОВЕРХ градиента. Обычные Tx2/Tx3 подобраны под почти чёрный фон
+         и на фиолетовом поле проваливаются; здесь та же иерархия, но светлее. -->
+    <SolidColorBrush x:Key="HeroTxBrush" Color="#FFFFFFFF"/>
+    <SolidColorBrush x:Key="HeroTx2Brush" Color="#FFD9CDF7"/>
+    <SolidColorBrush x:Key="HeroTx3Brush" Color="#FFB6A5E4"/>
+    <!-- Шкала буфера: жёлоб темнее поля, заливка — лайм. Сирень по сирени
+         не читалась вовсе, а лайм здесь единственный контрастный цвет. -->
+    <SolidColorBrush x:Key="HeroTrackBrush" Color="#59120534"/>
+    <SolidColorBrush x:Key="HeroFillBrush" Color="#FFC8FF3D"/>
+
+    <!-- Логотип и крупные плитки-иконки -->
+    <LinearGradientBrush x:Key="LogoBrush" StartPoint="0,0" EndPoint="0.6,1">
+        <GradientStop Color="#FFC4A6FF" Offset="0"/>
+        <GradientStop Color="#FF8B5CF6" Offset="0.55"/>
+        <GradientStop Color="#FF5B21B6" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Фоновое свечение окна: сирень сверху слева, пурпур снизу справа -->
+    <RadialGradientBrush x:Key="AmbientBrush" GradientOrigin="0.12,0" Center="0.12,0"
+                         RadiusX="0.9" RadiusY="0.8">
+        <GradientStop Color="#2E8B5CF6" Offset="0"/>
+        <GradientStop Color="#008B5CF6" Offset="1"/>
+    </RadialGradientBrush>
+    <RadialGradientBrush x:Key="Ambient2Brush" GradientOrigin="0.95,0.08" Center="0.95,0.08"
+                         RadiusX="0.75" RadiusY="0.75">
+        <GradientStop Color="#26C026D3" Offset="0"/>
+        <GradientStop Color="#00C026D3" Offset="1"/>
+    </RadialGradientBrush>
+
+</ResourceDictionary>

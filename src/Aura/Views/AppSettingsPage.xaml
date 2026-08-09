@@ -1,4 +1,4 @@
-<views:PageBase x:Class="Aura.Views.AppSettingsPage"
+﻿<views:PageBase x:Class="Aura.Views.AppSettingsPage"
                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                 xmlns:c="clr-namespace:Aura.Controls"
@@ -14,21 +14,21 @@
             <Border Style="{StaticResource Card}">
                 <StackPanel>
                     <c:AdaptiveRow Margin="16,12,16,12">
-                        <c:IconTile Data="{DynamicResource Ico.Rocket}" Background="{DynamicResource GrayBrush}"/>
+                        <c:IconTile Data="{DynamicResource Ico.Power}" Background="{DynamicResource BlueBrush}"/>
                         <TextBlock Text="Запускать вместе с Windows" Style="{StaticResource RowLabel}"
                                    VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <c:Switch x:Name="AutoStart" Click="System_Changed"/>
                     </c:AdaptiveRow>
                     <Border Style="{StaticResource RowSeparator}"/>
                     <c:AdaptiveRow Margin="16,12,16,12">
-                        <c:IconTile Data="{DynamicResource Ico.Down}" Background="{DynamicResource GrayBrush}"/>
+                        <c:IconTile Data="{DynamicResource Ico.Tray}" Background="{DynamicResource GrayBrush}"/>
                         <TextBlock Text="Стартовать свёрнутым в трей" Style="{StaticResource RowLabel}"
                                    VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <c:Switch x:Name="StartInTray" Click="System_Changed"/>
                     </c:AdaptiveRow>
                     <Border Style="{StaticResource RowSeparator}"/>
                     <c:AdaptiveRow Margin="16,12,16,12">
-                        <c:IconTile Data="{DynamicResource Ico.Rec}" Background="{DynamicResource AccentBrush}"/>
+                        <c:IconTile Data="{DynamicResource Ico.Replay}" Background="{DynamicResource AccentBrush}"/>
                         <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                             <TextBlock Text="Включать мгновенный повтор при старте" Style="{StaticResource RowLabel}"/>
                             <TextBlock Text="Запись начинается сразу после запуска" Style="{StaticResource RowSub}"/>
@@ -126,6 +126,7 @@
                                    VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <c:Segmented x:Name="Theme" SelectionChanged="Theme_Changed">
                             <ListBoxItem Content="Тёмная" Tag="Dark"/>
+                            <ListBoxItem Content="Глубокая" Tag="Deep"/>
                             <ListBoxItem Content="Светлая" Tag="Light"/>
                             <ListBoxItem Content="Как в системе" Tag="System"/>
                         </c:Segmented>

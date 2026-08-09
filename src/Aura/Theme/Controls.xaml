@@ -225,7 +225,22 @@
                                     Filled="{Binding (c:Deco.Filled), RelativeSource={RelativeSource TemplatedParent}}"
                                     Foreground="{TemplateBinding Foreground}"
                                     Visibility="{Binding (c:Deco.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource HasIcon}}"/>
-                            <ContentPresenter x:Name="Body" VerticalAlignment="Center"/>
+                            <ContentPresenter x:Name="Body" VerticalAlignment="Center">
+                                <!-- Подпись обязана красться цветом КНОПКИ.
+                                     ContentPresenter из строки делает TextBlock, а на
+                                     него ложится неявный стиль из Base.xaml, который
+                                     жёстко ставит TxBrush — и перебивает наследование.
+                                     Из-за этого «Сохранить повтор» был белым по сирени
+                                     вместо тёмного, а «Удалить» — белым вместо красного.
+                                     Локальный стиль в ресурсах презентера сильнее
+                                     приложенческого. -->
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
+                                        <Setter Property="Foreground"
+                                                Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    </Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </StackPanel>
                     </Border>
                     <ControlTemplate.Triggers>

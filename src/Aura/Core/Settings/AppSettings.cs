@@ -13,7 +13,8 @@ public enum AudioTrackMode
     MicOnly
 }
 public enum NotificationPosition { TopLeft, TopRight, BottomLeft, BottomRight, TopCenter }
-public enum AppTheme { Dark, Light, System }
+/// <summary>Deep — тёмно-фиолетовая с градиентами (Palette.Deep.xaml).</summary>
+public enum AppTheme { Dark, Light, System, Deep }
 public enum AppLanguage { Ru, En }
 public enum SaveSound { None, Classic, Soft, Custom }
 

@@ -259,6 +259,20 @@ public partial class AppSettingsPage : PageBase
         finally { CheckButton.IsEnabled = true; }
     }
 
+    /// <summary>
+    /// Начать установку сразу, без второго клика.
+    ///
+    /// Зовётся из карточки «Есть обновление» в боковой колонке: она уже подписана
+    /// «Нажми, чтобы поставить», и требовать после неё ещё одного нажатия по
+    /// «Обновить» на открывшейся странице — обманывать эту подпись.
+    /// Если обновления нет или установка уже идёт, ничего не делаем.
+    /// </summary>
+    public void StartInstall()
+    {
+        if (InstallButton.Visibility != Visibility.Visible || !InstallButton.IsEnabled) return;
+        Install_Click(InstallButton, new RoutedEventArgs());
+    }
+
     private async void Install_Click(object sender, RoutedEventArgs e)
     {
         if (InstallButton.Tag is not Core.SystemIntegration.UpdateInfo info) return;

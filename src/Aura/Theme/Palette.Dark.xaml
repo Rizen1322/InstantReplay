@@ -2,8 +2,13 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ТЁМНАЯ ТЕМА.
-         Ключи здесь и в Palette.Light.xaml совпадают один в один: тема меняется
-         подменой словаря на лету, а все стили ссылаются через DynamicResource. -->
+         Ключи здесь, в Palette.Light.xaml и в Palette.Deep.xaml совпадают один
+         в один: тема меняется подменой словаря на лету, а все стили ссылаются
+         через DynamicResource. -->
+
+    <!-- Типографика живёт в палитре: у темы может быть своя пара гарнитур -->
+    <FontFamily x:Key="UiFont">pack://application:,,,/Fonts/#Golos Text</FontFamily>
+    <FontFamily x:Key="DispFont">pack://application:,,,/Fonts/#Onest</FontFamily>
 
     <Color x:Key="CanvasColor">#FF0B0B0E</Color>
     <Color x:Key="GlassColor">#F21C1D22</Color>
@@ -66,6 +71,21 @@
     <SolidColorBrush x:Key="GrayBrush" Color="{DynamicResource GrayColor}"/>
     <SolidColorBrush x:Key="PinkBrush" Color="{DynamicResource PinkColor}"/>
     <SolidColorBrush x:Key="KnobBrush" Color="{DynamicResource KnobColor}"/>
+
+    <!-- Крупные градиентные поверхности. В обычной тёмной теме градиента нет:
+         это плоская карточка и фирменная зелёная плитка логотипа. -->
+    <SolidColorBrush x:Key="HeroBrush" Color="{DynamicResource CardColor}"/>
+    <!-- Карточка плоская — «поверх градиента» рисовать нечем, цвета обычные -->
+    <SolidColorBrush x:Key="HeroTxBrush" Color="{DynamicResource TxColor}"/>
+    <SolidColorBrush x:Key="HeroTx2Brush" Color="{DynamicResource Tx2Color}"/>
+    <SolidColorBrush x:Key="HeroTx3Brush" Color="{DynamicResource Tx3Color}"/>
+    <SolidColorBrush x:Key="HeroTrackBrush" Color="{DynamicResource TrackColor}"/>
+    <SolidColorBrush x:Key="HeroFillBrush" Color="{DynamicResource AccentColor}"/>
+    <LinearGradientBrush x:Key="LogoBrush" StartPoint="0,0" EndPoint="0.6,1">
+        <GradientStop Color="#FF5CF07C" Offset="0"/>
+        <GradientStop Color="#FF12A53C" Offset="0.62"/>
+        <GradientStop Color="#FF0B8C6E" Offset="1"/>
+    </LinearGradientBrush>
 
     <!-- Фоновое свечение окна: зелёное сверху слева, синее снизу справа -->
     <RadialGradientBrush x:Key="AmbientBrush" GradientOrigin="0.12,0" Center="0.12,0"

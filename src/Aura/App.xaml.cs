@@ -98,7 +98,10 @@ public partial class App : Application
 
         Services.Settings.Load();
         Loc.Lang = Services.Settings.Current.Language;
-        ApplyTheme(Services.Settings.Current.Theme);
+        // --theme dark|deep|light|system — примерить тему, не трогая настройки.
+        // Рядом с --page и --dev: примерка оформления не должна переписывать
+        // settings.json пользователя.
+        ApplyTheme(ThemeArg(e.Args) ?? Services.Settings.Current.Theme);
 
         MediaFactory.MFStartup(); // Media Foundation — один раз на процесс
 
@@ -193,17 +196,45 @@ public partial class App : Application
     // ---------------- Тема ----------------
 
     /// <summary>Смена палитры на лету: подменяем первый словарь в MergedDictionaries.</summary>
+    /// <summary>
+    /// Значок в трее под тему: у «Глубокой» он фиолетовый, у остальных зелёный.
+    /// Значок висит рядом с системными часами и остаётся на виду, когда окно
+    /// свёрнуто, — если он один на все темы, выбранное оформление там не читается.
+    /// </summary>
+    private void UpdateTrayIcon(AppTheme theme)
+    {
+        if (_tray is null) return;
+        string file = theme == AppTheme.Deep ? "tray-deep.ico" : "tray.ico";
+        try
+        {
+            _tray.IconSource = new BitmapImage(
+                new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", file)));
+        }
+        catch (Exception ex) { Log.Warn("App", $"Значок трея {file}: {ex.Message}"); }
+    }
+
+    private static AppTheme? ThemeArg(string[] args)
+    {
+        int i = Array.IndexOf(args, "--theme");
+        if (i < 0 || i + 1 >= args.Length) return null;
+        return Enum.TryParse<AppTheme>(args[i + 1], ignoreCase: true, out var theme) ? theme : null;
+    }
+
     public static void ApplyTheme(AppTheme theme)
     {
-        bool dark = theme switch
+        string file = theme switch
         {
-            AppTheme.Dark => true,
-            AppTheme.Light => false,
-            _ => IsSystemDark()
+            AppTheme.Deep => "Theme/Palette.Deep.xaml",
+            AppTheme.Dark => "Theme/Palette.Dark.xaml",
+            AppTheme.Light => "Theme/Palette.Light.xaml",
+            _ => IsSystemDark() ? "Theme/Palette.Dark.xaml" : "Theme/Palette.Light.xaml"
         };
-        var uri = new Uri(dark ? "Theme/Palette.Dark.xaml" : "Theme/Palette.Light.xaml", UriKind.Relative);
+        var uri = new Uri(file, UriKind.Relative);
         var dictionaries = Current.Resources.MergedDictionaries;
         dictionaries[0] = new ResourceDictionary { Source = uri };
+
+        // Значок в трее живёт вне словарей ресурсов — меняем его руками
+        (Current as App)?.UpdateTrayIcon(theme);
     }
 
     private static bool IsSystemDark()
@@ -394,9 +425,9 @@ public partial class App : Application
         {
             ToolTipText = "Aura",
             ContextMenu = menu,
-            MenuActivation = H.NotifyIcon.Core.PopupActivationMode.RightClick,
-            IconSource = new BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", "tray.ico")))
+            MenuActivation = H.NotifyIcon.Core.PopupActivationMode.RightClick
         };
+        UpdateTrayIcon(Services.Settings.Current.Theme);
         _tray.TrayLeftMouseUp += (_, _) => ShowMainWindow();
 
         // Меню открываем сами: у иконки в трее нет окна-владельца, и без

@@ -334,5 +334,15 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    private void Update_Click(object sender, RoutedEventArgs e) => Navigate("app");
+    /// <summary>
+    /// Карточка «Есть обновление» в боковой колонке: открываем «Приложение» и
+    /// сразу запускаем установку. Ставим через диспетчер — страница к этому моменту
+    /// только назначена содержимым окна, а кнопку установки она включает в OnShown.
+    /// </summary>
+    private void Update_Click(object sender, RoutedEventArgs e)
+    {
+        Navigate("app");
+        if (_current is AppSettingsPage page)
+            Dispatcher.BeginInvoke(page.StartInstall, System.Windows.Threading.DispatcherPriority.Loaded);
+    }
 }

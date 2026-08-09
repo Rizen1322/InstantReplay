@@ -23,9 +23,13 @@
         <RectangleGeometry Rect="2.5,6.5,19,11" RadiusX="2.6" RadiusY="2.6"/>
         <PathGeometry Figures="M6.5 10h0.01 M10 10h0.01 M13.5 10h0.01 M17 10h0.01 M8.5 14h7"/>
     </GeometryGroup>
+    <!-- Шестерёнка. Раньше здесь были маленький кружок и восемь ДЛИННЫХ лучей от
+         него — и читалось это солнцем, а не механизмом. Теперь корпус шестерни
+         нарисован кругом, а лучи стали короткими зубцами снаружи него. -->
     <GeometryGroup x:Key="Ico.Cog">
-        <EllipseGeometry Center="12,12" RadiusX="3.1" RadiusY="3.1"/>
-        <PathGeometry Figures="M12 3v2.4 M12 18.6V21 M21 12h-2.4 M5.4 12H3 M18.4 5.6l-1.7 1.7 M7.3 16.7l-1.7 1.7 M18.4 18.4l-1.7-1.7 M7.3 7.3 5.6 5.6"/>
+        <EllipseGeometry Center="12,12" RadiusX="6.9" RadiusY="6.9"/>
+        <EllipseGeometry Center="12,12" RadiusX="2.7" RadiusY="2.7"/>
+        <PathGeometry Figures="M12 2.6v2.5 M12 18.9v2.5 M21.4 12h-2.5 M5.1 12H2.6 M18.65 5.35l-1.77 1.77 M7.12 16.88l-1.77 1.77 M18.65 18.65l-1.77-1.77 M7.12 7.12 5.35 5.35"/>
     </GeometryGroup>
     <GeometryGroup x:Key="Ico.Cpu">
         <RectangleGeometry Rect="6.5,6.5,11,11" RadiusX="2.4" RadiusY="2.4"/>
@@ -151,6 +155,39 @@
 
     <!-- вернуть как было -->
     <PathGeometry x:Key="Ico.Undo" Figures="M3.8 12a8.2 8.2 0 1 0 2.7-6.1 M3.6 4.2v4.6h4.6"/>
+
+    <!-- ============================================================
+         Метафоры вместо «просто картинок». Три строки раздела «Запуск» и
+         пункт «Приложение» в колонке носили иконки не по смыслу: ракету на
+         автозапуске, стрелку вниз на сворачивании в трей и «солнце» (та самая
+         сломанная шестерёнка) на настройках приложения.
+         ============================================================ -->
+
+    <!-- окно приложения: рамка с шапкой и двумя точками -->
+    <GeometryGroup x:Key="Ico.App">
+        <RectangleGeometry Rect="3.2,4.4,17.6,15.2" RadiusX="3" RadiusY="3"/>
+        <PathGeometry Figures="M3.2 9.2h17.6 M6.6 6.8h0.01 M9.5 6.8h0.01"/>
+    </GeometryGroup>
+
+    <!-- питание: запуск вместе с системой -->
+    <GeometryGroup x:Key="Ico.Power">
+        <PathGeometry Figures="M17.2 6.8a7.4 7.4 0 1 1-10.4 0"/>
+        <PathGeometry Figures="M12 2.8v8.4"/>
+    </GeometryGroup>
+
+    <!-- свернуть в трей: стрелка вниз в лоток -->
+    <GeometryGroup x:Key="Ico.Tray">
+        <PathGeometry Figures="M3.4 13.6h4.2l1.4 2.4h6l1.4-2.4h4.2"/>
+        <PathGeometry Figures="M3.4 13.6v3.8a2.4 2.4 0 0 0 2.4 2.4h12.4a2.4 2.4 0 0 0 2.4-2.4v-3.8"/>
+        <PathGeometry Figures="M12 3.6v6.6 M12 10.2l2.6-2.6 M12 10.2 9.4 7.6"/>
+    </GeometryGroup>
+
+    <!-- мгновенный повтор: круговая стрелка с треугольником воспроизведения -->
+    <GeometryGroup x:Key="Ico.Replay">
+        <PathGeometry Figures="M3.8 12a8.2 8.2 0 1 0 2.7-6.1"/>
+        <PathGeometry Figures="M3.6 4.2v4.6h4.6"/>
+        <PathGeometry Figures="M10.4 9.6c0-.5.55-.82 1-.55l3.9 2.4c.42.26.42.84 0 1.1l-3.9 2.4c-.45.27-1-.05-1-.55z"/>
+    </GeometryGroup>
 
     <!-- выбрать файл -->
     <GeometryGroup x:Key="Ico.File">

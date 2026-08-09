@@ -42,14 +42,9 @@
 
                     <!-- Логотип и название -->
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2,0,2,14">
-                        <Border Width="30" Height="30" CornerRadius="9">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="0.6,1">
-                                    <GradientStop Color="#FF5CF07C" Offset="0"/>
-                                    <GradientStop Color="#FF12A53C" Offset="0.62"/>
-                                    <GradientStop Color="#FF0B8C6E" Offset="1"/>
-                                </LinearGradientBrush>
-                            </Border.Background>
+                        <!-- Градиент берётся из палитры: у каждой темы он свой -->
+                        <Border Width="30" Height="30" CornerRadius="9"
+                                Background="{DynamicResource LogoBrush}">
                             <c:Icon Data="{DynamicResource Ico.Aura}" Size="17" Foreground="White"
                                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
@@ -167,7 +162,7 @@
                                 </RadioButton>
                                 <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="app" Click="Nav_Click">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Cog}" Background="{DynamicResource GrayBrush}"/>
+                                        <c:IconTile Data="{DynamicResource Ico.App}" Background="{DynamicResource GrayBrush}"/>
                                         <TextBlock Text="Приложение" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
                                                    FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
                                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>

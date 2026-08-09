@@ -16,13 +16,8 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Border Width="44" Height="44" CornerRadius="13">
-                        <Border.Background>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="0.6,1">
-                                <GradientStop Color="#FF5CF07C" Offset="0"/>
-                                <GradientStop Color="#FF12A53C" Offset="1"/>
-                            </LinearGradientBrush>
-                        </Border.Background>
+                    <Border Width="44" Height="44" CornerRadius="13"
+                            Background="{DynamicResource LogoBrush}">
                         <c:Icon Data="{DynamicResource Ico.Cpu}" Size="23" Foreground="White"
                                 HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>

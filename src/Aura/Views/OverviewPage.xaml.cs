@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -72,7 +72,7 @@ public partial class OverviewPage : PageBase
 
         Master.IsChecked = on;
         MasterState.Text = on ? "Включён" : "Выключен";
-        Tally.Fill = (Brush)FindResource(on ? "RecBrush" : "Tx3Brush");
+        Tally.Fill = (Brush)FindResource(on ? "RecBrush" : "HeroTx3Brush");
 
         // Названия активного окна здесь нет намеренно: определяется оно по процессу
         // на переднем плане, а когда игра свёрнута или человек листает браузер, там
@@ -133,15 +133,23 @@ public partial class OverviewPage : PageBase
                 {
                     Data = (Geometry)FindResource(icon),
                     Size = 12,
-                    Foreground = (Brush)FindResource("Tx2Brush"),
+                    Foreground = (Brush)FindResource("HeroTx2Brush"),
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(0, 0, 6, 0)
                 });
-            content.Children.Add(new TextBlock { Text = text, Style = (Style)FindResource("PillText") });
+            // Плашки лежат на градиенте, поэтому цвета берутся из «геройского»
+            // набора палитры, а не общие: обычные Tx2/Track на нём проваливаются.
+            content.Children.Add(new TextBlock
+            {
+                Text = text,
+                Style = (Style)FindResource("PillText"),
+                Foreground = (Brush)FindResource("HeroTx2Brush")
+            });
 
             Pills.Children.Add(new Border
             {
                 Style = (Style)FindResource("Pill"),
+                Background = (Brush)FindResource("HeroTrackBrush"),
                 Margin = new Thickness(0, 0, 7, 7),
                 Child = content
             });
