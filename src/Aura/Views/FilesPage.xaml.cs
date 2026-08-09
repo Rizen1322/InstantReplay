@@ -45,8 +45,6 @@ public partial class FilesPage : PageBase
         CountText.Text = stats.ClipCount.ToString();
         UsedText.Text = ByteSize.Format(stats.FolderBytes);
         FreeText.Text = ByteSize.Format(stats.FreeDiskBytes);
-        UsageText.Text = "Записи копятся, пока есть место на диске. Само ничего не удаляется — " +
-                         "лишнее убирается вручную в «Клипах».";
     }
 
     private void Setting_Changed(object sender, RoutedEventArgs e)
