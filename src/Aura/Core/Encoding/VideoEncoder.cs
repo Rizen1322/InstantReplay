@@ -534,6 +534,62 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
+    // ---------------- Ключевые кадры по времени ----------------
+
+    /// <summary>Как часто в буфере обязан появляться keyframe. Тики (100 нс).</summary>
+    private const long KeyframeIntervalTicks = 2 * 10_000_000L;
+
+    /// <summary>Не просить чаще, чем раз в полсекунды: запрос отрабатывает не мгновенно.</summary>
+    private const long KeyframeRequestGapTicks = 5_000_000L;
+
+    private long _lastKeyframeTicks = long.MinValue;
+    private long _lastKeyframeRequestTicks = long.MinValue;
+    private bool _forceKeyframeUnavailable;
+
+    /// <summary>
+    /// Попросить энкодер выдать ключевой кадр, если по ЧАСАМ их давно не было.
+    ///
+    /// Зачем вообще: и AVEncMPVGOPSize, и MF_MT_MAX_KEYFRAME_SPACING заданы В КАДРАХ
+    /// (так они и описаны у Microsoft), а не в секундах. Мы ставим fps*2 в расчёте
+    /// на «keyframe каждые 2 секунды» — но это верно, только пока энкодер реально
+    /// принимает заданные fps. Стоит ему просесть (слабая видеокарта, чужая нагрузка,
+    /// дропы перед подачей), и те же 120 кадров растягиваются на 6, 10, 25 секунд.
+    ///
+    /// Буфер повтора режется строго по keyframe, поэтому редкие ключевые кадры дают
+    /// ровно то, что видно у пользователя: длина буфера гуляет вокруг заказанной на
+    /// целый GOP, а сохранённый клип оказывается длиннее настройки.
+    /// </summary>
+    private void MaybeForceKeyframe(long sampleTicks)
+    {
+        if (_forceKeyframeUnavailable) return;
+        if (_lastKeyframeTicks != long.MinValue && sampleTicks - _lastKeyframeTicks < KeyframeIntervalTicks) return;
+        if (_lastKeyframeRequestTicks != long.MinValue &&
+            sampleTicks - _lastKeyframeRequestTicks < KeyframeRequestGapTicks) return;
+
+        _lastKeyframeRequestTicks = sampleTicks;
+
+        IntPtr pCodecApi = IntPtr.Zero;
+        try
+        {
+            Guid iid = typeof(ICodecAPI).GUID;
+            Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
+            var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
+            Guid guid = CodecApiGuids.AVEncVideoForceKeyFrame;
+            object boxed = 1u;
+            codecApi.SetValue(ref guid, ref boxed);
+        }
+        catch (Exception ex)
+        {
+            // Ключ не поддержан — больше не дёргаем. Останется штатный GOP по кадрам.
+            _forceKeyframeUnavailable = true;
+            Log.Info("Encoder", $"Ключевой кадр по требованию недоступен ({ex.Message})");
+        }
+        finally
+        {
+            if (pCodecApi != IntPtr.Zero) Marshal.Release(pCodecApi);
+        }
+    }
+
     private void ApplyQualityPreset(uint value, string reason)
     {
         IntPtr pCodecApi = IntPtr.Zero;
@@ -846,6 +902,9 @@ public sealed class VideoEncoder : IDisposable
                 while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
                     if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
 
+                // Просим keyframe ДО подачи кадра: ключ действует на следующий вход.
+                MaybeForceKeyframe(item.ticks);
+
                 long piStart = Diagnostics.PipelineProbe.Now();
                 using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(
                     typeof(ID3D11Texture2D).GUID, item.tex, 0, false);
@@ -972,6 +1031,8 @@ public sealed class VideoEncoder : IDisposable
 
         bool keyframe = false;
         try { keyframe = sample.GetUInt32(SampleAttributeKeys.CleanPoint) != 0; } catch { }
+        // Отсчёт «давно ли был ключевой» ведём по факту выдачи, а не по нашим просьбам
+        if (keyframe) _lastKeyframeTicks = sample.SampleTime;
 
         Interlocked.Increment(ref FramesEncoded);
         Diagnostics.PipelineProbe.DrainOutput.Add(drainStart, Diagnostics.PipelineProbe.Now());

@@ -127,14 +127,37 @@ public sealed class ReplayVideoBuffer
     /// <summary>Ёмкость арены в байтах (сколько максимум может занять).</summary>
     public long CapacityBytes { get { lock (_sync) return _capacity; } }
 
-    /// <summary>Реальная длительность буфера от первого keyframe до последнего кадра, тики.</summary>
+    /// <summary>Первый ключевой кадр в буфере; null — их нет вовсе (сломанный GOP).</summary>
+    private LinkedListNode<Entry>? FirstKeyframe()
+    {
+        for (var n = _entries.First; n is not null; n = n.Next)
+            if (n.Value.IsKeyframe) return n;
+        return null;
+    }
+
+    /// <summary>
+    /// Сколько повтора реально СОХРАНИТСЯ, тики.
+    ///
+    /// Считается от первого КЛЮЧЕВОГО кадра и обрезается настройкой. Раньше здесь
+    /// было «от первого кадра вообще, без ограничения» — и число получалось честным
+    /// только внешне: буфер намеренно держит запас сверх заказанного (GOP плюс
+    /// страховка), поэтому на экране «Обзора» при настройке 2:00 показывалось 2:05
+    /// и 2:10, а после вытеснения очередной группы разом падало до 1:40. Сохранить
+    /// эти лишние секунды всё равно было нельзя — снимок режется по keyframe.
+    /// </summary>
     public long BufferedDurationTicks
     {
         get
         {
             lock (_sync)
-                return _entries.Count == 0 ? 0
-                     : _entries.Last!.Value.PtsTicks - _entries.First!.Value.PtsTicks;
+            {
+                if (_entries.Count == 0) return 0;
+                var first = FirstKeyframe();
+                if (first is null) return 0;
+
+                long span = _entries.Last!.Value.PtsTicks - first.Value.PtsTicks;
+                return MaxDurationTicks > 0 ? Math.Min(span, MaxDurationTicks) : span;
+            }
         }
     }
 
@@ -392,10 +415,25 @@ public sealed class ReplayVideoBuffer
             long newest = _entries.Last!.Value.PtsTicks;
             long from = newest - wantedTicks;
 
-            // Ищем последний keyframe с pts <= from (или самый первый кадр)
-            LinkedListNode<Entry>? start = _entries.First;
+            // Ищем последний keyframe с pts <= from
+            LinkedListNode<Entry>? start = null;
             for (var n = _entries.First; n is not null && n.Value.PtsTicks <= from; n = n.Next)
                 if (n.Value.IsKeyframe) start = n;
+
+            // Такого keyframe нет — берём САМЫЙ РАННИЙ из имеющихся, даже если он
+            // позже точки среза и клип выйдет короче заказанного.
+            //
+            // Здесь раньше стояло «иначе первый кадр буфера», и это был тот самый
+            // баг: при сломанном GOP (вытеснение по времени срезало голову посреди
+            // группы) клип начинался с P-кадра, который ссылается на уже выброшенный
+            // ключевой. Файл получался длиннее настройки, а плеер первые секунды
+            // показывал пустоту или отказывался играть, пока не перемотаешь вручную.
+            start ??= FirstKeyframe();
+            if (start is null)
+            {
+                Log.Warn("Buffer", "В буфере нет ни одного ключевого кадра — сохранять нечего");
+                return result;
+            }
 
             long reserved = 0;
             for (var n = start; n is not null; n = n.Next)
