@@ -381,6 +381,30 @@
         </Setter>
     </Style>
 
+    <!-- Ручка ширины боковой колонки. Невидима, пока на неё не навели: полоска
+         поверх границы, которая подсвечивается акцентом под курсором и во время
+         перетаскивания — иначе непонятно, что край вообще можно тянуть. -->
+    <Style x:Key="SideGrip" TargetType="Thumb">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Border Background="Transparent">
+                        <Border x:Name="Line" Width="2" HorizontalAlignment="Right"
+                                Background="{DynamicResource AccentBrush}" Opacity="0"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Line" Property="Opacity" Value="0.55"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="Line" Property="Opacity" Value="1"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Ячейка выбора угла экрана для уведомлений -->
     <Style x:Key="PositionCell" TargetType="Button">
         <Setter Property="Cursor" Value="Hand"/>

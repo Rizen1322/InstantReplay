@@ -60,6 +60,7 @@ public partial class MainWindow : Window
 
         Loaded += (_, _) =>
         {
+            if (!IsCompact) Side.Width = WantedSideWidth;
             Navigate(StartPage);
             SyncMaster();
             _ = CheckUpdateAsync();
@@ -105,16 +106,25 @@ public partial class MainWindow : Window
         nameof(IsCompact), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
     public bool IsCompact { get => (bool)GetValue(IsCompactProperty); set => SetValue(IsCompactProperty, value); }
 
+    /// <summary>Границы ширины колонки: уже — не помещаются подписи, шире — отъедает страницу.</summary>
+    private const double MinSideWidth = 190, MaxSideWidth = 420;
+
+    /// <summary>Ширина развёрнутой колонки из настроек, приведённая к допустимой.</summary>
+    private static double WantedSideWidth =>
+        Math.Clamp(Services.Settings.Current.SidebarWidth, MinSideWidth, MaxSideWidth);
+
     private void UpdateCompact()
     {
         bool compact = ActualWidth / UiScale.ScaleX < CompactWidth;
         if (compact == IsCompact) return;
         IsCompact = compact;
 
-        Side.BeginAnimation(WidthProperty, new DoubleAnimation(compact ? 64 : 236, TimeSpan.FromSeconds(0.32))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        });
+        SideGrip.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        Side.BeginAnimation(WidthProperty,
+            new DoubleAnimation(compact ? 64 : WantedSideWidth, TimeSpan.FromSeconds(0.32))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            });
 
         // В свёрнутой колонке поля ужимаются: иначе переключатель шириной 44 px
         // не помещался в 64 px колонки и обрезался краем окна.
@@ -146,6 +156,26 @@ public partial class MainWindow : Window
             <= 800  => 0.9,    // ноутбучные 1366×768 и подобные
             _       => 1.0
         };
+    }
+
+    // ---------------- Ширина боковой колонки ----------------
+
+    private void SideGrip_Drag(object sender, DragDeltaEventArgs e)
+    {
+        if (IsCompact) return;
+
+        // Анимацию сначала снимаем: она держит Width своим значением, и присвоение
+        // из кода на ней бы просто не отразилось.
+        Side.BeginAnimation(WidthProperty, null);
+        Side.Width = Math.Clamp(Side.Width + e.HorizontalChange, MinSideWidth, MaxSideWidth);
+        Dispatcher.BeginInvoke(MoveIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Сохраняем в конце перетаскивания, а не на каждый пиксель движения.</summary>
+    private void SideGrip_Done(object sender, DragCompletedEventArgs e)
+    {
+        Services.Settings.Current.SidebarWidth = Side.Width;
+        Services.Settings.Save("ui");
     }
 
     // ---------------- Навигация ----------------

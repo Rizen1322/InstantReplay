@@ -9,26 +9,21 @@
             <TextBlock Text="Клипы" Style="{StaticResource PageTitle}"/>
             <TextBlock x:Name="Summary" Style="{StaticResource Lede}" Text="Считаю записи…"/>
 
-            <!-- Фильтры -->
-            <Grid Margin="0,0,8,14">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-
-                <c:Segmented x:Name="TypeFilter" SelectionChanged="Filter_Changed">
+            <!-- Фильтры. Обновление стоит сразу за ними, а не у правого края: это
+                 такой же орган управления списком, и через всю строку до него было
+                 далеко. Кнопки «Папка» здесь нет — то же действие живёт в шапке окна.
+                 WrapPanel, чтобы на узком окне ряд переносился, а не обрезался. -->
+            <WrapPanel Margin="0,0,8,14">
+                <c:Segmented x:Name="TypeFilter" SelectionChanged="Filter_Changed" Margin="0,0,9,8">
                     <ListBoxItem Content="Всё" IsSelected="True"/>
                     <ListBoxItem Content="Клипы"/>
                     <ListBoxItem Content="Скриншоты"/>
                 </c:Segmented>
 
-                <ComboBox x:Name="GameFilter" Grid.Column="1" MinWidth="150" Margin="9,0,0,0"
+                <ComboBox x:Name="GameFilter" MinWidth="150" Margin="0,0,9,8"
                           SelectionChanged="Filter_Changed"/>
 
-                <ComboBox x:Name="SortOrder" Grid.Column="2" MinWidth="150" Margin="9,0,0,0"
+                <ComboBox x:Name="SortOrder" MinWidth="150" Margin="0,0,9,8"
                           SelectionChanged="Filter_Changed">
                     <ComboBoxItem Content="Сначала новые" IsSelected="True"/>
                     <ComboBoxItem Content="Сначала старые"/>
@@ -36,37 +31,43 @@
                     <ComboBoxItem Content="По названию"/>
                 </ComboBox>
 
-                <!-- Кнопки «Папка» здесь нет: то же самое действие уже живёт в шапке
-                     окна («Открыть папку») и дублировать его в фильтрах незачем. -->
-                <Button Grid.Column="4" Style="{StaticResource BtnSquare}" Click="Refresh_Click" ToolTip="Обновить список"
-                        c:Deco.Icon="{DynamicResource Ico.Refresh}"/>
-            </Grid>
+                <Button Style="{StaticResource BtnSquare}" Click="Refresh_Click" ToolTip="Обновить список"
+                        Margin="0,0,0,8" c:Deco.Icon="{DynamicResource Ico.Refresh}"/>
+            </WrapPanel>
 
             <!-- Панель выделения: появляется, когда что-то выбрано, и едет вместе
                  с прокруткой — кнопки нужны там, где сейчас глаза, а не в начале
                  списка. Тень включается, только когда панель «оторвалась» от своего
                  места: так видно, что она лежит поверх карточек. -->
+            <!-- Скругление 14 совпадает со скруглением карточек записи, а рамка
+                 сделана мягкой (акцент приглушён подложкой): яркий контур в 1 px
+                 на скруглённом углу дробился в лесенку и выглядел браком.
+                 SnapsToDevicePixels — чтобы рамка ложилась в целые пиксели при
+                 любом масштабе интерфейса. -->
             <Border x:Name="SelectionBar" Visibility="Collapsed" Margin="0,0,8,14" Panel.ZIndex="10"
-                    RenderTransformOrigin="0,0"
-                    Background="{DynamicResource GlassBrush}" CornerRadius="12" Padding="14,10,10,10"
-                    BorderBrush="{DynamicResource AccentBrush}" BorderThickness="1">
+                    RenderTransformOrigin="0,0" SnapsToDevicePixels="True" UseLayoutRounding="True"
+                    Background="{DynamicResource GlassBrush}" CornerRadius="14" Padding="16,11,11,11"
+                    BorderBrush="{DynamicResource HairBrush}" BorderThickness="1">
                 <Border.RenderTransform><TranslateTransform x:Name="SelectionBarShift"/></Border.RenderTransform>
-                <Grid>
-                    <TextBlock x:Name="SelectionText" VerticalAlignment="Center" FontWeight="SemiBold"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+
+                <!-- AdaptiveRow сам уводит кнопки под подпись, когда окно узкое,
+                     а WrapPanel внутри переносит их по одной, если и там не влезло.
+                     Раньше ряд просто обрезался правым краем. -->
+                <c:AdaptiveRow MinTextWidth="120" Gap="12">
+                    <TextBlock x:Name="SelectionText" VerticalAlignment="Center" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis"/>
+                    <WrapPanel x:Name="SelectionActions" HorizontalAlignment="Right">
                         <!-- Одна кнопка на два действия: пока выделено не всё — «Выбрать
                              всё», когда выделено всё — «Снять всё». Отдельная кнопка
                              снятия рядом с «Готово» только путала. -->
                         <Button x:Name="SelectAllButton" Content="Выбрать всё" Click="SelectAll_Click"
-                                MinWidth="150" c:Deco.Icon="{DynamicResource Ico.CheckSquare}"/>
-                        <Button Content="Копировать пути" Margin="8,0,0,0" Click="CopySelectedPaths_Click"
-                                c:Deco.Icon="{DynamicResource Ico.Copy}"/>
-                        <Button Content="Удалить" Margin="8,0,0,0" Click="DeleteSelected_Click"
+                                MinWidth="150" Margin="0,2,8,2" c:Deco.Icon="{DynamicResource Ico.CheckSquare}"/>
+                        <Button x:Name="DeleteButton" Content="Удалить" Margin="0,2,8,2" Click="DeleteSelected_Click"
                                 Style="{StaticResource BtnDanger}" c:Deco.Icon="{DynamicResource Ico.Trash}"/>
-                        <Button Content="Готово" Margin="8,0,0,0" Click="ClearSelection_Click"
+                        <Button x:Name="DoneButton" Content="Готово" Margin="0,2,0,2" Click="ClearSelection_Click"
                                 Style="{StaticResource BtnPri}" c:Deco.Icon="{DynamicResource Ico.Check}"/>
-                    </StackPanel>
-                </Grid>
+                    </WrapPanel>
+                </c:AdaptiveRow>
             </Border>
 
             <!-- Группы по датам -->

@@ -108,6 +108,8 @@ public sealed class AppSettings
     public SaveSound SaveSound { get; set; } = SaveSound.Soft;
     /// <summary>Свой WAV для звука сохранения (SaveSound = Custom).</summary>
     public string? CustomSaveSoundPath { get; set; }
+    /// <summary>Ширина боковой колонки в пикселях; тянется за правый край.</summary>
+    public double SidebarWidth { get; set; } = 236;
     public AppTheme Theme { get; set; } = AppTheme.Dark;
     public AppLanguage Language { get; set; } = AppLanguage.Ru;
     /// <summary>

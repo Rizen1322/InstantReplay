@@ -35,7 +35,12 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- ==================== БОКОВАЯ КОЛОНКА ==================== -->
+            <!-- ==================== БОКОВАЯ КОЛОНКА ====================
+                 Ширину можно тянуть за правый край: у разделов длинные названия
+                 («Включать мгновенный повтор при старте» в подписях), а на широком
+                 мониторе места в колонке не жалко. Ручка — прозрачная полоска
+                 поверх границы, поэтому сама граница не дёргается. -->
+            <Grid>
             <Border x:Name="Side" Width="236" Background="{DynamicResource GlassBrush}"
                     BorderBrush="{DynamicResource SepBrush}" BorderThickness="0,0,1,0">
                 <DockPanel x:Name="SideContent" Margin="12,14,12,12" LastChildFill="True">
@@ -185,6 +190,11 @@
                     <Grid/>
                 </DockPanel>
             </Border>
+
+            <Thumb x:Name="SideGrip" Width="7" HorizontalAlignment="Right" Cursor="SizeWE"
+                   Style="{StaticResource SideGrip}" DragDelta="SideGrip_Drag"
+                   DragCompleted="SideGrip_Done"/>
+            </Grid>
 
             <!-- ==================== ПРАВАЯ ЧАСТЬ ==================== -->
             <Grid Grid.Column="1">

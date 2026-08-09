@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -55,7 +55,8 @@ public partial class ClipsPage : PageBase
             HookScroll();
         };
         ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = ReloadAsync());
-        ClipCommands.SelectRequested += clip => Dispatcher.BeginInvoke(() => BeginSelection(clip));
+        ClipCommands.SelectRequested += clip => Dispatcher.BeginInvoke(() => ToggleSelection(clip));
+        SizeChanged += (_, _) => { UpdateBarLayout(); UpdateSelectionBarOffset(); };
     }
 
     public override void OnShown()
@@ -301,7 +302,7 @@ public partial class ClipsPage : PageBase
         // Ctrl+ЛКМ включает выделение сразу, без захода в меню.
         if (!_selecting)
         {
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { BeginSelection(clip); return; }
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) { ToggleSelection(clip); return; }
             Open(clip.FullPath);
             return;
         }
@@ -317,9 +318,21 @@ public partial class ClipsPage : PageBase
         UpdateSelectionBar();
     }
 
-    /// <summary>Пункт «Выделить» из меню карточки: включаем режим и берём её первой.</summary>
-    private void BeginSelection(ClipItem clip)
+    /// <summary>
+    /// Пункт «Выделить» из меню карточки. Работает как переключатель: на уже
+    /// выделенной записи он снимает выделение. Иначе с карточки, отмеченной по
+    /// ошибке, отметку было не убрать — меню предлагало выделить её ещё раз.
+    /// </summary>
+    private void ToggleSelection(ClipItem clip)
     {
+        if (clip.IsSelected)
+        {
+            clip.IsSelected = false;
+            if (ReferenceEquals(_anchor, clip)) _anchor = null;
+            UpdateSelectionBar();
+            return;
+        }
+
         _selecting = true;
         clip.IsSelected = true;
         _anchor = clip;
@@ -364,8 +377,10 @@ public partial class ClipsPage : PageBase
 
         // Кнопка-выключатель показывает то действие, которое сделает следующий клик
         bool all = AllShownSelected();
-        SelectAllButton.Content = all ? "Снять всё" : "Выбрать всё";
+        _selectAllLabel = all ? "Снять всё" : "Выбрать всё";
         Controls.Deco.SetIcon(SelectAllButton, (Geometry)FindResource(all ? "Ico.X" : "Ico.CheckSquare"));
+        UpdateBarLayout();
+        ApplyBarLabels();
 
         // Только что показанная панель ещё не размечена — её место на странице
         // известно лишь после раскладки, поэтому сдвиг считаем следующим заходом.
@@ -405,10 +420,40 @@ public partial class ClipsPage : PageBase
         if (selected.Count > 0) ClipCommands.DeleteMany.Execute(selected);
     }
 
-    private void CopySelectedPaths_Click(object sender, RoutedEventArgs e)
+    // ---------------- Ширина панели ----------------
+
+    /// <summary>
+    /// На узком окне подписи с кнопок снимаются — остаются иконки с подсказками.
+    /// Панель висит поверх карточек, и растянутый на всю ширину ряд кнопок закрывал
+    /// бы собой ровно то, что человек выделяет.
+    /// </summary>
+    private bool _barCompact;
+    private string _selectAllLabel = "Выбрать всё";
+
+    private void UpdateBarLayout()
     {
-        var selected = SelectedItems();
-        if (selected.Count > 0) ClipCommands.CopyPathsMany.Execute(selected);
+        bool compact = ActualWidth > 0 && ActualWidth < 700;
+        if (compact == _barCompact && SelectAllButton.ToolTip is not null) return;
+        _barCompact = compact;
+        ApplyBarLabels();
+    }
+
+    private void ApplyBarLabels()
+    {
+        SetLabel(SelectAllButton, _selectAllLabel);
+        SetLabel(DeleteButton, "Удалить");
+        SetLabel(DoneButton, "Готово");
+        SelectAllButton.MinWidth = _barCompact ? 0 : 150;
+    }
+
+    private void SetLabel(Button button, string text)
+    {
+        button.ToolTip = text;
+        // Content = null включает в шаблоне кнопки правило «только иконка»:
+        // отступ справа от контура убирается, и он встаёт по центру.
+        button.Content = _barCompact ? null : text;
+        button.Width = _barCompact ? 34 : double.NaN;
+        button.Padding = _barCompact ? new Thickness(0) : new Thickness(14, 0, 14, 0);
     }
 
     /// <summary>
@@ -425,16 +470,23 @@ public partial class ClipsPage : PageBase
         if (menu is null) return;
 
         bool many = selected.Count > 0;
+        var clip = (source.DataContext ?? (FindCard(source) as FrameworkElement)?.DataContext) as ClipItem;
+
         foreach (var element in menu.Items)
         {
             if (element is not FrameworkElement named) continue;
             switch (named.Name)
             {
                 case "ManySeparator":
-                case "CopyPathsItem":
                 case "DeleteManyItem":
                     named.Visibility = many ? Visibility.Visible : Visibility.Collapsed;
                     if (named is MenuItem menuItem) menuItem.CommandParameter = selected;
+                    break;
+
+                // Пункт переключает выделение, поэтому и называется по действию,
+                // которое сделает: на отмеченной записи это «Снять выделение».
+                case "SelectItem" when named is MenuItem select:
+                    select.Header = clip?.IsSelected == true ? "Снять выделение" : "Выделить";
                     break;
             }
         }

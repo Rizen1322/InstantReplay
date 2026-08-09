@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 using Aura.Core.Library;
@@ -46,10 +46,6 @@ public static class ClipCommands
 
     /// <summary>Удалить все выделенные записи в корзину — один вопрос на всех.</summary>
     public static ICommand DeleteMany { get; } = new ClipsAction(DeleteManyAsync);
-
-    /// <summary>Скопировать пути выделенных записей, по одному на строку.</summary>
-    public static ICommand CopyPathsMany { get; } = new ClipsAction(items =>
-        CopyToClipboard(string.Join(Environment.NewLine, items.Select(i => i.FullPath))));
 
     /// <summary>Библиотека изменилась — страницам пора перечитать список.</summary>
     public static event Action? LibraryChanged;
