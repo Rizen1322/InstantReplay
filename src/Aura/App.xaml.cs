@@ -101,7 +101,8 @@ public partial class App : Application
         // --theme dark|deep|light|system — примерить тему, не трогая настройки.
         // Рядом с --page и --dev: примерка оформления не должна переписывать
         // settings.json пользователя.
-        ApplyTheme(ThemeArg(e.Args) ?? Services.Settings.Current.Theme);
+        var theme = ThemeArg(e.Args) ?? Services.Settings.Current.Theme;
+        ApplyTheme(theme);
 
         MediaFactory.MFStartup(); // Media Foundation — один раз на процесс
 
@@ -123,6 +124,11 @@ public partial class App : Application
         int pageArg = Array.IndexOf(e.Args, "--page");
         if (pageArg >= 0 && pageArg + 1 < e.Args.Length) _main.StartPage = e.Args[pageArg + 1];
         MainWindow = _main;
+
+        // Значки под тему — здесь, а не в ApplyTheme выше: там окна ещё не было,
+        // а кнопку на панели задач рисует именно иконка окна.
+        ApplyThemeIcons(theme);
+
         if (!minimized) _main.Show();
 
         if (Services.Settings.Current.AutoStartReplayBuffer) SafeStartEngine();
@@ -195,22 +201,45 @@ public partial class App : Application
 
     // ---------------- Тема ----------------
 
-    /// <summary>Смена палитры на лету: подменяем первый словарь в MergedDictionaries.</summary>
     /// <summary>
-    /// Значок в трее под тему: у «Глубокой» он фиолетовый, у остальных зелёный.
-    /// Значок висит рядом с системными часами и остаётся на виду, когда окно
-    /// свёрнуто, — если он один на все темы, выбранное оформление там не читается.
+    /// Кадр нужного размера из .ico под выбранную тему.
+    ///
+    /// Размер приходится выбирать руками: BitmapImage для .ico отдаёт ПЕРВЫЙ кадр
+    /// в файле, а не подходящий по размеру. У зелёных значков первым лежит 16×16 —
+    /// и кнопка на панели задач получала иконку в 16 px, которую Windows рисует
+    /// мелко по центру, не растягивая. Отсюда и разный размер у тем.
     /// </summary>
-    private void UpdateTrayIcon(AppTheme theme)
+    private static BitmapSource? ThemeIcon(AppTheme theme, int wanted)
     {
-        if (_tray is null) return;
         string file = theme == AppTheme.Deep ? "tray-deep.ico" : "tray.ico";
         try
         {
-            _tray.IconSource = new BitmapImage(
-                new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", file)));
+            var uri = new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", file));
+            var frames = BitmapDecoder.Create(uri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad).Frames;
+
+            // Ближайший кадр НЕ МЕНЬШЕ нужного (уменьшать можно, увеличивать — мыло),
+            // а если таких нет — самый крупный из имеющихся.
+            return frames.Where(f => f.PixelWidth >= wanted).OrderBy(f => f.PixelWidth).FirstOrDefault()
+                   ?? frames.OrderByDescending(f => f.PixelWidth).FirstOrDefault();
         }
-        catch (Exception ex) { Log.Warn("App", $"Значок трея {file}: {ex.Message}"); }
+        catch (Exception ex) { Log.Warn("App", $"Значок {file}: {ex.Message}"); return null; }
+    }
+
+    /// <summary>
+    /// Значок под выбранную тему в обоих местах, где его видно.
+    ///
+    /// Их именно два, и берутся они из разных источников. Значок в трее — это
+    /// IconSource у TaskbarIcon. А кнопка на панели задач и уголок заголовка берут
+    /// ИКОНКУ ОКНА, и пока она не задана, Windows подставляет иконку exe из
+    /// ApplicationIcon — та вшита при компиляции и остаётся зелёной при любой теме.
+    /// Поэтому окну значок присваиваем явно.
+    /// </summary>
+    public void ApplyThemeIcons(AppTheme theme)
+    {
+        // Трею хватает мелкого кадра (16–24 px в области уведомлений), кнопке на
+        // панели задач нужен крупный: 32 px при обычном масштабе и 64 при 200%.
+        if (_tray is not null && ThemeIcon(theme, 32) is { } trayIcon) _tray.IconSource = trayIcon;
+        if (_main is not null && ThemeIcon(theme, 64) is { } windowIcon) _main.Icon = windowIcon;
     }
 
     private static AppTheme? ThemeArg(string[] args)
@@ -233,8 +262,8 @@ public partial class App : Application
         var dictionaries = Current.Resources.MergedDictionaries;
         dictionaries[0] = new ResourceDictionary { Source = uri };
 
-        // Значок в трее живёт вне словарей ресурсов — меняем его руками
-        (Current as App)?.UpdateTrayIcon(theme);
+        // Значки живут вне словарей ресурсов — меняем их руками
+        (Current as App)?.ApplyThemeIcons(theme);
     }
 
     private static bool IsSystemDark()
@@ -427,7 +456,6 @@ public partial class App : Application
             ContextMenu = menu,
             MenuActivation = H.NotifyIcon.Core.PopupActivationMode.RightClick
         };
-        UpdateTrayIcon(Services.Settings.Current.Theme);
         _tray.TrayLeftMouseUp += (_, _) => ShowMainWindow();
 
         // Меню открываем сами: у иконки в трее нет окна-владельца, и без
