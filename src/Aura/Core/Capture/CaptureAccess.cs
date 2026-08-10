@@ -1,6 +1,7 @@
 using Windows.Foundation.Metadata;
 using Windows.Graphics.Capture;
 using Aura.Core.Logging;
+using Aura.Shared;
 
 namespace Aura.Core.Capture;
 
@@ -48,6 +49,8 @@ public static class CaptureAccess
                 return;
             }
 
+            EnsureConsentInRegistry();
+
             try
             {
                 // Не на UI-потоке: ожидание WinRT-операции на нём может дать взаимоблокировку
@@ -65,6 +68,28 @@ public static class CaptureAccess
             {
                 Log.Warn("Capture", $"Запрос права на захват без рамки не удался: {ex.Message}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Снимает запрет в ConsentStore ДО запроса права: иначе RequestAccessAsync
+    /// молча вернёт DeniedByUser (диалога у этой возможности нет — спрашивать
+    /// пользователя система не станет). На чистой Windows 11 машинное значение —
+    /// Deny, поэтому после переустановки системы рамка возвращается сама собой.
+    /// Пишем отсюда, а не только из установщика: приложение всегда работает от
+    /// администратора, а установщик — нет, и HKLM ему обычно недоступен.
+    /// </summary>
+    private static void EnsureConsentInRegistry()
+    {
+        if (!BorderlessConsent.TryAllowForCurrentUser(Environment.ProcessPath, out string user))
+            Log.Warn("Capture", $"Не удалось разрешить захват без рамки для пользователя: {user}");
+
+        if (!BorderlessConsent.IsMachineWideAllowed())
+        {
+            if (BorderlessConsent.TryAllowMachineWide(out string machine))
+                Log.Info("Capture", "Машинный запрет на захват без рамки снят");
+            else
+                Log.Warn("Capture", $"Машинный запрет на захват без рамки снять не удалось: {machine}");
         }
     }
 }

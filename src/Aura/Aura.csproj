@@ -16,9 +16,9 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyVersion>1.1.37.0</AssemblyVersion>
-    <FileVersion>1.1.37.0</FileVersion>
-    <Version>1.1.37</Version>
+    <AssemblyVersion>1.1.40.0</AssemblyVersion>
+    <FileVersion>1.1.40.0</FileVersion>
+    <Version>1.1.40</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
@@ -36,6 +36,11 @@
     <PackageReference Include="H.NotifyIcon.Wpf" Version="2.1.4" />
     <!-- WMI -->
     <PackageReference Include="System.Management" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Общий с установщиком код: разрешение на захват без жёлтой рамки -->
+    <Compile Include="..\Shared\BorderlessConsent.cs" Link="Core\Capture\BorderlessConsent.cs" />
   </ItemGroup>
 
   <ItemGroup>
