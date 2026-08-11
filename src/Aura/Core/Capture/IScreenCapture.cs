@@ -51,9 +51,8 @@ public delegate bool LiveFrameProvider(UseFrame use);
 public static class ScreenCaptureFactory
 {
     /// <summary>
-    /// Windows 11 — WGC (рамку отключаем через IsBorderRequired, есть аппаратный курсор).
-    /// Windows 10 — Desktop Duplication: там WGC всегда рисует жёлтую рамку и убрать её
-    /// нечем (свойства IsBorderRequired в системе просто нет).
+    /// Windows 11 с выданным правом на захват без рамки — WGC (аппаратный курсор в кадре).
+    /// Иначе — Desktop Duplication: рамки там нет в принципе.
     /// </summary>
     public static IScreenCapture Create()
     {
@@ -72,6 +71,11 @@ public static class ScreenCaptureFactory
     /// что от этого зависит не только источник кадров: аппаратный курсор умеет класть
     /// в кадр только WGC, и настройкам нужно знать это ДО запуска движка, чтобы не
     /// обещать курсор там, где его не будет.
+    ///
+    /// Права на захват без рамки здесь НЕТ в условии намеренно: подменять источник
+    /// втихую хуже, чем попросить разрешение. Если права нет, приложение остаётся на
+    /// WGC (курсор в кадре) и открывает пользователю страницу разрешения — см.
+    /// App.AskBorderlessPermission.
     /// </summary>
     public static bool UsesWgc
     {

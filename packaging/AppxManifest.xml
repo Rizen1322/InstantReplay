@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Манифест sparse-пакета: приложение получает package identity, не переезжая в MSIX.
+  Файлов приложения здесь нет — внешним расположением при регистрации назначается
+  папка установки (app\), а установщик и обновления остаются прежними.
+
+  Ради чего всё: возможность graphicsCaptureWithoutBorder объявляется ТОЛЬКО в
+  манифесте пакета. Без неё GraphicsCaptureAccess.RequestAccessAsync(Borderless)
+  отвечает отказом, и Windows рисует жёлтую рамку поверх записи, игнорируя
+  IsBorderRequired = false.
+
+  Identity/@Name, Identity/@Publisher и Application/@Id обязаны совпадать с
+  элементом msix в src\Aura\app.manifest, иначе identity в рантайме не появится.
+  Publisher обязан совпадать с Subject сертификата подписи.
+  Version подставляет build_identity_package.ps1 из версии приложения.
+-->
+<Package IgnorableNamespaces="uap uap10 uap11 rescap"
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:uap11="http://schemas.microsoft.com/appx/manifest/uap/windows10/11"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities">
+
+  <Identity Name="Rizen1322.Aura" Publisher="CN=Rizen1322" Version="0.0.0.0" ProcessorArchitecture="neutral" />
+
+  <Properties>
+    <DisplayName>Aura</DisplayName>
+    <PublisherDisplayName>Rizen1322</PublisherDisplayName>
+    <!-- Путь относительно внешнего расположения, то есть папки app\ -->
+    <Logo>Assets\logo.png</Logo>
+    <!-- Без этого пакет нельзя связать с внешней папкой -->
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="ru-ru" />
+  </Resources>
+
+  <Dependencies>
+    <!-- 19041 — минимум для AllowExternalContent; рамку умеет гасить 20348+ -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <!-- Обычное Win32-поведение: без виртуализации реестра и файловой системы -->
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+    <!-- Ради чего всё затевалось -->
+    <uap11:Capability Name="graphicsCaptureWithoutBorder" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="Aura" Executable="Aura.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <!-- AppListEntry="none": пакет не должен появляться отдельным пунктом в меню -->
+      <uap:VisualElements AppListEntry="none" DisplayName="Aura" Description="Мгновенные повторы геймплея"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\logo.png" Square44x44Logo="Assets\logo.png" />
+    </Application>
+  </Applications>
+</Package>

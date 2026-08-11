@@ -39,11 +39,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Общий с установщиком код: разрешение на захват без жёлтой рамки -->
-    <Compile Include="..\Shared\BorderlessConsent.cs" Link="Core\Capture\BorderlessConsent.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Content Include="Assets\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

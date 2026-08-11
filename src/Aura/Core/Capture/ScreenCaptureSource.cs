@@ -165,15 +165,17 @@ public sealed class ScreenCaptureSource : IScreenCapture
 
             _session = _framePool.CreateCaptureSession(_item);
 
-            // Жёлтая рамка записи. Ошибку НЕ глотаем молча: раньше на части систем
-            // свойство отваливалось незаметно и пользователь видел рамку весь сеанс.
+            // Жёлтая рамка записи. Обратное чтение свойства здесь ничего не доказывает:
+            // без права система принимает false, читает его обратно как false и всё
+            // равно рисует рамку. Единственный достоверный признак — итог запроса
+            // права, поэтому смотрим на него, а не на _session.IsBorderRequired.
             if (CaptureAccess.IsBorderControlSupported)
             {
                 try
                 {
                     _session.IsBorderRequired = false;
-                    if (_session.IsBorderRequired)
-                        Log.Warn("Capture", "Система не дала отключить рамку записи (нет права graphicsCaptureWithoutBorder)");
+                    if (!CaptureAccess.BorderlessGranted)
+                        Log.Warn("Capture", "Права на захват без рамки нет — рамка записи останется");
                 }
                 catch (Exception ex)
                 {
