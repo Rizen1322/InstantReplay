@@ -393,9 +393,9 @@ public partial class RegionCaptureWindow : Window
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
         switch (e.Key)
         {
-            // Esc при готовом выделении сначала снимает его: частый случай — промахнулся
-            // с областью, а не передумал делать снимок вовсе.
-            case Key.Escape when _hasSelection: ResetSelection(); break;
+            // Esc закрывает сразу. Двухступенчатый выход (сначала снять выделение,
+            // потом закрыть) выглядел так, будто клавиша не сработала: чтобы выделить
+            // заново, достаточно протянуть мышью мимо текущей области.
             case Key.Escape: Close(); break;
             case Key.Enter: if (_hasSelection) Finish(copy: false, save: true); break;
             case Key.Z when ctrl: Undo(); break;
