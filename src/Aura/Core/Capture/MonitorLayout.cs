@@ -35,6 +35,48 @@ public static class MonitorLayout
         return (r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top, scale);
     }
 
+    /// <summary>
+    /// Монитор, на котором сейчас курсор. Скриншот должен сниматься там, где человек
+    /// работает, а не там, куда настроена запись: настройка записи привязана к игре,
+    /// а скриншот делают где угодно.
+    /// null — определить не удалось, вызывающий останется на своём мониторе.
+    /// </summary>
+    public static int? IndexUnderCursor()
+    {
+        try
+        {
+            if (!NativeMethods.GetCursorPos(out var point)) return null;
+
+            var bounds = All();
+            for (int i = 0; i < bounds.Count; i++)
+            {
+                var r = bounds[i];
+                if (point.X >= r.Left && point.X < r.Right && point.Y >= r.Top && point.Y < r.Bottom)
+                    return i;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>Границы всех мониторов в порядке перечисления DXGI — тот же индекс, что в настройках.</summary>
+    private static List<NativeMethods.RECT> All()
+    {
+        var list = new List<NativeMethods.RECT>();
+        using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+        for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+        {
+            using (adapter)
+                for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
+                    using (output)
+                    {
+                        var c = output.Description.DesktopCoordinates;
+                        list.Add(new NativeMethods.RECT { Left = c.Left, Top = c.Top, Right = c.Right, Bottom = c.Bottom });
+                    }
+        }
+        return list;
+    }
+
     private static IntPtr HandleFor(int monitorIndex)
     {
         try

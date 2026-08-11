@@ -57,6 +57,9 @@
     <SolidColorBrush x:Key="Tx3Brush" Color="{DynamicResource Tx3Color}"/>
 
     <SolidColorBrush x:Key="AccentBrush" Color="{DynamicResource AccentColor}"/>
+    <!-- Акцент под курсором: чуть притемнённый, а не нейтральный — тёмная подпись
+         главной кнопки читается только на заливке. -->
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="#FF2AC33F"/>
     <SolidColorBrush x:Key="AccentTxBrush" Color="{DynamicResource AccentTxColor}"/>
     <SolidColorBrush x:Key="AccentInkBrush" Color="{DynamicResource AccentInkColor}"/>
     <SolidColorBrush x:Key="AccentSoftBrush" Color="{DynamicResource AccentSoftColor}"/>

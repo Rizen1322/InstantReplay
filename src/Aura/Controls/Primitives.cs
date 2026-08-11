@@ -174,6 +174,21 @@ public static class Deco
 
     public static bool GetFilled(DependencyObject d) => (bool)d.GetValue(FilledProperty);
     public static void SetFilled(DependencyObject d, bool value) => d.SetValue(FilledProperty, value);
+
+    /// <summary>
+    /// Фон кнопки под курсором.
+    ///
+    /// Раньше шаблон подставлял на наведении один и тот же нейтральный PressBrush
+    /// всем кнопкам подряд — и главная кнопка теряла акцентный фон, оставаясь с
+    /// тёмной подписью, рассчитанной на яркую заливку. В тёмной теме «Сохранить
+    /// повтор» под курсором превращался в бледную плашку с почти чёрным текстом.
+    /// Теперь каждый стиль говорит, каким ему быть под курсором.
+    /// </summary>
+    public static readonly DependencyProperty HoverBrushProperty = DependencyProperty.RegisterAttached(
+        "HoverBrush", typeof(Brush), typeof(Deco), new FrameworkPropertyMetadata(null));
+
+    public static Brush? GetHoverBrush(DependencyObject d) => (Brush?)d.GetValue(HoverBrushProperty);
+    public static void SetHoverBrush(DependencyObject d, Brush? value) => d.SetValue(HoverBrushProperty, value);
 }
 
 // ---------------- конвертеры ----------------

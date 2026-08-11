@@ -40,6 +40,10 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
 
+    // POINT объявлена ниже, рядом с MINMAXINFO
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetCursorPos(out POINT lpPoint);
+
     /// <summary>MDT_EFFECTIVE_DPI = 0 — тот масштаб, который видит пользователь.</summary>
     [LibraryImport("shcore.dll")]
     internal static partial int GetDpiForMonitor(IntPtr hMonitor, int dpiType, out uint dpiX, out uint dpiY);

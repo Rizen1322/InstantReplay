@@ -495,9 +495,10 @@ public partial class App : Application
         try
         {
             string file = Core.Capture.ScreenshotService.NextFilePath(s.ScreenshotFolder);
+            var (monitor, live) = ScreenshotTarget();
 
             await Task.Run(() => Core.Capture.ScreenshotService.CaptureAsync(
-                s.MonitorIndex, file, s.RecordCursor, Services.Engine.TryUseLiveFrame));
+                monitor, file, s.RecordCursor, live));
             Services.Notifications.Show(NotificationKind.Screenshot, "Скриншот сохранён", Describe(file));
         }
         catch (Exception ex)
@@ -513,14 +514,28 @@ public partial class App : Application
         var s = Services.Settings.Current;
         try
         {
-            await Views.RegionCaptureWindow.ShowForAsync(
-                s.MonitorIndex, s.RecordCursor, Services.Engine.TryUseLiveFrame, s.ScreenshotFolder);
+            var (monitor, live) = ScreenshotTarget();
+            await Views.RegionCaptureWindow.ShowForAsync(monitor, s.RecordCursor, live, s.ScreenshotFolder);
         }
         catch (Exception ex)
         {
             Log.Error("Screenshot", ex);
             Services.Notifications.Show(NotificationKind.Warning, "Не удалось открыть выделение области");
         }
+    }
+
+    /// <summary>
+    /// На каком мониторе снимать и можно ли взять готовый кадр у буфера записи.
+    ///
+    /// Снимаем там, где курсор: настройка записи привязана к игре, а скриншот делают
+    /// на любом мониторе. Кадр у работающего буфера при этом годится только когда
+    /// это ТОТ ЖЕ монитор — иначе в снимок попал бы соседний экран.
+    /// </summary>
+    private static (int Monitor, Core.Capture.LiveFrameProvider? Live) ScreenshotTarget()
+    {
+        var s = Services.Settings.Current;
+        int monitor = Core.Capture.MonitorLayout.IndexUnderCursor() ?? s.MonitorIndex;
+        return (monitor, monitor == s.MonitorIndex ? Services.Engine.TryUseLiveFrame : null);
     }
 
     /// <summary>Папка со скриншотами — открывается из трея и со страницы настроек.</summary>

@@ -209,6 +209,9 @@
         <Setter Property="Background" Value="{DynamicResource Card2Brush}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource HairBrush}"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
+        <!-- Нейтральной кнопке под курсором идёт нейтральная подсветка; у цветных
+             стилей своя, иначе они теряют заливку вместе с читаемостью подписи. -->
+        <Setter Property="c:Deco.HoverBrush" Value="{DynamicResource PressBrush}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -252,7 +255,8 @@
                             <Setter TargetName="Lead" Property="Margin" Value="0"/>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="B" Property="Background" Value="{DynamicResource PressBrush}"/>
+                            <Setter TargetName="B" Property="Background"
+                                    Value="{Binding (c:Deco.HoverBrush), RelativeSource={RelativeSource TemplatedParent}}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Trigger.EnterActions>
@@ -288,6 +292,9 @@
         <Setter Property="Foreground" Value="{DynamicResource AccentInkBrush}"/>
         <Setter Property="BorderBrush" Value="Transparent"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
+        <!-- Под курсором акцент только притемняется: подпись у этой кнопки тёмная и
+             на нейтральном фоне читаться перестаёт. -->
+        <Setter Property="c:Deco.HoverBrush" Value="{DynamicResource AccentHoverBrush}"/>
     </Style>
 
     <!-- Ссылка-кнопка -->
