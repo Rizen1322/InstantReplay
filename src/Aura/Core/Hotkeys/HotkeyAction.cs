@@ -9,5 +9,6 @@ public enum HotkeyAction
     StopRecording,
     ToggleInstantReplay,
     Screenshot,
+    ScreenshotRegion,
     OpenFolder
 }

@@ -122,6 +122,7 @@ public sealed class HotkeyService : IDisposable
             TryAdd(s.HotkeyStopRecording, HotkeyAction.StopRecording);
             TryAdd(s.HotkeyToggleInstantReplay, HotkeyAction.ToggleInstantReplay);
             TryAdd(s.HotkeyScreenshot, HotkeyAction.Screenshot);
+            TryAdd(s.HotkeyScreenshotRegion, HotkeyAction.ScreenshotRegion);
             TryAdd(s.HotkeyOpenFolder, HotkeyAction.OpenFolder);
         }
     }

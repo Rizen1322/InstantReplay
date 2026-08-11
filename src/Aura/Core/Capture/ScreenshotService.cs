@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Vortice.Direct3D11;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
@@ -22,6 +23,19 @@ public static class ScreenshotService
     public static async Task<string> CaptureAsync(int monitorIndex, string filePath, bool cursor,
         LiveFrameProvider? live = null)
     {
+        var (bgra, width, height) = await CapturePixelsAsync(monitorIndex, cursor, live);
+        await SavePngAsync(bgra, width, height, filePath);
+        return filePath;
+    }
+
+    /// <summary>
+    /// Пиксели экрана без записи на диск — этим пользуется оверлей выделения области:
+    /// ему нужна картинка на экране, а файл появится только если пользователь решит
+    /// сохранить. Порядок источников тот же, что и у обычного скриншота.
+    /// </summary>
+    public static async Task<(byte[] Bgra, int W, int H)> CapturePixelsAsync(
+        int monitorIndex, bool cursor, LiveFrameProvider? live = null)
+    {
         (byte[] Bgra, int W, int H)? shot = null;
 
         // 1) Кадр у работающего буфера
@@ -40,11 +54,47 @@ public static class ScreenshotService
         }
 
         // 2) Буфер выключен — своя одноразовая сессия
-        if (shot is null)
-            shot = await CaptureOwnSessionAsync(monitorIndex, cursor);
+        shot ??= await CaptureOwnSessionAsync(monitorIndex, cursor);
+        return shot.Value;
+    }
 
-        var (bgra, width, height) = shot.Value;
+    /// <summary>
+    /// Следующее свободное имя вида Screenshot_1.png, Screenshot_2.png и так далее.
+    ///
+    /// Папка перечитывается при КАЖДОМ сохранении, а счётчик нигде не хранится:
+    /// снимки удаляют, переименовывают и копируют руками, и сохранённый счётчик рано
+    /// или поздно указал бы на занятое имя — то есть затёр бы чужой файл. Берём
+    /// максимальный существующий номер и прибавляем единицу; заодно проверяем каждое
+    /// имя на существование, потому что между перечислением и записью файл может
+    /// появиться (второй снимок из трея, например).
+    /// </summary>
+    public static string NextFilePath(string folder, string prefix = "Screenshot", string extension = ".png")
+    {
+        Directory.CreateDirectory(folder);
 
+        int max = 0;
+        var pattern = new Regex($@"^{Regex.Escape(prefix)}_(\d+)$", RegexOptions.IgnoreCase);
+        try
+        {
+            foreach (string file in Directory.EnumerateFiles(folder, $"{prefix}_*{extension}"))
+            {
+                var match = pattern.Match(Path.GetFileNameWithoutExtension(file));
+                if (match.Success && int.TryParse(match.Groups[1].Value, out int number) && number > max)
+                    max = number;
+            }
+        }
+        catch (Exception ex) { Log.Warn("Screenshot", $"Чтение папки {folder}: {ex.Message}"); }
+
+        int next = max + 1;
+        string path = Path.Combine(folder, $"{prefix}_{next}{extension}");
+        while (File.Exists(path))
+            path = Path.Combine(folder, $"{prefix}_{++next}{extension}");
+        return path;
+    }
+
+    /// <summary>BGRA → PNG на диск.</summary>
+    public static async Task SavePngAsync(byte[] bgra, int width, int height, string filePath)
+    {
         // Кодируем в память, а на диск пишем готовые байты одним куском.
         // Раньше энкодер писал прямо в FileStream через AsRandomAccessStream: обёртка
         // живёт своей жизнью, и порядок закрытия «сначала FileStream, потом обёртка»
@@ -70,7 +120,6 @@ public static class ScreenshotService
         await File.WriteAllBytesAsync(filePath, bytes);
 
         Log.Info("Screenshot", $"Сохранён: {filePath} ({width}x{height}, {bytes.Length / 1024} КБ)");
-        return filePath;
     }
 
     /// <summary>Одноразовая сессия захвата: живёт ~200 мс, ждём первый кадр.</summary>

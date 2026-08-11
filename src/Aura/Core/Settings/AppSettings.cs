@@ -67,12 +67,32 @@ public sealed class AppSettings
     public string HotkeyToggleInstantReplay { get; set; } = "Alt+F11";
     public string HotkeyStartRecording { get; set; } = "Alt+F9";
     public string HotkeyStopRecording { get; set; } = "Alt+Shift+F9";
-    public string HotkeyScreenshot { get; set; } = "Alt+F12";
+    public string HotkeyScreenshot { get; set; } = "Alt+PrintScreen";
+    /// <summary>
+    /// Скриншот выделенной области. PrintScreen без модификаторов — как в Lightshot;
+    /// наш низкоуровневый хук перехватывает клавишу раньше системных «Ножниц».
+    /// </summary>
+    public string HotkeyScreenshotRegion { get; set; } = "PrintScreen";
     public string HotkeyOpenFolder { get; set; } = "Alt+F8";
 
     // ---------- Хранилище ----------
     public string SaveRootPath { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Aura");
+
+    /// <summary>
+    /// Папка для скриншотов — отдельная от записей: картинки не должны попадать в
+    /// библиотеку клипов и в подсчёт занятого места видео, а искать их удобнее там,
+    /// где система держит изображения.
+    /// </summary>
+    public string ScreenshotFolder { get; set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Aura");
+
+    /// <summary>
+    /// Показывали ли уже страницу разрешения на захват без рамки. Спрашиваем один
+    /// раз: если человек осознанно отказал, открывать «Параметры» при каждом запуске —
+    /// не забота, а навязчивость.
+    /// </summary>
+    public bool BorderlessPermissionAsked { get; set; }
     /// <summary>
     /// Раскладывать записи по папкам игр (Videos\Aura\Counter-Strike 2\…).
     /// В интерфейсе переключателя нет — это поведение по умолчанию; выключить можно

@@ -168,6 +168,7 @@ public partial class KeysPage : PageBase
             HotkeyAction.StartRecording => s.HotkeyStartRecording,
             HotkeyAction.StopRecording => s.HotkeyStopRecording,
             HotkeyAction.Screenshot => s.HotkeyScreenshot,
+            HotkeyAction.ScreenshotRegion => s.HotkeyScreenshotRegion,
             _ => s.HotkeyOpenFolder
         };
     }
@@ -183,6 +184,7 @@ public partial class KeysPage : PageBase
             case HotkeyAction.StartRecording: s.HotkeyStartRecording = combo; break;
             case HotkeyAction.StopRecording: s.HotkeyStopRecording = combo; break;
             case HotkeyAction.Screenshot: s.HotkeyScreenshot = combo; break;
+            case HotkeyAction.ScreenshotRegion: s.HotkeyScreenshotRegion = combo; break;
             case HotkeyAction.OpenFolder: s.HotkeyOpenFolder = combo; break;
         }
         Services.Settings.Save("hotkeys");
@@ -198,6 +200,7 @@ public partial class KeysPage : PageBase
         s.HotkeyStartRecording = defaults.HotkeyStartRecording;
         s.HotkeyStopRecording = defaults.HotkeyStopRecording;
         s.HotkeyScreenshot = defaults.HotkeyScreenshot;
+        s.HotkeyScreenshotRegion = defaults.HotkeyScreenshotRegion;
         s.HotkeyOpenFolder = defaults.HotkeyOpenFolder;
         Services.Settings.Save("hotkeys");
         Build();

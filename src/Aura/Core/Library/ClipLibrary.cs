@@ -175,6 +175,37 @@ public static class ClipLibrary
         return list;
     }
 
+    /// <summary>
+    /// Записи и скриншоты одним списком: видео и снимки хранятся в разных папках,
+    /// но в «Клипах» человек ищет их вместе — по дате, а не по типу файла.
+    ///
+    /// Вложенную папку скриншотов вторым проходом не обходим: иначе каждый снимок
+    /// попал бы в список дважды.
+    /// </summary>
+    public static List<ClipItem> ScanAll(string videoRoot, string? screenshotRoot)
+    {
+        var list = Scan(videoRoot);
+
+        if (!string.IsNullOrWhiteSpace(screenshotRoot) && !IsInside(screenshotRoot!, videoRoot))
+        {
+            list.AddRange(Scan(screenshotRoot!));
+            list.Sort((a, b) => b.Created.CompareTo(a.Created));
+        }
+        return list;
+    }
+
+    private static bool IsInside(string path, string root)
+    {
+        try
+        {
+            string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            string parent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+            return full.Equals(parent, StringComparison.OrdinalIgnoreCase)
+                || full.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
     /// <summary>Разбить упорядоченный список на группы по дате записи.</summary>
     public static List<ClipGroup> GroupByDate(List<ClipItem> items)
     {

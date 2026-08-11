@@ -31,18 +31,35 @@
             </Border>
 
             <!-- Папка -->
-            <TextBlock Text="Папка записей" Style="{StaticResource GroupLabel}"/>
+            <TextBlock Text="Папки" Style="{StaticResource GroupLabel}"/>
             <Border Style="{StaticResource Card}">
                 <StackPanel>
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                            <TextBlock Text="Куда сохранять" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Видео" Style="{StaticResource RowLabel}"/>
                             <TextBlock x:Name="PathText" Style="{StaticResource RowSub}"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
                             <Button Content="Открыть" Click="OpenFolder_Click" Margin="0,0,8,0"
                                     c:Deco.Icon="{DynamicResource Ico.FolderOpen}"/>
                             <Button Content="Выбрать…" Click="Browse_Click"
+                                    c:Deco.Icon="{DynamicResource Ico.Folder}"/>
+                        </StackPanel>
+                    </c:AdaptiveRow>
+
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <!-- Скриншоты отдельно от видео: картинки не должны попадать в
+                         подсчёт занятого места записями, а держать их удобнее там,
+                         где система хранит изображения. В «Клипах» показываются вместе. -->
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Скриншоты" Style="{StaticResource RowLabel}"/>
+                            <TextBlock x:Name="ShotsPathText" Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Открыть" Click="OpenShotsFolder_Click" Margin="0,0,8,0"
+                                    c:Deco.Icon="{DynamicResource Ico.FolderOpen}"/>
+                            <Button Content="Выбрать…" Click="BrowseShots_Click"
                                     c:Deco.Icon="{DynamicResource Ico.Folder}"/>
                         </StackPanel>
                     </c:AdaptiveRow>

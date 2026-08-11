@@ -28,7 +28,8 @@ public static class HotkeyConflicts
         new(HotkeyAction.ToggleInstantReplay, "Включить повтор", s.HotkeyToggleInstantReplay),
         new(HotkeyAction.StartRecording, "Начать запись", s.HotkeyStartRecording),
         new(HotkeyAction.StopRecording, "Остановить запись", s.HotkeyStopRecording),
-        new(HotkeyAction.Screenshot, "Скриншот", s.HotkeyScreenshot),
+        new(HotkeyAction.Screenshot, "Скриншот экрана", s.HotkeyScreenshot),
+        new(HotkeyAction.ScreenshotRegion, "Скриншот области", s.HotkeyScreenshotRegion),
         new(HotkeyAction.OpenFolder, "Открыть папку записей", s.HotkeyOpenFolder),
     ];
 

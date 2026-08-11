@@ -22,6 +22,28 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool PostThreadMessageW(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
 
+    // Границы монитора и его масштаб: оверлею выделения области нужно лечь ровно на
+    // тот монитор, с которого снят кадр. WPF работает в аппаратно-независимых
+    // пикселях, DXGI отдаёт физические — без DPI монитора одно в другое не перевести.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RECT { public int Left, Top, Right, Bottom; }
+
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    /// <summary>MDT_EFFECTIVE_DPI = 0 — тот масштаб, который видит пользователь.</summary>
+    [LibraryImport("shcore.dll")]
+    internal static partial int GetDpiForMonitor(IntPtr hMonitor, int dpiType, out uint dpiX, out uint dpiY);
+
     [LibraryImport("user32.dll", SetLastError = true)]
     internal static partial int GetWindowLongW(IntPtr hWnd, int nIndex);
     [LibraryImport("user32.dll", SetLastError = true)]

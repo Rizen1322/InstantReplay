@@ -155,8 +155,9 @@ public partial class App : Application
         try
         {
             Thread.CurrentThread.Priority = ThreadPriority.Lowest;
-            string root = Services.Settings.Current.SaveRootPath;
-            Core.Library.ClipThumbnails.PruneOrphans(Core.Library.ClipLibrary.Scan(root));
+            var s = Services.Settings.Current;
+            Core.Library.ClipThumbnails.PruneOrphans(
+                Core.Library.ClipLibrary.ScanAll(s.SaveRootPath, s.ScreenshotFolder));
         }
         catch (Exception ex) { Log.Warn("App", $"Уборка кэша: {ex.Message}"); }
     });
@@ -326,9 +327,19 @@ public partial class App : Application
                 case HotkeyAction.StopRecording: engine.StopRecordingToFile(); break;
                 case HotkeyAction.ToggleInstantReplay: ToggleEngine(); break;
                 case HotkeyAction.Screenshot: _ = TakeScreenshotAsync(); break;
+                case HotkeyAction.ScreenshotRegion: _ = TakeRegionScreenshotAsync(); break;
                 case HotkeyAction.OpenFolder: OpenRecordingsFolder(); break;
             }
         });
+
+        // Итог работы оверлея выделения: уведомления показывает приложение, а не окно —
+        // оно к моменту показа уже закрыто.
+        Views.RegionCaptureWindow.Saved += (file, copied) =>
+            n.Show(NotificationKind.Screenshot,
+                file is null ? "Скриншот в буфере обмена" : "Скриншот сохранён",
+                file is null ? null : (copied ? "и скопирован" : Describe(file)));
+        Views.RegionCaptureWindow.Failed += ex =>
+            n.Show(NotificationKind.Warning, "Не удалось сделать скриншот", ex.Message);
 
         Services.Settings.Changed += group =>
         {
@@ -362,8 +373,35 @@ public partial class App : Application
 
     public static void SafeStartEngine()
     {
-        try { Services.Engine.Start(); }
+        try
+        {
+            Services.Engine.Start();
+            AskBorderlessPermission();
+        }
         catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось включить повтор", ex.Message); }
+    }
+
+    /// <summary>
+    /// Права на захват без рамки нет — просим его у пользователя.
+    ///
+    /// Своего диалога у системы для классических приложений нет: согласие заводится
+    /// в состоянии «не решено», а решение принимается на странице параметров. Поэтому
+    /// открываем её сами — но ровно один раз за всё время: отказ тоже ответ, и
+    /// открывать «Параметры» при каждом включении повтора было бы навязчиво.
+    /// </summary>
+    private static void AskBorderlessPermission()
+    {
+        if (!Core.Capture.ScreenCaptureFactory.UsesWgc) return;      // без WGC рамки нет вовсе
+        if (Core.Capture.CaptureAccess.BorderlessGranted) return;
+
+        Services.Notifications.Show(NotificationKind.Warning, "Windows рисует рамку записи",
+            "Разрешите захват без рамки в параметрах конфиденциальности");
+
+        var s = Services.Settings.Current;
+        if (s.BorderlessPermissionAsked) return;
+        s.BorderlessPermissionAsked = true;
+        Services.Settings.Save("system");
+        Core.Capture.CaptureAccess.OpenPermissionSettings();
     }
 
     public static void SafeStartRecording()
@@ -378,26 +416,51 @@ public partial class App : Application
         else Services.Engine.Stop();
     }
 
+    /// <summary>
+    /// Скриншот всего экрана. Складывается в отдельную папку скриншотов, а не к
+    /// клипам: библиотека приложения — про видео, и картинки там только мешали
+    /// подсчёту занятого места.
+    /// </summary>
     public static async Task TakeScreenshotAsync()
     {
         var s = Services.Settings.Current;
         try
         {
-            string game = Core.GameDetection.GameDetector.DetectForegroundGame();
-            string dir = s.GroupByGame ? Path.Combine(s.SaveRootPath, game) : s.SaveRootPath;
-            string file = Path.Combine(dir, $"screenshot {DateTime.Now:yyyy-MM-dd - HH-mm-ss}.png");
+            string file = Core.Capture.ScreenshotService.NextFilePath(s.ScreenshotFolder);
 
             await Task.Run(() => Core.Capture.ScreenshotService.CaptureAsync(
                 s.MonitorIndex, file, s.RecordCursor, Services.Engine.TryUseLiveFrame));
-            Services.Storage.RegisterSaved(file);
             Services.Notifications.Show(NotificationKind.Screenshot, "Скриншот сохранён", Describe(file));
-            Services.Ui.Enqueue(Views.ClipCommands.NotifyLibraryChanged);
         }
         catch (Exception ex)
         {
             Log.Error("Screenshot", ex);
             Services.Notifications.Show(NotificationKind.Warning, "Не удалось сделать скриншот");
         }
+    }
+
+    /// <summary>Скриншот выделенной области: оверлей с рисованием, копированием и сохранением.</summary>
+    public static async Task TakeRegionScreenshotAsync()
+    {
+        var s = Services.Settings.Current;
+        try
+        {
+            await Views.RegionCaptureWindow.ShowForAsync(
+                s.MonitorIndex, s.RecordCursor, Services.Engine.TryUseLiveFrame, s.ScreenshotFolder);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Screenshot", ex);
+            Services.Notifications.Show(NotificationKind.Warning, "Не удалось открыть выделение области");
+        }
+    }
+
+    /// <summary>Папка со скриншотами — открывается из трея и со страницы настроек.</summary>
+    public static void OpenScreenshotFolder()
+    {
+        string path = Services.Settings.Current.ScreenshotFolder;
+        Directory.CreateDirectory(path);
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
     }
 
     public static void OpenRecordingsFolder()
@@ -446,6 +509,7 @@ public partial class App : Application
         _trayToggle = Add("Включить повтор", "Ico.Rec", ToggleEngine);
         _traySave = Add("Сохранить повтор", "Ico.Save", () => Services.Engine.SaveReplay());
         Add("Скриншот", "Ico.Camera", () => _ = TakeScreenshotAsync());
+        Add("Скриншот области", "Ico.Camera", () => _ = TakeRegionScreenshotAsync());
         Add("Папка с записями", "Ico.FolderOpen", OpenRecordingsFolder);
         menu.Items.Add(new Separator { Style = (Style)Resources["TrayMenuSeparator"] });
         Add("Выход", "Ico.X", ExitApp, "RecBrush");

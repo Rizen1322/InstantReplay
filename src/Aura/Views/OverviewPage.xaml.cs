@@ -185,8 +185,9 @@ public partial class OverviewPage : PageBase
 
     private async Task LoadRecentAsync()
     {
-        string root = Services.Settings.Current.SaveRootPath;
-        var items = await Task.Run(() => ClipLibrary.Scan(root).Take(4).ToList());
+        var s = Services.Settings.Current;
+        string root = s.SaveRootPath, shots = s.ScreenshotFolder;
+        var items = await Task.Run(() => ClipLibrary.ScanAll(root, shots).Take(4).ToList());
 
         _loadedClips = true;
         Recent.ItemsSource = items;

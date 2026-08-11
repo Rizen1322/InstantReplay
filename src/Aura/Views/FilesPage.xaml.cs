@@ -34,6 +34,7 @@ public partial class FilesPage : PageBase
         _loading = true;
         var s = Services.Settings.Current;
         PathText.Text = s.SaveRootPath;
+        ShotsPathText.Text = s.ScreenshotFolder;
         GroupSub.Text = Path.Combine(s.SaveRootPath, "Counter-Strike 2") + @"\…";
         GroupByGame.IsChecked = s.GroupByGame;
         ShowTrimTool();
@@ -55,6 +56,46 @@ public partial class FilesPage : PageBase
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
+
+    private void OpenShotsFolder_Click(object sender, RoutedEventArgs e) => App.OpenScreenshotFolder();
+
+    /// <summary>
+    /// Папка скриншотов. Смена трогает и «Клипы»: список собирается из обеих папок,
+    /// поэтому событие то же самое — storage.
+    /// </summary>
+    private void BrowseShots_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Куда сохранять скриншоты",
+            InitialDirectory = Services.Settings.Current.ScreenshotFolder
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        string folder = AuraFolderIn(dialog.FolderName);
+        Services.Settings.Current.ScreenshotFolder = folder;
+        Directory.CreateDirectory(folder);
+        Services.Settings.Save("storage");
+        Load();
+        ClipCommands.NotifyLibraryChanged();
+    }
+
+    /// <summary>
+    /// Своя папка внутри выбранной: человек указывает «Документы», а файлы должны
+    /// лечь в «Документы\Aura» — сваливать их прямо в пользовательскую папку нельзя,
+    /// её потом не разгрести. Если выбрана уже сама Aura, второй такой же
+    /// вложенности не делаем.
+    /// </summary>
+    private static string AuraFolderIn(string chosen)
+    {
+        try
+        {
+            string name = new DirectoryInfo(chosen).Name;
+            if (name.Equals("Aura", StringComparison.OrdinalIgnoreCase)) return chosen;
+        }
+        catch { /* нераспознаваемый путь — просто добавим подпапку */ }
+        return Path.Combine(chosen, "Aura");
+    }
 
     // ---------------- Программа для обрезки ----------------
 
@@ -109,8 +150,9 @@ public partial class FilesPage : PageBase
         };
         if (dialog.ShowDialog() != true) return;
 
-        Services.Settings.Current.SaveRootPath = dialog.FolderName;
-        Directory.CreateDirectory(dialog.FolderName);
+        string folder = AuraFolderIn(dialog.FolderName);
+        Services.Settings.Current.SaveRootPath = folder;
+        Directory.CreateDirectory(folder);
         Services.Settings.Save("storage");
         Load();
         ShowStats(Services.Storage.GetStats());

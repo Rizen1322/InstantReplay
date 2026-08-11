@@ -156,8 +156,9 @@ public partial class ClipsPage : PageBase
 
     private async Task ReloadAsync()
     {
-        string root = Services.Settings.Current.SaveRootPath;
-        _all = await Task.Run(() => ClipLibrary.Scan(root));
+        var s = Services.Settings.Current;
+        string root = s.SaveRootPath, shots = s.ScreenshotFolder;
+        _all = await Task.Run(() => ClipLibrary.ScanAll(root, shots));
         _loaded = true;
 
         FillGameFilter();
