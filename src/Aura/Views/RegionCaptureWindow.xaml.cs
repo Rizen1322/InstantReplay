@@ -54,7 +54,7 @@ public partial class RegionCaptureWindow : Window
     private InkTool _tool = InkTool.None;
     private Color _color = Palette[0].Color;
 
-    /// <summary>Отменённые фигуры: Ctrl+I возвращает их обратно, пока не нарисовано новое.</summary>
+    /// <summary>Отменённые фигуры: Ctrl+Y возвращает их обратно, пока не нарисовано новое.</summary>
     private readonly Stack<InkShape> _undone = new();
     private Rect _selection;
     private bool _hasSelection, _selecting, _drawing, _resizing, _moving;
@@ -399,7 +399,7 @@ public partial class RegionCaptureWindow : Window
             case Key.Escape: Close(); break;
             case Key.Enter: if (_hasSelection) Finish(copy: false, save: true); break;
             case Key.Z when ctrl: Undo(); break;
-            case Key.I when ctrl: Redo(); break;
+            case Key.Y when ctrl: Redo(); break;
             case Key.C when ctrl: if (_hasSelection) Finish(copy: true, save: false); break;
             case Key.S when ctrl: if (_hasSelection) Finish(copy: false, save: true); break;
         }

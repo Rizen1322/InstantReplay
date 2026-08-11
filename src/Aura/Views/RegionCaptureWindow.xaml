@@ -106,7 +106,7 @@
                         <c:Icon Data="{DynamicResource Ico.Undo}" Size="17"/>
                     </Button>
                     <!-- Та же стрелка зеркально: отдельной иконки «вернуть» в наборе нет -->
-                    <Button x:Name="RedoBtn" Style="{StaticResource ActionButton}" ToolTip="Вернуть отменённое (Ctrl+I)">
+                    <Button x:Name="RedoBtn" Style="{StaticResource ActionButton}" ToolTip="Вернуть отменённое (Ctrl+Y)">
                         <c:Icon Data="{DynamicResource Ico.Undo}" Size="17">
                             <c:Icon.LayoutTransform>
                                 <ScaleTransform ScaleX="-1"/>
