@@ -396,11 +396,24 @@ public partial class App : Application
         Services.Ui.Enqueue(() => PresentChangelog(entries, current));
     }
 
+    /// <summary>
+    /// Список уже на экране. Диалог модальный, но его собственный цикл сообщений
+    /// продолжает крутить очередь диспетчера: пока человек читает, вторая копия
+    /// приложения успевает попросить показать окно, и поверх открывался второй такой
+    /// же список. Отметка о показе ставится только после закрытия, поэтому от неё
+    /// защиты нет — нужен свой признак.
+    /// </summary>
+    private static bool _changelogVisible;
+
     private static void PresentChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries, Version current)
     {
+        if (_changelogVisible) return;
+        _changelogVisible = true;
+
         Log.Info("App", $"Показываю список изменений до версии {current}");
         try { Views.Dialogs.ShowChangelog(entries); }
         catch (Exception ex) { Log.Warn("App", $"Список изменений: {ex.Message}"); }
+        finally { _changelogVisible = false; }
 
         // Отметку ставим после показа: если диалог не открылся, человек не должен
         // потерять список из-за нашей ошибки.
