@@ -94,8 +94,19 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             _cursor = null;
             if (captureCursor)
             {
-                _cursor = new CursorOverlay(_device!, _context!);
-                Log.Info("Capture", "Курсор дорисовывается в кадр");
+                var cursor = new CursorOverlay(_device!, _context!);
+                // Не готов — не держим и не врём в лог, что курсор рисуется:
+                // причину CursorOverlay уже написал предупреждением.
+                if (cursor.IsReady)
+                {
+                    _cursor = cursor;
+                    Log.Info("Capture", "Курсор дорисовывается в кадр");
+                }
+                else
+                {
+                    cursor.Dispose();
+                    Log.Warn("Capture", "Курсор в кадр не попадёт");
+                }
             }
 
             // Признак работы СВОЙ у каждого потока, а не общее поле. Иначе брошенный

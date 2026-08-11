@@ -50,6 +50,9 @@ internal sealed class CursorOverlay : IDisposable
     private ID3D11PixelShader? _psAnd;      // выдаёт маску AND
     private ID3D11PixelShader? _psXor;      // выдаёт маску XOR
     private ID3D11PixelShader? _psColor;    // выдаёт цвет с прозрачностью
+    /// <summary>Готов ли курсор рисоваться. false — шейдер не собрался, наложения не будет.</summary>
+    public bool IsReady => _ready;
+
     private ID3D11SamplerState? _sampler;
     private ID3D11BlendState? _blendAnd;
     private ID3D11BlendState? _blendXor;
@@ -286,12 +289,20 @@ internal sealed class CursorOverlay : IDisposable
 
     // ---------------- Шейдеры и смешивание ----------------
 
+    // ВНИМАНИЕ: в тексте шейдера только латиница и никаких комментариев по-русски.
+    // Кириллица в UTF-8 занимает два байта на букву, и компилятор получал буфер
+    // короче, чем текст: на Windows 10 у друга сборка обрывалась на 26-й строке с
+    // «unexpected end of file», хотя на машине разработчика всё компилировалось.
+    // Пояснения к шейдеру — здесь, в коде:
+    //   PsAnd   — выдаёт маску AND (синий канал текстуры формы)
+    //   PsXor   — выдаёт маску XOR (зелёный; для маскированного цветного там же цвет)
+    //   PsColor — обычный цветной курсор с прозрачностью
     private const string ShaderSource = """
         struct VsOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 
         VsOut VsMain(uint id : SV_VertexID)
         {
-            float2 corner = float2(id & 1, id >> 1);   // 0,0  1,0  0,1  1,1
+            float2 corner = float2(id & 1, id >> 1);
             VsOut o;
             o.pos = float4(corner.x * 2 - 1, 1 - corner.y * 2, 0, 1);
             o.uv  = corner;
@@ -301,17 +312,15 @@ internal sealed class CursorOverlay : IDisposable
         Texture2D Shape : register(t0);
         SamplerState Point : register(s0);
 
-        // Маска AND: единица там, где фон остаётся
         float4 PsAnd(VsOut i) : SV_Target
         {
             float a = Shape.Sample(Point, i.uv).b;
             return float4(a, a, a, 1);
         }
 
-        // Маска XOR: единица там, где фон инвертируется
         float4 PsXor(VsOut i) : SV_Target
         {
-            float3 x = Shape.Sample(Point, i.uv).gra;   // G,R,A — цвет для маскированного
+            float3 x = Shape.Sample(Point, i.uv).gra;
             return float4(x, 1);
         }
 
@@ -319,6 +328,7 @@ internal sealed class CursorOverlay : IDisposable
         {
             return Shape.Sample(Point, i.uv);
         }
+
         """;
 
     private bool TryBuildPipeline()
