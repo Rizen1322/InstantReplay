@@ -62,7 +62,7 @@ public static class ScreenCaptureFactory
             return new ScreenCaptureSource();
         }
 
-        Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет, курсора тоже)");
+        Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");
         return new DesktopDuplicationSource();
     }
 

@@ -29,6 +29,8 @@
     <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <!-- Компиляция шейдера, который дорисовывает курсор в кадр Desktop Duplication -->
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.6.2" />
     <!-- WASAPI-захват и ресемплинг -->
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="NAudio.Core" Version="2.2.1" />
