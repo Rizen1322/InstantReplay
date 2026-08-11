@@ -193,3 +193,6 @@ dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 3. **Оверлей поверх exclusive fullscreen** ОС не рисует в принципе (ShadowPlay делает это через собственный in-game hook). В borderless/windowed — работает везде; сама **запись** работает в любом режиме, включая exclusive fullscreen.
 4. **Смешанные частоты дискретизации**: микшер приводит всё к 48 кГц stereo float (WDL-ресемплер NAudio).
 5. Все настройки — `%LocalAppData%\InstantReplay\settings.json`, логи — там же в `logs\`.
+
+
+SIGN BY GEDAYO
