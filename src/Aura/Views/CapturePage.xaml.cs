@@ -56,29 +56,11 @@ public partial class CapturePage : PageBase
 
         BuildPresets();
         BuildLengths();
-        ShowCursorSupport();
+        // Курсор пишется на любой версии Windows: на «десятке» кадры берутся через
+        // Desktop Duplication, и раньше переключатель там был неактивен с подписью
+        // «не работает» — теперь приложение дорисовывает курсор само.
         _levels.Tick += (_, _) => ShowLevels();
         Loaded += (_, _) => LoadFromSettings();
-    }
-
-    /// <summary>
-    /// Курсор в записи есть только на Windows 11.
-    ///
-    /// На «десятке» кадры берутся через Desktop Duplication (WGC там рисует жёлтую
-    /// рамку вокруг экрана, и убрать её нечем), а Desktop Duplication аппаратный
-    /// курсор в кадр не кладёт — его пришлось бы дорисовывать самим. Переключатель
-    /// оставляем: настройка запомнится и заработает после перехода на Windows 11.
-    /// </summary>
-    private static bool CursorSupported => ScreenCaptureFactory.UsesWgc;
-
-    private void ShowCursorSupport()
-    {
-        if (CursorSupported) return;
-        CursorWarnRow.Visibility = Visibility.Visible;
-        CursorSub.Text = "На Windows 10 не работает";
-        // Не просто серый, а именно неактивный: щёлкать по переключателю, который
-        // ни на что не влияет, человек не должен.
-        CursorSwitch.IsEnabled = false;
     }
 
     public override void OnShown()
