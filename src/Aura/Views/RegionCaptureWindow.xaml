@@ -105,6 +105,14 @@
                     <Button x:Name="UndoBtn" Style="{StaticResource ActionButton}" ToolTip="Убрать последнее (Ctrl+Z)">
                         <c:Icon Data="{DynamicResource Ico.Undo}" Size="17"/>
                     </Button>
+                    <!-- Та же стрелка зеркально: отдельной иконки «вернуть» в наборе нет -->
+                    <Button x:Name="RedoBtn" Style="{StaticResource ActionButton}" ToolTip="Вернуть отменённое (Ctrl+I)">
+                        <c:Icon Data="{DynamicResource Ico.Undo}" Size="17">
+                            <c:Icon.LayoutTransform>
+                                <ScaleTransform ScaleX="-1"/>
+                            </c:Icon.LayoutTransform>
+                        </c:Icon>
+                    </Button>
 
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
                     <Button x:Name="CopyBtn" Style="{StaticResource ActionButton}" ToolTip="В буфер обмена (Ctrl+C)">

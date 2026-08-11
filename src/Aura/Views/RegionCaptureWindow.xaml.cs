@@ -53,6 +53,9 @@ public partial class RegionCaptureWindow : Window
 
     private InkTool _tool = InkTool.None;
     private Color _color = Palette[0].Color;
+
+    /// <summary>Отменённые фигуры: Ctrl+I возвращает их обратно, пока не нарисовано новое.</summary>
+    private readonly Stack<InkShape> _undone = new();
     private Rect _selection;
     private bool _hasSelection, _selecting, _drawing, _resizing, _moving;
     private Grip _grip;
@@ -73,6 +76,7 @@ public partial class RegionCaptureWindow : Window
         ArrowBtn.Click += (_, _) => SetTool(InkTool.Arrow);
         RectBtn.Click += (_, _) => SetTool(InkTool.Rect);
         UndoBtn.Click += (_, _) => Undo();
+        RedoBtn.Click += (_, _) => Redo();
         CopyBtn.Click += (_, _) => Finish(copy: true, save: false);
         SaveBtn.Click += (_, _) => Finish(copy: false, save: true);
         CloseBtn.Click += (_, _) => Close();
@@ -262,6 +266,8 @@ public partial class RegionCaptureWindow : Window
             {
                 Ink.Shapes.Add(shape);
                 Ink.Current = null;
+                // История линейная: после новой фигуры возвращать нечего
+                _undone.Clear();
                 Ink.Refresh();
             }
             return;
@@ -301,6 +307,7 @@ public partial class RegionCaptureWindow : Window
         Ink.ShowHandles = false;
         Ink.Shapes.Clear();
         Ink.Current = null;
+        _undone.Clear();
         Ink.Refresh();
         UpdateDim();
         Toolbar.Visibility = Visibility.Collapsed;
@@ -392,6 +399,7 @@ public partial class RegionCaptureWindow : Window
             case Key.Escape: Close(); break;
             case Key.Enter: if (_hasSelection) Finish(copy: false, save: true); break;
             case Key.Z when ctrl: Undo(); break;
+            case Key.I when ctrl: Redo(); break;
             case Key.C when ctrl: if (_hasSelection) Finish(copy: true, save: false); break;
             case Key.S when ctrl: if (_hasSelection) Finish(copy: false, save: true); break;
         }
@@ -411,7 +419,16 @@ public partial class RegionCaptureWindow : Window
     private void Undo()
     {
         if (Ink.Shapes.Count == 0) return;
+        _undone.Push(Ink.Shapes[^1]);
         Ink.Shapes.RemoveAt(Ink.Shapes.Count - 1);
+        Ink.Refresh();
+    }
+
+    /// <summary>Вернуть отменённое. Ветка истории одна: нарисовал новое — возвращать больше нечего.</summary>
+    private void Redo()
+    {
+        if (_undone.Count == 0) return;
+        Ink.Shapes.Add(_undone.Pop());
         Ink.Refresh();
     }
 

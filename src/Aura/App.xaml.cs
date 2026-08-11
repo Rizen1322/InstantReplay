@@ -370,7 +370,6 @@ public partial class App : Application
         var s = Services.Settings.Current;
         var current = Core.SystemIntegration.UpdateService.CurrentVersion;
         var last = Core.SystemIntegration.Changelog.Parse(s.LastSeenVersion);
-        Log.Info("App", $"Список изменений: было {s.LastSeenVersion ?? "—"}, стало {current}, окно {(_main?.IsVisible == true ? "видно" : "скрыто")}");
 
         if (last is null)
         {
@@ -399,6 +398,7 @@ public partial class App : Application
 
     private static void PresentChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries, Version current)
     {
+        Log.Info("App", $"Показываю список изменений до версии {current}");
         try { Views.Dialogs.ShowChangelog(entries); }
         catch (Exception ex) { Log.Warn("App", $"Список изменений: {ex.Message}"); }
 
