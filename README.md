@@ -195,4 +195,4 @@ dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 5. Все настройки — `%LocalAppData%\InstantReplay\settings.json`, логи — там же в `logs\`.
 
 
-SIGN BY GEDAYO
+SIGNED BY GEDAYO
