@@ -170,6 +170,37 @@ public partial class ClipsPage : PageBase
         _ = Task.Run(() => ClipThumbnails.PruneOrphans(snapshot));
     }
 
+    /// <summary>
+    /// Состав списка словами: «158 записей» ничего не говорило о том, что половина
+    /// из них — скриншоты. На вкладке «Всё» показываем оба числа, на «Клипах» и
+    /// «Скриншотах» остаётся только своё — считаем по факту, а не по выбранной вкладке.
+    /// </summary>
+    private static string Describe(List<ClipItem> items)
+    {
+        int videos = items.Count(i => !i.IsScreenshot);
+        int shots = items.Count - videos;
+
+        // «видео» не склоняется, поэтому число к нему приписывается как есть
+        string video = $"{videos} видео";
+        string shot = Plural(shots, "скриншот", "скриншота", "скриншотов");
+
+        if (videos > 0 && shots > 0) return $"{video} и {shot}";
+        return videos > 0 ? video : shot;
+    }
+
+    /// <summary>Русское склонение после числа: 1 скриншот, 2 скриншота, 5 скриншотов.</summary>
+    private static string Plural(int count, string one, string few, string many)
+    {
+        int hundred = count % 100, ten = count % 10;
+        if (hundred is >= 11 and <= 14) return $"{count} {many}";
+        return ten switch
+        {
+            1 => $"{count} {one}",
+            2 or 3 or 4 => $"{count} {few}",
+            _ => $"{count} {many}"
+        };
+    }
+
     private void FillGameFilter()
     {
         string? previous = (GameFilter.SelectedItem as ComboBoxItem)?.Content?.ToString();
@@ -195,7 +226,7 @@ public partial class ClipsPage : PageBase
         long bytes = items.Sum(i => i.SizeBytes);
         Summary.Text = items.Count == 0
             ? "Пока ничего не сохранено."
-            : $"{items.Count} записей, {ByteSize.Format(bytes)}.";
+            : $"{Describe(items)}, {ByteSize.Format(bytes)}.";
 
         EmptyState.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (items.Count == 0)

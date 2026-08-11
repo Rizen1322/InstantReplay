@@ -112,6 +112,12 @@ public sealed class ClipItem : INotifyPropertyChanged
     public Visibility DurationVisibility =>
         DurationText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
+    /// <summary>Кружок Play при наведении — только у видео: у картинки играть нечего.</summary>
+    public Visibility PlayVisibility => IsScreenshot ? Visibility.Collapsed : Visibility.Visible;
+
+    /// <summary>Пункты меню, которые есть только у скриншотов (копирование картинки).</summary>
+    public Visibility ScreenshotVisibility => IsScreenshot ? Visibility.Visible : Visibility.Collapsed;
+
     /// <summary>Плашка «новое» у свежих записей — сразу видно, что только что сохранилось.</summary>
     private bool _isNew;
     public bool IsNew

@@ -466,7 +466,7 @@ public partial class RegionCaptureWindow : Window
         {
             var image = RenderSelection();
 
-            if (copy && !CopyToClipboard(image))
+            if (copy && !ImageClipboard.Copy(image))
             {
                 Failed?.Invoke(new InvalidOperationException("буфер обмена занят другой программой"));
                 Close();
@@ -496,48 +496,6 @@ public partial class RegionCaptureWindow : Window
             Failed?.Invoke(ex);
         }
         Close();
-    }
-
-    /// <summary>
-    /// Снимок в буфер обмена. Одного Clipboard.SetImage оказалось мало — он «проходил»
-    /// без ошибки, а вставлять было нечего:
-    ///
-    /// • WPF кладёт единственный формат Bitmap, а браузеры, мессенджеры и графические
-    ///   редакторы читают из буфера PNG или DIB — кладём все три сразу;
-    /// • альфа-канал в DIB часть программ понимает как полную прозрачность, поэтому
-    ///   картинка переводится в формат без альфы;
-    /// • буфер — общий ресурс: пока его держит открытым другой процесс, запись падает
-    ///   с CLIPBRD_E_CANT_OPEN, и единственное лекарство — повторить.
-    /// </summary>
-    private static bool CopyToClipboard(BitmapSource image)
-    {
-        var opaque = new FormatConvertedBitmap(image, PixelFormats.Bgr32, null, 0);
-        opaque.Freeze();
-
-        var png = new MemoryStream();
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(image));
-        encoder.Save(png);
-
-        var data = new DataObject();
-        data.SetImage(opaque);                        // CF_BITMAP и CF_DIB
-        data.SetData("PNG", png, autoConvert: false); // то, что берут браузеры и мессенджеры
-
-        for (int attempt = 1; attempt <= 6; attempt++)
-        {
-            try
-            {
-                // copy: true — данные остаются в буфере после закрытия оверлея
-                Clipboard.SetDataObject(data, copy: true);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("Screenshot", $"Буфер обмена занят (попытка {attempt}): {ex.Message}");
-                Thread.Sleep(70);
-            }
-        }
-        return false;
     }
 
     /// <summary>Файл (null — только буфер) и признак копирования. Уведомления показывает App.</summary>

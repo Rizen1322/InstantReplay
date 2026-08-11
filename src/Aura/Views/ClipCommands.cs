@@ -20,7 +20,8 @@ public static class ClipCommands
     // серыми и не нажимались. Здесь выполнение не зависит ни от фокуса, ни от дерева.
     public static ICommand Open { get; } = new ClipAction(item => OpenFile(item.FullPath));
     public static ICommand Reveal { get; } = new ClipAction(item => RevealFile(item.FullPath));
-    public static ICommand CopyPath { get; } = new ClipAction(item => CopyToClipboard(item.FullPath));
+    /// <summary>Копировать сам снимок в буфер обмена. Есть только у скриншотов.</summary>
+    public static ICommand CopyImage { get; } = new ClipAction(CopyImageToClipboard, item => item.IsScreenshot);
     public static ICommand Rename { get; } = new ClipAction(RenameAsync);
     public static ICommand Delete { get; } = new ClipAction(DeleteAsync);
 
@@ -119,10 +120,19 @@ public static class ClipCommands
         catch (Exception ex) { Log.Warn("Library", $"explorer.exe {args}: {ex.Message}"); }
     }
 
-    private static void CopyToClipboard(string text)
+    /// <summary>
+    /// Скриншот в буфер обмена. Раньше здесь копировался путь строкой — вставить
+    /// картинку из «Клипов» было нельзя, приходилось открывать файл и копировать
+    /// оттуда.
+    /// </summary>
+    private static void CopyImageToClipboard(ClipItem item)
     {
-        try { Clipboard.SetText(text); }
-        catch (Exception ex) { Log.Warn("Library", $"Копирование пути: {ex.Message}"); }
+        if (ImageClipboard.CopyFile(item.FullPath))
+            Services.Notifications.Show(Core.Notifications.NotificationKind.Screenshot,
+                "Скриншот скопирован");
+        else
+            Services.Notifications.Show(Core.Notifications.NotificationKind.Warning,
+                "Не удалось скопировать", "буфер обмена занят другой программой");
     }
 
     private static async void RenameAsync(ClipItem item)
