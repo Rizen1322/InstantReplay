@@ -209,12 +209,15 @@
         <Setter Property="Background" Value="{DynamicResource Card2Brush}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource HairBrush}"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
-        <!-- Нейтральной кнопке под курсором идёт нейтральная подсветка; у цветных
-             стилей своя, иначе они теряют заливку вместе с читаемостью подписи. -->
-        <Setter Property="c:Deco.HoverBrush" Value="{DynamicResource PressBrush}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
+                    <!-- Прозрачная подложка обязательна: Border с пустым фоном мышь не
+                         ловит вовсе. Стоило кисти наведения не разрешиться — курсор
+                         «проваливался» сквозь кнопку, IsMouseOver сбрасывался, фон
+                         возвращался, и кнопка мигала с частотой перерисовки. Над
+                         подписью мигания не было: текст мышь ловит сам. -->
+                    <Border Background="Transparent">
                     <Border x:Name="B" Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
                             CornerRadius="10" Padding="{TemplateBinding Padding}"
@@ -246,6 +249,7 @@
                             </ContentPresenter>
                         </StackPanel>
                     </Border>
+                    </Border>
                     <ControlTemplate.Triggers>
                         <!-- Кнопка без подписи (только иконка) — отступ справа не нужен -->
                         <Trigger Property="Content" Value="{x:Null}">
@@ -253,10 +257,6 @@
                         </Trigger>
                         <Trigger Property="Content" Value="">
                             <Setter TargetName="Lead" Property="Margin" Value="0"/>
-                        </Trigger>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="B" Property="Background"
-                                    Value="{Binding (c:Deco.HoverBrush), RelativeSource={RelativeSource TemplatedParent}}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Trigger.EnterActions>
@@ -284,6 +284,14 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <!-- Подсветка задаётся свойством самой кнопки, а не подменой фона внутри
+             шаблона: так цветные стили переопределяют её своим значением, а не
+             получают один нейтральный фон на всех. -->
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource PressBrush}"/>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <!-- Главное действие -->
@@ -294,7 +302,11 @@
         <Setter Property="FontWeight" Value="SemiBold"/>
         <!-- Под курсором акцент только притемняется: подпись у этой кнопки тёмная и
              на нейтральном фоне читаться перестаёт. -->
-        <Setter Property="c:Deco.HoverBrush" Value="{DynamicResource AccentHoverBrush}"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource AccentHoverBrush}"/>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <!-- Ссылка-кнопка -->
