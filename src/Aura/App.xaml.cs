@@ -130,6 +130,7 @@ public partial class App : Application
         ApplyThemeIcons(theme);
 
         if (!minimized) _main.Show();
+        ShowChangelogIfUpdated();
 
         if (Services.Settings.Current.AutoStartReplayBuffer) SafeStartEngine();
         if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
@@ -351,6 +352,60 @@ public partial class App : Application
                 ApplyTheme(Services.Settings.Current.Theme);
             }
         };
+    }
+
+    /// <summary>
+    /// «Что нового» после обновления.
+    ///
+    /// Показывается один раз на версию и только тем, кто обновился: при первой в
+    /// жизни установке в настройках ещё нет прошлой версии, и список изменений там
+    /// был бы разговором ни о чём.
+    ///
+    /// Если приложение стартовало свёрнутым в трей (автозапуск вместе с Windows —
+    /// обычно прямо в игру), диалог не всплывает поверх экрана: отметка о показе не
+    /// ставится, и список дождётся момента, когда человек сам откроет окно.
+    /// </summary>
+    private void ShowChangelogIfUpdated()
+    {
+        var s = Services.Settings.Current;
+        var current = Core.SystemIntegration.UpdateService.CurrentVersion;
+        var last = Core.SystemIntegration.Changelog.Parse(s.LastSeenVersion);
+        Log.Info("App", $"Список изменений: было {s.LastSeenVersion ?? "—"}, стало {current}, окно {(_main?.IsVisible == true ? "видно" : "скрыто")}");
+
+        if (last is null)
+        {
+            s.LastSeenVersion = current.ToString(3);
+            Services.Settings.Save("app");
+            return;
+        }
+        if (last >= current) return;
+
+        var entries = Core.SystemIntegration.Changelog.Between(last, current);
+        if (entries.Count == 0)
+        {
+            s.LastSeenVersion = current.ToString(3);
+            Services.Settings.Save("app");
+            return;
+        }
+
+        // Окна нет — ничего не отмечаем и ждём: проверку повторит ShowMainWindow,
+        // когда человек откроет приложение. Подписываться на события этого окна
+        // бесполезно: показ спрятанного окна пересоздаёт его заново (см. IsClosed),
+        // и обработчик остался бы на выброшенном экземпляре.
+        if (_main is null || !_main.IsVisible) return;
+
+        Services.Ui.Enqueue(() => PresentChangelog(entries, current));
+    }
+
+    private static void PresentChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries, Version current)
+    {
+        try { Views.Dialogs.ShowChangelog(entries); }
+        catch (Exception ex) { Log.Warn("App", $"Список изменений: {ex.Message}"); }
+
+        // Отметку ставим после показа: если диалог не открылся, человек не должен
+        // потерять список из-за нашей ошибки.
+        Services.Settings.Current.LastSeenVersion = current.ToString(3);
+        Services.Settings.Save("app");
     }
 
     /// <summary>
@@ -592,6 +647,10 @@ public partial class App : Application
             Core.Interop.NativeMethods.SetForegroundWindow(hwnd);
         }
         catch { }
+
+        // Запуск свёрнутым в трей — обычное дело (автозапуск вместе с Windows), и
+        // «что нового» ждёт здесь: показывать список поверх игры незачем.
+        ShowChangelogIfUpdated();
     });
 
     /// <summary>Закрыто ли окно: у WPF нет публичного признака, спрашиваем по-другому.</summary>

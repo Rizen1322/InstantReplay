@@ -88,6 +88,12 @@ public sealed class AppSettings
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Aura");
 
     /// <summary>
+    /// Версия, для которой человек уже видел список изменений. Пусто — приложение
+    /// поставили впервые: «что нового» после первой установки показывать незачем.
+    /// </summary>
+    public string? LastSeenVersion { get; set; }
+
+    /// <summary>
     /// Показывали ли уже страницу разрешения на захват без рамки. Спрашиваем один
     /// раз: если человек осознанно отказал, открывать «Параметры» при каждом запуске —
     /// не забота, а навязчивость.
