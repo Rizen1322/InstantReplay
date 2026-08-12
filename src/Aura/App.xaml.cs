@@ -306,7 +306,7 @@ public partial class App : Application
         engine.ReplaySaved += (file, seconds) =>
         {
             n.CompleteSaving("Повтор сохранён", $"{Loc.Duration(seconds)} · {Describe(file)}");
-            Views.ClipCommands.NotifyLibraryChanged();
+            Views.ClipCommands.NotifyClipAdded(file);
         };
         engine.SaveFailed += msg => n.Show(NotificationKind.Warning, "Не удалось сохранить", msg);
         engine.Warning += msg => n.Show(NotificationKind.Warning, msg);
@@ -315,7 +315,7 @@ public partial class App : Application
         engine.RecordingSaved += (file, seconds) =>
         {
             n.Show(NotificationKind.Saved, "Запись сохранена", $"{Loc.Duration(seconds)} · {Describe(file)}");
-            Views.ClipCommands.NotifyLibraryChanged();
+            Views.ClipCommands.NotifyClipAdded(file);
         };
 
         Services.Hotkeys.HotkeyPressed += action => Services.Ui.Enqueue(() =>
@@ -335,10 +335,13 @@ public partial class App : Application
 
         // Итог работы оверлея выделения: уведомления показывает приложение, а не окно —
         // оно к моменту показа уже закрыто.
-        Views.RegionCaptureWindow.Saved += (file, copied) =>
+        Views.RegionCaptureWindow.Saved += (file, copied) => Services.Ui.Enqueue(() =>
+        {
             n.Show(NotificationKind.Screenshot,
                 file is null ? "Скриншот в буфере обмена" : "Скриншот сохранён",
                 file is null ? null : (copied ? "и скопирован" : Describe(file)));
+            if (file is not null) Views.ClipCommands.NotifyClipAdded(file);
+        });
         Views.RegionCaptureWindow.Failed += ex =>
             n.Show(NotificationKind.Warning, "Не удалось сделать скриншот", ex.Message);
 
@@ -500,6 +503,7 @@ public partial class App : Application
             await Task.Run(() => Core.Capture.ScreenshotService.CaptureAsync(
                 monitor, file, s.RecordCursor, live));
             Services.Notifications.Show(NotificationKind.Screenshot, "Скриншот сохранён", Describe(file));
+            Services.Ui.Enqueue(() => Views.ClipCommands.NotifyClipAdded(file));
         }
         catch (Exception ex)
         {

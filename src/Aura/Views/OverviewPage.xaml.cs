@@ -37,6 +37,9 @@ public partial class OverviewPage : PageBase
         _tick.Tick += (_, _) => Refresh();
         Services.Storage.StatsChanged += stats => Dispatcher.BeginInvoke(() => ShowStats(stats));
         ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = LoadRecentAsync());
+        // Один новый файл — тоже повод обновить «последние записи», но здесь список
+        // всего из четырёх карточек, и перечитать его дешевле, чем городить вставку.
+        ClipCommands.ClipAdded += path => Dispatcher.BeginInvoke(() => { _ = path; _ = LoadRecentAsync(); });
 
         SizeChanged += (_, _) =>
         {

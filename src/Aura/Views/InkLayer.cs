@@ -4,17 +4,20 @@ using System.Windows.Media;
 namespace Aura.Views;
 
 /// <summary>Чем рисуют поверх выделенной области.</summary>
-public enum InkTool { None, Pencil, Arrow, Rect }
+public enum InkTool { None, Pencil, Arrow, Rect, Blur, Text }
 
-/// <summary>Одна фигура: карандашный след, стрелка или прямоугольник.</summary>
+/// <summary>Одна фигура: след карандаша, стрелка, прямоугольник, размытие или подпись.</summary>
 public sealed class InkShape
 {
     public InkTool Tool { get; init; }
     public List<Point> Points { get; } = [];   // карандаш
-    public Point Start { get; set; }           // стрелка и прямоугольник
+    public Point Start { get; set; }           // стрелка, прямоугольник, размытие, подпись
     public Point End { get; set; }
     public Color Color { get; init; }
     public double Thickness { get; init; } = 2.5;
+
+    /// <summary>Текст подписи. Пустая подпись при завершении ввода не сохраняется.</summary>
+    public string Text { get; set; } = "";
 }
 
 /// <summary>
@@ -34,6 +37,14 @@ public sealed class InkLayer : FrameworkElement
     public List<InkShape> Shapes { get; } = [];
     public InkShape? Current { get; set; }
     public Rect? Selection { get; set; }
+
+    /// <summary>
+    /// Размытая копия всего снимка в координатах окна. Размытие рисуется не фильтром
+    /// поверх кадра, а куском этой копии: тогда экспорт в файл идёт тем же кодом, что
+    /// и показ на экране, и сохранённое совпадает с увиденным. Готовится один раз при
+    /// первом обращении к инструменту (см. RegionCaptureWindow.EnsureBlurred).
+    /// </summary>
+    public ImageSource? Blurred { get; set; }
 
     /// <summary>Показывать ручки изменения размера — только когда выделение готово.</summary>
     public bool ShowHandles { get; set; }
@@ -89,10 +100,34 @@ public sealed class InkLayer : FrameworkElement
         if (Current is not null) Draw(dc, Current);
     }
 
-    private static void Draw(DrawingContext dc, InkShape shape)
+    /// <summary>Есть ли хоть одно размытие — по этому признаку готовится размытая копия.</summary>
+    public bool NeedsBlurred => Shapes.Any(s => s.Tool == InkTool.Blur) || Current?.Tool == InkTool.Blur;
+
+    private void Draw(DrawingContext dc, InkShape shape)
     {
         var brush = new SolidColorBrush(shape.Color);
         brush.Freeze();
+
+        if (shape.Tool == InkTool.Blur)
+        {
+            var area = new Rect(shape.Start, shape.End);
+            if (area.Width <= 0 || area.Height <= 0) return;
+            if (Blurred is null) return;
+
+            // Кусок размытой копии ровно на своём месте: рисуем всю копию, обрезав
+            // её прямоугольником — тогда координаты совпадают с кадром сами собой.
+            dc.PushClip(new RectangleGeometry(area));
+            dc.DrawImage(Blurred, new Rect(0, 0, Blurred.Width, Blurred.Height));
+            dc.Pop();
+            return;
+        }
+
+        if (shape.Tool == InkTool.Text)
+        {
+            if (shape.Text.Length == 0) return;
+            dc.DrawText(Caption(shape, brush), shape.Start);
+            return;
+        }
         var pen = new Pen(brush, shape.Thickness) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
         pen.Freeze();
 
@@ -121,6 +156,19 @@ public sealed class InkLayer : FrameworkElement
                 break;
         }
     }
+
+    /// <summary>
+    /// Подпись. Размер кегля привязан к выбранной толщине линии: человек уже выбрал
+    /// «тонко/средне/толсто», и отдельная настройка размера текста была бы лишней.
+    /// </summary>
+    public static FormattedText Caption(InkShape shape, Brush brush) =>
+        new(shape.Text, System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal),
+            CaptionSize(shape.Thickness), brush, 96)
+        { TextAlignment = TextAlignment.Left };
+
+    /// <summary>Кегль подписи по толщине линии: 2,5 → 18, 5 → 26, 9 → 38.</summary>
+    public static double CaptionSize(double thickness) => 12 + thickness * 2.6;
 
     /// <summary>Наконечник стрелки — залитый треугольник, чтобы был виден на пёстром фоне.</summary>
     private static void DrawHead(DrawingContext dc, Brush brush, InkShape shape)

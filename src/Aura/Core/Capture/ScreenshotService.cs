@@ -34,7 +34,7 @@ public static class ScreenshotService
     /// сохранить. Порядок источников тот же, что и у обычного скриншота.
     /// </summary>
     public static async Task<(byte[] Bgra, int W, int H)> CapturePixelsAsync(
-        int monitorIndex, bool cursor, LiveFrameProvider? live = null)
+        int monitorIndex, bool cursor, LiveFrameProvider? live = null, byte[]? into = null)
     {
         (byte[] Bgra, int W, int H)? shot = null;
 
@@ -43,7 +43,7 @@ public static class ScreenshotService
         {
             try
             {
-                live((device, context, texture) => shot = ReadPixels(device, context, texture));
+                live((device, context, texture) => shot = ReadPixels(device, context, texture, into));
                 if (shot is not null) Log.Info("Screenshot", "Кадр взят у работающего буфера");
             }
             catch (Exception ex)
@@ -141,9 +141,15 @@ public static class ScreenshotService
         return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
     }
 
-    /// <summary>Считать пиксели текстуры в RAM через staging-копию.</summary>
+    /// <summary>
+    /// Считать пиксели текстуры в RAM через staging-копию.
+    ///
+    /// <paramref name="into"/> — готовый буфер, если он есть и достаточного размера.
+    /// Кадр 2560×1440 это 14 МБ, и выделять их заново на каждый снимок незачем:
+    /// оверлей выделения держит свой буфер между вызовами.
+    /// </summary>
     public static (byte[] Bgra, int W, int H) ReadPixels(
-        ID3D11Device device, ID3D11DeviceContext context, ID3D11Texture2D texture)
+        ID3D11Device device, ID3D11DeviceContext context, ID3D11Texture2D texture, byte[]? into = null)
     {
         var desc = texture.Description;
         using var staging = device.CreateTexture2D(desc with
@@ -159,7 +165,8 @@ public static class ScreenshotService
         try
         {
             int w = (int)desc.Width, h = (int)desc.Height;
-            var bytes = new byte[w * h * 4];
+            int size = w * h * 4;
+            var bytes = into is not null && into.Length >= size ? into : new byte[size];
             unsafe
             {
                 byte* src = (byte*)mapped.DataPointer;

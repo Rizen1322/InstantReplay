@@ -46,6 +46,7 @@ public partial class RegionCaptureWindow : Window
     ];
 
     private static RegionCaptureWindow? _open;
+    private static byte[]? _pixels;
 
     private readonly BitmapSource _shot;
     private readonly int _monitorX, _monitorY, _pixelWidth, _pixelHeight;
@@ -53,6 +54,14 @@ public partial class RegionCaptureWindow : Window
 
     private InkTool _tool = InkTool.None;
     private Color _color = Palette[0].Color;
+
+    /// <summary>Толщина линии: тонко / средне / толсто. От неё же считается кегль подписи.</summary>
+    private static readonly double[] Thicknesses = [2.5, 5, 9];
+    private int _thickness;
+
+    /// <summary>Поле ввода подписи, пока она набирается.</summary>
+    private TextBox? _caption;
+    private Point _captionAt;
 
     /// <summary>Отменённые фигуры: Ctrl+Y возвращает их обратно, пока не нарисовано новое.</summary>
     private readonly Stack<InkShape> _undone = new();
@@ -71,10 +80,15 @@ public partial class RegionCaptureWindow : Window
 
         Shot.Source = shot;
         BuildSwatches();
+        ThicknessDot.Width = ThicknessDot.Height = 5 + Thicknesses[_thickness];
+        ThicknessBtn.ToolTip = $"Толщина линии: {Thicknesses[_thickness]:0.#} px";
 
         PencilBtn.Click += (_, _) => SetTool(InkTool.Pencil);
         ArrowBtn.Click += (_, _) => SetTool(InkTool.Arrow);
         RectBtn.Click += (_, _) => SetTool(InkTool.Rect);
+        BlurBtn.Click += (_, _) => SetTool(InkTool.Blur);
+        TextBtn.Click += (_, _) => SetTool(InkTool.Text);
+        ThicknessBtn.Click += (_, _) => CycleThickness();
         UndoBtn.Click += (_, _) => Undo();
         RedoBtn.Click += (_, _) => Redo();
         CopyBtn.Click += (_, _) => Finish(copy: true, save: false);
@@ -102,7 +116,11 @@ public partial class RegionCaptureWindow : Window
     {
         if (_open is not null) { _open.Activate(); return; }
 
-        var (bgra, width, height) = await ScreenshotService.CapturePixelsAsync(monitorIndex, cursor, live);
+        // Буфер кадра переживает закрытие оверлея: 14 МБ на 2560×1440, и выделять их
+        // заново на каждое нажатие клавиши незачем. Оверлей всегда один (см. _open),
+        // так что делить буфер не с кем.
+        var (bgra, width, height) = await ScreenshotService.CapturePixelsAsync(monitorIndex, cursor, live, _pixels);
+        _pixels = bgra;
 
         // Bgr32, а не Bgra32: альфа в кадре захвата недостоверна (рабочий стол отдаёт
         // её нулями), и картинка становится прозрачной. Обычный скриншот по той же
@@ -178,6 +196,9 @@ public partial class RegionCaptureWindow : Window
         // сами кнопки событие гасят, а вот отступы вокруг них — нет.
         if (e.OriginalSource is DependencyObject source && Toolbar.IsAncestorOf(source)) return;
 
+        // Клик мимо набираемой подписи её завершает — как в любом редакторе
+        if (_caption is not null && !ReferenceEquals(e.OriginalSource, _caption)) CommitCaption();
+
         var point = e.GetPosition(Root);
 
         if (_hasSelection)
@@ -195,10 +216,24 @@ public partial class RegionCaptureWindow : Window
                 return;
             }
 
+            if (grip == Grip.Inside && _tool == InkTool.Text)
+            {
+                StartCaption(point);
+                return;
+            }
+
             if (grip == Grip.Inside && _tool != InkTool.None)
             {
+                CommitCaption();
                 _drawing = true;
-                var shape = new InkShape { Tool = _tool, Color = _color, Start = point, End = point };
+                var shape = new InkShape
+                {
+                    Tool = _tool,
+                    Color = _color,
+                    Thickness = Thicknesses[_thickness],
+                    Start = point,
+                    End = point
+                };
                 if (_tool == InkTool.Pencil) shape.Points.Add(point);
                 Ink.Current = shape;
                 CaptureMouse();
@@ -391,6 +426,20 @@ public partial class RegionCaptureWindow : Window
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+
+        // Пока набирается подпись, клавиши принадлежат ей: Esc отменяет ввод,
+        // Enter заканчивает, всё остальное — обычный набор текста.
+        if (_caption is not null)
+        {
+            if (e.Key == Key.Escape) { CancelCaption(); e.Handled = true; }
+            else if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+            {
+                CommitCaption();
+                e.Handled = true;
+            }
+            return;
+        }
+
         switch (e.Key)
         {
             // Esc закрывает сразу. Двухступенчатый выход (сначала снять выделение,
@@ -409,11 +458,136 @@ public partial class RegionCaptureWindow : Window
 
     private void SetTool(InkTool tool)
     {
+        CommitCaption();
         _tool = _tool == tool ? InkTool.None : tool;
+
         PencilBtn.IsChecked = _tool == InkTool.Pencil;
         ArrowBtn.IsChecked = _tool == InkTool.Arrow;
         RectBtn.IsChecked = _tool == InkTool.Rect;
-        Cursor = _tool == InkTool.None ? Cursors.Arrow : Cursors.Pen;
+        BlurBtn.IsChecked = _tool == InkTool.Blur;
+        TextBtn.IsChecked = _tool == InkTool.Text;
+
+        // Размытая копия готовится один раз и только если её попросили: это полный
+        // проход по кадру, платить за него тем, кто размытием не пользуется, незачем.
+        if (_tool == InkTool.Blur) EnsureBlurred();
+
+        Cursor = _tool switch
+        {
+            InkTool.None => Cursors.Arrow,
+            InkTool.Text => Cursors.IBeam,
+            _ => Cursors.Pen
+        };
+    }
+
+    private void CycleThickness()
+    {
+        _thickness = (_thickness + 1) % Thicknesses.Length;
+        double value = Thicknesses[_thickness];
+        ThicknessDot.Width = ThicknessDot.Height = 5 + value;
+        ThicknessBtn.ToolTip = $"Толщина линии: {value:0.#} px";
+    }
+
+    /// <summary>
+    /// Размытая копия всего снимка. Делается через обычный эффект размытия WPF, а
+    /// дальше используется как картинка: инструмент рисует её кусок, и в файл попадает
+    /// ровно то же, что видно на экране. Разрешение сохраняем исходное — копия
+    /// готовится в пикселях кадра, а не окна.
+    /// </summary>
+    private void EnsureBlurred()
+    {
+        if (Ink.Blurred is not null) return;
+
+        try
+        {
+            double width = Root.ActualWidth, height = Root.ActualHeight;
+            if (width <= 0 || height <= 0) return;
+
+            double factor = _shot.PixelWidth / width;
+            var image = new Image
+            {
+                Source = _shot,
+                Width = width,
+                Height = height,
+                Effect = new System.Windows.Media.Effects.BlurEffect
+                {
+                    Radius = 16,
+                    KernelType = System.Windows.Media.Effects.KernelType.Gaussian,
+                    RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance
+                }
+            };
+            image.Measure(new Size(width, height));
+            image.Arrange(new Rect(0, 0, width, height));
+
+            var bitmap = new RenderTargetBitmap(
+                _shot.PixelWidth, _shot.PixelHeight, 96 * factor, 96 * factor, PixelFormats.Pbgra32);
+            bitmap.Render(image);
+            bitmap.Freeze();
+            Ink.Blurred = bitmap;
+        }
+        catch (Exception ex) { Log.Warn("Screenshot", $"Размытие недоступно: {ex.Message}"); }
+    }
+
+    // ---------------- Подпись ----------------
+
+    /// <summary>Поле ввода прямо на снимке: человек печатает там же, где появится текст.</summary>
+    private void StartCaption(Point at)
+    {
+        CommitCaption();
+        _captionAt = at;
+
+        var brush = new SolidColorBrush(_color);
+        brush.Freeze();
+        _caption = new TextBox
+        {
+            MinWidth = 60,
+            Background = System.Windows.Media.Brushes.Transparent,
+            Foreground = brush,
+            CaretBrush = brush,
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x88, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            FontFamily = new FontFamily("Segoe UI"),
+            FontWeight = FontWeights.SemiBold,
+            FontSize = InkLayer.CaptionSize(Thicknesses[_thickness]),
+            Padding = new Thickness(2, 0, 2, 0),
+            Cursor = Cursors.IBeam
+        };
+        // Поле стоит так, чтобы буквы оказались там же, где их нарисует экспорт
+        Canvas.SetLeft(_caption, at.X - 3);
+        Canvas.SetTop(_caption, at.Y - 2);
+        Layer.Children.Add(_caption);
+
+        _caption.Focus();
+        Keyboard.Focus(_caption);
+    }
+
+    /// <summary>Закончить ввод: пустую подпись выбрасываем, непустую превращаем в фигуру.</summary>
+    private void CommitCaption()
+    {
+        if (_caption is null) return;
+
+        string text = _caption.Text.Trim();
+        Layer.Children.Remove(_caption);
+        _caption = null;
+
+        if (text.Length == 0) return;
+
+        Ink.Shapes.Add(new InkShape
+        {
+            Tool = InkTool.Text,
+            Color = _color,
+            Thickness = Thicknesses[_thickness],
+            Start = _captionAt,
+            Text = text
+        });
+        _undone.Clear();
+        Ink.Refresh();
+    }
+
+    private void CancelCaption()
+    {
+        if (_caption is null) return;
+        Layer.Children.Remove(_caption);
+        _caption = null;
     }
 
     private void Undo()
@@ -477,11 +651,17 @@ public partial class RegionCaptureWindow : Window
 
     private void Finish(bool copy, bool save)
     {
+        // Недонабранная подпись должна попасть в снимок, а не пропасть по кнопке
+        CommitCaption();
         if (!_hasSelection) return;
 
         try
         {
+            // Кадр собираем здесь — он требует потока интерфейса, — а вот кодирование
+            // PNG и запись файла уводим в фон: на выделении в пол-4K это заметная
+            // пауза перед закрытием окна, и человек видит подвисший оверлей.
             var image = RenderSelection();
+            image.Freeze();
 
             if (copy && !ImageClipboard.Copy(image))
             {
@@ -490,22 +670,36 @@ public partial class RegionCaptureWindow : Window
                 return;
             }
 
-            string? file = null;
-            if (save)
+            if (!save)
             {
-                // Имя ищется по фактическому содержимому папки на каждый снимок
-                file = ScreenshotService.NextFilePath(_screenshotFolder);
-
-                var encoder = new PngBitmapEncoder();
-                encoder.Frames.Add(BitmapFrame.Create(image));
-                using var stream = File.Create(file);
-                encoder.Save(stream);
-
-                Log.Info("Screenshot", $"Область сохранена: {file} ({image.PixelWidth}x{image.PixelHeight})");
+                Log.Info("Screenshot", $"Область скопирована в буфер ({image.PixelWidth}x{image.PixelHeight})");
+                Saved?.Invoke(null, copy);
+                Close();
+                return;
             }
-            else Log.Info("Screenshot", $"Область скопирована в буфер ({image.PixelWidth}x{image.PixelHeight})");
 
-            Saved?.Invoke(file, copy);
+            string folder = _screenshotFolder;
+            bool copied = copy;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    // Имя ищется по фактическому содержимому папки на каждый снимок
+                    string file = ScreenshotService.NextFilePath(folder);
+
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(image));
+                    using (var stream = File.Create(file)) encoder.Save(stream);
+
+                    Log.Info("Screenshot", $"Область сохранена: {file} ({image.PixelWidth}x{image.PixelHeight})");
+                    Saved?.Invoke(file, copied);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Screenshot", ex);
+                    Failed?.Invoke(ex);
+                }
+            });
         }
         catch (Exception ex)
         {

@@ -55,6 +55,7 @@ public partial class ClipsPage : PageBase
             HookScroll();
         };
         ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = ReloadAsync());
+        ClipCommands.ClipAdded += path => Dispatcher.BeginInvoke(() => InsertClip(path));
         ClipCommands.SelectRequested += clip => Dispatcher.BeginInvoke(() => ToggleSelection(clip));
         SizeChanged += (_, _) => { UpdateBarLayout(); UpdateSelectionBarOffset(); };
     }
@@ -168,6 +169,31 @@ public partial class ClipsPage : PageBase
         // осталось от записей, удалённых автоочисткой или мимо приложения.
         var snapshot = _all.ToList();
         _ = Task.Run(() => ClipThumbnails.PruneOrphans(snapshot));
+    }
+
+    /// <summary>
+    /// Вставить один новый файл в уже собранный список — без обхода папок.
+    ///
+    /// Список ещё не читали — ничего не делаем: он соберётся целиком при открытии
+    /// вкладки и новый файл попадёт туда сам.
+    /// </summary>
+    private void InsertClip(string path)
+    {
+        if (!_loaded) return;
+        if (_all.Any(c => string.Equals(c.FullPath, path, StringComparison.OrdinalIgnoreCase))) return;
+
+        var s = Services.Settings.Current;
+        string root = path.StartsWith(s.ScreenshotFolder, StringComparison.OrdinalIgnoreCase)
+            ? s.ScreenshotFolder
+            : s.SaveRootPath;
+
+        try
+        {
+            _all.Insert(0, new ClipItem(path, root));   // новые первыми, как и в Scan
+            FillGameFilter();
+            Render();
+        }
+        catch (Exception ex) { Core.Logging.Log.Warn("Library", $"Не удалось добавить {path}: {ex.Message}"); }
     }
 
     /// <summary>

@@ -8,8 +8,12 @@
         WindowStartupLocation="Manual" Cursor="Cross" Title="Aura — снимок области">
 
     <Window.Resources>
-        <!-- Стрелки в наборе приложения нет — рисуем свою в той же сетке 24×24 -->
+        <!-- Стрелки, капли и буквы в наборе приложения нет — рисуем свои в сетке 24×24 -->
         <PathGeometry x:Key="Ico.ArrowTool" Figures="M5 19 L18.5 5.5 M18.5 5.5h-7 M18.5 5.5v7"/>
+        <!-- Капля: общепринятый знак размытия -->
+        <PathGeometry x:Key="Ico.BlurTool" Figures="M12 3.5c-4.6 5.6-6.5 8.4-6.5 11a6.5 6.5 0 0 0 13 0c0-2.6-1.9-5.4-6.5-11z"/>
+        <!-- Буква «А» — знак подписи -->
+        <PathGeometry x:Key="Ico.TextTool" Figures="M4.8 19.5 12 4.5l7.2 15 M7.9 14.4h8.2"/>
 
         <!-- Панель инструментов намеренно самостоятельна по стилям: оверлей должен
              выглядеть одинаково независимо от темы приложения и не тянуть словари. -->
@@ -95,6 +99,19 @@
                     <ToggleButton x:Name="RectBtn" Style="{StaticResource ToolButton}" ToolTip="Прямоугольник">
                         <c:Icon Data="{DynamicResource Ico.Box}" Size="17"/>
                     </ToggleButton>
+                    <ToggleButton x:Name="BlurBtn" Style="{StaticResource ToolButton}" ToolTip="Размыть — скрыть ник, почту, ключ">
+                        <c:Icon Data="{StaticResource Ico.BlurTool}" Size="17"/>
+                    </ToggleButton>
+                    <ToggleButton x:Name="TextBtn" Style="{StaticResource ToolButton}" ToolTip="Подпись">
+                        <c:Icon Data="{StaticResource Ico.TextTool}" Size="17"/>
+                    </ToggleButton>
+
+                    <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
+                    <!-- Толщина линии: кнопка по кругу меняет три значения, а сама точка
+                         показывает выбранное — отдельная подпись не нужна. -->
+                    <Button x:Name="ThicknessBtn" Style="{StaticResource ActionButton}" ToolTip="Толщина линии">
+                        <Ellipse x:Name="ThicknessDot" Width="7" Height="7" Fill="#E8E8ED"/>
+                    </Button>
 
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
                     <!-- Палитра собирается в коде: цвета перечислены одним списком там же,

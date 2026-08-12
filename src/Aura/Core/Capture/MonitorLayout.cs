@@ -4,7 +4,7 @@ using Aura.Core.Interop;
 namespace Aura.Core.Capture;
 
 /// <summary>
-/// Где физически находится монитор с заданным индексом и с каким масштабом.
+/// Где физически находятся мониторы и с каким масштабом.
 ///
 /// Нужно оверлею выделения области: кадр приходит в физических пикселях от DXGI,
 /// а окно WPF живёт в аппаратно-независимых. Без границ монитора и его DPI оверлей
@@ -14,25 +14,32 @@ namespace Aura.Core.Capture;
 /// зависеть от работающего конвейера — скриншот области делается и при выключенном
 /// буфере. Порядок обхода тот же (адаптеры, внутри — выходы), поэтому индекс
 /// монитора совпадает с тем, что выбран в настройках записи.
+///
+/// Список ненадолго кэшируется: снимок области спрашивает и монитор под курсором, и
+/// границы этого монитора, то есть обходил бы адаптеры дважды подряд. Мониторы за
+/// две секунды не переезжают, а смена конфигурации всё равно догонит следующий вызов.
 /// </summary>
 public static class MonitorLayout
 {
+    private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(2);
+    private static readonly object Sync = new();
+    private static List<(IntPtr Handle, NativeMethods.RECT Bounds)>? _cache;
+    private static DateTime _cachedAt;
+
     /// <summary>Границы в физических пикселях и масштаб (1.0 = 96 DPI). Пусто — монитор не найден.</summary>
     public static (int X, int Y, int Width, int Height, double Scale)? For(int monitorIndex)
     {
-        IntPtr handle = HandleFor(monitorIndex);
-        if (handle == IntPtr.Zero) return null;
+        var monitors = Monitors();
+        if (monitors.Count == 0) return null;
 
-        var info = new NativeMethods.MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>() };
-        if (!NativeMethods.GetMonitorInfoW(handle, ref info)) return null;
+        var (handle, bounds) = monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)];
 
         double scale = 1.0;
         // MDT_EFFECTIVE_DPI: сбой не критичен — просто останемся на 100%
         if (NativeMethods.GetDpiForMonitor(handle, 0, out uint dpiX, out _) == 0 && dpiX > 0)
             scale = dpiX / 96.0;
 
-        var r = info.rcMonitor;
-        return (r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top, scale);
+        return (bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top, scale);
     }
 
     /// <summary>
@@ -47,10 +54,10 @@ public static class MonitorLayout
         {
             if (!NativeMethods.GetCursorPos(out var point)) return null;
 
-            var bounds = All();
-            for (int i = 0; i < bounds.Count; i++)
+            var monitors = Monitors();
+            for (int i = 0; i < monitors.Count; i++)
             {
-                var r = bounds[i];
+                var r = monitors[i].Bounds;
                 if (point.X >= r.Left && point.X < r.Right && point.Y >= r.Top && point.Y < r.Bottom)
                     return i;
             }
@@ -59,39 +66,36 @@ public static class MonitorLayout
         return null;
     }
 
-    /// <summary>Границы всех мониторов в порядке перечисления DXGI — тот же индекс, что в настройках.</summary>
-    private static List<NativeMethods.RECT> All()
+    private static List<(IntPtr Handle, NativeMethods.RECT Bounds)> Monitors()
     {
-        var list = new List<NativeMethods.RECT>();
-        using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
-        for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+        lock (Sync)
         {
-            using (adapter)
-                for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
-                    using (output)
-                    {
-                        var c = output.Description.DesktopCoordinates;
-                        list.Add(new NativeMethods.RECT { Left = c.Left, Top = c.Top, Right = c.Right, Bottom = c.Bottom });
-                    }
-        }
-        return list;
-    }
+            if (_cache is not null && DateTime.UtcNow - _cachedAt < CacheLifetime) return _cache;
 
-    private static IntPtr HandleFor(int monitorIndex)
-    {
-        try
-        {
-            using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
-            var monitors = new List<IntPtr>();
-            for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+            var list = new List<(IntPtr, NativeMethods.RECT)>();
+            try
             {
-                using (adapter)
-                    for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
-                        using (output) monitors.Add(output.Description.Monitor);
+                using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+                for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+                {
+                    using (adapter)
+                        for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
+                            using (output)
+                            {
+                                var description = output.Description;
+                                var c = description.DesktopCoordinates;
+                                list.Add((description.Monitor, new NativeMethods.RECT
+                                {
+                                    Left = c.Left, Top = c.Top, Right = c.Right, Bottom = c.Bottom
+                                }));
+                            }
+                }
             }
-            if (monitors.Count == 0) return IntPtr.Zero;
-            return monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)];
+            catch { }
+
+            _cache = list;
+            _cachedAt = DateTime.UtcNow;
+            return list;
         }
-        catch { return IntPtr.Zero; }
     }
 }

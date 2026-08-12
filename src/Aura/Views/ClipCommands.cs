@@ -51,8 +51,19 @@ public static class ClipCommands
     /// <summary>Библиотека изменилась — страницам пора перечитать список.</summary>
     public static event Action? LibraryChanged;
 
+    /// <summary>
+    /// Появился один новый файл. Отдельно от <see cref="LibraryChanged"/> намеренно:
+    /// полное перечитывание обходит обе папки рекурсивно и делает FileInfo на каждый
+    /// файл, а после каждого скриншота это лишняя работа на ровном месте — новый файл
+    /// известен по имени, его достаточно вставить в уже собранный список.
+    /// </summary>
+    public static event Action<string>? ClipAdded;
+
     /// <summary>Сообщить страницам, что в папке записей что-то поменялось.</summary>
     public static void NotifyLibraryChanged() => LibraryChanged?.Invoke();
+
+    /// <summary>Сообщить страницам про один новый файл.</summary>
+    public static void NotifyClipAdded(string path) => ClipAdded?.Invoke(path);
 
     /// <summary>Оставлено для совместимости вызова из App: регистрация больше не нужна.</summary>
     public static void Register() { }

@@ -405,6 +405,9 @@ public sealed class VideoEncoder : IDisposable
             Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
             var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
 
+            // Своя ссылка на интерфейс — для вызовов из рабочих потоков (см. KeepCodecApi)
+            KeepCodecApi();
+
             // eAVEncCommonRateControlMode: 0 = CBR, 1 = PeakConstrainedVBR,
             // 2 = UnconstrainedVBR, 3 = Quality.
             //
@@ -546,6 +549,9 @@ public sealed class VideoEncoder : IDisposable
     private long _lastKeyframeRequestTicks = long.MinValue;
     private bool _forceKeyframeUnavailable;
 
+    /// <summary>Своя ссылка на ICodecAPI (см. KeepCodecApi). Освобождается в Stop.</summary>
+    private IntPtr _codecApi;
+
     /// <summary>
     /// Попросить энкодер выдать ключевой кадр, если по ЧАСАМ их давно не было.
     ///
@@ -568,51 +574,79 @@ public sealed class VideoEncoder : IDisposable
 
         _lastKeyframeRequestTicks = sampleTicks;
 
-        IntPtr pCodecApi = IntPtr.Zero;
-        try
-        {
-            Guid iid = typeof(ICodecAPI).GUID;
-            Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
-            var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
-            Guid guid = CodecApiGuids.AVEncVideoForceKeyFrame;
-            object boxed = 1u;
-            codecApi.SetValue(ref guid, ref boxed);
-        }
-        catch (Exception ex)
-        {
-            // Ключ не поддержан — больше не дёргаем. Останется штатный GOP по кадрам.
-            _forceKeyframeUnavailable = true;
-            Log.Info("Encoder", $"Ключевой кадр по требованию недоступен ({ex.Message})");
-        }
-        finally
-        {
-            if (pCodecApi != IntPtr.Zero) Marshal.Release(pCodecApi);
-        }
+        if (SetCodecValueDirect(CodecApiGuids.AVEncVideoForceKeyFrame, 1u, out string error)) return;
+
+        // Ключ не поддержан — больше не дёргаем. Останется штатный GOP по кадрам.
+        _forceKeyframeUnavailable = true;
+        Log.Info("Encoder", $"Ключевой кадр по требованию недоступен ({error})");
     }
 
     private void ApplyQualityPreset(uint value, string reason)
     {
-        IntPtr pCodecApi = IntPtr.Zero;
+        if (SetCodecValueDirect(CodecApiGuids.AVEncCommonQualityVsSpeed, value, out string failure))
+        {
+            QualityPreset = value;
+            Log.Info("Encoder", $"Пресет качества → {value} ({reason})");
+            return;
+        }
+
+        // Энкодер не даёт менять пресет на лету — больше не дёргаем его каждые 5 сек.
+        _adaptUnavailable = true;
+        Log.Info("Encoder", $"Пресет качества на лету не меняется ({failure}) — остаётся {QualityPreset}");
+    }
+
+    /// <summary>
+    /// Своя ссылка на ICodecAPI, живущая столько же, сколько энкодер.
+    ///
+    /// Зачем: параметры на лету (ключевой кадр по требованию, пресет качества)
+    /// запрашиваются из рабочих потоков энкодера, а интерфейс раньше добывался там
+    /// же — заново, через обёртку .NET. Она возвращает обёртку по ИДЕНТИЧНОСТИ
+    /// объекта, созданную на потоке инициализации, и запрос интерфейса с чужого
+    /// потока упирался в отсутствие маршалинга: E_NOINTERFACE. В логах это годами
+    /// висело как «Ключевой кадр по требованию недоступен» — то есть GOP в две
+    /// секунды, на который опирается нарезка буфера, по факту не запрашивался.
+    /// </summary>
+    private void KeepCodecApi()
+    {
         try
         {
             Guid iid = typeof(ICodecAPI).GUID;
-            Marshal.QueryInterface(_transform!.NativePointer, in iid, out pCodecApi);
-            var codecApi = (ICodecAPI)Marshal.GetObjectForIUnknown(pCodecApi);
-            Guid guid = CodecApiGuids.AVEncCommonQualityVsSpeed;
-            object boxed = value;
-            codecApi.SetValue(ref guid, ref boxed);
-            QualityPreset = value;
-            Log.Info("Encoder", $"Пресет качества → {value} ({reason})");
+            if (Marshal.QueryInterface(_transform!.NativePointer, in iid, out IntPtr kept) >= 0)
+                _codecApi = kept;
+        }
+        catch (Exception ex) { Log.Info("Encoder", $"ICodecAPI не сохранён: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Вызов ICodecAPI::SetValue напрямую через таблицу методов, без обёртки .NET —
+    /// поэтому работает с любого потока. Девятый слот таблицы: три метода IUnknown
+    /// плюс шесть объявленных выше SetValue (см. интерфейс ICodecAPI).
+    /// </summary>
+    private unsafe bool SetCodecValueDirect(Guid api, uint value, out string error)
+    {
+        error = "";
+        if (_codecApi == IntPtr.Zero) { error = "интерфейс недоступен"; return false; }
+
+        try
+        {
+            // VARIANT: тип в первых двух байтах, значение с восьмого (x64)
+            byte* variant = stackalloc byte[24];
+            new Span<byte>(variant, 24).Clear();
+            *(ushort*)variant = 19;              // VT_UI4
+            *(uint*)(variant + 8) = value;
+
+            var vtable = *(void***)_codecApi;
+            var setValue = (delegate* unmanaged[Stdcall]<IntPtr, Guid*, void*, int>)vtable[9];
+            int hr = setValue(_codecApi, &api, variant);
+            if (hr >= 0) return true;
+
+            error = $"HRESULT 0x{hr:X8}";
+            return false;
         }
         catch (Exception ex)
         {
-            // Энкодер не даёт менять пресет на лету — больше не дёргаем его каждые 5 сек.
-            _adaptUnavailable = true;
-            Log.Info("Encoder", $"Пресет качества на лету не меняется ({ex.Message}) — остаётся {QualityPreset}");
-        }
-        finally
-        {
-            if (pCodecApi != IntPtr.Zero) Marshal.Release(pCodecApi);
+            error = ex.Message;
+            return false;
         }
     }
 
@@ -1068,11 +1102,15 @@ public sealed class VideoEncoder : IDisposable
             Log.Warn("Encoder", "Event-поток не завершился за 2 сек — MFT оставлен GC");
             _eventGen = null;
             _transform = null;
+            _codecApi = IntPtr.Zero;   // отпускать нельзя: MFT ещё используется висящим потоком
         }
         else
         {
             try { _transform?.ProcessMessage(TMessageType.MessageCommandFlush, UIntPtr.Zero); } catch { }
             _eventGen?.Dispose();
+            // Своя ссылка на ICodecAPI отпускается вместе с MFT и только вместе с ним:
+            // пока трансформ жив, из него могут прийти запросы ключевого кадра.
+            if (_codecApi != IntPtr.Zero) { Marshal.Release(_codecApi); _codecApi = IntPtr.Zero; }
             _transform?.Dispose();
         }
         _deviceManager?.Dispose();
