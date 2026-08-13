@@ -6,7 +6,14 @@ using Aura.Core.Logging;
 
 namespace Aura.Core.SystemIntegration;
 
-public sealed record UpdateInfo(string Version, string DownloadUrl, string ReleaseUrl);
+/// <summary>
+/// Найденное обновление. <see cref="DigestUrl"/> и <see cref="SignatureUrl"/> —
+/// сопутствующие файлы релиза (<c>*.sha256</c> и <c>*.sig</c>), по которым установщик
+/// проверяется перед запуском; null — такого файла в релизе нет.
+/// </summary>
+public sealed record UpdateInfo(
+    string Version, string DownloadUrl, string ReleaseUrl,
+    string? DigestUrl = null, string? SignatureUrl = null);
 
 /// <summary>
 /// Автообновление: проверка последнего релиза на GitHub (repo из настроек),
@@ -48,12 +55,15 @@ public sealed class UpdateService
             var local = typeof(UpdateService).Assembly.GetName().Version ?? new Version(1, 0, 0);
             if (remote is null || remote <= local) { Available = null; return null; }
 
-            string? asset = release.Assets?.FirstOrDefault(a =>
-                a.Name?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true ||
-                a.Name?.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) == true ||
-                a.Name?.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) == true)?.BrowserDownloadUrl;
+            string? asset = AssetUrl(release, n =>
+                n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
+            string? digest = AssetUrl(release, n => n.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase));
+            string? signature = AssetUrl(release, n => n.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
 
-            Available = new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "");
+            Available = new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "",
+                                       digest, signature);
             return Available;
         }
         catch (Exception ex)
@@ -63,16 +73,41 @@ public sealed class UpdateService
         }
     }
 
+    /// <summary>
+    /// Ссылка на файл релиза, подходящий под <paramref name="match"/>.
+    ///
+    /// Ссылка приходит из ответа GitHub, но это просто строка в JSON — качать по ней
+    /// что угодно нельзя. Чужой хост отбрасываем ещё на этапе проверки, чтобы до
+    /// закачки дело вообще не дошло.
+    /// </summary>
+    private static string? AssetUrl(GithubRelease release, Func<string, bool> match)
+    {
+        string? url = release.Assets?.FirstOrDefault(a => a.Name is not null && match(a.Name))?.BrowserDownloadUrl;
+        if (url is null) return null;
+        if (UpdateVerification.IsTrustedHost(url)) return url;
+
+        Log.Warn("Update", $"Файл релиза лежит на чужом хосте — игнорирую: {url}");
+        return null;
+    }
+
     /// <summary>Версия текущей сборки — её же показываем в UI.</summary>
     public static Version CurrentVersion =>
         typeof(UpdateService).Assembly.GetName().Version ?? new Version(1, 0, 0);
 
     /// <summary>
-    /// Скачивает установщик новой версии во временную папку.
+    /// Скачивает установщик новой версии во временную папку и ПРОВЕРЯЕТ его.
     /// progress — доля 0..1 (или -1, если сервер не сообщил размер).
+    ///
+    /// Возвращает путь только к файлу, который прошёл проверку (см.
+    /// <see cref="UpdateVerification.EnsureTrusted"/>). Непрошедший удаляется здесь же:
+    /// запускать его будут с правами администратора, и оставлять такой файл на диске
+    /// незачем.
     /// </summary>
-    public async Task<string> DownloadAsync(string url, IProgress<double>? progress, CancellationToken ct = default)
+    public async Task<string> DownloadAsync(UpdateInfo update, IProgress<double>? progress, CancellationToken ct = default)
     {
+        if (!UpdateVerification.IsTrustedHost(update.DownloadUrl))
+            throw new InvalidOperationException("Ссылка на обновление ведёт не на GitHub — загрузка отменена.");
+
         string dir = Path.Combine(Path.GetTempPath(), "AuraUpdate");
         Directory.CreateDirectory(dir);
         // Имя файла прежнее — под ним установщик лежит в релизе, и по нему
@@ -81,13 +116,13 @@ public sealed class UpdateService
         // Файл мог остаться от прошлой попытки
         try { if (File.Exists(file)) File.Delete(file); } catch { }
 
-        using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-
-        long total = response.Content.Headers.ContentLength ?? -1;
-        await using var source = await response.Content.ReadAsStreamAsync(ct);
-        await using (var target = File.Create(file))
+        using (var response = await Http.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
         {
+            response.EnsureSuccessStatusCode();
+
+            long total = response.Content.Headers.ContentLength ?? -1;
+            await using var source = await response.Content.ReadAsStreamAsync(ct);
+            await using var target = File.Create(file);
             var buffer = new byte[128 * 1024];
             long read = 0;
             int n;
@@ -99,13 +134,46 @@ public sealed class UpdateService
             }
         }
 
-        var info = new FileInfo(file);
-        if (info.Length < 1024 * 1024) // установщик весит ~156 МБ; крохотный файл = страница ошибки
-            throw new InvalidOperationException(
-                $"Скачанный файл подозрительно мал ({info.Length} байт) — ссылка на релиз битая.");
+        try
+        {
+            string? digest = await TryGetTextAsync(update.DigestUrl, ct);
+            byte[]? signature = DecodeSignature(await TryGetBytesAsync(update.SignatureUrl, ct));
+            UpdateVerification.EnsureTrusted(file, digest, signature);
+        }
+        catch
+        {
+            try { File.Delete(file); } catch { }
+            throw;
+        }
 
-        Log.Info("Update", $"Установщик скачан: {file} ({info.Length / (1024 * 1024)} МБ)");
+        Log.Info("Update", $"Установщик скачан и проверен: {file} ({new FileInfo(file).Length / (1024 * 1024)} МБ)");
         return file;
+    }
+
+    /// <summary>Сопутствующий файл релиза; null — его нет или он не читается.</summary>
+    private static async Task<string?> TryGetTextAsync(string? url, CancellationToken ct)
+    {
+        if (!UpdateVerification.IsTrustedHost(url)) return null;
+        try { return await Http.GetStringAsync(url!, ct); }
+        catch (Exception ex) { Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}"); return null; }
+    }
+
+    private static async Task<byte[]?> TryGetBytesAsync(string? url, CancellationToken ct)
+    {
+        if (!UpdateVerification.IsTrustedHost(url)) return null;
+        try { return await Http.GetByteArrayAsync(url!, ct); }
+        catch (Exception ex) { Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}"); return null; }
+    }
+
+    /// <summary>
+    /// Подпись кладём в релиз текстом base64 — так её видно глазами и не портят
+    /// инструменты, считающие файл текстовым. Сырые байты тоже принимаем.
+    /// </summary>
+    private static byte[]? DecodeSignature(byte[]? raw)
+    {
+        if (raw is null || raw.Length == 0) return null;
+        try { return Convert.FromBase64String(System.Text.Encoding.ASCII.GetString(raw).Trim()); }
+        catch (FormatException) { return raw; }
     }
 
     /// <summary>

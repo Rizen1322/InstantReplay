@@ -68,19 +68,22 @@ public sealed class DriverWatch(SettingsManager settings, NvidiaDriverService nv
                 return;
             }
 
-            s.LastDriverCheckUtc = DateTime.UtcNow;
-
+            // Проверка живёт в фоновой задаче, поэтому правки идут через Update:
+            // настройки в этот момент может сохранять поток интерфейса.
             if (!status.UpdateAvailable)
             {
                 Log.Info("DriverWatch", $"Драйвер актуален ({status.InstalledVersion})");
-                settings.Save("system");
+                settings.Update(x => x.LastDriverCheckUtc = DateTime.UtcNow, "system");
                 return;
             }
 
             bool alreadyTold = string.Equals(s.NotifiedDriverVersion, status.LatestVersion,
                                              StringComparison.OrdinalIgnoreCase);
-            s.NotifiedDriverVersion = status.LatestVersion;
-            settings.Save("system");
+            settings.Update(x =>
+            {
+                x.LastDriverCheckUtc = DateTime.UtcNow;
+                x.NotifiedDriverVersion = status.LatestVersion;
+            }, "system");
 
             Log.Info("DriverWatch", $"Драйвер {status.LatestVersion} доступен " +
                                     $"(установлен {status.InstalledVersion})" +

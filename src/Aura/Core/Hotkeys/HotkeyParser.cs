@@ -14,7 +14,18 @@ public static class HotkeyParser
         ["Insert"] = 0x2D, ["Delete"] = 0x2E, ["Home"] = 0x24, ["End"] = 0x23,
         ["PageUp"] = 0x21, ["PageDown"] = 0x22, ["PrintScreen"] = 0x2C, ["Pause"] = 0x13,
         ["Up"] = 0x26, ["Down"] = 0x28, ["Left"] = 0x25, ["Right"] = 0x27,
+
+        // Кнопки мыши. Коды настоящие (VK_MBUTTON/VK_XBUTTON1/VK_XBUTTON2), и это
+        // удобно: клавиатурный хук их не выдаёт никогда, поэтому одна и та же карта
+        // сочетаний обслуживает и клавиши, и мышь без всяких признаков-разделителей.
+        //
+        // Левой и правой в списке нет намеренно: назначить действие на них — значит
+        // отобрать у человека мышь. Нумерация как в играх: 3 — колесо, 4 и 5 — боковые.
+        ["Mouse3"] = 0x04, ["Mouse4"] = 0x05, ["Mouse5"] = 0x06,
     };
+
+    /// <summary>Кнопка мыши, а не клавиша: по такому биндy нужен хук мыши.</summary>
+    public static bool IsMouseButton(uint vk) => vk is 0x04 or 0x05 or 0x06;
 
     public static bool TryParse(string combo, out (uint vk, bool ctrl, bool shift, bool alt, bool win) result)
     {

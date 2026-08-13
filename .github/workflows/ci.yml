@@ -1,0 +1,44 @@
+name: CI
+
+# Приложение — WPF под Windows, поэтому и сборка, и тесты идут только на
+# windows-runner: linux-образ не соберёт TFM net9.0-windows10.0.22621.0.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      # Тесты первыми: они собирают исходники приложения напрямую
+      # (см. InstantReplay.Tests.csproj) и падают быстрее полной сборки WPF.
+      - name: Тесты
+        run: dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release --nologo
+
+      - name: Сборка приложения
+        run: dotnet build src/Aura/Aura.csproj -c Release -r win-x64 --nologo
+
+      # Проверяем, что версия в csproj и правда поднята одинаково во всех трёх
+      # полях: расхождение ломает автообновление молча — установленная копия
+      # считает себя новее собственного релиза и предлагает его бесконечно.
+      - name: Версии в csproj согласованы
+        shell: pwsh
+        run: |
+          $csproj = Get-Content src/Aura/Aura.csproj -Raw
+          $assembly = [regex]::Match($csproj, '<AssemblyVersion>([\d\.]+)</AssemblyVersion>').Groups[1].Value
+          $file     = [regex]::Match($csproj, '<FileVersion>([\d\.]+)</FileVersion>').Groups[1].Value
+          $version  = [regex]::Match($csproj, '<Version>([\d\.]+)</Version>').Groups[1].Value
+          Write-Host "AssemblyVersion=$assembly FileVersion=$file Version=$version"
+          if ($assembly -ne $file) { throw "AssemblyVersion ($assembly) != FileVersion ($file)" }
+          if ($assembly -ne "$version.0") { throw "AssemblyVersion ($assembly) не равна Version.0 ($version.0)" }

@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>InstantReplay.Tests</RootNamespace>
+    <!-- ArenaMediaBuffer — рукописный COM-объект на указателях -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <!--
+    Файлы приложения компилируются в тест ПРЯМОЙ ССЫЛКОЙ НА ИСХОДНИКИ, а не через
+    ProjectReference: сам Aura — WPF-приложение под net9.0-windows10.x, и ссылка на
+    него притащила бы в тестовый хост весь графический стек.
+    Сюда попадает только логика без UI и без графики — её и проверяем.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Aura\Core\Hotkeys\HotkeyAction.cs" Link="App\HotkeyAction.cs" />
+    <Compile Include="..\..\src\Aura\Core\Hotkeys\HotkeyParser.cs" Link="App\HotkeyParser.cs" />
+    <Compile Include="..\..\src\Aura\Core\Hotkeys\HotkeyConflicts.cs" Link="App\HotkeyConflicts.cs" />
+    <Compile Include="..\..\src\Aura\Core\Settings\AppSettings.cs" Link="App\AppSettings.cs" />
+    <Compile Include="..\..\src\Aura\Core\Storage\ByteSize.cs" Link="App\ByteSize.cs" />
+    <Compile Include="..\..\src\Aura\Core\Storage\ClipIndex.cs" Link="App\ClipIndex.cs" />
+    <Compile Include="..\..\src\Aura\Core\Storage\FileNaming.cs" Link="App\FileNaming.cs" />
+    <Compile Include="..\..\src\Aura\Core\Library\ClipGrouping.cs" Link="App\ClipGrouping.cs" />
+    <Compile Include="..\..\src\Aura\Core\Buffering\ReplayBuffers.cs" Link="App\ReplayBuffers.cs" />
+    <Compile Include="..\..\src\Aura\Core\Logging\Log.cs" Link="App\Log.cs" />
+    <!-- Чистый COM-интероп без графики: подключается к тестам как есть -->
+    <Compile Include="..\..\src\Aura\Core\Saving\ArenaMediaBuffer.cs" Link="App\ArenaMediaBuffer.cs" />
+    <Compile Include="..\..\src\Aura\Core\System\UpdateVerification.cs" Link="App\UpdateVerification.cs" />
+    <Compile Include="..\..\src\Aura\Core\GameDetection\GameDatabase.cs" Link="App\GameDatabase.cs" />
+  </ItemGroup>
+
+</Project>

@@ -49,6 +49,7 @@ public partial class KeysPage : PageBase
             };
             field.Click += Field_Click;
             field.PreviewKeyDown += Field_KeyDown;
+            field.PreviewMouseDown += Field_MouseDown;
             field.LostFocus += (_, _) => StopCapture(field, binding.Combo);
             row.Children.Add(field);
 
@@ -73,7 +74,7 @@ public partial class KeysPage : PageBase
         _capturing = field;
         field.Content = new TextBlock
         {
-            Text = "Жми клавиши · Esc — снять",
+            Text = "Жми клавишу или кнопку мыши · Esc — снять",
             FontSize = 12.5,
             Foreground = (System.Windows.Media.Brush)FindResource("BlueBrush")
         };
@@ -99,15 +100,44 @@ public partial class KeysPage : PageBase
             return;
         }
 
+        Apply(field, KeyName(key));
+    }
+
+    /// <summary>
+    /// Назначение на кнопку мыши.
+    ///
+    /// Левая и правая не назначаются намеренно: левой это поле и открывают, а
+    /// перехватывать правую значило бы отобрать у человека контекстные меню.
+    /// Остаются колесо и две боковые — то, что для этого и держат.
+    /// </summary>
+    private void Field_MouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_capturing is not { } field || !ReferenceEquals(field, sender)) return;
+
+        string name = e.ChangedButton switch
+        {
+            MouseButton.Middle => "Mouse3",
+            MouseButton.XButton1 => "Mouse4",
+            MouseButton.XButton2 => "Mouse5",
+            _ => ""
+        };
+        if (name.Length == 0) return;
+
+        e.Handled = true;
+        Apply(field, name);
+    }
+
+    /// <summary>Собрать сочетание с текущими модификаторами и сохранить.</summary>
+    private void Apply(Button field, string name)
+    {
+        if (name.Length == 0) return;
+
         var parts = new List<string>();
         var modifiers = Keyboard.Modifiers;
         if (modifiers.HasFlag(ModifierKeys.Control)) parts.Add("Ctrl");
         if (modifiers.HasFlag(ModifierKeys.Shift)) parts.Add("Shift");
         if (modifiers.HasFlag(ModifierKeys.Alt)) parts.Add("Alt");
         if (modifiers.HasFlag(ModifierKeys.Windows)) parts.Add("Win");
-
-        string name = KeyName(key);
-        if (name.Length == 0) return;
         parts.Add(name);
 
         string combo = string.Join("+", parts);

@@ -14,6 +14,8 @@
         <PathGeometry x:Key="Ico.BlurTool" Figures="M12 3.5c-4.6 5.6-6.5 8.4-6.5 11a6.5 6.5 0 0 0 13 0c0-2.6-1.9-5.4-6.5-11z"/>
         <!-- Буква «А» — знак подписи -->
         <PathGeometry x:Key="Ico.TextTool" Figures="M4.8 19.5 12 4.5l7.2 15 M7.9 14.4h8.2"/>
+        <!-- Пипетка: наклонная колба с носиком, общепринятый знак выбора цвета -->
+        <PathGeometry x:Key="Ico.Eyedropper" Figures="M17.6 3.6a2.6 2.6 0 0 1 3.7 3.7l-2.1 2.1-3.7-3.7zM14.6 6.6l3.7 3.7-8.6 8.6-4.6 1 1-4.6z"/>
 
         <!-- Панель инструментов намеренно самостоятельна по стилям: оверлей должен
              выглядеть одинаково независимо от темы приложения и не тянуть словари. -->
@@ -104,6 +106,11 @@
                     </ToggleButton>
                     <ToggleButton x:Name="TextBtn" Style="{StaticResource ToolButton}" ToolTip="Подпись">
                         <c:Icon Data="{StaticResource Ico.TextTool}" Size="17"/>
+                    </ToggleButton>
+                    <!-- Пипетка берёт цвет с любого места кадра, в том числе вне
+                         выделения: подобрать оттенок с соседнего окна — обычное дело. -->
+                    <ToggleButton x:Name="EyedropperBtn" Style="{StaticResource ToolButton}" ToolTip="Пипетка — взять цвет с кадра">
+                        <c:Icon x:Name="EyedropperIcon" Data="{StaticResource Ico.Eyedropper}" Size="17"/>
                     </ToggleButton>
 
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>

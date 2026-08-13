@@ -145,7 +145,7 @@ public partial class CapturePage : PageBase
             // Мало уметь кодировать — файл ещё должен собраться: AV1 на Windows 10
             // кодируется, но в MP4 не пакуется, и сохранение падает уже после записи.
             bool hasEncoder = _supported.Contains(codec);
-            bool canSave = VideoEncoder.CanSaveToMp4(codec);
+            bool canSave = HardwareEncoders.CanSaveToMp4(codec);
             bool available = hasEncoder && canSave;
             var row = new AdaptiveRow { Margin = new Thickness(16, 12, 16, 12) };
             row.Children.Add(new IconTile
@@ -200,7 +200,7 @@ public partial class CapturePage : PageBase
         Bitrate.Value = s.BitrateMbps;
         ShowBitrate();
 
-        try { (_, _supported) = VideoEncoder.ProbeSupport(); } catch { }
+        try { (_, _supported) = HardwareEncoders.ProbeSupport(); } catch { }
         if (_supported.Count == 0) _supported = [VideoCodec.H264, VideoCodec.HEVC];
         BuildCodecs();
 

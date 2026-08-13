@@ -69,7 +69,15 @@ internal static partial class NativeMethods
     internal delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     internal const int WH_KEYBOARD_LL = 13;
+    internal const int WH_MOUSE_LL = 14;
     internal const int WM_KEYDOWN = 0x0100, WM_SYSKEYDOWN = 0x0104, WM_QUIT = 0x0012;
+
+    // Кнопки мыши, которые можно назначать на действия. Левой и правой здесь нет
+    // намеренно: перехватить их значило бы отобрать у человека мышь.
+    internal const int WM_MBUTTONDOWN = 0x0207, WM_XBUTTONDOWN = 0x020B;
+
+    /// <summary>Какая боковая кнопка нажата — лежит в старшем слове mouseData.</summary>
+    internal const uint XBUTTON1 = 0x0001, XBUTTON2 = 0x0002;
     internal const uint MONITOR_DEFAULTTOPRIMARY = 1;
 
     internal const int GWL_EXSTYLE = -20;
@@ -80,6 +88,13 @@ internal static partial class NativeMethods
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public IntPtr dwExtraInfo; }
+
+    /// <summary>
+    /// Смещение поля mouseData в MSLLHOOKSTRUCT: перед ним лежит POINT из двух int.
+    /// Читаем поле напрямую, а не разбираем структуру целиком — низкоуровневый хук
+    /// мыши вызывается на каждое движение, и объект в куче там непозволителен.
+    /// </summary>
+    internal const int MouseDataOffset = 8;
 
     // ---------------- субклассинг окна (минимальный размер через WM_GETMINMAXINFO) ----------------
     internal const int GWLP_WNDPROC = -4;

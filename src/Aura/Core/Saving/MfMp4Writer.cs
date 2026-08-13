@@ -67,35 +67,32 @@ internal static class MfMp4Writer
     }
 
     /// <summary>
-    /// Аудиопотоки по режиму дорожек: список (индекс потока, селектор PCM из блока).
+    /// Аудиопотоки по режиму дорожек: список (индекс потока, что в него писать).
+    ///
+    /// Отдаём именно ВИД дорожки, а не функцию-селектор: селектор возвращал массив,
+    /// и в сведённом режиме выделял новый на каждый блок — в обычной записи это
+    /// происходило на потоке микшера с приоритетом Highest, сто раз в секунду.
+    /// Теперь вызывающий сам подставляет готовый приёмник (см. AudioBlock.Mix).
     /// </summary>
-    public static List<(int Index, Func<AudioBlock, short[]> Selector)> AddAudioStreams(
+    public static List<(int Index, AudioTrackKind Kind)> AddAudioStreams(
         IMFSinkWriter writer, AudioTrackMode trackMode, bool hasGame, bool hasMic)
     {
-        var streams = new List<(int, Func<AudioBlock, short[]>)>();
+        var streams = new List<(int, AudioTrackKind)>();
         bool wantGame = hasGame && trackMode is not AudioTrackMode.MicOnly;
         bool wantMic = hasMic && trackMode is not AudioTrackMode.GameOnly;
         if (!wantGame && !wantMic) return streams;
 
         if (trackMode == AudioTrackMode.Separate && wantGame && wantMic)
         {
-            streams.Add((AddAacStream(writer), b => b.Game));
-            streams.Add((AddAacStream(writer), b => b.Mic));
+            streams.Add((AddAacStream(writer), AudioTrackKind.Game));
+            streams.Add((AddAacStream(writer), AudioTrackKind.Mic));
         }
         else
         {
-            streams.Add((AddAacStream(writer), b =>
-            {
-                if (!wantMic) return b.Game;
-                if (!wantGame) return b.Mic;
-                // Сводим в int и зажимаем по границам short: сумма двух дорожек
-                // легко выходит за диапазон, а переполнение слышно как треск.
-                var mixed = new short[b.Game.Length];
-                for (int i = 0; i < mixed.Length; i++)
-                    mixed[i] = (short)Math.Clamp(b.Game[i] + b.Mic[i], short.MinValue, short.MaxValue);
-                return mixed;
-            }
-            ));
+            streams.Add((AddAacStream(writer),
+                !wantMic ? AudioTrackKind.Game
+                : !wantGame ? AudioTrackKind.Mic
+                : AudioTrackKind.Mixed));
         }
         return streams;
     }
@@ -148,11 +145,13 @@ internal static class MfMp4Writer
     /// <summary>
     /// Сэмпл БЕЗ копирования: буфер ссылается прямо на память по указателю
     /// (см. <see cref="ArenaMediaBuffer"/>). Вызывающий обязан держать эту память
-    /// закреплённой и живой, пока писатель не отпустит сэмпл.
+    /// закреплённой и живой, пока писатель не отпустит сэмпл — за этим и следит
+    /// <paramref name="batch"/>, партия буферов текущего сохранения.
     /// </summary>
-    public static IMFSample CreateSampleNoCopy(IntPtr data, int length, long ptsTicks, long durationTicks)
+    public static IMFSample CreateSampleNoCopy(
+        ArenaBufferBatch batch, IntPtr data, int length, long ptsTicks, long durationTicks)
     {
-        IntPtr bufferPtr = ArenaMediaBuffer.Create(data, length);
+        IntPtr bufferPtr = batch.Create(data, length);
         // Обёртка забирает нашу единственную ссылку: AddBuffer поднимет счётчик до
         // двух, Dispose вернёт к одной, и дальше буфером владеет сэмпл.
         using var buffer = new IMFMediaBuffer(bufferPtr);

@@ -36,7 +36,9 @@ public sealed class HotkeyService : IDisposable
     private Thread? _thread;
     private uint _threadId;
     private IntPtr _hook;
-    private HookProc? _hookProc; // держим делегат, чтобы GC не собрал
+    private IntPtr _mouseHook;
+    private HookProc? _hookProc;      // держим делегаты, чтобы GC их не собрал
+    private HookProc? _mouseHookProc;
 
     // Скомпилированные комбинации: (vk, ctrl, shift, alt, win) → действие
     private readonly Dictionary<(uint vk, bool ctrl, bool shift, bool alt, bool win), HotkeyAction> _map = new();
@@ -68,13 +70,25 @@ public sealed class HotkeyService : IDisposable
             Log.Error("Hotkeys", $"SetWindowsHookEx failed: {Marshal.GetLastWin32Error()}");
             return;
         }
-        Log.Info("Hotkeys", "Глобальный хук клавиатуры установлен");
+
+        // Хук мыши живёт на ТОМ ЖЕ потоке и обслуживается тем же циклом сообщений:
+        // ставить под него отдельный поток незачем, а лишний поток с очередью — это
+        // ещё одно место, где можно потерять сообщение при выключении.
+        _mouseHookProc = MouseHookCallback;
+        _mouseHook = SetWindowsHookExW(WH_MOUSE_LL, _mouseHookProc, IntPtr.Zero, 0);
+        if (_mouseHook == IntPtr.Zero)
+            Log.Warn("Hotkeys", $"Хук мыши не установлен ({Marshal.GetLastWin32Error()}) — " +
+                                "кнопки мыши назначить не получится");
+
+        Log.Info("Hotkeys", "Глобальный хук клавиатуры установлен" +
+                            (_mouseHook != IntPtr.Zero ? " (и мыши)" : ""));
 
         while (GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
             TranslateMessage(ref msg);
             DispatchMessageW(ref msg);
         }
+        if (_mouseHook != IntPtr.Zero) { UnhookWindowsHookEx(_mouseHook); _mouseHook = IntPtr.Zero; }
         UnhookWindowsHookEx(_hook);
         _hook = IntPtr.Zero;
     }
@@ -86,28 +100,66 @@ public sealed class HotkeyService : IDisposable
     {
         if (nCode >= 0 && !Suspended && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
         {
-            var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
-            uint vk = info.vkCode;
+            // Читаем ТОЛЬКО vkCode — он лежит первым полем KBDLLHOOKSTRUCT.
+            // Разбор всей структуры через PtrToStructure давал объект в куче на
+            // каждое нажатие клавиши, а этот колбэк обязан возвращаться за <1 мс.
+            uint vk = (uint)Marshal.ReadInt32(lParam);
 
-            // Модификаторы через GetAsyncKeyState — состояние на момент нажатия
-            bool ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0;
-            bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0;
-            bool alt = (GetAsyncKeyState(0x12) & 0x8000) != 0;
-            bool win = ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0;
-
-            HotkeyAction? action = null;
-            lock (_mapLock)
-                if (_map.TryGetValue((vk, ctrl, shift, alt, win), out var a)) action = a;
-
-            if (action is not null)
-            {
-                // Обработку уводим из хука мгновенно — колбэк должен вернуться за <1 мс
-                var act = action.Value;
-                ThreadPool.QueueUserWorkItem(_ => HotkeyPressed?.Invoke(act));
-                return new IntPtr(1); // комбинацию съедаем, в игру она не попадёт
-            }
+            if (TryFire(vk)) return new IntPtr(1); // комбинацию съедаем, в игру она не попадёт
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Низкоуровневый хук мыши.
+    ///
+    /// ВАЖНО ПРО СКОРОСТЬ: сюда прилетает КАЖДОЕ движение мыши, а в игре это сотни
+    /// событий в секунду. Поэтому первым делом — грубый отбор по типу сообщения, и
+    /// только для нажатий средней и боковых кнопок мы вообще что-то читаем из памяти
+    /// хука. Всё остальное уходит дальше по цепочке немедленно.
+    /// </summary>
+    private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && !Suspended)
+        {
+            int message = (int)wParam;
+            if (message is WM_MBUTTONDOWN or WM_XBUTTONDOWN)
+            {
+                uint vk = 0x04; // VK_MBUTTON
+                if (message == WM_XBUTTONDOWN)
+                {
+                    // Какая боковая — в старшем слове mouseData
+                    uint mouseData = (uint)Marshal.ReadInt32(lParam, MouseDataOffset);
+                    uint button = mouseData >> 16;
+                    vk = button == XBUTTON1 ? 0x05u : button == XBUTTON2 ? 0x06u : 0u;
+                }
+                if (vk != 0 && TryFire(vk)) return new IntPtr(1);
+            }
+        }
+        return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Найти действие по коду и модификаторам и запустить его. true — сочетание наше,
+    /// событие дальше не пойдёт.
+    ///
+    /// Модификаторы читаются здесь для обоих хуков одинаково: Alt+боковая кнопка
+    /// должно работать так же, как Alt+F10.
+    /// </summary>
+    private bool TryFire(uint vk)
+    {
+        bool ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0;
+        bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0;
+        bool alt = (GetAsyncKeyState(0x12) & 0x8000) != 0;
+        bool win = ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) != 0;
+
+        HotkeyAction action;
+        lock (_mapLock)
+            if (!_map.TryGetValue((vk, ctrl, shift, alt, win), out action)) return false;
+
+        // Обработку уводим из хука мгновенно — колбэк должен вернуться за <1 мс
+        ThreadPool.QueueUserWorkItem(_ => HotkeyPressed?.Invoke(action));
+        return true;
     }
 
     private void RebuildMap()

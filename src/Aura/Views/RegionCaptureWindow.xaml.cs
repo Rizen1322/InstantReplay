@@ -88,6 +88,7 @@ public partial class RegionCaptureWindow : Window
         RectBtn.Click += (_, _) => SetTool(InkTool.Rect);
         BlurBtn.Click += (_, _) => SetTool(InkTool.Blur);
         TextBtn.Click += (_, _) => SetTool(InkTool.Text);
+        EyedropperBtn.Click += (_, _) => SetTool(InkTool.Eyedropper);
         ThicknessBtn.Click += (_, _) => CycleThickness();
         UndoBtn.Click += (_, _) => Undo();
         RedoBtn.Click += (_, _) => Redo();
@@ -186,6 +187,13 @@ public partial class RegionCaptureWindow : Window
         foreach (var child in Swatches.Children)
             if (child is Border border)
                 border.BorderBrush = (Color)border.Tag == _color ? Brushes.White : Brushes.Transparent;
+
+        // Значок пипетки заодно показывает ТЕКУЩИЙ цвет. Без этого цвет, взятый с
+        // кадра, вообще нигде не виден: среди кружков палитры его нет, и подсвечивать
+        // нечего.
+        var current = new SolidColorBrush(_color);
+        current.Freeze();
+        EyedropperIcon.Foreground = current;
     }
 
     // ---------------- Мышь ----------------
@@ -200,6 +208,11 @@ public partial class RegionCaptureWindow : Window
         if (_caption is not null && !ReferenceEquals(e.OriginalSource, _caption)) CommitCaption();
 
         var point = e.GetPosition(Root);
+
+        // Пипетка работает по ВСЕМУ кадру, а не только внутри выделения: подобрать
+        // оттенок с соседнего окна — обычное дело, и выделять ради этого пол-экрана
+        // никто не станет.
+        if (_tool == InkTool.Eyedropper) { PickColor(point); return; }
 
         if (_hasSelection)
         {
@@ -466,6 +479,7 @@ public partial class RegionCaptureWindow : Window
         RectBtn.IsChecked = _tool == InkTool.Rect;
         BlurBtn.IsChecked = _tool == InkTool.Blur;
         TextBtn.IsChecked = _tool == InkTool.Text;
+        EyedropperBtn.IsChecked = _tool == InkTool.Eyedropper;
 
         // Размытая копия готовится один раз и только если её попросили: это полный
         // проход по кадру, платить за него тем, кто размытием не пользуется, незачем.
@@ -475,8 +489,33 @@ public partial class RegionCaptureWindow : Window
         {
             InkTool.None => Cursors.Arrow,
             InkTool.Text => Cursors.IBeam,
+            InkTool.Eyedropper => Cursors.Cross,
             _ => Cursors.Pen
         };
+    }
+
+    /// <summary>
+    /// Взять цвет из кадра под курсором.
+    ///
+    /// Читаем из <see cref="_shot"/>, а не с экрана: на экране поверх кадра лежат
+    /// затемнение, пометки и сама панель, и пипетка брала бы их, а не картинку.
+    /// Координаты окна переводим в пиксели снимка тем же множителем, что и экспорт, —
+    /// иначе на мониторе с масштабом попадёшь мимо.
+    ///
+    /// После выбора сразу берём карандаш: цвет выбирают, чтобы им рисовать, и лишний
+    /// клик по инструменту здесь только мешает.
+    /// </summary>
+    private void PickColor(Point at)
+    {
+        try
+        {
+            var picked = ColorSampling.At(_shot, at, Root.ActualWidth);
+            _color = picked;
+            HighlightSwatch();
+            EyedropperBtn.ToolTip = $"Пипетка — взят #{picked.R:X2}{picked.G:X2}{picked.B:X2}";
+            SetTool(InkTool.Pencil);
+        }
+        catch (Exception ex) { Log.Warn("Screenshot", $"Пипетка: {ex.Message}"); }
     }
 
     private void CycleThickness()

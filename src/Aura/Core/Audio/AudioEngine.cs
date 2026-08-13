@@ -97,7 +97,13 @@ public sealed class AudioCaptureSource : IDisposable
 public sealed class AudioMixerEngine : IDisposable
 {
     private const int BlockFrames = AudioCaptureSource.SampleRate / 100; // 480 фреймов = 10 мс
-    private const int BlockSamples = BlockFrames * AudioCaptureSource.Channels;
+
+    /// <summary>
+    /// Сэмплов в блоке на дорожку. Публичная: по этому числу кольцевой аудиобуфер
+    /// считает свою арену, а сам он про NAudio знать не должен — иначе его не
+    /// подключить к тестам.
+    /// </summary>
+    public const int BlockSamples = BlockFrames * AudioCaptureSource.Channels;
 
     private AudioCaptureSource? _game;
     private AudioCaptureSource? _mic;
@@ -248,6 +254,12 @@ public sealed class AudioMixerEngine : IDisposable
 
         var gameBuf = new float[BlockSamples];
         var micBuf = new float[BlockSamples];
+        // Приёмники PCM живут столько же, сколько поток. Блок отдаётся подписчикам
+        // ссылкой и валиден только на время вызова (см. AudioBlock): раньше здесь
+        // выделялись два свежих массива на КАЖДЫЕ 10 мс, то есть двести в секунду,
+        // и кольцевой буфер держал их все живыми до самого вытеснения.
+        var gameOut = new short[BlockSamples];
+        var micOut = new short[BlockSamples];
         int backlogCheck = 0;
 
         while (_running)
@@ -284,8 +296,6 @@ public sealed class AudioMixerEngine : IDisposable
             // Считаем в float (шумодав и пики требуют дробной точности), а отдаём
             // 16 бит: буфер хранит часы звука, и вчетверо более широкий формат там
             // ничего не добавляет — дальше всё равно AAC.
-            var gameOut = new short[BlockSamples];
-            var micOut = new short[BlockSamples];
             float gPeak = 0, mPeak = 0;
             for (int i = 0; i < BlockSamples; i++)
             {

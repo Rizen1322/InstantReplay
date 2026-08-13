@@ -14,6 +14,9 @@ namespace Aura.Core.Buffering;
 public readonly record struct EncodedFrame(
     byte[] Data, int Offset, int Length, long PtsTicks, long DurationTicks, bool IsKeyframe);
 
+/// <summary>Что писать в дорожку файла: звук игры, микрофон или их смесь.</summary>
+public enum AudioTrackKind { Game, Mic, Mixed }
+
 /// <summary>
 /// Блок аудио 10 мс: две дорожки interleaved stereo 48 кГц по 960 сэмплов.
 ///
@@ -23,8 +26,66 @@ public readonly record struct EncodedFrame(
 /// Динамический диапазон 96 дБ, потолок AAC при 192 кбит/с намного ниже, так что
 /// на слух разницы нет. Память буфера при этом падает вдвое: 132 МБ на три минуты
 /// двух дорожек превращаются в 66 МБ.
+///
+/// ВЛАДЕНИЕ. Массивы принадлежат микшеру и переиспользуются от блока к блоку:
+/// они валидны ТОЛЬКО на время вызова <see cref="Audio.AudioMixerEngine.BlockReady"/>,
+/// подписчик обязан скопировать данные себе. Ровно тот же контракт, что у
+/// <see cref="EncodedFrame"/> из энкодера, и по той же причине: раньше микшер
+/// выделял два свежих массива каждые 10 мс — двести массивов в секунду, и
+/// трёхминутный буфер держал их все живыми, около сорока тысяч объектов.
 /// </summary>
-public readonly record struct AudioBlock(short[] Game, short[] Mic, long PtsTicks);
+public readonly record struct AudioBlock(short[] Game, short[] Mic, long PtsTicks)
+{
+    /// <summary>Записать нужную дорожку в готовый буфер, ничего не выделяя.</summary>
+    public void CopyTo(AudioTrackKind kind, Span<short> dest) => Mix(Game, Mic, kind, dest);
+
+    /// <summary>
+    /// Свести дорожки прямо в приёмник.
+    ///
+    /// Сложение идёт через int с зажимом по границам short: сумма двух дорожек
+    /// легко выходит за диапазон, а переполнение слышно как треск. Раньше сведение
+    /// жило в селекторе, который выделял под результат новый массив НА КАЖДЫЙ БЛОК —
+    /// в обычной записи это происходило на потоке микшера с приоритетом Highest.
+    /// </summary>
+    public static void Mix(ReadOnlySpan<short> game, ReadOnlySpan<short> mic,
+                           AudioTrackKind kind, Span<short> dest)
+    {
+        switch (kind)
+        {
+            case AudioTrackKind.Game:
+                game[..dest.Length].CopyTo(dest);
+                break;
+            case AudioTrackKind.Mic:
+                mic[..dest.Length].CopyTo(dest);
+                break;
+            default:
+                for (int i = 0; i < dest.Length; i++)
+                    dest[i] = (short)Math.Clamp(game[i] + mic[i], short.MinValue, short.MaxValue);
+                break;
+        }
+    }
+}
+
+/// <summary>
+/// Замороженный кусок аудиобуфера: своя память, живёт столько, сколько нужно тому,
+/// кто пишет файл. Дорожки лежат раздельно — как их свести, решает вызывающий.
+/// </summary>
+public sealed class AudioSnapshot(short[] game, short[] mic, long[] pts, int blockSamples)
+{
+    public static readonly AudioSnapshot Empty = new([], [], [], 0);
+
+    /// <summary>Сэмплов в одном блоке на дорожку.</summary>
+    public int BlockSamples { get; } = blockSamples;
+
+    public int Count => pts.Length;
+
+    public long PtsAt(int index) => pts[index];
+
+    /// <summary>Записать блок нужной дорожкой в готовый буфер, ничего не выделяя.</summary>
+    public void CopyTo(int index, AudioTrackKind kind, Span<short> dest) =>
+        AudioBlock.Mix(game.AsSpan(index * BlockSamples, BlockSamples),
+                       mic.AsSpan(index * BlockSamples, BlockSamples), kind, dest);
+}
 
 /// <summary>
 /// Кольцевой буфер сжатого видео в оперативной памяти.
@@ -493,44 +554,153 @@ public sealed class ReplayVideoBuffer
 /// Кольцевой буфер аудио: 10-мс блоки, ВСЕГДА обе дорожки (игра и микрофон)
 /// раздельно — как именно свести (одна дорожка / две / только игра / только мик)
 /// решается в момент сохранения, а не записи.
+///
+/// УСТРОЙСТВО: две плоские арены (по одной на дорожку) и кольцо индексов поверх них.
+/// Раньше здесь лежала очередь блоков, каждый со своей парой массивов: микшер
+/// выделял их двести штук в секунду, и трёхминутный буфер держал живыми под сорок
+/// тысяч объектов — при том, что видеотракт ушёл на арену как раз затем, чтобы не
+/// давить на сборщик во время записи. Теперь память берётся один раз при старте
+/// конвейера и дальше не растёт вовсе.
 /// </summary>
 public sealed class ReplayAudioBuffer
 {
-    private readonly Queue<AudioBlock> _blocks = new();
     private readonly object _sync = new();
+
+    private short[] _game = [];
+    private short[] _mic = [];
+    private long[] _pts = [];
+
+    private int _blockSamples;
+    private int _capacity;   // блоков в кольце
+    private int _head;       // индекс самого старого блока
+    private int _count;
+
+    /// <summary>Блок — 10 мс, значит в секунде их сто.</summary>
+    private const int BlocksPerSecond = 100;
+
+    /// <summary>Запас сверх заказанной длительности — как у видео.</summary>
+    private const long SlackTicks = 10_000_000;
 
     public long MaxDurationTicks { get; set; }
 
     /// <summary>Сколько байт занимают накопленные блоки — для диагностики памяти.</summary>
     public long TotalBytes
     {
-        get { lock (_sync) return _blocks.Count * (long)BlockBytes; }
+        get { lock (_sync) return (long)_count * _blockSamples * 2 * sizeof(short); }
     }
 
     /// <summary>
-    /// Две дорожки по 10 мс: 480 фреймов × 2 канала × 2 байта × 2 дорожки.
-    /// Размер блока задаёт микшер (AudioMixerEngine.BlockFrames); здесь он записан
-    /// числом намеренно — файл не должен тянуть за собой аудиоподсистему с NAudio,
-    /// иначе его не подключить к тестам.
+    /// Выделить арену под заданную длительность. Зовётся при старте конвейера.
+    ///
+    /// <paramref name="blockSamples"/> задаёт микшер (AudioMixerEngine.BlockSamples);
+    /// параметром — намеренно: файл не должен тянуть за собой аудиоподсистему с
+    /// NAudio, иначе его не подключить к тестам.
     /// </summary>
-    private const int BlockBytes = 480 * 2 * sizeof(short) * 2;
+    public void Allocate(int blockSamples, int seconds)
+    {
+        // Плюс секунда — тот же запас, с которым работает вытеснение по времени
+        int capacity = Math.Max(BlocksPerSecond, (seconds + 1) * BlocksPerSecond);
+
+        lock (_sync)
+        {
+            _blockSamples = blockSamples;
+            _capacity = capacity;
+            _head = 0;
+            _count = 0;
+            _game = new short[(long)capacity * blockSamples];
+            _mic = new short[(long)capacity * blockSamples];
+            _pts = new long[capacity];
+        }
+
+        long bytes = 2L * capacity * blockSamples * sizeof(short);
+        Log.Info("Buffer", $"Арена звука: {capacity} блоков × 2 дорожки = " +
+                           $"{bytes / (1024 * 1024)} МБ на {seconds} сек");
+    }
 
     public void Add(AudioBlock block)
     {
         lock (_sync)
         {
-            _blocks.Enqueue(block);
-            while (_blocks.Count > 0 && block.PtsTicks - _blocks.Peek().PtsTicks > MaxDurationTicks + 10_000_000)
-                _blocks.Dequeue();
+            if (_capacity == 0) return;   // арена ещё не задана
+
+            int slot = (_head + _count) % _capacity;
+            // Кольцо заполнено — новый блок ложится на место самого старого
+            if (_count == _capacity) _head = (_head + 1) % _capacity;
+            else _count++;
+
+            int offset = slot * _blockSamples;
+            block.Game.AsSpan(0, _blockSamples).CopyTo(_game.AsSpan(offset, _blockSamples));
+            block.Mic.AsSpan(0, _blockSamples).CopyTo(_mic.AsSpan(offset, _blockSamples));
+            _pts[slot] = block.PtsTicks;
+
+            // Вытеснение по времени: держим заказанную длительность плюс запас
+            while (_count > 1 && block.PtsTicks - _pts[_head] > MaxDurationTicks + SlackTicks)
+            {
+                _head = (_head + 1) % _capacity;
+                _count--;
+            }
         }
     }
 
-    /// <summary>Блоки в интервале [fromTicks, toTicks].</summary>
-    public List<AudioBlock> Snapshot(long fromTicks, long toTicks)
+    /// <summary>
+    /// Блоки в интервале [fromTicks, toTicks] отдельной копией.
+    ///
+    /// Копия здесь обязательна: кольцо продолжает заполняться, пока файл пишется в
+    /// фоне, и отдать наружу ссылку на живую арену значит дать перезаписать её прямо
+    /// под писателем. Зато копия ОДНА на сохранение, а не сорок тысяч мелких
+    /// объектов, живущих всё время работы буфера.
+    /// </summary>
+    public AudioSnapshot Snapshot(long fromTicks, long toTicks)
     {
         lock (_sync)
-            return _blocks.Where(b => b.PtsTicks >= fromTicks && b.PtsTicks <= toTicks).ToList();
+        {
+            if (_count == 0 || _blockSamples == 0) return AudioSnapshot.Empty;
+
+            int first = -1, last = -2;
+            for (int i = 0; i < _count; i++)
+            {
+                long stamp = _pts[(_head + i) % _capacity];
+                if (stamp < fromTicks) continue;
+                if (stamp > toTicks) break;
+                if (first < 0) first = i;
+                last = i;
+            }
+            if (first < 0) return AudioSnapshot.Empty;
+
+            int count = last - first + 1;
+            var game = new short[count * _blockSamples];
+            var mic = new short[count * _blockSamples];
+            var pts = new long[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                int slot = (_head + first + i) % _capacity;
+                _game.AsSpan(slot * _blockSamples, _blockSamples).CopyTo(game.AsSpan(i * _blockSamples));
+                _mic.AsSpan(slot * _blockSamples, _blockSamples).CopyTo(mic.AsSpan(i * _blockSamples));
+                pts[i] = _pts[slot];
+            }
+            return new AudioSnapshot(game, mic, pts, _blockSamples);
+        }
     }
 
-    public void Clear() { lock (_sync) _blocks.Clear(); }
+    /// <summary>
+    /// Забыть накопленное, СОХРАНИВ арену: буфер копит заново с чистого листа.
+    /// Так делается после каждого сохранения повтора — конвейер при этом работает,
+    /// и отпускать под ним память нельзя.
+    /// </summary>
+    public void Clear() { lock (_sync) { _head = 0; _count = 0; } }
+
+    /// <summary>Отпустить арену целиком: конвейер остановлен, память возвращается системе.</summary>
+    public void Release()
+    {
+        lock (_sync)
+        {
+            _head = 0;
+            _count = 0;
+            _capacity = 0;
+            _game = [];
+            _mic = [];
+            _pts = [];
+        }
+    }
 }

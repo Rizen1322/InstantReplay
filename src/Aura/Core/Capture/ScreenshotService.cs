@@ -38,19 +38,32 @@ public static class ScreenshotService
     {
         (byte[] Bgra, int W, int H)? shot = null;
 
-        // 1) Кадр у работающего буфера
+        // 1) Кадр у работающего буфера.
+        //
+        // Обязательно В ФОНЕ, и вот почему. Внутри — ожидание ближайшего кадра
+        // (до полусекунды на статичном экране), копия в видеопамяти и вычитывание
+        // 14 МБ через staging-текстуру. Всё это синхронное, а метод зовут в том
+        // числе с потока интерфейса: оверлей выделения области открывался прямо
+        // из обработчика горячей клавиши, и нажатие PrintScreen подвешивало окно.
+        // Обычный скриншот от этого был защищён своим Task.Run в App — лишняя
+        // обёртка там ничего не стоит, а здесь чинит корень.
         if (live is not null)
         {
-            try
+            shot = await Task.Run(() =>
             {
-                live((device, context, texture) => shot = ReadPixels(device, context, texture, into));
-                if (shot is not null) Log.Info("Screenshot", "Кадр взят у работающего буфера");
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("Screenshot", $"Не удалось взять кадр у буфера: {ex.Message}");
-                shot = null;
-            }
+                (byte[] Bgra, int W, int H)? frame = null;
+                try
+                {
+                    live((device, context, texture) => frame = ReadPixels(device, context, texture, into));
+                    if (frame is not null) Log.Info("Screenshot", "Кадр взят у работающего буфера");
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("Screenshot", $"Не удалось взять кадр у буфера: {ex.Message}");
+                    frame = null;
+                }
+                return frame;
+            }).ConfigureAwait(false);
         }
 
         // 2) Буфер выключен — своя одноразовая сессия

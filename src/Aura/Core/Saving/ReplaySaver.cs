@@ -21,7 +21,8 @@ public static class ReplaySaver
     private const int MfESinkHeadersNotFound = unchecked((int)0xC00D4A45);
 
     /// <summary>
-    /// Открепить блоки арены — но только когда писатель отпустит ВСЕ наши буферы.
+    /// Открепить блоки арены — но только когда писатель отпустит ВСЕ буферы ЭТОГО
+    /// сохранения.
     ///
     /// Сэмплы ссылаются прямо на память арены, и Dispose писателя не гарантирует,
     /// что он отпустил их немедленно: в замерах он удерживал 6781 сэмпл из 7067.
@@ -29,29 +30,37 @@ public static class ReplaySaver
     /// собрать блок целиком — и Media Foundation обратится к чужой памяти. Именно так
     /// приложение и падало молча через несколько секунд после сохранения.
     ///
+    /// Считаем по счётчику СВОЕЙ партии (<see cref="ArenaBufferBatch"/>), а не по
+    /// общему на процесс: следующее сохранение начинается раньше, чем заканчивается
+    /// это ожидание, и на общем счётчике оно выглядело бы как «писатель ещё держит».
+    ///
     /// Ждём в фоне, чтобы не задерживать вызывающего: закрепление лишних блоков на
     /// пару секунд ничего не стоит, а обращение к освобождённой памяти стоит краха.
     /// </summary>
-    private static void UnpinWhenWriterDone(List<System.Runtime.InteropServices.GCHandle> handles)
+    private static void UnpinWhenWriterDone(
+        ArenaBufferBatch batch, List<System.Runtime.InteropServices.GCHandle> handles)
     {
-        if (handles.Count == 0) return;
+        if (handles.Count == 0) { batch.Free(); return; }
 
         Task.Run(() =>
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            while (ArenaMediaBuffer.Alive > 0 && clock.Elapsed < TimeSpan.FromSeconds(30))
+            while (batch.Alive > 0 && clock.Elapsed < TimeSpan.FromSeconds(30))
                 Thread.Sleep(20);
 
-            if (ArenaMediaBuffer.Alive > 0)
+            if (batch.Alive > 0)
             {
-                // Так быть не должно. Блоки оставляем закреплёнными навсегда: утечка
-                // нескольких десятков мегабайт безопаснее обращения к чужой памяти.
-                Log.Warn("Saver", $"Писатель не отпустил {ArenaMediaBuffer.Alive} буферов за 30 секунд — " +
+                // Так быть не должно. Блоки оставляем закреплёнными навсегда, а
+                // счётчик партии намеренно НЕ освобождаем — живые буферы всё ещё
+                // будут его править. Утечка нескольких десятков мегабайт безопаснее
+                // обращения к чужой памяти.
+                Log.Warn("Saver", $"Писатель не отпустил {batch.Alive} буферов за 30 секунд — " +
                                   "блоки арены остаются закреплёнными");
                 return;
             }
 
             foreach (var handle in handles) handle.Free();
+            batch.Free();
             if (clock.ElapsedMilliseconds > 50)
                 Log.Info("Saver", $"Писатель отпустил буферы через {clock.ElapsedMilliseconds} мс после закрытия");
         });
@@ -63,7 +72,7 @@ public static class ReplaySaver
         try
         {
             Guid sub = type.GetGUID(MediaTypeAttributeKeys.Subtype);
-            if (sub == VideoEncoder.SubtypeFor(VideoCodec.AV1)) return "AV1";
+            if (sub == HardwareEncoders.SubtypeFor(VideoCodec.AV1)) return "AV1";
             if (sub == VideoFormatGuids.Hevc) return "HEVC";
             if (sub == VideoFormatGuids.H264) return "H.264";
         }
@@ -74,7 +83,7 @@ public static class ReplaySaver
     public static void Save(
         string filePath,
         List<EncodedFrame> video,
-        List<AudioBlock> audio,
+        AudioSnapshot audio,
         IMFMediaType videoType,
         AudioTrackMode trackMode,
         bool hasGame, bool hasMic,
@@ -96,6 +105,8 @@ public static class ReplaySaver
         // сэмплы ссылаются на них напрямую, и пока писатель жив, память трогать нельзя.
         IMFSinkWriter writer = MfMp4Writer.Create(filePath);
         var handles = new List<System.Runtime.InteropServices.GCHandle>();
+        // Своя партия буферов на это сохранение — по ней и ждём разгрузки писателя
+        var batch = new ArenaBufferBatch();
         try
         {
 
@@ -136,7 +147,7 @@ public static class ReplaySaver
         // отдаёт статистику своей очереди. Фиксированный темп пробовали и отказались:
         // ни 300, ни 180 МБ/с на память не повлияли (прирост нативной части всё равно
         // равен объёму клипа), а сохранение растянулось с 2.6 до 5.5 секунды.
-        int blockSamples = audio.Count > 0 ? audio[0].Game.Length : 960;
+        int blockSamples = audio.Count > 0 ? audio.BlockSamples : 960;
         long totalBytes = 0;
         foreach (var f in video) totalBytes += f.Length;
         totalBytes += (long)audio.Count * blockSamples * sizeof(short) * audioStreams.Count;
@@ -193,16 +204,16 @@ public static class ReplaySaver
             // Сначала — всё аудио, которое звучит раньше этого кадра
             for (int s = 0; s < audioStreams.Count; s++)
             {
-                var (index, selector) = audioStreams[s];
+                var kind = audioStreams[s].Kind;
                 while (audioPos[s] < audio.Count)
                 {
-                    long apts = audio[audioPos[s]].PtsTicks - baseTicks;
+                    long apts = audio.PtsAt(audioPos[s]) - baseTicks;
                     if (apts > vpts) break;
                     if (apts >= 0)
                     {
                         if (chunkFill[s] == 0) chunkStart[s] = apts;
-                        selector(audio[audioPos[s]])
-                            .CopyTo(chunkBuf[s].AsSpan(chunkFill[s] * blockSamples));
+                        audio.CopyTo(audioPos[s], kind,
+                                     chunkBuf[s].AsSpan(chunkFill[s] * blockSamples, blockSamples));
                         if (++chunkFill[s] >= BlocksPerChunk) FlushAudio(s);
                     }
                     audioPos[s]++;
@@ -211,7 +222,7 @@ public static class ReplaySaver
 
             {
                 var sample = MfMp4Writer.CreateSampleNoCopy(
-                    pinned[f.Data] + f.Offset, f.Length, vpts, f.DurationTicks);
+                    batch, pinned[f.Data] + f.Offset, f.Length, vpts, f.DurationTicks);
                 if (f.IsKeyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
                 long videoStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 writer.WriteSample(videoStream, sample);
@@ -225,13 +236,13 @@ public static class ReplaySaver
         // Хвост аудио после последнего видеокадра
         for (int s = 0; s < audioStreams.Count; s++)
         {
-            var (index, selector) = audioStreams[s];
+            var kind = audioStreams[s].Kind;
             for (; audioPos[s] < audio.Count; audioPos[s]++)
             {
-                long apts = audio[audioPos[s]].PtsTicks - baseTicks;
+                long apts = audio.PtsAt(audioPos[s]) - baseTicks;
                 if (apts < 0) continue;
                 if (chunkFill[s] == 0) chunkStart[s] = apts;
-                selector(audio[audioPos[s]]).CopyTo(chunkBuf[s].AsSpan(chunkFill[s] * blockSamples));
+                audio.CopyTo(audioPos[s], kind, chunkBuf[s].AsSpan(chunkFill[s] * blockSamples, blockSamples));
                 if (++chunkFill[s] >= BlocksPerChunk) FlushAudio(s);
             }
             FlushAudio(s); // остаток дорожки
@@ -275,7 +286,7 @@ public static class ReplaySaver
         finally
         {
             writer.Dispose();  // отпускает удержанные сэмплы
-            UnpinWhenWriterDone(handles);
+            UnpinWhenWriterDone(batch, handles);
         }
     }
 

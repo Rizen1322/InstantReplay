@@ -26,18 +26,18 @@
 
   <ItemGroup>
     <!-- Direct3D11 / DXGI / Media Foundation -->
-    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
-    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
-    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
     <!-- Компиляция шейдера, который дорисовывает курсор в кадр Desktop Duplication -->
-    <PackageReference Include="Vortice.D3DCompiler" Version="3.6.2" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
     <!-- WASAPI-захват и ресемплинг -->
-    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
-    <PackageReference Include="NAudio.Core" Version="2.2.1" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.3.0" />
+    <PackageReference Include="NAudio.Core" Version="2.3.0" />
     <!-- Иконка в трее (WPF-вариант того же пакета) -->
-    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.1.4" />
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.3.2" />
     <!-- WMI -->
-    <PackageReference Include="System.Management" Version="9.0.0" />
+    <PackageReference Include="System.Management" Version="9.0.19" />
   </ItemGroup>
 
   <ItemGroup>

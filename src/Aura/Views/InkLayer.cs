@@ -4,7 +4,11 @@ using System.Windows.Media;
 namespace Aura.Views;
 
 /// <summary>Чем рисуют поверх выделенной области.</summary>
-public enum InkTool { None, Pencil, Arrow, Rect, Blur, Text }
+/// <summary>
+/// Инструмент панели. <see cref="Eyedropper"/> ничего не рисует — он только берёт
+/// цвет с кадра, поэтому в списке фигур не встречается.
+/// </summary>
+public enum InkTool { None, Pencil, Arrow, Rect, Blur, Text, Eyedropper }
 
 /// <summary>Одна фигура: след карандаша, стрелка, прямоугольник, размытие или подпись.</summary>
 public sealed class InkShape

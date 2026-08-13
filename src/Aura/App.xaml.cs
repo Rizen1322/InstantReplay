@@ -171,12 +171,12 @@ public partial class App : Application
     private static void GuardCodec()
     {
         var settings = Services.Settings.Current;
-        if (Core.Encoding.VideoEncoder.CanSaveToMp4(settings.Codec)) return;
+        if (Core.Encoding.HardwareEncoders.CanSaveToMp4(settings.Codec)) return;
 
         var fallback = Core.Settings.VideoCodec.H264;
         try
         {
-            var (_, codecs) = Core.Encoding.VideoEncoder.ProbeSupport();
+            var (_, codecs) = Core.Encoding.HardwareEncoders.ProbeSupport();
             if (codecs.Contains(Core.Settings.VideoCodec.HEVC)) fallback = Core.Settings.VideoCodec.HEVC;
         }
         catch { }
@@ -706,6 +706,9 @@ public partial class App : Application
         _tray?.Dispose();
         try { MediaFactory.MFShutdown(); } catch { }
         Core.Interop.NativeMethods.timeEndPeriod(1);
+        // Environment.Exit убивает фоновый поток лога на месте — сначала даём ему
+        // дописать хвост, иначе итоги остановки конвейера до диска не доезжают.
+        Log.Shutdown();
         Environment.Exit(0);
     }
 }

@@ -45,18 +45,11 @@ internal static unsafe class ArenaMediaBuffer
         public IntPtr Data;
         public uint MaxLength;
         public uint CurrentLength;
+        /// <summary>Счётчик живых буферов своей партии (см. <see cref="ArenaBufferBatch"/>).</summary>
+        public IntPtr Alive;
     }
 
     private static readonly IntPtr SharedVtbl = BuildVtbl();
-
-    /// <summary>
-    /// Сколько наших буферов ещё живо. Пока счётчик не ноль, память, на которую они
-    /// смотрят, трогать нельзя: писатель отпускает сэмплы асинхронно и вполне может
-    /// додержать часть после того, как его самого освободили.
-    /// </summary>
-    private static int _alive;
-
-    public static int Alive => Volatile.Read(ref _alive);
 
     private static IntPtr BuildVtbl()
     {
@@ -75,9 +68,10 @@ internal static unsafe class ArenaMediaBuffer
 
     /// <summary>
     /// Создать буфер поверх готовых байт. Счётчик ссылок = 1, эта ссылка переходит
-    /// вызывающему.
+    /// вызывающему. <paramref name="alive"/> — счётчик партии: поднимается здесь,
+    /// опускается в <see cref="Release"/>, когда буфер действительно умер.
     /// </summary>
-    public static IntPtr Create(IntPtr data, int length)
+    public static IntPtr Create(int* alive, IntPtr data, int length)
     {
         var instance = (Instance*)NativeMemory.Alloc((nuint)sizeof(Instance));
         instance->Vtbl = SharedVtbl;
@@ -85,7 +79,8 @@ internal static unsafe class ArenaMediaBuffer
         instance->Data = data;
         instance->MaxLength = (uint)length;
         instance->CurrentLength = (uint)length;
-        Interlocked.Increment(ref _alive);
+        instance->Alive = (IntPtr)alive;
+        Interlocked.Increment(ref *alive);
         return (IntPtr)instance;
     }
 
@@ -118,8 +113,10 @@ internal static unsafe class ArenaMediaBuffer
         int left = Interlocked.Decrement(ref self->RefCount);
         if (left == 0)
         {
+            // Счётчик читаем ДО освобождения объекта: после Free поле уже мусор.
+            int* alive = (int*)self->Alive;
             NativeMemory.Free(self); // саму арену не трогаем — она не наша
-            Interlocked.Decrement(ref _alive);
+            if (alive is not null) Interlocked.Decrement(ref *alive);
         }
         return (uint)Math.Max(left, 0);
     }
@@ -162,5 +159,54 @@ internal static unsafe class ArenaMediaBuffer
         if (length is null) return EPointer;
         *length = self->MaxLength;
         return SOk;
+    }
+}
+
+/// <summary>
+/// Партия буферов ОДНОГО сохранения: знает, сколько её буферов ещё живо.
+///
+/// Пока счётчик не ноль, память арены, на которую они смотрят, трогать нельзя:
+/// писатель отпускает сэмплы асинхронно и вполне может додержать часть после того,
+/// как его самого освободили.
+///
+/// Счётчик обязан быть СВОЙ на каждое сохранение. Раньше он был один статический на
+/// весь процесс, и ломалось это так: движок возвращает состояние Running сразу после
+/// закрытия писателя, а ожидание разгрузки продолжается в фоне. Следующее сохранение,
+/// начатое в эту щель, поднимало общий счётчик своими буферами — предыдущее видело
+/// «писатель ещё держит» там, где держать было уже нечего, высиживало все 30 секунд
+/// и уходило в аварийную ветку, оставляя блоки арены закреплёнными НАВСЕГДА.
+///
+/// Счётчик нативный, а не обычное поле: его правит Release, который прилетает из
+/// потоков Media Foundation в произвольный момент — в том числе когда управляемая
+/// часть сохранения давно закончилась.
+/// </summary>
+internal sealed unsafe class ArenaBufferBatch
+{
+    private IntPtr _counter = (IntPtr)NativeMemory.AllocZeroed(1, (nuint)sizeof(int));
+
+    /// <summary>Сколько буферов партии ещё живо; 0 — писатель отпустил всё.</summary>
+    public int Alive
+    {
+        get
+        {
+            IntPtr p = Volatile.Read(ref _counter);
+            return p == IntPtr.Zero ? 0 : Volatile.Read(ref *(int*)p);
+        }
+    }
+
+    /// <summary>Буфер Media Foundation поверх памяти арены, отнесённый к этой партии.</summary>
+    public IntPtr Create(IntPtr data, int length) =>
+        ArenaMediaBuffer.Create((int*)_counter, data, length);
+
+    /// <summary>
+    /// Отпустить счётчик. Звать ТОЛЬКО когда <see cref="Alive"/> == 0: буферы правят
+    /// его из Release, и освобождение раньше времени — это запись по мёртвому адресу.
+    /// При зависшем писателе счётчик намеренно утекает вместе с закреплёнными блоками
+    /// арены: несколько байт безопаснее краха.
+    /// </summary>
+    public void Free()
+    {
+        IntPtr p = Interlocked.Exchange(ref _counter, IntPtr.Zero);
+        if (p != IntPtr.Zero) NativeMemory.Free((void*)p);
     }
 }

@@ -65,7 +65,7 @@ public sealed class ManualRecorder : IDisposable
     private readonly List<string> _files = [];
 
     private readonly object _audioSync = new();
-    private List<(int Index, Func<AudioBlock, short[]> Selector)> _audioStreams = [];
+    private List<(int Index, AudioTrackKind Kind)> _audioStreams = [];
     private short[][] _chunkBuf = [];
     private int[] _chunkFill = [];
     private long[] _chunkStart = [];
@@ -139,7 +139,8 @@ public sealed class ManualRecorder : IDisposable
             for (int s = 0; s < _chunkBuf.Length; s++)
             {
                 if (_chunkFill[s] == 0) _chunkStart[s] = pts;
-                _audioStreams[s].Selector(block).CopyTo(_chunkBuf[s].AsSpan(_chunkFill[s] * _blockSamples));
+                block.CopyTo(_audioStreams[s].Kind,
+                             _chunkBuf[s].AsSpan(_chunkFill[s] * _blockSamples, _blockSamples));
                 if (++_chunkFill[s] >= BlocksPerChunk)
                     (ready ??= []).Add(TakeChunk(s));
             }

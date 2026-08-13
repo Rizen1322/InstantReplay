@@ -125,10 +125,13 @@ public sealed class ReplayEngine : IDisposable
             _videoBuffer.MaxDurationTicks = TimeSpan.FromSeconds(s.ReplayLengthSeconds).Ticks;
             _audioBuffer.MaxDurationTicks = _videoBuffer.MaxDurationTicks;
             _videoBuffer.Clear();
-            _audioBuffer.Clear();
+            _audioBuffer.Release();
             // Арена под кадры: размер считается из длительности и битрейта, дальше
             // память не растёт — сколько выделено, столько буфер и занимает.
             _videoBuffer.Allocate(s.BitrateBps, s.ReplayLengthSeconds);
+            // Своя арена под звук, по той же причине: раньше микшер выделял пару
+            // массивов каждые 10 мс, и буфер держал их все живыми.
+            _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, s.ReplayLengthSeconds);
 
             _capture = ScreenCaptureFactory.Create();
             _capture.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
@@ -510,7 +513,7 @@ public sealed class ReplayEngine : IDisposable
         _processor?.Dispose(); _processor = null;
         _capture?.Dispose(); _capture = null;
         _videoBuffer.Clear();
-        _audioBuffer.Clear();
+        _audioBuffer.Release();   // конвейер стоит — арену звука возвращаем системе
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive;
         SetState(EngineState.Stopped);
         Log.Info("Engine", "Instant Replay выключен");
@@ -581,8 +584,9 @@ public sealed class ReplayEngine : IDisposable
                                  s.CaptureGameAudio, s.CaptureMicrophone,
                                  p => SaveProgress = p);
                 _storage.RegisterSaved(file); // индекс папки — без повторного обхода диска
-                s.TotalReplaysSaved++;
-                _settings.Save("stats");
+                // Правку счётчика делает фоновый поток — идём через Update, чтобы она
+                // не столкнулась с сохранением настроек из потока интерфейса
+                _settings.Update(x => x.TotalReplaysSaved++, "stats");
                 ReplaySaved?.Invoke(file, Math.Max(seconds, 1));
             }
             catch (Exception ex)
