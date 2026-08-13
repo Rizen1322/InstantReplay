@@ -155,8 +155,7 @@ public sealed class InkLayer : FrameworkElement
                 break;
 
             case InkTool.Arrow:
-                dc.DrawLine(pen, shape.Start, shape.End);
-                DrawHead(dc, brush, shape);
+                DrawArrow(dc, brush, pen, shape);
                 break;
         }
     }
@@ -174,6 +173,41 @@ public sealed class InkLayer : FrameworkElement
     /// <summary>Кегль подписи по толщине линии: 2,5 → 18, 5 → 26, 9 → 38.</summary>
     public static double CaptionSize(double thickness) => 12 + thickness * 2.6;
 
+    /// <summary>Разлёт сторон наконечника от оси стрелки, радианы (~24°).</summary>
+    private const double HeadSpread = 0.42;
+
+    /// <summary>Длина наконечника от кончика до боковых углов.</summary>
+    private static double HeadLength(double thickness) => Math.Max(11, thickness * 4.5);
+
+    /// <summary>
+    /// Стрелка: древко и залитый наконечник.
+    ///
+    /// Древко НЕ доводится до кончика. У пера скруглённые концы, и линия, дотянутая
+    /// до самой точки End, вылезала за наконечник полукруглым бугорком радиусом в
+    /// половину толщины: на тонкой линии почти незаметно, а на толстой (9 px) это
+    /// 4.5 px отростка прямо из острия. Останавливаем древко на основании
+    /// треугольника — скругление уходит под заливку, и стыка не видно.
+    /// </summary>
+    private static void DrawArrow(DrawingContext dc, Brush brush, Pen pen, InkShape shape)
+    {
+        double dx = shape.End.X - shape.Start.X;
+        double dy = shape.End.Y - shape.Start.Y;
+        double length = Math.Sqrt(dx * dx + dy * dy);
+        if (length < 1) return;
+
+        double angle = Math.Atan2(dy, dx);
+        // Основание треугольника: проекция боковых углов на ось стрелки
+        double shaft = length - HeadLength(shape.Thickness) * Math.Cos(HeadSpread);
+
+        // Короткая стрелка — это уже один наконечник, древку в ней места нет
+        if (shaft > 0.5)
+            dc.DrawLine(pen, shape.Start, new Point(
+                shape.Start.X + Math.Cos(angle) * shaft,
+                shape.Start.Y + Math.Sin(angle) * shaft));
+
+        DrawHead(dc, brush, shape);
+    }
+
     /// <summary>Наконечник стрелки — залитый треугольник, чтобы был виден на пёстром фоне.</summary>
     private static void DrawHead(DrawingContext dc, Brush brush, InkShape shape)
     {
@@ -182,9 +216,9 @@ public sealed class InkLayer : FrameworkElement
         double length = Math.Sqrt(dx * dx + dy * dy);
         if (length < 1) return;
 
-        double head = Math.Max(11, shape.Thickness * 4.5);
+        double head = HeadLength(shape.Thickness);
         double angle = Math.Atan2(dy, dx);
-        const double spread = 0.42; // ~24°
+        const double spread = HeadSpread;
 
         var left = new Point(
             shape.End.X - head * Math.Cos(angle - spread),

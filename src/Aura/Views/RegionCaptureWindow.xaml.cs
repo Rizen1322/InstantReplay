@@ -89,6 +89,7 @@ public partial class RegionCaptureWindow : Window
         BlurBtn.Click += (_, _) => SetTool(InkTool.Blur);
         TextBtn.Click += (_, _) => SetTool(InkTool.Text);
         EyedropperBtn.Click += (_, _) => SetTool(InkTool.Eyedropper);
+        ColorBtn.Click += (_, _) => ShowColorPanel(ColorBtn.IsChecked == true);
         ThicknessBtn.Click += (_, _) => CycleThickness();
         UndoBtn.Click += (_, _) => Undo();
         RedoBtn.Click += (_, _) => Redo();
@@ -168,7 +169,12 @@ public partial class RegionCaptureWindow : Window
                 ToolTip = name,
                 Tag = color
             };
-            swatch.MouseLeftButtonDown += (s, e) => { SetColor((Color)((Border)s).Tag); e.Handled = true; };
+            swatch.MouseLeftButtonDown += (s, e) =>
+            {
+                SetColor((Color)((Border)s).Tag);
+                ShowColorPanel(false);   // цвет выбран — плашка своё отработала
+                e.Handled = true;
+            };
             Swatches.Children.Add(swatch);
         }
         HighlightSwatch();
@@ -188,12 +194,38 @@ public partial class RegionCaptureWindow : Window
             if (child is Border border)
                 border.BorderBrush = (Color)border.Tag == _color ? Brushes.White : Brushes.Transparent;
 
-        // Значок пипетки заодно показывает ТЕКУЩИЙ цвет. Без этого цвет, взятый с
-        // кадра, вообще нигде не виден: среди кружков палитры его нет, и подсвечивать
-        // нечего.
+        // Кнопка палитры и значок пипетки показывают ТЕКУЩИЙ цвет. Без этого цвет,
+        // взятый с кадра, вообще негде увидеть: среди кружков палитры его нет, а сама
+        // палитра теперь свёрнута.
         var current = new SolidColorBrush(_color);
         current.Freeze();
+        ColorDot.Fill = current;
         EyedropperIcon.Foreground = current;
+    }
+
+    /// <summary>Раскрыть или убрать плашку с цветами. Ставится под кнопкой цвета.</summary>
+    private void ShowColorPanel(bool show)
+    {
+        ColorBtn.IsChecked = show;
+        if (!show) { ColorPanel.Visibility = Visibility.Collapsed; return; }
+
+        ColorPanel.Visibility = Visibility.Visible;
+        ColorPanel.UpdateLayout();
+
+        // Кнопка лежит внутри панели, а та — где угодно на холсте, поэтому её место
+        // спрашиваем у самого дерева, а не считаем от координат выделения.
+        var origin = ColorBtn.TransformToAncestor(Root).Transform(new Point(0, 0));
+        double width = ColorPanel.ActualWidth > 0 ? ColorPanel.ActualWidth : 260;
+        double height = ColorPanel.ActualHeight > 0 ? ColorPanel.ActualHeight : 36;
+
+        double left = Math.Clamp(origin.X + ColorBtn.ActualWidth / 2 - width / 2,
+                                 6, Math.Max(6, Root.ActualWidth - width - 6));
+        // Под панелью, а если там край экрана — над ней
+        double top = origin.Y + ColorBtn.ActualHeight + 8;
+        if (top + height > Root.ActualHeight - 6) top = Math.Max(6, origin.Y - height - 8);
+
+        Canvas.SetLeft(ColorPanel, left);
+        Canvas.SetTop(ColorPanel, top);
     }
 
     // ---------------- Мышь ----------------
@@ -202,7 +234,11 @@ public partial class RegionCaptureWindow : Window
     {
         // Промах по пустому месту панели не должен начинать новое выделение:
         // сами кнопки событие гасят, а вот отступы вокруг них — нет.
-        if (e.OriginalSource is DependencyObject source && Toolbar.IsAncestorOf(source)) return;
+        if (e.OriginalSource is DependencyObject source &&
+            (Toolbar.IsAncestorOf(source) || ColorPanel.IsAncestorOf(source))) return;
+
+        // Клик мимо раскрытой палитры её закрывает — как любое всплывающее меню
+        if (ColorPanel.Visibility == Visibility.Visible) ShowColorPanel(false);
 
         // Клик мимо набираемой подписи её завершает — как в любом редакторе
         if (_caption is not null && !ReferenceEquals(e.OriginalSource, _caption)) CommitCaption();
@@ -278,6 +314,10 @@ public partial class RegionCaptureWindow : Window
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
         var point = e.GetPosition(Root);
+
+        // Пипетка ведёт за курсором кружок с тем цветом, который возьмётся по клику:
+        // без него приходится жать наугад и проверять по кнопке уже постфактум.
+        if (_tool == InkTool.Eyedropper) { UpdateColorPeek(point); return; }
 
         if (_drawing && Ink.Current is { } shape)
         {
@@ -485,6 +525,13 @@ public partial class RegionCaptureWindow : Window
         // проход по кадру, платить за него тем, кто размытием не пользуется, незачем.
         if (_tool == InkTool.Blur) EnsureBlurred();
 
+        // Пипетке затемнение мешает: она про НАСТОЯЩИЙ цвет кадра, а поверх него
+        // лежит полупрозрачная чёрная заливка. Снимаем её на время выбора и
+        // возвращаем, как только инструмент сменился.
+        UpdateDim();
+        if (_tool != InkTool.Eyedropper) HideColorPeek();
+        if (_tool == InkTool.Eyedropper) ShowColorPanel(false);
+
         Cursor = _tool switch
         {
             InkTool.None => Cursors.Arrow,
@@ -505,6 +552,35 @@ public partial class RegionCaptureWindow : Window
     /// После выбора сразу берём карандаш: цвет выбирают, чтобы им рисовать, и лишний
     /// клик по инструменту здесь только мешает.
     /// </summary>
+    /// <summary>Кружок с цветом под курсором и его код — рядом с самим курсором.</summary>
+    private void UpdateColorPeek(Point at)
+    {
+        try
+        {
+            var color = ColorSampling.At(_shot, at, Root.ActualWidth);
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            PeekDot.Fill = brush;
+            PeekText.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+            ColorPeek.Visibility = Visibility.Visible;
+            ColorPeek.UpdateLayout();
+
+            // Ниже-правее курсора, но у краёв экрана переворачиваем: подсказка,
+            // уехавшая за границу, бесполезна ровно там, где нужнее всего.
+            double width = ColorPeek.ActualWidth, height = ColorPeek.ActualHeight;
+            double left = at.X + 18, top = at.Y + 18;
+            if (left + width > Root.ActualWidth - 4) left = at.X - width - 12;
+            if (top + height > Root.ActualHeight - 4) top = at.Y - height - 12;
+
+            Canvas.SetLeft(ColorPeek, Math.Max(4, left));
+            Canvas.SetTop(ColorPeek, Math.Max(4, top));
+        }
+        catch { HideColorPeek(); }
+    }
+
+    private void HideColorPeek() => ColorPeek.Visibility = Visibility.Collapsed;
+
     private void PickColor(Point at)
     {
         try
@@ -648,6 +724,10 @@ public partial class RegionCaptureWindow : Window
     /// <summary>Затемнение всего экрана с вырезанным выделением (правило EvenOdd).</summary>
     private void UpdateDim()
     {
+        // Пока выбирают цвет — кадр показываем как есть: сквозь затемнение оттенок
+        // не подобрать, а пипетка всё равно берёт цвет из исходного кадра.
+        if (_tool == InkTool.Eyedropper) { Dim.Data = null; return; }
+
         var full = new RectangleGeometry(new Rect(0, 0, Root.ActualWidth, Root.ActualHeight));
         if (_selection.IsEmpty || _selection.Width <= 0)
         {

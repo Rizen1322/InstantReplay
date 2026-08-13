@@ -107,12 +107,6 @@
                     <ToggleButton x:Name="TextBtn" Style="{StaticResource ToolButton}" ToolTip="Подпись">
                         <c:Icon Data="{StaticResource Ico.TextTool}" Size="17"/>
                     </ToggleButton>
-                    <!-- Пипетка берёт цвет с любого места кадра, в том числе вне
-                         выделения: подобрать оттенок с соседнего окна — обычное дело. -->
-                    <ToggleButton x:Name="EyedropperBtn" Style="{StaticResource ToolButton}" ToolTip="Пипетка — взять цвет с кадра">
-                        <c:Icon x:Name="EyedropperIcon" Data="{StaticResource Ico.Eyedropper}" Size="17"/>
-                    </ToggleButton>
-
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
                     <!-- Толщина линии: кнопка по кругу меняет три значения, а сама точка
                          показывает выбранное — отдельная подпись не нужна. -->
@@ -121,9 +115,16 @@
                     </Button>
 
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
-                    <!-- Палитра собирается в коде: цвета перечислены одним списком там же,
-                         где выбранный цвет и живёт. -->
-                    <StackPanel x:Name="Swatches" Orientation="Horizontal" VerticalAlignment="Center"/>
+                    <!-- Цвет свёрнут в одну кнопку: семь кружков в ряд занимали больше
+                         места, чем все инструменты вместе, и панель переставала влезать
+                         над узким выделением. Кнопка сама показывает текущий цвет, а по
+                         клику раскрывается палитра вместе с пипеткой. -->
+                    <ToggleButton x:Name="ColorBtn" Style="{StaticResource ToolButton}" ToolTip="Цвет и пипетка">
+                        <Grid>
+                            <Ellipse x:Name="ColorDot" Width="17" Height="17" Fill="#E03B3B"/>
+                            <Ellipse Width="17" Height="17" Stroke="#55FFFFFF" StrokeThickness="1"/>
+                        </Grid>
+                    </ToggleButton>
 
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
                     <Button x:Name="UndoBtn" Style="{StaticResource ActionButton}" ToolTip="Убрать последнее (Ctrl+Z)">
@@ -154,6 +155,38 @@
             <Border x:Name="SizeChip" Visibility="Collapsed" Background="#CC1C1C22" CornerRadius="5"
                     Padding="7,3" BorderBrush="#33FFFFFF" BorderThickness="1">
                 <TextBlock x:Name="SizeText" Foreground="#E8E8ED" FontSize="12" FontFamily="Consolas"/>
+            </Border>
+
+            <!-- Раскрытая палитра. На том же холсте, а не всплывающим окном: оверлей
+                 сам растянут поверх всех окон, и отдельный Popup со своим hwnd тут
+                 воюет за порядок отрисовки. -->
+            <Border x:Name="ColorPanel" Visibility="Collapsed" Background="#1C1C22" CornerRadius="10"
+                    BorderBrush="#33FFFFFF" BorderThickness="1" Padding="6,5">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.55" Color="Black"/>
+                </Border.Effect>
+                <StackPanel Orientation="Horizontal">
+                    <StackPanel x:Name="Swatches" Orientation="Horizontal" VerticalAlignment="Center"/>
+                    <Border Width="1" Background="#33FFFFFF" Margin="5,2"/>
+                    <!-- Пипетка живёт здесь же: она про цвет, а не про рисование -->
+                    <ToggleButton x:Name="EyedropperBtn" Style="{StaticResource ToolButton}"
+                                  ToolTip="Пипетка — взять цвет с кадра">
+                        <c:Icon x:Name="EyedropperIcon" Data="{StaticResource Ico.Eyedropper}" Size="17"/>
+                    </ToggleButton>
+                </StackPanel>
+            </Border>
+
+            <!-- Что возьмёт пипетка: кружок цвета под курсором и его код -->
+            <Border x:Name="ColorPeek" Visibility="Collapsed" Background="#E61C1C22" CornerRadius="6"
+                    Padding="6,4" BorderBrush="#55FFFFFF" BorderThickness="1" IsHitTestVisible="False">
+                <StackPanel Orientation="Horizontal">
+                    <Grid VerticalAlignment="Center" Margin="0,0,6,0">
+                        <Ellipse x:Name="PeekDot" Width="14" Height="14"/>
+                        <Ellipse Width="14" Height="14" Stroke="#66FFFFFF" StrokeThickness="1"/>
+                    </Grid>
+                    <TextBlock x:Name="PeekText" Foreground="#E8E8ED" FontSize="12"
+                               FontFamily="Consolas" VerticalAlignment="Center"/>
+                </StackPanel>
             </Border>
         </Canvas>
 
