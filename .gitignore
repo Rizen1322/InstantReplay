@@ -30,6 +30,11 @@ setup_music.wav
 *.snk
 release-key*
 
+# npm-обвязка сторонних инструментов: к сборке приложения отношения не имеет,
+# а release.ps1 делает `git add -A` и утащил бы её в релизный коммит.
+package.json
+package-lock.json
+
 # Пользовательские данные IDE
 .vs/
 *.user
