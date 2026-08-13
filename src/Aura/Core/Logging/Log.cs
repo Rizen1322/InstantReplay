@@ -56,11 +56,20 @@ public static class Log
     /// <summary>Писатель один на процесс, даже если Init позвали повторно (тесты).</summary>
     private static int _started;
 
+    /// <summary>Хвост имени файла: у копии --dev он свой, см. <see cref="Init"/>.</summary>
+    private static string _suffix = "";
+
     /// <summary>
     /// Поднять лог. <paramref name="directory"/> задаётся только тестами; приложение
     /// зовёт без аргумента и пишет в %LocalAppData%\Aura\logs.
+    ///
+    /// <paramref name="fileSuffix"/> разводит копии по разным файлам. Это не украшение:
+    /// файл открыт с FileShare.ReadWrite (иначе лог не прочитать, пока приложение
+    /// работает), и две копии — обычная и запущенная с --dev — писали бы в один файл
+    /// каждая своим буфером, затирая друг другу строки. Обычные копии разведены
+    /// мьютексом единственного экземпляра, а --dev поднимается рядом намеренно.
     /// </summary>
-    public static void Init(string? directory = null)
+    public static void Init(string? directory = null, string fileSuffix = "")
     {
         string dir = directory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura", "logs");
@@ -72,6 +81,7 @@ public static class Log
             _file = null;
             _openedFor = "";
             _dir = dir;
+            _suffix = fileSuffix;
         }
 
         foreach (var f in Directory.EnumerateFiles(dir, "app-*.log"))
@@ -190,7 +200,7 @@ public static class Log
         try { _file?.Flush(); _file?.Dispose(); } catch { }
         _file = null;
 
-        var stream = new FileStream(Path.Combine(_dir, $"app-{today}.log"),
+        var stream = new FileStream(Path.Combine(_dir, $"app-{today}{_suffix}.log"),
                                     FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
         // Полное имя кодировки: внутри Aura.Core короткое Encoding — это наше
         // пространство имён с кодировщиком видео, а не System.Text.
@@ -235,7 +245,7 @@ public static class Log
         {
             string dir = _dir;
             if (dir.Length == 0) return;
-            File.AppendAllText(Path.Combine(dir, $"crash-{DateTime.Now:yyyy-MM-dd}.log"),
+            File.AppendAllText(Path.Combine(dir, $"crash-{DateTime.Now:yyyy-MM-dd}{_suffix}.log"),
                                line + Environment.NewLine);
         }
         catch { }
