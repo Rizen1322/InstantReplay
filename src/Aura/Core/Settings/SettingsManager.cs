@@ -50,7 +50,15 @@ public sealed class SettingsManager
             try
             {
                 if (File.Exists(FilePath))
+                {
                     Current = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOpts) ?? new();
+
+                    // Discord поднял лимит вложения с 10 МБ до 20. Настройку никто руками не
+                    // задаёт — поля в интерфейсе нет, — так что записанная старая десятка это
+                    // просто прежнее значение по умолчанию, застрявшее в файле.
+                    if (Current.AttachmentSizeMb == AppSettings.LegacyAttachmentSizeMb)
+                        Current.AttachmentSizeMb = AppSettings.DefaultAttachmentSizeMb;
+                }
             }
             catch (Exception ex)
             {

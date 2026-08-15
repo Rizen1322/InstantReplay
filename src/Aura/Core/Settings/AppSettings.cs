@@ -122,8 +122,14 @@ public sealed class AppSettings
     /// <summary>Путь к ffmpeg.exe для «Сжать для Discord». Обычно находится сам рядом с LosslessCut.</summary>
     public string? FfmpegPath { get; set; }
 
-    /// <summary>Под какой размер вложения сжимать, МБ (у Discord без Nitro — 10).</summary>
-    public int AttachmentSizeMb { get; set; } = 10;
+    /// <summary>Под какой размер вложения сжимать, МБ (у Discord без Nitro — 20).</summary>
+    public int AttachmentSizeMb { get; set; } = DefaultAttachmentSizeMb;
+
+    /// <summary>Лимит вложения Discord без Nitro. Был 10 МБ, с 2025-го — 20.</summary>
+    public const int DefaultAttachmentSizeMb = 20;
+
+    /// <summary>Прежний лимит: старые settings.json донесли его до нас записанным числом.</summary>
+    public const int LegacyAttachmentSizeMb = 10;
 
     // ---------- Уведомления / UI ----------
     public bool ShowNotifications { get; set; } = true;
