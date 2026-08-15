@@ -62,7 +62,10 @@ public static class MonitorLayout
                     return i;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Logging.Log.Warn("Capture", $"Не удалось определить монитор под курсором: {ex.Message}");
+        }
         return null;
     }
 
@@ -91,7 +94,13 @@ public static class MonitorLayout
                             }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Неполный список молча уводит запись на другой монитор: индексы
+                // сдвигаются, и «второй монитор» в настройках указывает не туда.
+                Logging.Log.Warn("Capture",
+                    $"Перечисление мониторов оборвалось на {list.Count}-м: {ex.Message}");
+            }
 
             _cache = list;
             _cachedAt = DateTime.UtcNow;

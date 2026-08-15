@@ -144,6 +144,9 @@ public static class Log
     public static void Error(string tag, string msg) => Enqueue("ERR", tag, msg);
     public static void Error(string tag, Exception ex) => Enqueue("ERR", tag, ex.ToString());
 
+    /// <summary>Сколько строк потеряно из-за переполнения очереди с прошлого отчёта.</summary>
+    private static long _dropped;
+
     private static void Enqueue(string lvl, string tag, string msg)
     {
         var line = $"{DateTime.Now:HH:mm:ss.fff} [{lvl}] [{tag}] {msg}";
@@ -151,7 +154,20 @@ public static class Log
         // Очередь не бесконечна: при шторме лучше потерять строку, чем притормозить
         // поток захвата на ожидании места. После Shutdown она закрыта — TryAdd на
         // закрытой коллекции бросает, и это не повод падать на выходе.
-        try { Queue.TryAdd(line); } catch (InvalidOperationException) { }
+        try
+        {
+            if (Queue.TryAdd(line)) return;
+
+            // Потеря строк молча означает лог с дырой, о которой никто не знает:
+            // при разборе падения кажется, что события просто не было. Считаем
+            // потери и докладываем о них степенями десятки, чтобы сам отчёт
+            // не стал источником шторма.
+            long lost = Interlocked.Increment(ref _dropped);
+            if (lost is 1 or 100 or 10_000 or 1_000_000)
+                Queue.TryAdd($"{DateTime.Now:HH:mm:ss.fff} [WRN] [Log] " +
+                             $"очередь лога переполнена, потеряно строк: {lost}");
+        }
+        catch (InvalidOperationException) { }
     }
 
     private static void Writer()

@@ -256,7 +256,10 @@ public sealed class ManualRecorder : IDisposable
     private void OpenSegment(long ptsBase)
     {
         string path = _segmentIndex == 0 ? _firstFilePath : PartPath(_firstFilePath, _segmentIndex + 1);
-        var videoType = _videoType();
+        // Фабрика отдаёт КОПИЮ выходного типа, а не ссылку на поле энкодера: запись
+        // переживает остановку конвейера, и Dispose энкодера не должен освобождать
+        // тип под нашим SinkWriter. Копия нужна только на время AddStream.
+        using var videoType = _videoType();
         if (videoType is null) { Fail("энкодер не отдал тип видеопотока"); return; }
 
         var writer = MfMp4Writer.Create(path);

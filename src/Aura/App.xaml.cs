@@ -84,6 +84,11 @@ public partial class App : Application
         {
             Log.Fatal("App", $"Исключение в потоке интерфейса: {args.Exception}");
             args.Handled = true; // интерфейс переживёт, движок продолжит писать
+            // ...но человек должен об этом узнать. Гасить всё молча означало «кнопка
+            // нажимается и ничего не делает»: пользователь считает, что приложение
+            // сломалось, и не догадывается заглянуть в лог. Показываем не чаще раза
+            // в полминуты, иначе повторяющаяся ошибка завалит экран уведомлениями.
+            ReportUiFailure(args.Exception);
         };
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
@@ -701,16 +706,57 @@ public partial class App : Application
         catch { return true; }
     }
 
+    /// <summary>Когда в последний раз показывали уведомление о сбое интерфейса.</summary>
+    private static DateTime _lastUiFailureShown = DateTime.MinValue;
+
+    /// <summary>
+    /// Сказать пользователю, что действие не выполнилось, и куда смотреть.
+    /// Само уведомление тоже может упасть — тогда остаёмся с записью в логе,
+    /// но процесс не роняем: мы уже внутри обработчика последнего рубежа.
+    /// </summary>
+    private static void ReportUiFailure(Exception ex)
+    {
+        try
+        {
+            if ((DateTime.UtcNow - _lastUiFailureShown).TotalSeconds < 30) return;
+            _lastUiFailureShown = DateTime.UtcNow;
+
+            Services.Notifications.Show(NotificationKind.Warning,
+                "Действие не выполнилось",
+                $"{ex.Message} · подробности в логе (Настройки → Открыть логи)");
+        }
+        catch (Exception inner)
+        {
+            Log.Warn("App", $"Не удалось показать уведомление о сбое: {inner.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Выход из приложения. Каждый шаг разбора — в своём try/catch.
+    ///
+    /// ЗАЧЕМ. Раньше обёрнут был только MFShutdown, а Engine.Dispose и Hotkeys.Dispose
+    /// шли голыми. Исключение при остановке конвейера улетало в глобальный обработчик,
+    /// тот ставил Handled = true, и до Environment.Exit(0) дело не доходило: приложение
+    /// оставалось жить с полуразобранным движком, а «Выход» переставал работать вовсе.
+    /// Выход обязан доводиться до конца, чем бы ни закончился любой отдельный шаг.
+    /// </summary>
     public void ExitApp()
     {
-        Services.Engine.Dispose();
-        Services.Hotkeys.Dispose();
-        _tray?.Dispose();
-        try { MediaFactory.MFShutdown(); } catch { }
-        Core.Interop.NativeMethods.timeEndPeriod(1);
+        Step("движок", () => Services.Engine.Dispose());
+        Step("хоткеи", () => Services.Hotkeys.Dispose());
+        Step("значок в трее", () => _tray?.Dispose());
+        Step("Media Foundation", () => MediaFactory.MFShutdown());
+        Step("таймер", () => Core.Interop.NativeMethods.timeEndPeriod(1));
+
         // Environment.Exit убивает фоновый поток лога на месте — сначала даём ему
         // дописать хвост, иначе итоги остановки конвейера до диска не доезжают.
-        Log.Shutdown();
+        Step("лог", Log.Shutdown);
         Environment.Exit(0);
+
+        static void Step(string what, Action action)
+        {
+            try { action(); }
+            catch (Exception ex) { Log.Error("App", $"Выход, шаг «{what}»: {ex.Message}"); }
+        }
     }
 }

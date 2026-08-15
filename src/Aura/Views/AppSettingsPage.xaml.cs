@@ -282,7 +282,12 @@ public partial class AppSettingsPage : PageBase
         try
         {
             var progress = new Progress<double>(value => UpdateProgress.Value = value);
-            string installer = await Services.Updates.DownloadAsync(info, progress);
+
+            // Установщик приезжает под замком и остаётся под ним до Process.Start:
+            // подменить проверенный файл между проверкой и запуском нельзя.
+            // LaunchInstaller снимает замок сам, поэтому using — только на случай,
+            // когда до запуска дело не дошло.
+            using var installer = await Services.Updates.DownloadAsync(info, progress);
 
             // Установщик сам погасит приложение, обновит файлы и запустит новую версию
             string? root = Core.SystemIntegration.UpdateService.InstallRoot;

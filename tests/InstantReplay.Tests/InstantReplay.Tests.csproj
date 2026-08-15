@@ -37,6 +37,7 @@
     <!-- Чистый COM-интероп без графики: подключается к тестам как есть -->
     <Compile Include="..\..\src\Aura\Core\Saving\ArenaMediaBuffer.cs" Link="App\ArenaMediaBuffer.cs" />
     <Compile Include="..\..\src\Aura\Core\System\UpdateVerification.cs" Link="App\UpdateVerification.cs" />
+    <Compile Include="..\..\src\Aura\Core\System\TrustedUrl.cs" Link="App\TrustedUrl.cs" />
     <Compile Include="..\..\src\Aura\Core\GameDetection\GameDatabase.cs" Link="App\GameDatabase.cs" />
   </ItemGroup>
 

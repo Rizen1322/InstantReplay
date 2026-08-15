@@ -1,6 +1,8 @@
 using System.Net.Http;
 using System.Diagnostics;
 using System.Net.Http.Json;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json.Serialization;
 using Aura.Core.Logging;
 
@@ -14,6 +16,35 @@ namespace Aura.Core.SystemIntegration;
 public sealed record UpdateInfo(
     string Version, string DownloadUrl, string ReleaseUrl,
     string? DigestUrl = null, string? SignatureUrl = null);
+
+/// <summary>
+/// Проверенный установщик, который нельзя подменить: пока этот объект жив,
+/// файл открыт с <see cref="FileShare.Read"/>, то есть запись, удаление и
+/// переименование по его пути запрещены всем.
+///
+/// Владение обязано доживать до <c>Process.Start</c> включительно — именно
+/// непрерывность владения, а не повторная проверка, закрывает окно между
+/// «подпись сошлась» и «файл запущен». Освобождать сразу после запуска:
+/// образ уже загружен, и дальше замок ничего не защищает.
+/// </summary>
+public sealed class VerifiedInstaller : IDisposable
+{
+    private readonly FileStream _held;
+
+    internal VerifiedInstaller(string path, FileStream held)
+    {
+        Path = path;
+        _held = held;
+    }
+
+    /// <summary>Путь к файлу под замком.</summary>
+    public string Path { get; }
+
+    /// <summary>Размер проверенного файла в байтах.</summary>
+    public long Length => _held.Length;
+
+    public void Dispose() => _held.Dispose();
+}
 
 /// <summary>
 /// Автообновление: проверка последнего релиза на GitHub (repo из настроек),
@@ -98,18 +129,17 @@ public sealed class UpdateService
     /// Скачивает установщик новой версии во временную папку и ПРОВЕРЯЕТ его.
     /// progress — доля 0..1 (или -1, если сервер не сообщил размер).
     ///
-    /// Возвращает путь только к файлу, который прошёл проверку (см.
-    /// <see cref="UpdateVerification.EnsureTrusted"/>). Непрошедший удаляется здесь же:
+    /// Возвращает установщик, который прошёл проверку и УДЕРЖИВАЕТСЯ под замком до
+    /// запуска (см. <see cref="VerifiedInstaller"/>). Непрошедший удаляется здесь же:
     /// запускать его будут с правами администратора, и оставлять такой файл на диске
     /// незачем.
     /// </summary>
-    public async Task<string> DownloadAsync(UpdateInfo update, IProgress<double>? progress, CancellationToken ct = default)
+    public async Task<VerifiedInstaller> DownloadAsync(UpdateInfo update, IProgress<double>? progress, CancellationToken ct = default)
     {
         if (!UpdateVerification.IsTrustedHost(update.DownloadUrl))
             throw new InvalidOperationException("Ссылка на обновление ведёт не на GitHub — загрузка отменена.");
 
-        string dir = Path.Combine(Path.GetTempPath(), "AuraUpdate");
-        Directory.CreateDirectory(dir);
+        string dir = CreateDownloadDirectory();
         // Имя файла прежнее — под ним установщик лежит в релизе, и по нему
         // обновляются установленные версии 1.0.x
         string file = Path.Combine(dir, "InstantReplaySetup.exe");
@@ -134,11 +164,14 @@ public sealed class UpdateService
             }
         }
 
+        VerifiedInstaller installer;
         try
         {
             string? digest = await TryGetTextAsync(update.DigestUrl, ct);
             byte[]? signature = DecodeSignature(await TryGetBytesAsync(update.SignatureUrl, ct));
-            UpdateVerification.EnsureTrusted(file, digest, signature);
+            // Проверяем ровно те байты, которые останутся под замком, и замок берём
+            // до возврата: с этого момента подменить файл уже нельзя
+            installer = new VerifiedInstaller(file, UpdateVerification.OpenVerified(file, digest, signature));
         }
         catch
         {
@@ -146,8 +179,54 @@ public sealed class UpdateService
             throw;
         }
 
-        Log.Info("Update", $"Установщик скачан и проверен: {file} ({new FileInfo(file).Length / (1024 * 1024)} МБ)");
-        return file;
+        Log.Info("Update", $"Установщик скачан и проверен: {file} ({installer.Length / (1024 * 1024)} МБ), файл под замком до запуска");
+        return installer;
+    }
+
+    /// <summary>
+    /// Каталог для загрузки установщика.
+    ///
+    /// ЗАЧЕМ НЕ %TEMP%. У процесса с повышением <see cref="Path.GetTempPath"/> — это
+    /// по-прежнему Temp текущего пользователя, куда пишет любой процесс среднего
+    /// уровня целостности. Кладём в ProgramData и снимаем наследование прав, оставляя
+    /// доступ только администраторам и SYSTEM. Замок на файле (<see cref="VerifiedInstaller"/>)
+    /// защищает и без этого, но два барьера лучше одного.
+    ///
+    /// Если права выставить не удалось (запуск без повышения — манифест этого не
+    /// допускает, но мало ли), честно откатываемся на %TEMP% и пишем в лог: обновление
+    /// важнее идеального DACL, а подмену всё равно ловит замок.
+    /// </summary>
+    private static string CreateDownloadDirectory()
+    {
+        string dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Aura", "update");
+
+        try
+        {
+            var security = new DirectorySecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            foreach (var sid in new[] { WellKnownSidType.BuiltinAdministratorsSid, WellKnownSidType.LocalSystemSid })
+                security.AddAccessRule(new FileSystemAccessRule(
+                    new SecurityIdentifier(sid, null),
+                    FileSystemRights.FullControl,
+                    InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit,
+                    PropagationFlags.None,
+                    AccessControlType.Allow));
+
+            var info = new DirectoryInfo(dir);
+            if (info.Exists) info.SetAccessControl(security);
+            else info.Create(security);
+
+            return dir;
+        }
+        catch (Exception ex)
+        {
+            string fallback = Path.Combine(Path.GetTempPath(), "AuraUpdate");
+            Log.Warn("Update", $"Не удалось создать защищённый каталог обновления ({ex.Message}); " +
+                               $"качаю в {fallback} — файл всё равно удерживается под замком");
+            Directory.CreateDirectory(fallback);
+            return fallback;
+        }
     }
 
     /// <summary>Сопутствующий файл релиза; null — его нет или он не читается.</summary>
@@ -177,15 +256,20 @@ public sealed class UpdateService
     }
 
     /// <summary>
-    /// Запускает скачанный установщик в тихом режиме обновления и возвращает true,
+    /// Запускает проверенный установщик в тихом режиме обновления и возвращает true,
     /// если он стартовал. Установщик сам закроет приложение, обновит файлы в той же
     /// папке и запустит новую версию — поэтому вызывающий должен просто выйти.
+    ///
+    /// Замок с файла снимается только ПОСЛЕ <c>Process.Start</c>: до этого момента
+    /// подменённый установщик стартовал бы с правами администратора без запроса UAC.
+    /// Чтение под <see cref="FileShare.Read"/> запуску не мешает — образу нужен
+    /// как раз доступ на чтение и выполнение.
     /// </summary>
-    public static bool LaunchInstaller(string installerPath, string installRoot)
+    public static bool LaunchInstaller(VerifiedInstaller installer, string installRoot)
     {
         try
         {
-            var psi = new ProcessStartInfo(installerPath) { UseShellExecute = true };
+            var psi = new ProcessStartInfo(installer.Path) { UseShellExecute = true };
             psi.ArgumentList.Add("/update");
             psi.ArgumentList.Add(installRoot);
             Process.Start(psi);
@@ -196,6 +280,10 @@ public sealed class UpdateService
         {
             Log.Error("Update", $"Не удалось запустить установщик: {ex.Message}");
             return false;
+        }
+        finally
+        {
+            installer.Dispose();
         }
     }
 

@@ -31,7 +31,13 @@ public static class MonitorEnumerator
                         }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Список короче настоящего — это молча сдвинутые индексы в настройках:
+            // пользователь выбирает «Монитор 2», а пишется совсем другой экран.
+            Logging.Log.Warn("Capture",
+                $"Перечисление мониторов оборвалось на {result.Count}-м: {ex.Message}");
+        }
         if (result.Count == 0)
             result.Add(new MonitorDescription(0, "Монитор 1 — основной", 0, 0, true));
         return result;

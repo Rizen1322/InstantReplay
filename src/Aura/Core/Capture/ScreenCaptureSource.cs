@@ -28,6 +28,9 @@ public sealed class ScreenCaptureSource : IScreenCapture
     /// <summary>Кадр: текстура BGRA в VRAM + время кадра (QPC, 100-нс тики).</summary>
     public event Action<ID3D11Texture2D, long>? FrameArrived;
 
+    /// <inheritdoc />
+    public event Action<Exception>? Failed;
+
     private readonly IDirect3DDevice _winrtDevice;
     private GraphicsCaptureItem? _item;
     private Direct3D11CaptureFramePool? _framePool;
@@ -193,6 +196,28 @@ public sealed class ScreenCaptureSource : IScreenCapture
     }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
+    {
+        // Это FreeThreaded-колбэк WinRT: необработанное исключение здесь пересекает
+        // границу managed→native и завершает процесс. А бросают тут ровно те вызовы
+        // (TryGetNextFrame, GetTexture, Recreate), которые и отдают DXGI_ERROR_DEVICE_REMOVED
+        // при сбросе драйвера — то есть без этого перехвата потеря устройства роняла
+        // приложение вместо того, чтобы дойти до восстановления конвейера.
+        try
+        {
+            DrainFrames(sender);
+        }
+        catch (Exception ex) when (DeviceLoss.IsDeviceLost(ex))
+        {
+            Log.Warn("Capture", $"WGC: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
+            Failed?.Invoke(ex);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Capture", $"WGC: кадр не обработан: {ex.Message}");
+        }
+    }
+
+    private void DrainFrames(Direct3D11CaptureFramePool sender)
     {
         // ВАЖНО: выгребаем ВСЕ накопившиеся кадры, а не один. Под игровой нагрузкой
         // события коалесцируются: один кадр за событие → пул (4 буфера) переполняется,

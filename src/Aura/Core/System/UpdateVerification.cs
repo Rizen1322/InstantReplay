@@ -55,6 +55,16 @@ internal static class UpdateVerification
     public static string Sha256File(string filePath)
     {
         using var stream = File.OpenRead(filePath);
+        return Sha256Stream(stream);
+    }
+
+    /// <summary>
+    /// SHA-256 содержимого потока с начала. Позиция потока после вызова —
+    /// в конце; вызывающий перематывает сам, если поток ему ещё нужен.
+    /// </summary>
+    public static string Sha256Stream(Stream stream)
+    {
+        stream.Position = 0;
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
@@ -67,9 +77,16 @@ internal static class UpdateVerification
         try
         {
             using var stream = File.OpenRead(filePath);
-            return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z';
+            return LooksLikeWindowsExecutable(stream);
         }
         catch { return false; }
+    }
+
+    /// <summary>То же для уже открытого потока.</summary>
+    public static bool LooksLikeWindowsExecutable(Stream stream)
+    {
+        stream.Position = 0;
+        return stream.ReadByte() == 'M' && stream.ReadByte() == 'Z';
     }
 
     /// <summary>
@@ -133,17 +150,63 @@ internal static class UpdateVerification
     /// <summary>То же с явным ключом — для тестов, см. <see cref="VerifySignature"/>.</summary>
     public static void EnsureTrusted(string filePath, string? publishedDigest, byte[]? signature, string publicKeyBase64)
     {
-        var info = new FileInfo(filePath);
-        // Установщик весит ~156 МБ; крохотный файл = страница ошибки, а не сборка
-        if (info.Length < 1024 * 1024)
-            throw new InvalidOperationException(
-                $"Скачанный файл подозрительно мал ({info.Length} байт) — ссылка на релиз битая.");
+        using var stream = File.OpenRead(filePath);
+        EnsureTrusted(stream, publishedDigest, signature, publicKeyBase64);
+    }
 
-        if (!LooksLikeWindowsExecutable(filePath))
+    /// <summary>
+    /// Открыть проверенный установщик так, чтобы его нельзя было подменить до запуска,
+    /// и вернуть удерживающий хендл. Держать до <c>Process.Start</c> включительно.
+    ///
+    /// ЗАЧЕМ ИМЕННО ХЕНДЛ. Проверка по пути закрывает файл сразу после чтения, а
+    /// запускается он позже и открывается заново. Между этими двумя моментами файл
+    /// лежит в каталоге, доступном на запись любому процессу пользователя, — и его
+    /// можно заменить на произвольный exe уже ПОСЛЕ того, как подпись сошлась.
+    /// Приложение работает с правами администратора, поэтому подменённый установщик
+    /// стартовал бы с высоким уровнем целостности без запроса UAC.
+    ///
+    /// <see cref="FileShare.Read"/> оставляет другим только чтение: запись, удаление
+    /// и переименование файла запрещены, пока хендл жив. Повторная проверка перед
+    /// запуском окно не закрывает — закрывает именно непрерывное владение.
+    /// </summary>
+    public static FileStream OpenVerified(string filePath, string? publishedDigest, byte[]? signature) =>
+        OpenVerified(filePath, publishedDigest, signature, PublicKeyBase64);
+
+    /// <summary>То же с явным ключом — для тестов.</summary>
+    public static FileStream OpenVerified(string filePath, string? publishedDigest, byte[]? signature, string publicKeyBase64)
+    {
+        var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            EnsureTrusted(stream, publishedDigest, signature, publicKeyBase64);
+            stream.Position = 0;
+            return stream;
+        }
+        catch
+        {
+            // Забракованный файл вызывающий должен суметь удалить
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Проверка содержимого уже открытого потока. Отдельная перегрузка нужна, чтобы
+    /// <see cref="OpenVerified"/> проверял ровно те байты, которые останутся под
+    /// замком, а не перечитывал файл по пути.
+    /// </summary>
+    public static void EnsureTrusted(Stream stream, string? publishedDigest, byte[]? signature, string publicKeyBase64)
+    {
+        // Установщик весит ~156 МБ; крохотный файл = страница ошибки, а не сборка
+        if (stream.Length < 1024 * 1024)
+            throw new InvalidOperationException(
+                $"Скачанный файл подозрительно мал ({stream.Length} байт) — ссылка на релиз битая.");
+
+        if (!LooksLikeWindowsExecutable(stream))
             throw new InvalidOperationException(
                 "Скачанный файл не является программой Windows — обновление отменено.");
 
-        string actual = Sha256File(filePath);
+        string actual = Sha256Stream(stream);
         string? expected = ParseDigest(publishedDigest);
 
         if (expected is not null && !string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))

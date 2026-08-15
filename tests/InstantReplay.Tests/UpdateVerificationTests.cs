@@ -233,7 +233,125 @@ public class UpdateVerificationTests
         finally { File.Delete(original); File.Delete(tampered); }
     }
 
+    // ---------------- Удерживаемый хендл (защита от подмены после проверки) ----------------
+
+    [Fact]
+    public void ПроверенныйФайлОткрываетсяИОстаётсяПодЗамком()
+    {
+        string file = FakeInstaller();
+        try
+        {
+            using FileStream held = UpdateVerification.OpenVerified(
+                file, UpdateVerification.Sha256File(file), null, "");
+
+            Assert.True(held.CanRead);
+            Assert.Equal(file, held.Name);
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public void ПокаХендлУдерживаетсяФайлНельзяПодменить()
+    {
+        // Это и есть закрытие окна между проверкой и запуском: подменить проверенный
+        // установщик можно было бы записью поверх, переименованием или удалением.
+        string file = FakeInstaller();
+        string decoy = FakeInstaller(marker: 0x42);
+        try
+        {
+            string verified = UpdateVerification.Sha256File(file);
+            using FileStream held = UpdateVerification.OpenVerified(file, verified, null, "");
+
+            // Тип исключения у разных операций разный (IOException для записи и
+            // удаления, UnauthorizedAccessException для переименования), поэтому
+            // проверяем то, ради чего замок и ставится: содержимое не поменялось.
+            AssertBlocked(() => File.WriteAllBytes(file, [1, 2, 3]));
+            AssertBlocked(() => File.Delete(file));
+            AssertBlocked(() => File.Move(decoy, file, overwrite: true));
+
+            Assert.Equal(verified, UpdateVerification.Sha256Stream(held));
+        }
+        finally { File.Delete(decoy); File.Delete(file); }
+    }
+
+    [Fact]
+    public void ПослеОсвобожденияХендлаФайлСноваМожноУдалить()
+    {
+        string file = FakeInstaller();
+        using (UpdateVerification.OpenVerified(file, UpdateVerification.Sha256File(file), null, "")) { }
+
+        File.Delete(file);            // не должно бросить
+        Assert.False(File.Exists(file));
+    }
+
+    [Fact]
+    public void ПриОтказеПроверкиХендлНеОстаётсяОткрытым()
+    {
+        // Иначе вызывающий не смог бы удалить забракованный файл
+        string file = FakeInstaller();
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                UpdateVerification.OpenVerified(file, new string('a', 64), null, ""));
+
+            File.Delete(file);        // хендл закрыт — удаление проходит
+            Assert.False(File.Exists(file));
+        }
+        finally { if (File.Exists(file)) File.Delete(file); }
+    }
+
+    [Fact]
+    public void ПроверкаЧитаетСодержимоеЧерезТотЖеХендл()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        string publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+
+        string original = FakeInstaller();
+        string tampered = FakeInstaller(marker: 0x42);
+        try
+        {
+            string realDigest = UpdateVerification.Sha256File(original);
+            byte[] signature = key.SignHash(Convert.FromHexString(realDigest));
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                UpdateVerification.OpenVerified(tampered, realDigest, signature, publicKey));
+            Assert.Contains("Контрольная сумма", ex.Message);
+        }
+        finally { File.Delete(original); File.Delete(tampered); }
+    }
+
+    [Fact]
+    public void ЗамокНаЧтениеНеМешаетЗапуститьФайл()
+    {
+        // Страховка допущения Windows, на котором держится вся схема: если бы
+        // FileShare.Read блокировал CreateProcess, удерживаемый хендл сделал бы
+        // обновление невозможным. Проверяем на настоящем exe, а не на копии:
+        // образу нужен доступ на чтение и выполнение, и share-режим его допускает.
+        string cmd = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+        Assert.True(File.Exists(cmd), "в системе нет cmd.exe — тест неприменим");
+
+        using var held = new FileStream(cmd, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        var psi = new System.Diagnostics.ProcessStartInfo(cmd) { UseShellExecute = true };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add("exit");
+
+        using var process = System.Diagnostics.Process.Start(psi);
+        Assert.NotNull(process);
+        Assert.True(process!.WaitForExit(15_000), "процесс не завершился");
+        Assert.Equal(0, process.ExitCode);
+    }
+
     // ---------------- Вспомогательное ----------------
+
+    /// <summary>Операция над файлом под замком обязана не пройти.</summary>
+    private static void AssertBlocked(Action attempt)
+    {
+        var ex = Record.Exception(attempt);
+        Assert.NotNull(ex);
+        Assert.True(ex is IOException or UnauthorizedAccessException,
+            $"Ожидалась ошибка доступа, получено {ex.GetType().Name}: {ex.Message}");
+    }
 
     /// <summary>Файл, похожий на установщик: сигнатура PE и размер больше мегабайта.</summary>
     private static string FakeInstaller(byte marker = 0x00)

@@ -33,6 +33,9 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     public event Action<ID3D11Texture2D, long>? FrameArrived;
 
+    /// <inheritdoc />
+    public event Action<Exception>? Failed;
+
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
     private IDXGIOutput1? _output;
@@ -300,6 +303,15 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             catch (Exception ex)
             {
                 if (!token.Running) break;
+                // Потеря устройства неисправима на месте: и дупликация, и текстуры, и
+                // само устройство мертвы. Раньше цикл продолжал крутиться, писал в лог
+                // одну и ту же ошибку и запись не возвращалась до перезапуска приложения.
+                if (DeviceLoss.IsDeviceLost(ex))
+                {
+                    Log.Warn("Capture", $"DDA: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
+                    Failed?.Invoke(ex);
+                    break;
+                }
                 Log.Error("Capture", ex);
                 Thread.Sleep(50);
             }

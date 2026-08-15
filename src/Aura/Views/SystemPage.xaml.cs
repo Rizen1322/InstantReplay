@@ -5,7 +5,9 @@ using System.Windows.Media;
 using Aura.Controls;
 using Aura.Core.Encoding;
 using Aura.Core.Hardware;
+using Aura.Core.Logging;
 using Aura.Core.Settings;   // VideoCodec
+using Aura.Core.SystemIntegration;   // TrustedUrl
 
 namespace Aura.Views;
 
@@ -349,10 +351,26 @@ public partial class SystemPage : PageBase
     private void DownloadDriver_Click(object sender, RoutedEventArgs e)
     {
         if (_driver is null) return;
+
+        // Ссылка пришла из ответа сервиса NVIDIA, то есть это просто строка из JSON.
+        // UseShellExecute отработал бы и UNC-путь, и локальный exe, и протокол-хендлер —
+        // причём с правами администратора и без запроса UAC. Проверяем схему и хост.
+        if (!TrustedUrl.IsNvidiaDriver(_driver.DownloadUrl))
+        {
+            Log.Warn("Driver", $"Ссылка на драйвер ведёт не на nvidia.com — открытие отменено: {_driver.DownloadUrl}");
+            DriverStatus.Text = "Ссылка на драйвер выглядит подозрительно — откройте страницу NVIDIA вручную";
+            return;
+        }
+
         try
         {
             Process.Start(new ProcessStartInfo(_driver.DownloadUrl) { UseShellExecute = true });
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Молчаливый catch здесь означал «кнопка ничего не делает» без следов в логе
+            Log.Warn("Driver", $"Не удалось открыть ссылку на драйвер: {ex.Message}");
+            DriverStatus.Text = "Не удалось открыть браузер: " + ex.Message;
+        }
     }
 }

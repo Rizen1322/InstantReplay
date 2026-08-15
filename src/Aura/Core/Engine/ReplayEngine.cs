@@ -32,7 +32,38 @@ public sealed class ReplayEngine : IDisposable
     private readonly ReplayVideoBuffer _videoBuffer = new();
     private readonly ReplayAudioBuffer _audioBuffer = new();
 
-    public EngineState State { get; private set; } = EngineState.Stopped;
+    /// <summary>
+    /// Один замок на весь жизненный цикл: <see cref="Start"/>, <see cref="Stop"/> и
+    /// снимок в <see cref="SaveReplay"/> взаимно исключают друг друга.
+    ///
+    /// ЗАЧЕМ. Звать эти три метода могут четверо: поток интерфейса, обработчик
+    /// изменения настроек, вотчдог захвата и восстановление после потери устройства.
+    /// Проверка «if (State != Stopped) return» без замка их не разводит: два Start
+    /// подряд собирают два конвейера, два Stop освобождают энкодер дважды.
+    /// Monitor реентерантен, поэтому Stop() из catch внутри Start() работает.
+    /// </summary>
+    private readonly object _lifecycle = new();
+
+    /// <summary>
+    /// Ворота «кадров в полёте». <see cref="OnFrame"/> держит читательский замок на
+    /// время работы с D3D, снос конвейера берёт писательский — и тем самым ждёт,
+    /// пока текущий кадр досчитается.
+    ///
+    /// Без этого Stop() освобождал текстуры и контекст прямо под работающим
+    /// Convert/SubmitFrame. Такое падение — access violation внутри драйвера,
+    /// его не ловит ни try/catch в OnFrame, ни глобальный обработчик.
+    /// </summary>
+    private readonly ReaderWriterLockSlim _frameGate = new(LockRecursionPolicy.NoRecursion);
+
+    /// <summary>Конвейер собран и кадры можно обрабатывать. Гасится первым при сносе.</summary>
+    private volatile bool _pipelineOpen;
+
+    /// <summary>Идущее сохранение — Stop() обязан его дождаться, а не сносить буферы под ним.</summary>
+    private Task? _saveTask;
+    private int? _saveTaskId;
+
+    private volatile EngineState _state = EngineState.Stopped;
+    public EngineState State => _state;
     public event Action<EngineState>? StateChanged;
     /// <summary>
     /// Снимок буфера сделан — клип уже гарантирован, дальше только запись файла.
@@ -78,9 +109,16 @@ public sealed class ReplayEngine : IDisposable
     /// </summary>
     public bool TryUseLiveFrame(UseFrame use)
     {
-        var cap = _capture;
-        if (cap is null || State == EngineState.Stopped) return false;
-        return cap.TryUseLatestFrame(tex => use(cap.D3DDevice, cap.D3DContext, tex));
+        // Те же ворота, что и у OnFrame: скриншот берёт кадр с живого устройства
+        // захвата, и Stop() не должен освободить это устройство прямо во время чтения.
+        if (!_frameGate.TryEnterReadLock(TimeSpan.FromMilliseconds(50))) return false;
+        try
+        {
+            var cap = _capture;
+            if (cap is null || !_pipelineOpen) return false;
+            return cap.TryUseLatestFrame(tex => use(cap.D3DDevice, cap.D3DContext, tex));
+        }
+        finally { _frameGate.ExitReadLock(); }
     }
 
     // ---- Обычная запись в файл («Начать запись») ----
@@ -107,18 +145,25 @@ public sealed class ReplayEngine : IDisposable
                 _audio.MicNoiseGate = _settings.Current.MicNoiseSuppression;
                 _audio.MicGateThresholdDb = _settings.Current.MicNoiseGateDb;
             }
-            if (State == EngineState.Stopped) return;
+            if (_state == EngineState.Stopped) return;
             if (group is "video" or "audio" or "replay")
             {
                 Log.Info("Engine", $"Настройки '{group}' изменены — перезапускаю конвейер");
-                Stop(); Start();
+                // Под одним замком: между Stop и Start не должен вклиниться ни хоткей
+                // сохранения, ни вотчдог со своим перезапуском
+                lock (_lifecycle) { StopLocked(); StartLocked(); }
             }
         };
     }
 
     public void Start()
     {
-        if (State != EngineState.Stopped) return;
+        lock (_lifecycle) StartLocked();
+    }
+
+    private void StartLocked()
+    {
+        if (_state != EngineState.Stopped) return;
         var s = _settings.Current;
         try
         {
@@ -144,7 +189,14 @@ public sealed class ReplayEngine : IDisposable
                                 s.Fps, s.BitrateBps, s.Codec);
             _encoder.FrameEncoded += _videoBuffer.Add;
 
+            // Ворота открываем последним действием перед подпиской: до этого момента
+            // кадр, прилетевший от уже стартовавшего захвата, не должен идти в конвейер
+            _pipelineOpen = true;
             _capture.FrameArrived += OnFrame;
+            // Источник сам не оживёт после потери устройства — пересобираем конвейер.
+            // Для WGC это единственный путь: там кадры приходят в колбэк WinRT, из
+            // которого исключение не выпустить, не уронив процесс.
+            _capture.Failed += OnCaptureFailed;
 
             _audio.MicNoiseGate = s.MicNoiseSuppression;
             _audio.MicGateThresholdDb = s.MicNoiseGateDb;
@@ -163,15 +215,20 @@ public sealed class ReplayEngine : IDisposable
         catch (Exception ex)
         {
             Log.Error("Engine", ex);
-            Stop();
+            StopLocked();
             throw;
         }
     }
 
     private void OnFrame(Vortice.Direct3D11.ID3D11Texture2D bgra, long ticks)
     {
+        // Идёт снос конвейера — кадр уже некуда девать. Ждать нельзя: поток захвата
+        // заблокировал бы сам снос, которого он дожидается.
+        if (!_frameGate.TryEnterReadLock(0)) return;
         try
         {
+            if (!_pipelineOpen) return;
+
             long t0 = Diagnostics.PipelineProbe.Now();
             var nv12 = _processor!.Convert(bgra);
             long t1 = Diagnostics.PipelineProbe.Now();
@@ -191,7 +248,12 @@ public sealed class ReplayEngine : IDisposable
             }
             Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
         }
+        finally { _frameGate.ExitReadLock(); }
     }
+
+    /// <summary>Источник кадров сообщил о потере устройства — пересобираем конвейер.</summary>
+    private void OnCaptureFailed(Exception ex) =>
+        RecoverFromDeviceLoss($"источник кадров остановился: {ex.Message}");
 
     // ---------------- Восстановление после потери GPU-устройства ----------------
 
@@ -407,7 +469,13 @@ public sealed class ReplayEngine : IDisposable
                         _gameSamples.Dequeue();
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Молчание здесь означает клип, уехавший в папку не той игры,
+                // и никаких следов, почему так вышло. Раз в 2 секунды — не спамим:
+                // повторы схлопывает сам логгер.
+                Log.Warn("Engine", $"Не удалось определить игру на экране: {ex.Message}");
+            }
         }, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
@@ -498,20 +566,44 @@ public sealed class ReplayEngine : IDisposable
 
     public void Stop()
     {
+        lock (_lifecycle) StopLocked();
+    }
+
+    private void StopLocked()
+    {
         DumpStats("на выключении");
         _gameTimer?.Dispose(); _gameTimer = null;
         _watchdog?.Dispose(); _watchdog = null;
         _statsTimer?.Dispose(); _statsTimer = null;
+
+        // Сохранение работает с буферами и клипом в арене — снести всё это под ним
+        // означает потерять клип, который пользователю уже показали как сохранённый.
+        WaitForPendingSave();
+
+        // Гасим ворота и отписываемся: с этого момента новые кадры в конвейер не идут
+        _pipelineOpen = false;
+        if (_capture is not null)
+        {
+            _capture.FrameArrived -= OnFrame;
+            _capture.Failed -= OnCaptureFailed;
+        }
+        DrainFramesInFlight();
+
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
         // а записи нет».
         if (_recorder is not null) StopRecordingToFile(wait: true);
-        if (_capture is not null) _capture.FrameArrived -= OnFrame;
         _audio.BlockReady -= _audioBuffer.Add;
         _audio.Stop();
-        _encoder?.Dispose(); _encoder = null;
-        _processor?.Dispose(); _processor = null;
+
+        // ПОРЯДОК ВАЖЕН: сначала источник кадров (его Dispose дожидается своего
+        // потока захвата), и только потом то, чем этот поток пользуется. Обратный
+        // порядок освобождал видеопроцессор и текстуры пула энкодера под живым
+        // потоком DDA — падение в драйвере.
         _capture?.Dispose(); _capture = null;
+        _processor?.Dispose(); _processor = null;
+        _encoder?.Dispose(); _encoder = null;
+
         _videoBuffer.Clear();
         _audioBuffer.Release();   // конвейер стоит — арену звука возвращаем системе
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive;
@@ -520,9 +612,44 @@ public sealed class ReplayEngine : IDisposable
         ReleaseMemory();
     }
 
+    /// <summary>
+    /// Дождаться, пока поток захвата выйдет из <see cref="OnFrame"/>.
+    ///
+    /// Таймаут нужен на случай, когда SubmitFrame завис на переполненной очереди
+    /// энкодера: сносить конвейер силой рискованно, но зависнуть навсегда хуже.
+    /// Раньше ожидания не было вовсе, так что даже с таймаутом это строго лучше.
+    /// </summary>
+    private void DrainFramesInFlight()
+    {
+        if (_frameGate.TryEnterWriteLock(TimeSpan.FromSeconds(5)))
+        {
+            _frameGate.ExitWriteLock();
+            return;
+        }
+        Log.Warn("Engine", "Кадр не досчитался за 5 секунд — сношу конвейер не дожидаясь его");
+    }
+
+    /// <summary>
+    /// Дождаться фонового сохранения повтора. Вызов из самого сохраняющего потока
+    /// (например, через обработчик изменения настроек) не ждёт сам себя.
+    /// </summary>
+    private void WaitForPendingSave()
+    {
+        var pending = _saveTask;
+        if (pending is null || pending.IsCompleted) return;
+        if (Task.CurrentId is int id && id == _saveTaskId) return;
+
+        Log.Info("Engine", "Останов ждёт, пока допишется сохраняемый клип");
+        if (!pending.Wait(TimeSpan.FromSeconds(70)))
+            Log.Warn("Engine", "Сохранение не уложилось в 70 секунд — останавливаюсь без него");
+    }
+
     public void Toggle()
     {
-        if (State == EngineState.Stopped) Start(); else Stop();
+        lock (_lifecycle)
+        {
+            if (_state == EngineState.Stopped) StartLocked(); else StopLocked();
+        }
     }
 
     /// <summary>
@@ -532,7 +659,12 @@ public sealed class ReplayEngine : IDisposable
     /// </summary>
     public void SaveReplay(int? secondsOverride = null)
     {
-        if (State != EngineState.Running || _encoder?.OutputMediaType is null) return;
+        lock (_lifecycle) SaveReplayLocked(secondsOverride);
+    }
+
+    private void SaveReplayLocked(int? secondsOverride)
+    {
+        if (_state != EngineState.Running || _encoder?.OutputMediaType is null) return;
 
         DumpStats("к моменту сохранения"); // короткий сеанс тоже должен оставить следы в логе
 
@@ -549,7 +681,10 @@ public sealed class ReplayEngine : IDisposable
         // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip)
         string game = GameForClip();
         string file = BuildFilePath(game, "replay");
-        var mediaType = _encoder.OutputMediaType;
+        // Копия, а не ссылка на поле энкодера: запись файла переживёт остановку
+        // конвейера, а Dispose энкодера освободил бы тип прямо под SinkWriter.
+        var mediaType = _encoder.CloneOutputMediaType();
+        if (mediaType is null) { SaveFailed?.Invoke("Энкодер ещё не отдал тип видеопотока"); return; }
         int seconds = (int)Math.Round(TimeSpan.FromTicks(video[^1].PtsTicks - video[0].PtsTicks).TotalSeconds);
 
         // Данные уже вырваны из кольцевого буфера и никуда не денутся — говорим об этом
@@ -559,8 +694,9 @@ public sealed class ReplayEngine : IDisposable
         ReplayCaptured?.Invoke(Math.Max(seconds, 1));
 
         SetState(EngineState.Saving);
-        Task.Run(() =>
+        _saveTask = Task.Run(() =>
         {
+            _saveTaskId = Task.CurrentId;
             // Сохранение — пакетная фоновая работа: сотни МБ копий в нативные буферы
             // MF плюс сброс на диск. На обычном приоритете она конкурирует с потоками
             // захвата и кодирования (у тех AboveNormal), и входная очередь энкодера
@@ -601,11 +737,12 @@ public sealed class ReplayEngine : IDisposable
                 // время клип лежал в той же арене, а запись шла в её свободную часть.
                 _videoBuffer.ReleaseSnapshot(snapshotToken);
                 video.Clear();
+                mediaType.Dispose();                   // копия принадлежала этому сохранению
                 // Писатель закрыт — сводим освободившиеся нативные блоки вместе,
                 // иначе память, занятая под клип, остаётся за процессом до выхода.
                 Diagnostics.MemoryMap.Log("после сохранения");
                 self.Priority = previousPriority;      // поток уходит обратно в пул потоков
-                SetState(State == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
+                SetState(_state == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
             }
         });
     }
@@ -635,7 +772,7 @@ public sealed class ReplayEngine : IDisposable
         // сразу после старта конвейера энкодер ещё не дописал в него заголовки кодека,
         // и файл, открытый с таким типом, не собирается на финализации.
         var recorder = new ManualRecorder(BuildFilePath(game, "recording"),
-            () => _encoder?.OutputMediaType, s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
+            () => _encoder?.CloneOutputMediaType(), s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
         _encoder.FrameEncoded += recorder.OnFrame;
         _audio.BlockReady += recorder.OnAudio;
         _recorder = recorder;
@@ -670,7 +807,7 @@ public sealed class ReplayEngine : IDisposable
 
     private void SetState(EngineState st)
     {
-        State = st;
+        _state = st;
         StateChanged?.Invoke(st);
     }
 
@@ -678,5 +815,6 @@ public sealed class ReplayEngine : IDisposable
     {
         Stop();
         _audio.Dispose();
+        _frameGate.Dispose();
     }
 }

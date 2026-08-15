@@ -26,6 +26,37 @@ public sealed class VideoEncoder : IDisposable
     public event Action<EncodedFrame>? FrameEncoded;
 
     public IMFMediaType? OutputMediaType { get; private set; }
+
+    /// <summary>
+    /// Независимая копия выходного типа — её отдают тем, кто переживёт энкодер.
+    ///
+    /// ЗАЧЕМ. Сохранение повтора и обычная запись работают в фоне и держат тип
+    /// всё время записи файла. Если в это время конвейер остановят (выход из
+    /// приложения, смена настроек, восстановление после потери устройства),
+    /// <see cref="Dispose"/> освободит <see cref="OutputMediaType"/> прямо под
+    /// работающим SinkWriter — это падение процесса без строчки в логе.
+    /// Копия принадлежит вызывающему и живёт ровно столько, сколько ему нужно.
+    ///
+    /// null — энкодер ещё не отдал тип (первый keyframe не прошёл).
+    /// </summary>
+    public IMFMediaType? CloneOutputMediaType()
+    {
+        var source = OutputMediaType;   // присваивание ссылки атомарно
+        if (source is null) return null;
+
+        var copy = MediaFactory.MFCreateMediaType();
+        try
+        {
+            source.CopyAllItems(copy);
+            return copy;
+        }
+        catch
+        {
+            copy.Dispose();
+            throw;
+        }
+    }
+
     public int Width { get; private set; }
     public int Height { get; private set; }
     public int Fps { get; private set; }
