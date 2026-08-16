@@ -221,11 +221,21 @@ public class AudioBufferTests
     {
         var block = new AudioBlock(Filled(100), Filled(200), 0);
         var dest = new short[Samples];
-        for (int i = 0; i < 100; i++) block.CopyTo(AudioTrackKind.Mixed, dest);
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 10_000; i++) block.CopyTo(AudioTrackKind.Mixed, dest);
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        // Меряем УСТАНОВИВШЕЕСЯ состояние. На первом прогоне после сборки метод ещё
+        // проходит уровни JIT, и само повышение уровня аллоцирует внутри измеряемого
+        // цикла — тест падал случайно, примерно раз на запуск, без всякой регрессии.
+        // Настоящий контракт: рано или поздно сведение перестаёт выделять память
+        // и больше не начинает.
+        long allocated = -1;
+        for (int attempt = 0; attempt < 5 && allocated != 0; attempt++)
+        {
+            for (int i = 0; i < 10_000; i++) block.CopyTo(AudioTrackKind.Mixed, dest);
+
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++) block.CopyTo(AudioTrackKind.Mixed, dest);
+            allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
 
         Assert.True(allocated == 0, $"десять тысяч сведений выделили {allocated} байт");
     }

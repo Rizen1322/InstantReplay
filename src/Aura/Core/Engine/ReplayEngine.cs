@@ -136,6 +136,9 @@ public sealed class ReplayEngine : IDisposable
     {
         _settings = settings;
         _storage = storage;
+        // Проблемы со звуком должны доходить до человека сразу: немой клип
+        // обнаруживается уже после того, как момент упущен
+        _audio.Warning += msg => Warning?.Invoke(msg);
         // Реакция на изменение настроек записи: перезапуск конвейера на лету
         _settings.Changed += group =>
         {
@@ -721,7 +724,12 @@ public sealed class ReplayEngine : IDisposable
                                  p => SaveProgress = p);
                 _storage.RegisterSaved(file); // индекс папки — без повторного обхода диска
                 // Правку счётчика делает фоновый поток — идём через Update, чтобы она
-                // не столкнулась с сохранением настроек из потока интерфейса
+                // не столкнулась с сохранением настроек из потока интерфейса.
+                //
+                // ГРУППА ОБЯЗАНА ОСТАВАТЬСЯ "stats". Обработчик Changed на группы
+                // video/audio/replay берёт _lifecycle и перезапускает конвейер, а
+                // Stop() как раз в это время ждёт завершения ЭТОЙ задачи, держа тот же
+                // замок, — получился бы дедлок. Здесь мы внутри сохраняющего потока.
                 _settings.Update(x => x.TotalReplaysSaved++, "stats");
                 ReplaySaved?.Invoke(file, Math.Max(seconds, 1));
             }

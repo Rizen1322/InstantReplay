@@ -1,7 +1,6 @@
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
 using Aura.Core.Buffering;
 using Aura.Core.Logging;
 
@@ -29,9 +28,8 @@ public sealed class AudioCaptureSource : IDisposable
     public AudioCaptureSource(bool loopback, string? deviceId)
     {
         var enumerator = new MMDeviceEnumerator();
-        MMDevice device = deviceId is null
-            ? enumerator.GetDefaultAudioEndpoint(loopback ? DataFlow.Render : DataFlow.Capture, Role.Multimedia)
-            : enumerator.GetDevice(deviceId);
+        var flow = loopback ? DataFlow.Render : DataFlow.Capture;
+        MMDevice device = Resolve(enumerator, flow, deviceId, loopback);
 
         _capture = loopback ? new WasapiLoopbackCapture(device)
                             : new WasapiCapture(device) { ShareMode = AudioClientShareMode.Shared };
@@ -48,15 +46,47 @@ public sealed class AudioCaptureSource : IDisposable
             if (e.Exception is not null) Log.Error("Audio", $"Источник остановился: {e.Exception.Message}");
         };
 
-        // Приведение к 48k/stereo/float
-        ISampleProvider sp = _buffered.ToSampleProvider();
-        if (sp.WaveFormat.Channels == 1) sp = new MonoToStereoSampleProvider(sp);
-        if (sp.WaveFormat.SampleRate != SampleRate)
-            sp = new WdlResamplingSampleProvider(sp, SampleRate);
-        _pipeline = sp;
+        // Приведение к 48k/stereo/float — включая устройства с 5.1 и 7.1,
+        // которые раньше проезжали мимо и ломали темп записи (см. AudioFormat)
+        _pipeline = AudioFormat.Normalize(_buffered.ToSampleProvider());
 
         _capture.StartRecording();
         Log.Info("Audio", $"Источник запущен: {(loopback ? "loopback" : "mic")} {device.FriendlyName} ({_capture.WaveFormat})");
+        if (_capture.WaveFormat.Channels != Channels)
+            Log.Info("Audio", $"Устройство отдаёт {_capture.WaveFormat.Channels} канала(ов) — свожу в стерео");
+    }
+
+    /// <summary>
+    /// На какое устройство пришлось откатиться, потому что выбранное не нашлось.
+    /// null — взяли ровно то, что просили. Заполняется, чтобы движок мог сказать
+    /// об этом человеку, а не оставить его с немой записью.
+    /// </summary>
+    public string? FellBackTo { get; private set; }
+
+    /// <summary>
+    /// Найти устройство по сохранённому идентификатору, а если его больше нет —
+    /// взять текущее по умолчанию.
+    ///
+    /// ЗАЧЕМ ОТКАТ. Идентификатор устройства лежит в настройках и переживает
+    /// смену железа. Купил человек новые наушники — старый ID перестаёт
+    /// разрешаться (ERROR_NOT_FOUND, 0x80070490), и раньше запись просто
+    /// оставалась без звука: ошибка уходила в лог, источник не создавался,
+    /// и никто об этом не сообщал.
+    /// </summary>
+    private MMDevice Resolve(MMDeviceEnumerator enumerator, DataFlow flow, string? deviceId, bool loopback)
+    {
+        if (deviceId is not null)
+            try { return enumerator.GetDevice(deviceId); }
+            catch (Exception ex)
+            {
+                var fallback = enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
+                FellBackTo = fallback.FriendlyName;
+                Log.Warn("Audio", $"Выбранное устройство ({(loopback ? "звук игры" : "микрофон")}) " +
+                                  $"не найдено ({ex.Message}) — беру по умолчанию: {fallback.FriendlyName}");
+                return fallback;
+            }
+
+        return enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
     }
 
     /// <summary>Читает ровно count float-сэмплов (interleaved). Недостача = тишина.</summary>
@@ -128,6 +158,13 @@ public sealed class AudioMixerEngine : IDisposable
 
     public event Action<AudioBlock>? BlockReady;
 
+    /// <summary>
+    /// Со звуком что-то не так, и человеку об этом надо сказать: устройство
+    /// не найдено, пришлось откатиться на другое, запись пойдёт без звука.
+    /// Немой клип обнаруживается уже после того, как момент упущен.
+    /// </summary>
+    public event Action<string>? Warning;
+
     // Настройки последнего запуска — по ним пересоздаём источник, если система
     // сменила устройство по умолчанию.
     private bool _wantGame, _wantMic;
@@ -143,11 +180,29 @@ public sealed class AudioMixerEngine : IDisposable
         _renderDeviceId = renderDeviceId; _captureDeviceId = captureDeviceId;
 
         if (captureGame)
-            try { _game = new AudioCaptureSource(loopback: true, renderDeviceId); }
-            catch (Exception ex) { Log.Error("Audio", $"Loopback недоступен: {ex.Message}"); }
+            try
+            {
+                _game = new AudioCaptureSource(loopback: true, renderDeviceId);
+                if (_game.FellBackTo is { } name)
+                    Warning?.Invoke($"Выбранное устройство вывода не найдено — пишу звук с «{name}»");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Audio", $"Loopback недоступен: {ex.Message}");
+                Warning?.Invoke("Звук игры записать не удалось — проверьте устройство вывода в настройках");
+            }
         if (captureMic)
-            try { _mic = new AudioCaptureSource(loopback: false, captureDeviceId); }
-            catch (Exception ex) { Log.Error("Audio", $"Микрофон недоступен: {ex.Message}"); }
+            try
+            {
+                _mic = new AudioCaptureSource(loopback: false, captureDeviceId);
+                if (_mic.FellBackTo is { } name)
+                    Warning?.Invoke($"Выбранный микрофон не найден — пишу с «{name}»");
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Audio", $"Микрофон недоступен: {ex.Message}");
+                Warning?.Invoke("Микрофон записать не удалось — проверьте устройство в настройках");
+            }
 
         WatchDefaultDevices();
 
