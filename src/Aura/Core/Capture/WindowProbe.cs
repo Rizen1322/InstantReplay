@@ -1,8 +1,10 @@
 using Aura.Core.Interop;
 using Aura.Core.Logging;
-using Aura.Views;
 
 namespace Aura.Core.Capture;
+
+/// <summary>Прямоугольник в пикселях снимка экрана.</summary>
+public readonly record struct PixelRect(int X, int Y, int Width, int Height);
 
 /// <summary>
 /// Прямоугольники видимых окон в координатах снятого монитора.

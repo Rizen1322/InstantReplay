@@ -72,20 +72,11 @@ public partial class RegionCaptureWindow : Window
     private Rect _startRect;
 
     /// <summary>
-    /// Снап областей: окна собираются один раз при открытии, блоки внутри окон
-    /// ищутся по пикселям снимка. См. <see cref="WindowProbe"/> и <see cref="RegionDetector"/>.
+    /// Снап по окнам: список собирается один раз при открытии оверлея,
+    /// см. <see cref="WindowProbe"/>.
     /// </summary>
     private List<PixelRect>? _windows;
     private Rect? _candidate;
-
-    /// <summary>
-    /// Все области под курсором, от самой мелкой к самой крупной: блок внутри
-    /// окна, затем сами окна снизу вверх по вложенности. Колесо мыши ходит по
-    /// этому списку — «поймать» нужную рамку удаётся не всегда с первого раза.
-    /// </summary>
-    private readonly List<Rect> _candidates = [];
-    private int _candidateIndex;
-    private Rect? _lastSmallest;
     private Point _lastProbePoint = new(double.NaN, double.NaN);
 
     /// <summary>
@@ -141,7 +132,6 @@ public partial class RegionCaptureWindow : Window
         // следующее движение мыши: человек метит в неподвижную карточку
         KeyDown += (_, e) => { if (IsCtrl(e.Key)) OnSnapKeyChanged(); };
         KeyUp += (_, e) => { if (IsCtrl(e.Key)) OnSnapKeyChanged(); };
-        MouseWheel += OnMouseWheel;
 
         SourceInitialized += (_, _) => PlaceOverMonitor();
         // Затемнение рисуется по фактическому размеру окна — до Loaded он ещё нулевой
@@ -420,7 +410,7 @@ public partial class RegionCaptureWindow : Window
             return;
 
         _lastProbePoint = point;
-        RebuildCandidates(point);
+        RefreshCandidate(point);
     }
 
     private static bool IsCtrl(Key key) => key is Key.LeftCtrl or Key.RightCtrl;
@@ -446,48 +436,14 @@ public partial class RegionCaptureWindow : Window
     }
 
     /// <summary>
-    /// Пересобрать список областей под курсором и показать выбранную.
-    /// Индекс сохраняется между пересчётами: пока человек ведёт мышь внутри той
-    /// же карточки, выбранный колесом уровень вложенности не должен слетать.
+    /// Окно под курсором — самое верхнее по Z-порядку.
+    ///
+    /// Раньше здесь ещё искались блоки внутри окна по контрасту пикселей
+    /// (карточки, панели). На реальных экранах это угадывало границы слишком
+    /// ненадёжно, и от него отказались: Ctrl подсвечивает окно целиком, а
+    /// произвольную область по-прежнему даёт обычная протяжка мышью.
     /// </summary>
-    private void RebuildCandidates(Point point)
-    {
-        _candidates.Clear();
-
-        if (FindBlock(point) is { } block) _candidates.Add(block);
-
-        foreach (var window in WindowsAt(point))
-        {
-            var rect = ToDips(window);
-            // Окно, совпавшее с блоком с точностью до пары пикселей, — то же самое
-            if (_candidates.Any(c => Math.Abs(c.Width - rect.Width) < 3 && Math.Abs(c.Height - rect.Height) < 3))
-                continue;
-            _candidates.Add(rect);
-        }
-
-        // От мелкого к крупному: колесо вверх расширяет выбор, вниз сужает
-        _candidates.Sort((a, b) => (a.Width * a.Height).CompareTo(b.Width * b.Height));
-
-        // Уровень, выбранный колесом, держится пока курсор на той же области, но
-        // на новой карточке сбрасывается: иначе, отведя мышь, человек снова получает
-        // окно целиком и не понимает, почему подсветка «залипла».
-        var smallest = _candidates.Count > 0 ? _candidates[0] : (Rect?)null;
-        if (!Nullable.Equals(_lastSmallest, smallest)) _candidateIndex = 0;
-        _lastSmallest = smallest;
-
-        _candidateIndex = Math.Clamp(_candidateIndex, 0, Math.Max(0, _candidates.Count - 1));
-        SetCandidate(_candidates.Count > 0 ? _candidates[_candidateIndex] : null);
-    }
-
-    /// <summary>Колесо перебирает вложенные области: карточка → панель → окно.</summary>
-    private void OnMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        if (!SnapArmed || _candidates.Count < 2) return;
-
-        _candidateIndex = Math.Clamp(_candidateIndex + (e.Delta > 0 ? 1 : -1), 0, _candidates.Count - 1);
-        SetCandidate(_candidates[_candidateIndex]);
-        e.Handled = true;
-    }
+    private void RefreshCandidate(Point point) => SetCandidate(TopWindowAt(point));
 
     /// <summary>
     /// Ctrl нажали или отпустили — подсветка обязана появиться и исчезнуть сразу,
@@ -506,35 +462,21 @@ public partial class RegionCaptureWindow : Window
         if (_hasSelection) return;
 
         Hint.Text = SnapArmed
-            ? "Наведите на окно или блок и щёлкните · колесо — соседняя область · Esc — отмена"
-            : "Протяните область мышью · Ctrl — подсветка окон и блоков · Esc — отмена";
+            ? "Наведите на окно и щёлкните · Esc — отмена"
+            : "Протяните область мышью · Ctrl — выделить окно целиком · Esc — отмена";
     }
 
-    /// <summary>
-    /// Все окна под точкой, сверху вниз по Z-порядку.
-    ///
-    /// Возвращаем не одно, а все: под курсором обычно лежит и нужное окно, и
-    /// рабочий стол под ним, а человеку может понадобиться любое из них —
-    /// перебор идёт колесом.
-    /// </summary>
-    private IEnumerable<PixelRect> WindowsAt(Point point)
+    /// <summary>Самое верхнее окно под точкой; null — там ничего нет.</summary>
+    private Rect? TopWindowAt(Point point)
     {
-        if (_windows is null) yield break;
+        if (_windows is null) return null;
 
         var (px, py) = ToPixels(point);
         foreach (var w in _windows)
             if (px >= w.X && px < w.X + w.Width && py >= w.Y && py < w.Y + w.Height)
-                yield return w;
-    }
+                return ToDips(w);
 
-    /// <summary>Блок, найденный по самой картинке (карточка, панель, ячейка).</summary>
-    private Rect? FindBlock(Point point)
-    {
-        if (_pixels is null) return null;
-
-        var (px, py) = ToPixels(point);
-        var found = RegionDetector.Detect(_pixels, _pixelWidth, _pixelHeight, _pixelWidth * 4, px, py);
-        return found is null ? null : ToDips(found.Value);
+        return null;
     }
 
     /// <summary>
@@ -623,8 +565,6 @@ public partial class RegionCaptureWindow : Window
         Ink.Current = null;
         _undone.Clear();
         _lastProbePoint = new Point(double.NaN, double.NaN);   // искать заново с любого места
-        _candidates.Clear();
-        _candidateIndex = 0;
         Ink.Refresh();
         UpdateHint();
         UpdateDim();
