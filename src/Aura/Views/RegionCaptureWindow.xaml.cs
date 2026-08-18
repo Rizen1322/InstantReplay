@@ -71,12 +71,48 @@ public partial class RegionCaptureWindow : Window
     private Point _dragStart;
     private Rect _startRect;
 
+    /// <summary>
+    /// Снап областей: окна собираются один раз при открытии, блоки внутри окон
+    /// ищутся по пикселям снимка. См. <see cref="WindowProbe"/> и <see cref="RegionDetector"/>.
+    /// </summary>
+    private List<PixelRect>? _windows;
+    private Rect? _candidate;
+
+    /// <summary>
+    /// Все области под курсором, от самой мелкой к самой крупной: блок внутри
+    /// окна, затем сами окна снизу вверх по вложенности. Колесо мыши ходит по
+    /// этому списку — «поймать» нужную рамку удаётся не всегда с первого раза.
+    /// </summary>
+    private readonly List<Rect> _candidates = [];
+    private int _candidateIndex;
+    private Rect? _lastSmallest;
+    private Point _lastProbePoint = new(double.NaN, double.NaN);
+
+    /// <summary>
+    /// Что было подсвечено в момент нажатия кнопки.
+    ///
+    /// ЗАЧЕМ ОТДЕЛЬНОЕ ПОЛЕ. Подсветка гаснет сразу на нажатии — иначе она висит
+    /// поверх протяжки. Но решение «клик без протяжки = взять подсвеченное»
+    /// принимается только на ОТПУСКАНИИ, и к тому моменту гасить уже нечего.
+    /// Раньше здесь читалось <see cref="_candidate"/>, он был уже пуст, и клик
+    /// по подсвеченной области просто сбрасывал выделение.
+    /// </summary>
+    private Rect? _pressedCandidate;
+
     private RegionCaptureWindow(BitmapSource shot, int x, int y, int width, int height, string folder)
     {
         InitializeComponent();
         _shot = shot;
         _monitorX = x; _monitorY = y; _pixelWidth = width; _pixelHeight = height;
         _screenshotFolder = folder;
+
+        // Оверлей уже накрыл экран, картинка под ним застыла — список окон
+        // собираем один раз, а не на каждое движение мыши
+        _windows = WindowProbe.Collect(x, y, width, height);
+
+        // Бинд области сам может содержать Ctrl — тогда снап включён уже при открытии,
+        // и подсказка обязана говорить правду с первой секунды
+        UpdateHint();
 
         Shot.Source = shot;
         BuildSwatches();
@@ -101,6 +137,11 @@ public partial class RegionCaptureWindow : Window
         MouseMove += OnMouseMove;
         MouseLeftButtonUp += OnMouseUp;
         KeyDown += OnKeyDown;
+        // Ctrl включает снап, и реагировать надо на само нажатие, а не на
+        // следующее движение мыши: человек метит в неподвижную карточку
+        KeyDown += (_, e) => { if (IsCtrl(e.Key)) OnSnapKeyChanged(); };
+        KeyUp += (_, e) => { if (IsCtrl(e.Key)) OnSnapKeyChanged(); };
+        MouseWheel += OnMouseWheel;
 
         SourceInitialized += (_, _) => PlaceOverMonitor();
         // Затемнение рисуется по фактическому размеру окна — до Loaded он ещё нулевой
@@ -303,6 +344,11 @@ public partial class RegionCaptureWindow : Window
             ResetSelection();
         }
 
+        // Подсветку гасим сразу, чтобы не висела поверх протяжки, но саму область
+        // запоминаем: понадобится на отпускании, если протяжки так и не случилось
+        _pressedCandidate = _candidate;
+        SetCandidate(null);
+
         _selecting = true;
         _dragStart = point;
         _selection = new Rect(point, point);
@@ -341,6 +387,170 @@ public partial class RegionCaptureWindow : Window
         }
 
         UpdateCursor(point);
+        UpdateCandidate(point);
+    }
+
+    /// <summary>
+    /// Обновить подсветку области под курсором.
+    ///
+    /// Работает только до начала протяжки: как только человек зажал и потянул,
+    /// он выделяет вручную, и подсказка обязана уйти с дороги. Ctrl глушит её
+    /// совсем — на случай, когда область угадывается не так, как хочется.
+    /// </summary>
+    private void UpdateCandidate(Point point)
+    {
+        // Снап включает Ctrl. По умолчанию оверлей ведёт себя как раньше: протянул
+        // рамку — получил область. Подсказка появляется только когда её позвали,
+        // и обычному выделению не мешает вовсе.
+        bool armed = SnapArmed
+                     && !_hasSelection && !_selecting && !_drawing && !_resizing && !_moving
+                     && _tool == InkTool.None;
+
+        if (!armed)
+        {
+            SetCandidate(null);
+            return;
+        }
+
+        // Поиск идёт по пикселям и стоит заметно дороже отрисовки, а WPF шлёт
+        // MouseMove на каждый пиксель — считаем только когда курсор реально уехал
+        if (!double.IsNaN(_lastProbePoint.X)
+            && Math.Abs(point.X - _lastProbePoint.X) < 3
+            && Math.Abs(point.Y - _lastProbePoint.Y) < 3)
+            return;
+
+        _lastProbePoint = point;
+        RebuildCandidates(point);
+    }
+
+    private static bool IsCtrl(Key key) => key is Key.LeftCtrl or Key.RightCtrl;
+
+    /// <summary>Зажат ли Ctrl — им включается поиск областей.</summary>
+    private static bool SnapArmed => (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+
+    private void SetCandidate(Rect? value)
+    {
+        if (Nullable.Equals(_candidate, value)) return;
+        _candidate = value;
+        Ink.Candidate = value;
+
+        // Размер показываем сразу: по нему видно, что именно заберёт клик.
+        // Трогаем чип только когда своего выделения нет — иначе затрём его размер.
+        if (!_hasSelection)
+        {
+            if (value is { } area) ShowSizeChip(area);
+            else SizeChip.Visibility = Visibility.Collapsed;
+        }
+
+        Ink.Refresh();
+    }
+
+    /// <summary>
+    /// Пересобрать список областей под курсором и показать выбранную.
+    /// Индекс сохраняется между пересчётами: пока человек ведёт мышь внутри той
+    /// же карточки, выбранный колесом уровень вложенности не должен слетать.
+    /// </summary>
+    private void RebuildCandidates(Point point)
+    {
+        _candidates.Clear();
+
+        if (FindBlock(point) is { } block) _candidates.Add(block);
+
+        foreach (var window in WindowsAt(point))
+        {
+            var rect = ToDips(window);
+            // Окно, совпавшее с блоком с точностью до пары пикселей, — то же самое
+            if (_candidates.Any(c => Math.Abs(c.Width - rect.Width) < 3 && Math.Abs(c.Height - rect.Height) < 3))
+                continue;
+            _candidates.Add(rect);
+        }
+
+        // От мелкого к крупному: колесо вверх расширяет выбор, вниз сужает
+        _candidates.Sort((a, b) => (a.Width * a.Height).CompareTo(b.Width * b.Height));
+
+        // Уровень, выбранный колесом, держится пока курсор на той же области, но
+        // на новой карточке сбрасывается: иначе, отведя мышь, человек снова получает
+        // окно целиком и не понимает, почему подсветка «залипла».
+        var smallest = _candidates.Count > 0 ? _candidates[0] : (Rect?)null;
+        if (!Nullable.Equals(_lastSmallest, smallest)) _candidateIndex = 0;
+        _lastSmallest = smallest;
+
+        _candidateIndex = Math.Clamp(_candidateIndex, 0, Math.Max(0, _candidates.Count - 1));
+        SetCandidate(_candidates.Count > 0 ? _candidates[_candidateIndex] : null);
+    }
+
+    /// <summary>Колесо перебирает вложенные области: карточка → панель → окно.</summary>
+    private void OnMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (!SnapArmed || _candidates.Count < 2) return;
+
+        _candidateIndex = Math.Clamp(_candidateIndex + (e.Delta > 0 ? 1 : -1), 0, _candidates.Count - 1);
+        SetCandidate(_candidates[_candidateIndex]);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Ctrl нажали или отпустили — подсветка обязана появиться и исчезнуть сразу,
+    /// не дожидаясь, пока человек шевельнёт мышью.
+    /// </summary>
+    private void OnSnapKeyChanged()
+    {
+        _lastProbePoint = new Point(double.NaN, double.NaN);   // пересчитать на месте
+        UpdateHint();
+        UpdateCandidate(Mouse.GetPosition(Root));
+    }
+
+    /// <summary>Подсказка вверху экрана говорит то, что верно прямо сейчас.</summary>
+    private void UpdateHint()
+    {
+        if (_hasSelection) return;
+
+        Hint.Text = SnapArmed
+            ? "Наведите на окно или блок и щёлкните · колесо — соседняя область · Esc — отмена"
+            : "Протяните область мышью · Ctrl — подсветка окон и блоков · Esc — отмена";
+    }
+
+    /// <summary>
+    /// Все окна под точкой, сверху вниз по Z-порядку.
+    ///
+    /// Возвращаем не одно, а все: под курсором обычно лежит и нужное окно, и
+    /// рабочий стол под ним, а человеку может понадобиться любое из них —
+    /// перебор идёт колесом.
+    /// </summary>
+    private IEnumerable<PixelRect> WindowsAt(Point point)
+    {
+        if (_windows is null) yield break;
+
+        var (px, py) = ToPixels(point);
+        foreach (var w in _windows)
+            if (px >= w.X && px < w.X + w.Width && py >= w.Y && py < w.Y + w.Height)
+                yield return w;
+    }
+
+    /// <summary>Блок, найденный по самой картинке (карточка, панель, ячейка).</summary>
+    private Rect? FindBlock(Point point)
+    {
+        if (_pixels is null) return null;
+
+        var (px, py) = ToPixels(point);
+        var found = RegionDetector.Detect(_pixels, _pixelWidth, _pixelHeight, _pixelWidth * 4, px, py);
+        return found is null ? null : ToDips(found.Value);
+    }
+
+    /// <summary>
+    /// Из координат окна в пиксели снимка. Множитель считается от фактической
+    /// ширины, а не от системного масштаба: окно оверлея растянуто ровно на монитор.
+    /// </summary>
+    private (int X, int Y) ToPixels(Point point)
+    {
+        double factor = Root.ActualWidth > 0 ? _pixelWidth / Root.ActualWidth : 1;
+        return ((int)Math.Round(point.X * factor), (int)Math.Round(point.Y * factor));
+    }
+
+    private Rect ToDips(PixelRect r)
+    {
+        double factor = _pixelWidth > 0 ? Root.ActualWidth / _pixelWidth : 1;
+        return new Rect(r.X * factor, r.Y * factor, r.Width * factor, r.Height * factor);
     }
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
@@ -371,13 +581,29 @@ public partial class RegionCaptureWindow : Window
         if (!_selecting) return;
         _selecting = false;
 
-        // Случайный клик без протяжки — не выделение
+        // Клик без протяжки: если под курсором нашлась область — берём её целиком.
+        // Это и есть весь снап со стороны человека: навёл, увидел рамку, щёлкнул.
         if (_selection.Width < 4 || _selection.Height < 4)
         {
-            ResetSelection();
-            return;
+            if (_pressedCandidate is { Width: >= 4, Height: >= 4 } area)
+            {
+                _selection = area;
+                Ink.Selection = _selection;
+                SetCandidate(null);
+                // В протяжке это делает MouseMove; клик через него не проходит,
+                // и без этих двух вызовов область выглядела бы незатемнённой и безразмерной
+                UpdateDim();
+                UpdateSizeChip();
+            }
+            else
+            {
+                ResetSelection();
+                return;
+            }
         }
+        else SetCandidate(null);
 
+        _pressedCandidate = null;
         _hasSelection = true;
         Ink.ShowHandles = true;
         Ink.Refresh();
@@ -396,7 +622,11 @@ public partial class RegionCaptureWindow : Window
         Ink.Shapes.Clear();
         Ink.Current = null;
         _undone.Clear();
+        _lastProbePoint = new Point(double.NaN, double.NaN);   // искать заново с любого места
+        _candidates.Clear();
+        _candidateIndex = 0;
         Ink.Refresh();
+        UpdateHint();
         UpdateDim();
         Toolbar.Visibility = Visibility.Collapsed;
         SizeChip.Visibility = Visibility.Collapsed;
@@ -740,12 +970,15 @@ public partial class RegionCaptureWindow : Window
         Dim.Data = group;
     }
 
-    private void UpdateSizeChip()
+    private void UpdateSizeChip() => ShowSizeChip(_selection);
+
+    /// <summary>Плашка с размером — и для своего выделения, и для подсвеченной области.</summary>
+    private void ShowSizeChip(Rect area)
     {
         double factor = _shot.PixelWidth / Math.Max(1, Root.ActualWidth);
-        SizeText.Text = $"{Math.Round(_selection.Width * factor)} × {Math.Round(_selection.Height * factor)}";
-        Canvas.SetLeft(SizeChip, Math.Max(4, _selection.Left));
-        Canvas.SetTop(SizeChip, Math.Max(4, _selection.Top - 26));
+        SizeText.Text = $"{Math.Round(area.Width * factor)} × {Math.Round(area.Height * factor)}";
+        Canvas.SetLeft(SizeChip, Math.Max(4, area.Left));
+        Canvas.SetTop(SizeChip, Math.Max(4, area.Top - 26));
         SizeChip.Visibility = Visibility.Visible;
     }
 

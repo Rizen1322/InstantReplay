@@ -14,6 +14,33 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnhookWindowsHookEx(IntPtr hhk);
     [LibraryImport("user32.dll")] internal static partial short GetAsyncKeyState(int vKey);
+
+    // ---------------- Перечисление окон (снап оверлея выделения) ----------------
+    internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [LibraryImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsWindowVisible(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsIconic(IntPtr hWnd);
+
+    /// <summary>
+    /// Настоящие видимые границы окна. GetWindowRect врёт: у окон с тенью он
+    /// возвращает прямоугольник вместе с невидимыми полями, и рамка выделения
+    /// оказывается заметно больше самого окна.
+    /// </summary>
+    [LibraryImport("dwmapi.dll")]
+    internal static partial int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out RECT value, int size);
+
+    internal const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+    internal const int DWMWA_CLOAKED = 14;
+
+    /// <summary>Скрытые окна UWP остаются «видимыми» для user32 — их выдаёт только DWM.</summary>
+    [LibraryImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+    internal static partial int DwmGetWindowAttributeInt(IntPtr hwnd, int attribute, out int value, int size);
     [LibraryImport("user32.dll")]
     internal static partial int GetMessageW(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
     [LibraryImport("user32.dll")] internal static partial IntPtr DispatchMessageW(ref MSG lpMsg);

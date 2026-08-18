@@ -35,12 +35,35 @@ public sealed class InkLayer : FrameworkElement
 {
     private static readonly Color SelectionColor = Color.FromRgb(0xE0, 0x3B, 0x3B);
 
+    /// <summary>
+    /// Подсветка найденной области. Заливка нарочно едва заметная: она обязана
+    /// показать границы, но не перекрасить то, что человек собирается снять.
+    /// Кисти заморожены — объект живёт весь сеанс оверлея и перерисовывается
+    /// на каждое движение мыши.
+    /// </summary>
+    private static readonly Brush CandidateFill = Freeze(new SolidColorBrush(Color.FromArgb(0x22, 0x3B, 0x82, 0xF6)));
+    private static readonly Pen CandidatePen = Freeze(new Pen(
+        Freeze(new SolidColorBrush(Color.FromArgb(0xCC, 0x3B, 0x82, 0xF6))), 1.5));
+
+    private static T Freeze<T>(T value) where T : Freezable
+    {
+        value.Freeze();
+        return value;
+    }
+
     /// <summary>Сторона квадратика-ручки. Он же радиус захвата мышью по краю выделения.</summary>
     public const double HandleSize = 9;
 
     public List<InkShape> Shapes { get; } = [];
     public InkShape? Current { get; set; }
     public Rect? Selection { get; set; }
+
+    /// <summary>
+    /// Область под курсором, найденная снапом: окно или блок внутри окна.
+    /// Рисуется до начала протяжки и гаснет, как только человек потянул рамку —
+    /// подсказка не должна мешать обычному выделению.
+    /// </summary>
+    public Rect? Candidate { get; set; }
 
     /// <summary>
     /// Размытая копия всего снимка в координатах окна. Размытие рисуется не фильтром
@@ -57,6 +80,12 @@ public sealed class InkLayer : FrameworkElement
 
     protected override void OnRender(DrawingContext dc)
     {
+        // Подсветка кандидата идёт первой: выделение и пометки рисуются поверх
+        if (Candidate is { Width: > 0, Height: > 0 } candidate)
+        {
+            dc.DrawRectangle(CandidateFill, CandidatePen, candidate);
+        }
+
         if (Selection is { Width: > 0, Height: > 0 } selection)
         {
             var pen = new Pen(new SolidColorBrush(SelectionColor), 1.5);

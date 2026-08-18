@@ -192,7 +192,7 @@
 
         <TextBlock x:Name="Hint" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,28,0,0"
                    Foreground="#D8D8E0" FontSize="14" IsHitTestVisible="False"
-                   Text="Выделите область мышью · край — изменить размер · Esc — отмена">
+                   Text="Протяните область мышью · Ctrl — подсветка окон и блоков · Esc — отмена">
             <TextBlock.Effect>
                 <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.8" Color="Black"/>
             </TextBlock.Effect>

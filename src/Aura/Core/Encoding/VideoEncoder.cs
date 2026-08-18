@@ -471,6 +471,22 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     private void PacerLoop()
     {
+        // Пейсер — обычный фоновый поток, и необработанное исключение в нём убивает
+        // процесс целиком, без шанса что-то записать в лог. Ронять запись из-за
+        // одного не сдублированного кадра незачем: постоянный fps — удобство, а не
+        // условие работоспособности.
+        try
+        {
+            PacerLoopCore();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Encoder", $"Пейсер остановлен: {ex.Message}");
+        }
+    }
+
+    private void PacerLoopCore()
+    {
         while (_running)
         {
             Thread.Sleep(4);
