@@ -120,7 +120,16 @@ public partial class App : Application
 
         StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
         Services.Hotkeys.Start();
-        InitTray();
+
+        // Приложение живёт в трее, но выходить обязано только по своей команде.
+        // Иначе, если значок не создался, а окно спрятано, WPF гасит процесс сам
+        // по правилу «закрылось последнее окно» — именно так оно и исчезало.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        // Значок в трее — удобство, а не условие работы: хоткеи и запись живут
+        // без него. Упасть здесь означало оборвать весь остаток запуска.
+        try { InitTray(); }
+        catch (Exception ex) { Log.Error("App", $"Значок в трее не создан: {ex.Message}"); }
         StartShowWindowListener();
 
         // В режиме --dev окно показываем всегда: иначе с включённым «стартовать
@@ -627,8 +636,53 @@ public partial class App : Application
             menu.Focus();
         };
 
-        _tray.ForceCreate();
-        UpdateTray();
+        TryCreateTray(attempt: 1);
+    }
+
+    /// <summary>Сколько раз пробуем создать значок, прежде чем сдаться.</summary>
+    private const int TrayAttempts = 8;
+
+    /// <summary>
+    /// Создать значок в трее, повторяя попытки с растущей паузой.
+    ///
+    /// ЗАЧЕМ. При автозапуске по входу в систему приложение стартует раньше
+    /// оболочки: области уведомлений ещё нет, и Shell_NotifyIcon отвечает отказом —
+    /// H.NotifyIcon превращает его в «TryCreate failed». Раньше это исключение
+    /// вылетало из OnStartup и обрывало ВЕСЬ остаток запуска: ни окна, ни движка,
+    /// процесс просто завершался. Explorer поднимается за секунды, поэтому
+    /// достаточно подождать и попробовать снова.
+    /// </summary>
+    private void TryCreateTray(int attempt)
+    {
+        try
+        {
+            _tray!.ForceCreate();
+            UpdateTray();
+            if (attempt > 1) Log.Info("App", $"Значок в трее создан с попытки {attempt}");
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (attempt == 1)
+                Log.Warn("App", $"Область уведомлений ещё не готова ({ex.Message}) — повторю попытки");
+
+            if (attempt >= TrayAttempts)
+            {
+                Log.Error("App", $"Значок в трее так и не создался за {TrayAttempts} попыток — " +
+                                 "приложение работает без него");
+                return;
+            }
+
+            // 1, 2, 4, 8… но не дольше полуминуты между попытками
+            var delay = TimeSpan.FromSeconds(Math.Min(30, 1 << (attempt - 1)));
+            var timer = new System.Windows.Threading.DispatcherTimer { Interval = delay };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                TryCreateTray(attempt + 1);
+            };
+            timer.Start();
+        }
     }
 
     /// <summary>Трей показывает реальное состояние: подсказка и пункты меню.</summary>

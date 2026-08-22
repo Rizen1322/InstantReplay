@@ -462,7 +462,7 @@ public partial class RegionCaptureWindow : Window
         if (_hasSelection) return;
 
         Hint.Text = SnapArmed
-            ? "Наведите на окно и щёлкните · Esc — отмена"
+            ? "Наведите на окно и щёлкните · Ctrl+A — весь экран · Esc — отмена"
             : "Протяните область мышью · Ctrl — выделить окно целиком · Esc — отмена";
     }
 
@@ -549,6 +549,32 @@ public partial class RegionCaptureWindow : Window
         _hasSelection = true;
         Ink.ShowHandles = true;
         Ink.Refresh();
+        Hint.Visibility = Visibility.Collapsed;
+        Cursor = Cursors.Arrow;
+        ShowToolbar();
+    }
+
+    /// <summary>
+    /// Ctrl+A — весь экран целиком.
+    ///
+    /// Дальше это обычное выделение: его можно двигать, тянуть за края и рисовать
+    /// поверх. Пометки прошлого выделения снимаются, иначе они окажутся не там,
+    /// где их ставили.
+    /// </summary>
+    private void SelectWholeScreen()
+    {
+        CommitCaption();
+        ResetSelection();
+
+        _selection = new Rect(0, 0, Root.ActualWidth, Root.ActualHeight);
+        Ink.Selection = _selection;
+        SetCandidate(null);
+
+        _hasSelection = true;
+        Ink.ShowHandles = true;
+        Ink.Refresh();
+        UpdateDim();
+        UpdateSizeChip();
         Hint.Visibility = Visibility.Collapsed;
         Cursor = Cursors.Arrow;
         ShowToolbar();
@@ -670,6 +696,7 @@ public partial class RegionCaptureWindow : Window
             // заново, достаточно протянуть мышью мимо текущей области.
             case Key.Escape: Close(); break;
             case Key.Enter: if (_hasSelection) Finish(copy: false, save: true); break;
+            case Key.A when ctrl: SelectWholeScreen(); e.Handled = true; break;
             case Key.Z when ctrl: Undo(); break;
             case Key.Y when ctrl: Redo(); break;
             case Key.C when ctrl: if (_hasSelection) Finish(copy: true, save: false); break;
