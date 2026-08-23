@@ -181,7 +181,7 @@ public sealed class ReplayEngine : IDisposable
             // массивов каждые 10 мс, и буфер держал их все живыми.
             _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, s.ReplayLengthSeconds);
 
-            _capture = ScreenCaptureFactory.Create();
+            _capture = ScreenCaptureFactory.Create(s.MonitorIndex);
             _capture.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
 
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
@@ -356,6 +356,15 @@ public sealed class ReplayEngine : IDisposable
             $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
             $", пресет {enc.QualityPreset}, кадров внутри MFT до {Interlocked.Exchange(ref enc.MaxInFlight, 0)}" +
             (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (очередь полна)" : ""));
+
+        // Видеопамять: превышение бюджета означает вытеснение текстур в оперативную
+        // память через шину, и тогда застревает всё, что трогает GPU — и захват, и
+        // кодирование разом. По одним лишь fps эту причину от прочих не отличить.
+        if (cap is not null && GpuInfo.Usage(cap.D3DDevice) is { } vram)
+        {
+            string verdict = vram.UsedMb > vram.BudgetMb ? " — БЮДЖЕТ ПРЕВЫШЕН" : "";
+            Log.Info("Engine", $"Видеопамять: занято {vram.UsedMb} из {vram.BudgetMb} МБ бюджета{verdict}");
+        }
 
         // Где именно уходит бюджет кадра (16.7 мс при 60 fps)
         string probe = Diagnostics.PipelineProbe.TakeReport();

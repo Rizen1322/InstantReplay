@@ -1,0 +1,101 @@
+using Vortice.Direct3D11;
+using Vortice.DXGI;
+
+namespace Aura.Core.Capture;
+
+/// <summary>
+/// Кто и на каком адаптере работает, и сколько видеопамяти занято.
+///
+/// ЗАЧЕМ. Разбор жалобы «у всех нормально, у меня лагает» упирался в то, что по
+/// логу нельзя было понять две вещи: на том ли адаптере идёт захват и не кончилась
+/// ли видеопамять. На системе с двумя графиками (дискретная плюс встроенная)
+/// захват с ЧУЖОГО адаптера гонит каждый кадр через шину, и копия текстуры,
+/// обычно занимающая доли миллисекунды, начинает застревать на секунды.
+/// Обе цифры теперь видны в логе сразу.
+/// </summary>
+internal static class GpuInfo
+{
+    internal readonly record struct Adapter(string Name, long Luid, long VramBytes)
+    {
+        public override string ToString() =>
+            VramBytes > 0 ? $"{Name} ({VramBytes / (1024 * 1024)} МБ VRAM)" : Name;
+    }
+
+    /// <summary>Адаптер, на котором создано устройство.</summary>
+    public static Adapter? Of(ID3D11Device device)
+    {
+        try
+        {
+            using var dxgi = device.QueryInterface<IDXGIDevice>();
+            using var adapter = dxgi.GetAdapter();
+            var d = adapter.Description;
+            return new Adapter(d.Description.Trim(), d.Luid, (long)d.DedicatedVideoMemory);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Адаптер, к которому подключён монитор с этим индексом.</summary>
+    public static Adapter? ForMonitor(int monitorIndex)
+    {
+        try
+        {
+            using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+            int index = 0;
+            for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+                using (adapter)
+                    for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
+                        using (output)
+                            if (index++ == monitorIndex)
+                            {
+                                var d = adapter.Description;
+                                return new Adapter(d.Description.Trim(), d.Luid, (long)d.DedicatedVideoMemory);
+                            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Адаптер, к которому подключён монитор — для создания устройства ИМЕННО на нём.
+    /// Вызывающий обязан освободить результат. null — монитор не найден.
+    /// </summary>
+    public static IDXGIAdapter1? OpenAdapterForMonitor(int monitorIndex)
+    {
+        try
+        {
+            using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+            int index = 0;
+            for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+            {
+                bool keep = false;
+                for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
+                    using (output)
+                        if (index++ == monitorIndex) { keep = true; break; }
+
+                if (keep) return adapter;
+                adapter.Dispose();
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Занято/бюджет видеопамяти в мегабайтах. Бюджет назначает Windows, и он
+    /// меньше физического объёма: под нагрузкой система его ужимает. Превышение
+    /// бюджета означает вытеснение текстур в оперативную память через шину —
+    /// именно тогда всё, что трогает GPU, начинает застревать.
+    /// </summary>
+    public static (long UsedMb, long BudgetMb)? Usage(ID3D11Device device)
+    {
+        try
+        {
+            using var dxgi = device.QueryInterface<IDXGIDevice>();
+            using var adapter = dxgi.GetAdapter();
+            using var adapter3 = adapter.QueryInterface<IDXGIAdapter3>();
+            var info = adapter3.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local);
+            return ((long)info.CurrentUsage / (1024 * 1024), (long)info.Budget / (1024 * 1024));
+        }
+        catch { return null; }
+    }
+}

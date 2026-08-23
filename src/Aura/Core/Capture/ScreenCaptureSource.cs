@@ -46,11 +46,34 @@ public sealed class ScreenCaptureSource : IScreenCapture
     public long FramesAccepted => Interlocked.Read(ref _framesAccepted);
     private long _framesReceived, _framesAccepted;
 
-    public ScreenCaptureSource()
+    /// <summary>
+    /// Устройство создаётся на адаптере, к которому подключён снимаемый монитор.
+    ///
+    /// ЗАЧЕМ ИНДЕКС В КОНСТРУКТОРЕ. Раньше здесь стоял D3D11CreateDevice(null, ...) —
+    /// адаптер ПО УМОЛЧАНИЮ, выбранный до того, как вообще известно, какой монитор
+    /// снимать. На машине с двумя графиками это запросто не тот адаптер: Windows
+    /// может отдавать обычному оконному приложению встроенную графику ради
+    /// энергосбережения, пока игра рендерится на дискретной. Тогда каждый кадр
+    /// ходит между видеокартами через шину, и копия текстуры, обычно занимающая
+    /// доли миллисекунды, застревает на секунды — захват и кодирование проваливаются
+    /// одновременно, хотя сама обработка ничего не делает.
+    ///
+    /// Что именно считается адаптером по умолчанию, задаёт система, и переустановка
+    /// Windows это меняет — отсюда «на прошлой винде такого не было» при том же железе.
+    /// Desktop Duplication выбирал адаптер правильно с самого начала; теперь и WGC.
+    /// </summary>
+    public ScreenCaptureSource(int monitorIndex)
     {
         var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
         FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
-        D3D11.D3D11CreateDevice(null, DriverType.Hardware, flags, levels,
+
+        using var adapter = GpuInfo.OpenAdapterForMonitor(monitorIndex);
+        if (adapter is null)
+            Log.Warn("Capture", $"Адаптер монитора #{monitorIndex} не определён — беру по умолчанию");
+
+        // С явным адаптером тип драйвера обязан быть Unknown — иначе D3D11 его игнорирует
+        D3D11.D3D11CreateDevice(adapter, adapter is null ? DriverType.Hardware : DriverType.Unknown,
+            flags, levels,
             out ID3D11Device device, out _, out ID3D11DeviceContext context).CheckError();
         D3DDevice = device;
         D3DContext = context;
@@ -192,6 +215,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
             _session.StartCapture();
 
             Log.Info("Capture", $"Захват запущен: монитор #{monitorIndex}, {Width}x{Height}, target {targetFps} fps");
+            LogAdapters(monitorIndex);
         }
     }
 
@@ -268,6 +292,31 @@ public sealed class ScreenCaptureSource : IScreenCapture
             // texture освобождается на каждой итерации; получатель обязан скопировать её
             // (GPU-copy в свою NV12-текстуру) внутри колбэка.
         }
+    }
+
+    /// <summary>
+    /// Сверить, на том ли адаптере идёт захват.
+    ///
+    /// Устройство здесь создаётся в конструкторе на адаптере ПО УМОЛЧАНИЮ — тогда
+    /// ещё неизвестно, какой монитор попросят снимать. На системе с двумя графиками
+    /// это может оказаться не тот адаптер, к которому подключён монитор, и каждый
+    /// кадр начнёт ходить между ними через шину. В логе такое расхождение обязано
+    /// быть видно сразу, а не выясняться по косвенным признакам.
+    /// </summary>
+    private void LogAdapters(int monitorIndex)
+    {
+        var used = GpuInfo.Of(D3DDevice);
+        var owner = GpuInfo.ForMonitor(monitorIndex);
+
+        Log.Info("Capture", $"Адаптер захвата: {used?.ToString() ?? "неизвестен"}; " +
+                            $"монитор #{monitorIndex} на: {owner?.ToString() ?? "неизвестен"}");
+
+        if (used is { } u && owner is { } o && u.Luid != o.Luid)
+            Log.Warn("Capture", "Захват идёт НЕ с того адаптера, к которому подключён монитор — " +
+                                "каждый кадр копируется между видеокартами, это главный источник рывков");
+
+        if (GpuInfo.Usage(D3DDevice) is { } usage)
+            Log.Info("Capture", $"Видеопамять при старте: занято {usage.UsedMb} из {usage.BudgetMb} МБ бюджета");
     }
 
     public void Stop()

@@ -66,12 +66,16 @@ public static class ScreenCaptureFactory
     /// Windows 11 с выданным правом на захват без рамки — WGC (аппаратный курсор в кадре).
     /// Иначе — Desktop Duplication: рамки там нет в принципе.
     /// </summary>
-    public static IScreenCapture Create()
+    /// <param name="monitorIndex">
+    /// Нужен уже здесь: устройство D3D создаётся на адаптере ЭТОГО монитора,
+    /// а не на адаптере по умолчанию (см. <see cref="ScreenCaptureSource"/>).
+    /// </param>
+    public static IScreenCapture Create(int monitorIndex)
     {
         if (UsesWgc)
         {
             Logging.Log.Info("Capture", "Захват через Windows Graphics Capture");
-            return new ScreenCaptureSource();
+            return new ScreenCaptureSource(monitorIndex);
         }
 
         Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");
