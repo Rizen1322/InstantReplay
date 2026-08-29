@@ -152,6 +152,13 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     public long PacerBlocked;
 
+    /// <summary>Сколько кадров сейчас ждёт в очереди — для посекундной диагностики.</summary>
+    public int QueueDepth { get { lock (_queueLock) return _inputQueue.Count; } }
+
+    /// <summary>Размер кольца текстур и потолок очереди — их считает бюджет видеопамяти.</summary>
+    public int PoolSlots => _copyPool?.Slots ?? 0;
+    public int MaxQueue => _maxInputQueue;
+
     private static long NowQpcTicks() =>
         (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
                (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));

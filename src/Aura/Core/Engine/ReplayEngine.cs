@@ -212,6 +212,7 @@ public sealed class ReplayEngine : IDisposable
             SetState(EngineState.Running);
             StartStatsTimer();
             StartCaptureWatchdog();
+            StartCaptureProbe();
             StartGameTracker();
             Log.Info("Engine", "Instant Replay включен");
         }
@@ -530,6 +531,73 @@ public sealed class ReplayEngine : IDisposable
     private bool _wdEpisodeLogged; // логируем только начало эпизода тишины, не каждые 15 сек
     private int _wdFailures;       // сколько попыток пересоздать сессию не удалось подряд
 
+    // ---------------- Посекундная диагностика провалов ----------------
+    //
+    // Поминутной сводки мало: она усредняет провал вместе с нормальной работой и
+    // не даёт отличить три разных болезни друг от друга —
+    //   A) кончается видеопамять: бюджет падает, кадры перестают приходить И кодироваться;
+    //   B) молчит захват: бюджет в норме, кадры не приходят, очередь пуста;
+    //   C) не тянет энкодер: кадры приходят, очередь полна, запросов MFT мало.
+    // Поэтому пока идёт провал, пишем строку раз в секунду, а в норме молчим.
+
+    private System.Threading.Timer? _probeTimer;
+    private long _probeRecv, _probeEnc, _probeReq, _probeDrop, _probeDup;
+    private bool _probeEpisode;
+    private int _probeQuiet;
+
+    /// <summary>Ниже этого числа кадров в секунду считаем, что идёт провал.</summary>
+    private const int ProbeFpsFloor = 45;
+
+    private void StartCaptureProbe()
+    {
+        _probeEpisode = false;
+        _probeQuiet = 0;
+        _probeRecv = _probeEnc = _probeReq = _probeDrop = _probeDup = 0;
+        _probeTimer?.Dispose();
+        _probeTimer = new System.Threading.Timer(_ => Probe(), null,
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void Probe()
+    {
+        var cap = _capture;
+        var enc = _encoder;
+        if (cap is null || enc is null || _state == EngineState.Stopped) return;
+
+        try
+        {
+            long recv = cap.FramesReceived, encoded = enc.FramesEncoded;
+            long req = enc.InputRequests, drop = enc.FramesDroppedQueue, dup = enc.FramesDuplicated;
+
+            long dRecv = recv - _probeRecv, dEnc = encoded - _probeEnc, dReq = req - _probeReq;
+            long dDrop = drop - _probeDrop, dDup = dup - _probeDup;
+            _probeRecv = recv; _probeEnc = encoded; _probeReq = req; _probeDrop = drop; _probeDup = dup;
+
+            bool bad = dRecv < ProbeFpsFloor || dEnc < ProbeFpsFloor;
+
+            // Хвост после восстановления: по нему видно, что именно поднялось первым
+            if (!bad && _probeEpisode && ++_probeQuiet > 3) { _probeEpisode = false; _probeQuiet = 0; return; }
+            if (!bad && !_probeEpisode) return;
+            if (bad) _probeQuiet = 0;
+
+            if (!_probeEpisode)
+            {
+                _probeEpisode = true;
+                Log.Warn("Probe", "Провал захвата — посекундная диагностика (кадры/с: получено, закодировано, " +
+                                  "запросов MFT, дублей, дропов | очередь | видеопамять)");
+            }
+
+            string vram = GpuInfo.Usage(cap.D3DDevice) is { } v
+                ? $"{v.UsedMb}/{v.BudgetMb} МБ"
+                : "нет данных";
+
+            Log.Info("Probe", $"получено {dRecv}, закодировано {dEnc}, запросов {dReq}, " +
+                              $"дублей {dDup}, дропов {dDrop} | очередь {enc.QueueDepth}/{enc.MaxQueue} " +
+                              $"(пул {enc.PoolSlots}) | VRAM {vram}");
+        }
+        catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
+    }
+
     private void StartCaptureWatchdog()
     {
         _wdLastReceived = -1;
@@ -594,6 +662,7 @@ public sealed class ReplayEngine : IDisposable
         DumpStats("на выключении");
         _gameTimer?.Dispose(); _gameTimer = null;
         _watchdog?.Dispose(); _watchdog = null;
+        _probeTimer?.Dispose(); _probeTimer = null;
         _statsTimer?.Dispose(); _statsTimer = null;
 
         // Сохранение работает с буферами и клипом в арене — снести всё это под ним
