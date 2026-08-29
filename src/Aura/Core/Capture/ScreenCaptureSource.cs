@@ -146,8 +146,33 @@ public sealed class ScreenCaptureSource : IScreenCapture
         _copyReady.Set();
     }
 
-    /// <summary>Буферов в пуле: на 4K кадр весит ~33 МБ, там пул меньше.</summary>
-    private static int PoolSizeFor(int height) => height > 1440 ? 6 : 12;
+    /// <summary>
+    /// Буферов в пуле кадров WGC.
+    ///
+    /// Двенадцать буферов на 1440p — это ~168 МБ видеопамяти, самая крупная наша
+    /// доля. Пока памяти вдоволь, столько и берём: с четырьмя буферами система
+    /// отдавала 57.4 кадра/с вместо 60. Но когда тяжёлая игра забирает почти всю
+    /// видеопамять, Windows ужимает наш бюджет в разы (замер: 7249 МБ в простое,
+    /// 846 МБ под игрой), и держаться за 168 МБ становится вредно — драйвер
+    /// начинает вытеснять поверхности, и захват проваливается до 8–20 кадров/с.
+    /// </summary>
+    private int PoolSizeFor(int height)
+    {
+        int generous = height > 1440 ? 6 : 12;
+
+        if (GpuInfo.Usage(D3DDevice) is not { } vram || vram.BudgetMb <= 0) return generous;
+
+        // Кадр BGRA: ширина × высота × 4 байта
+        long frameMb = Math.Max((long)Width * height * 4 >> 20, 1);
+        int affordable = (int)Math.Max(2, vram.BudgetMb / 10 / frameMb);   // не больше десятой части бюджета
+        int chosen = Math.Min(generous, affordable);
+
+        if (chosen < generous)
+            Log.Warn("Capture", $"Видеопамяти мало (бюджет {vram.BudgetMb} МБ) — беру {chosen} буферов " +
+                                $"вместо {generous}, иначе система начнёт вытеснять кадры");
+
+        return chosen;
+    }
 
     /// <summary>Возвращает HMONITOR монитора по индексу (0 = основной по порядку DXGI).</summary>
     private static IntPtr GetMonitorHandle(int index)

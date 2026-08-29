@@ -1,5 +1,6 @@
 using Vortice.Direct3D11;
 using Vortice.DXGI;
+using Aura.Core.Logging;
 
 namespace Aura.Core.Capture;
 
@@ -28,10 +29,33 @@ internal static class GpuInfo
         {
             using var dxgi = device.QueryInterface<IDXGIDevice>();
             using var adapter = dxgi.GetAdapter();
+            return Describe(adapter);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Capture", $"Адаптер устройства не определяется: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Прочитать описание адаптера. Отдельным методом, потому что у разных версий
+    /// DXGI набор доступных полей отличается: если полное описание не читается,
+    /// довольствуемся идентификатором — он для сверки адаптеров и нужен.
+    /// </summary>
+    private static Adapter Describe(IDXGIAdapter adapter)
+    {
+        try
+        {
             var d = adapter.Description;
             return new Adapter(d.Description.Trim(), d.Luid, (long)d.DedicatedVideoMemory);
         }
-        catch { return null; }
+        catch
+        {
+            using var a1 = adapter.QueryInterface<IDXGIAdapter1>();
+            var d1 = a1.Description1;
+            return new Adapter(d1.Description.Trim(), d1.Luid, (long)d1.DedicatedVideoMemory);
+        }
     }
 
     /// <summary>Адаптер, к которому подключён монитор с этим индексом.</summary>
@@ -45,13 +69,12 @@ internal static class GpuInfo
                 using (adapter)
                     for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
                         using (output)
-                            if (index++ == monitorIndex)
-                            {
-                                var d = adapter.Description;
-                                return new Adapter(d.Description.Trim(), d.Luid, (long)d.DedicatedVideoMemory);
-                            }
+                            if (index++ == monitorIndex) return Describe(adapter);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Log.Warn("Capture", $"Адаптер монитора #{monitorIndex} не определяется: {ex.Message}");
+        }
         return null;
     }
 

@@ -16,11 +16,22 @@ namespace Aura.Core.Encoding;
 internal sealed class EncoderTexturePool : IDisposable
 {
     /// <summary>
-    /// Бюджет видеопамяти под пул. На 1080p даёт ~70 кадров (≈1.2 с запаса на
-    /// всплеск), на 4K упирается в нижнюю границу 24 — столько же, сколько было
-    /// раньше на всех разрешениях, так что тяжёлые режимы ничего не теряют.
+    /// Потолок, который пул берёт себе при свободной видеопамяти. На 1080p это
+    /// ~70 кадров (≈1.2 с запаса на всплеск), на 4K упирается в нижнюю границу.
     /// </summary>
-    private const long VramBudgetBytes = 220L << 20;
+    private const long MaxBudgetBytes = 220L << 20;
+
+    /// <summary>
+    /// Какую долю ВЫДЕЛЕННОГО системой бюджета видеопамяти пул вправе занять.
+    ///
+    /// ЗАЧЕМ ДОЛЯ, А НЕ КОНСТАНТА. Windows назначает бюджет процессу и ужимает его,
+    /// когда видеопамять нужна другим. Замер на тяжёлой игре: в простое бюджет
+    /// 7249 МБ, под игрой — 846 МБ, то есть в девять раз меньше. Пул при этом
+    /// продолжал требовать свои 220 МБ, драйвер начинал вытеснять поверхности,
+    /// и захват с кодированием проваливались одновременно: 8–20 кадров в секунду
+    /// вместо 60. Теперь пул ужимается вместе с бюджетом.
+    /// </summary>
+    private const double BudgetShare = 0.15;
 
     private readonly ID3D11Device _device;
     private readonly ID3D11Texture2D?[] _slots;
@@ -33,7 +44,17 @@ internal sealed class EncoderTexturePool : IDisposable
     {
         _device = device;
         long frameBytes = Math.Max((long)width * height * 3 / 2, 1); // NV12
-        _slots = new ID3D11Texture2D?[Math.Clamp(VramBudgetBytes / frameBytes, 24, 96)];
+        _slots = new ID3D11Texture2D?[Math.Clamp(BudgetBytes(device) / frameBytes, 8, 96)];
+    }
+
+    /// <summary>Сколько байт видеопамяти пул готов занять прямо сейчас.</summary>
+    private static long BudgetBytes(ID3D11Device device)
+    {
+        if (Capture.GpuInfo.Usage(device) is not { } vram || vram.BudgetMb <= 0)
+            return MaxBudgetBytes;   // бюджет не читается — ведём себя как раньше
+
+        long share = (long)(vram.BudgetMb * BudgetShare) << 20;
+        return Math.Min(MaxBudgetBytes, Math.Max(32L << 20, share));
     }
 
     /// <summary>
