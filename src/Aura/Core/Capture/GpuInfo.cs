@@ -16,10 +16,9 @@ namespace Aura.Core.Capture;
 /// </summary>
 internal static class GpuInfo
 {
-    internal readonly record struct Adapter(string Name, long Luid, long VramBytes)
+    internal readonly record struct Adapter(string Name, long Luid)
     {
-        public override string ToString() =>
-            VramBytes > 0 ? $"{Name} ({VramBytes / (1024 * 1024)} МБ VRAM)" : Name;
+        public override string ToString() => Name;
     }
 
     /// <summary>Адаптер, на котором создано устройство.</summary>
@@ -45,17 +44,13 @@ internal static class GpuInfo
     /// </summary>
     private static Adapter Describe(IDXGIAdapter adapter)
     {
-        try
-        {
-            var d = adapter.Description;
-            return new Adapter(d.Description.Trim(), d.Luid, (long)d.DedicatedVideoMemory);
-        }
-        catch
-        {
-            using var a1 = adapter.QueryInterface<IDXGIAdapter1>();
-            var d1 = a1.Description1;
-            return new Adapter(d1.Description.Trim(), d1.Luid, (long)d1.DedicatedVideoMemory);
-        }
+        // Только имя и идентификатор. Объём видеопамяти отсюда НЕ берём: поле
+        // DedicatedVideoMemory приходит указательного размера и на этой системе
+        // валило чтение всего описания с «Arithmetic operation resulted in an
+        // overflow», из-за чего в логе стояло «адаптер неизвестен». Занятость и
+        // бюджет всё равно точнее читаются через QueryVideoMemoryInfo.
+        var d = adapter.Description;
+        return new Adapter(d.Description.Trim(), d.Luid);
     }
 
     /// <summary>Адаптер, к которому подключён монитор с этим индексом.</summary>
