@@ -111,6 +111,28 @@ public class AuraArenaBufferTests
     }
 
     [Fact]
+    public void Repeated_saves_keep_byte_accounting_sane()
+    {
+        // Учёт занятых байтов ломался тихо: ReleaseSnapshot вычитал байты снимка,
+        // хотя его кадры остаются в списке и учтены там же. Каждое сохранение уводило
+        // счётчик всё дальше в минус — в логе это выглядело как «буфер видео -88 МБ».
+        var buffer = Make(seconds: 5, bitrateBps: 20 * Megabit);
+
+        for (int save = 0; save < 5; save++)
+        {
+            for (int i = 0; i < 60 * 6; i++)
+                buffer.Add(Frame((save * 1000 + i) * (Second / 60),
+                                 keyframe: i % 60 == 0, length: 30_000, seed: (byte)i));
+
+            var snapshot = buffer.TakeSnapshot(3 * Second, out long token);
+            buffer.ReleaseSnapshot(token);
+
+            Assert.True(buffer.TotalBytes >= 0,
+                $"после {save + 1}-го сохранения учёт байтов ушёл в минус: {buffer.TotalBytes}");
+        }
+    }
+
+    [Fact]
     public void Second_replay_right_after_first_still_has_content()
     {
         // Живой сценарий: «момент был чуть раньше — сохраню ещё раз». Раньше снимок
@@ -153,10 +175,16 @@ public class AuraArenaBufferTests
         for (int i = 0; i < snapshot.Count; i++)
             AssertPattern(snapshot[i], (byte)(first + i));
 
-        // Снимок отпущен — место возвращается буферу, вытеснение снова работает.
-        long usedWithSnapshot = buffer.TotalBytes;
+        // Снимок отпущен — вытеснение снова работает. Но байты освобождаются НЕ
+        // мгновенно: кадры снимка остаются в кольце, чтобы второй повтор подряд не
+        // оказался пустым, и списывает их обычное вытеснение, когда дойдёт до них.
         buffer.ReleaseSnapshot(token);
-        Assert.True(buffer.TotalBytes < usedWithSnapshot);
+
+        for (int i = 0; i < 600; i++)
+            buffer.Add(Frame((6000 + i) * (Second / 60), keyframe: i % 120 == 0, length: 50_000, seed: 0x11));
+
+        Assert.True(buffer.TotalBytes >= 0, $"учёт байтов ушёл в минус: {buffer.TotalBytes}");
+        Assert.True(buffer.TotalBytes <= buffer.CapacityBytes, "кольцо переросло арену");
 
         buffer.ReleaseSnapshot(token);            // повторный возврат ничего не делает
         buffer.ReleaseSnapshot(token + 999);      // чужой токен тоже

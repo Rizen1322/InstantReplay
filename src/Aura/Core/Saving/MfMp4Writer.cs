@@ -28,10 +28,38 @@ internal static class MfMp4Writer
     public static IMFSinkWriter Create(string filePath, bool disableThrottling = true)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
-        using IMFAttributes attrs = MediaFactory.MFCreateAttributes(2);
+
+        using IMFAttributes attrs = MediaFactory.MFCreateAttributes(3);
         attrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, 1u);
         if (disableThrottling) attrs.Set(SinkWriterAttributeKeys.DisableThrottling, 1u);
-        return MediaFactory.MFCreateSinkWriterFromURL(filePath, null, attrs);
+
+        // Контейнер задаём ЯВНО, а не расширением файла.
+        //
+        // MFCreateSinkWriterFromURL выбирает медиасинк по расширению пути. Пока файл
+        // назывался «...mp4», это работало само; как только запись пошла во временный
+        // «...mp4.part» (чтобы недописанный файл не попадал в библиотеку), Media
+        // Foundation перестала узнавать контейнер и отвечала MF_E_NOT_FOUND — то есть
+        // сохранение падало на первом же шаге, ещё до единого записанного кадра.
+        //
+        // С собственным байтовым потоком расширение не участвует вовсе: тип контейнера
+        // берётся из атрибута, и имя файла может быть любым.
+        attrs.Set(TranscodeAttributeKeys.TranscodeContainertype, TranscodeContainerTypeGuids.Mpeg4);
+
+        var stream = MediaFactory.MFCreateFile(
+            FileAccessMode.MfAccessModeWrite,
+            FileOpenMode.MfOpenModeDeleteIfExist,
+            FileFlags.FlagsNone,
+            filePath);
+
+        try
+        {
+            return MediaFactory.MFCreateSinkWriterFromURL(null, stream, attrs);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Видеопоток без перекодирования: input type == output type == сжатый.</summary>
