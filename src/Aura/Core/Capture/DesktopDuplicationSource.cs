@@ -368,6 +368,7 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             _duplication = null;
             _output = null;
             lock (_frameLock) _frameCopy = null;
+            _threadStuck = true;   // Dispose не должен трогать устройство и контекст
             return;
         }
 
@@ -376,9 +377,24 @@ public sealed class DesktopDuplicationSource : IScreenCapture
         lock (_frameLock) { _frameCopy?.Dispose(); _frameCopy = null; }
     }
 
+    /// <summary>Поток захвата не вышел — им ещё пользуются устройство и контекст.</summary>
+    private volatile bool _threadStuck;
+
     public void Dispose()
     {
         Stop();
+
+        // Если поток застрял, он продолжает звать CopyResource и AcquireNextFrame
+        // ровно на этих объектах. StopInternal их уже пощадил — здесь тоже нельзя,
+        // иначе получается ровно тот краш, от которого защищались строчкой выше.
+        if (_threadStuck)
+        {
+            Log.Warn("Capture", "Устройство DDA оставлено сборщику: поток захвата всё ещё жив");
+            _context = null;
+            _device = null;
+            return;
+        }
+
         _context?.Dispose(); _context = null;
         _device?.Dispose(); _device = null;
     }

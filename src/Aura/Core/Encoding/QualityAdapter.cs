@@ -24,8 +24,20 @@ internal sealed class QualityAdapter
 
     /// <summary>Окно оценки. Короче — дёргано, длиннее — поздно реагируем.</summary>
     private const int WindowMs = 5000;
-    /// <summary>Сколько спокойных окон подряд нужно, чтобы вернуться к качеству (30 с).</summary>
+    /// <summary>Сколько спокойных окон подряд нужно, чтобы вернуться к качеству.</summary>
     private const int RecoveryWindows = 6;
+
+    /// <summary>
+    /// Сколько спокойных окон требуется после КАЖДОГО неудачного возврата.
+    ///
+    /// ЗАЧЕМ. В логах пресет прыгал 50 → 25 → 50 → 25 с интервалом в пять секунд:
+    /// шесть спокойных окон набирались, качество возвращалось, нагрузка тут же
+    /// возвращала его обратно. Каждое переключение перенастраивает энкодер на ходу,
+    /// то есть флап стоит дороже, чем выигрыш от качества. Поэтому после неудачной
+    /// попытки порог удваивается — до предела, а после долгого спокойствия
+    /// возвращается к исходному.
+    /// </summary>
+    private const int MaxRecoveryWindows = 48;   // около четырёх минут
 
     private readonly CodecApi? _codecApi;
     private readonly int _fps;
@@ -34,6 +46,8 @@ internal sealed class QualityAdapter
     private long _nextCheckMs = WindowMs;
     private long _lastEncoded, _lastBlocked, _lastDropped;
     private int _calmWindows;
+    private int _recoveryNeeded = RecoveryWindows;
+    private bool _recoveryAttempted;
     private bool _unavailable;
 
     /// <summary>Текущий пресет — показывается в статистике конвейера.</summary>
@@ -81,13 +95,34 @@ internal sealed class QualityAdapter
         if (encoderBound)
         {
             _calmWindows = 0;
+
             if (Preset != Fast)
+            {
+                // Возврат к качеству не сработал — в следующий раз ждём дольше.
+                // Иначе получается флап 50 → 25 → 50 → 25 каждые пять секунд, и
+                // энкодер перенастраивается чаще, чем успевает дать выигрыш.
+                if (_recoveryAttempted)
+                {
+                    _recoveryNeeded = Math.Min(_recoveryNeeded * 2, MaxRecoveryWindows);
+                    Log.Info("Encoder", $"Возврат к качеству не удержался — следующая попытка " +
+                                        $"через {_recoveryNeeded * WindowMs / 1000} с");
+                }
                 Apply(Fast, $"энкодер не успевает ({dEncoded / (WindowMs / 1000.0):F0} из {_fps} fps)");
+                _recoveryAttempted = false;
+            }
         }
-        else if (Preset != Balanced && ++_calmWindows >= RecoveryWindows)
+        else if (Preset != Balanced && ++_calmWindows >= _recoveryNeeded)
         {
             _calmWindows = 0;
+            _recoveryAttempted = true;   // если качество не удержится, порог вырастет
             Apply(Balanced, "нагрузка спала");
+        }
+        else if (Preset == Balanced && ++_calmWindows >= MaxRecoveryWindows)
+        {
+            // Давно спокойно и качество держится — снимаем накопленный штраф,
+            // иначе один тяжёлый эпизод навсегда оставлял бы долгий порог
+            _calmWindows = 0;
+            _recoveryNeeded = RecoveryWindows;
         }
     }
 

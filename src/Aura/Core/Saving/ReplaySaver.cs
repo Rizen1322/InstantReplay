@@ -103,10 +103,21 @@ public static class ReplaySaver
         MfMp4Writer.ResetSampleCounters();
         // Писатель освобождается ЯВНО и строго раньше, чем открепляются блоки арены:
         // сэмплы ссылаются на них напрямую, и пока писатель жив, память трогать нельзя.
-        IMFSinkWriter writer = MfMp4Writer.Create(filePath);
+        // Пишем в СОСЕДНИЙ файл и переименовываем только после успешной финализации.
+        //
+        // ЗАЧЕМ. MFCreateSinkWriterFromURL писал прямо в целевой файл, и любой сбой
+        // на WriteSample или Finalize (кончилось место, отвалился диск, кодек не
+        // принял поток) оставлял в папке записей MP4 без moov. Библиотека показывала
+        // его обычной карточкой, а открыть его было нельзя. Теперь незавершённый файл
+        // не носит имени клипа и удаляется сам.
+        string partPath = filePath + ".part";
+        try { if (File.Exists(partPath)) File.Delete(partPath); } catch { }
+
+        IMFSinkWriter writer = MfMp4Writer.Create(partPath);
         var handles = new List<System.Runtime.InteropServices.GCHandle>();
         // Своя партия буферов на это сохранение — по ней и ждём разгрузки писателя
         var batch = new ArenaBufferBatch();
+        bool finalized = false;
         try
         {
 
@@ -252,12 +263,13 @@ public static class ReplaySaver
         try
         {
             writer.Finalize();
+            finalized = true;
         }
         catch (SharpGen.Runtime.SharpGenException ex) when (ex.ResultCode.Code == MfESinkHeadersNotFound)
         {
             // Windows не смогла собрать контейнер: у MP4-мультиплексора нет поддержки
             // этого кодека (на Windows 10 так бывает с AV1).
-            try { File.Delete(filePath); } catch { }
+            try { File.Delete(partPath); } catch { }
             Log.Error("Saver", $"MP4 не принял поток {VideoCodecName(videoType)}: {ex.Message}");
             throw new NotSupportedException(
                 $"Windows не умеет сохранять {VideoCodecName(videoType)} в MP4 на этой системе. " +
@@ -269,7 +281,7 @@ public static class ReplaySaver
         string fps = clipSeconds > 0.5 ? $", реально {frameCount / clipSeconds:F1} fps" : "";
         long total = sw.ElapsedMilliseconds;
         long fileBytes = 0;
-        try { fileBytes = new FileInfo(filePath).Length; } catch { }
+        try { fileBytes = new FileInfo(partPath).Length; } catch { }
 
         Log.Info("Saver", $"Сохранено: {filePath} ({frameCount} кадров за {clipSeconds:F1} с{fps}, " +
                           $"{audio.Count} аудиоблоков)");
@@ -287,6 +299,36 @@ public static class ReplaySaver
         {
             writer.Dispose();  // отпускает удержанные сэмплы
             UnpinWhenWriterDone(batch, handles);
+            // Только теперь файл закрыт и его можно переименовать
+            PublishOrDiscard(partPath, filePath, finalized);
+        }
+    }
+
+    /// <summary>
+    /// Довести файл до целевого имени — или убрать за собой.
+    ///
+    /// Переименование выполняется, только если Finalize прошёл: незавершённый MP4
+    /// не должен получить имя клипа и попасть в библиотеку.
+    /// </summary>
+    private static void PublishOrDiscard(string partPath, string filePath, bool finalized)
+    {
+        if (!finalized)
+        {
+            try { File.Delete(partPath); }
+            catch (Exception ex) { Log.Warn("Saver", $"Не удалось убрать незавершённый файл: {ex.Message}"); }
+            return;
+        }
+
+        try
+        {
+            File.Move(partPath, filePath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            // Файл записан целиком, но переименовать не вышло. Оставляем .part на
+            // диске: он валиден, и потерять запись хуже, чем оставить странное имя.
+            Log.Error("Saver", $"Клип записан, но переименовать не удалось ({ex.Message}). " +
+                               $"Файл остался как {partPath}");
         }
     }
 

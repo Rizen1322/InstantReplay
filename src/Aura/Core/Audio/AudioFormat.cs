@@ -85,20 +85,31 @@ internal static class AudioFormat
             _left[0] = 1f;
             if (_sourceChannels > 1) _right[1] = 1f;
 
+            // Центр на индексе 2 и LFE на индексе 3 — это раскладка 5.1 и 7.1
+            // (KSAUDIO_SPEAKER_5POINT1_SURROUND / 7POINT1_SURROUND). Применять её
+            // ко всему подряд нельзя: в QUAD (FL FR BL BR) индекс 2 — это тыл слева,
+            // а индекс 3 — тыл справа, и «выбросить LFE» означало потерять целый
+            // канал. В 2.1 (FL FR LFE) индекс 2 — наоборот низкочастотный, и
+            // разводить его по сторонам как центр значит перегрузить микс басом.
+            bool hasCenterAndLfe = _sourceChannels is 6 or 8;
+
             for (int ch = 2; ch < _sourceChannels; ch++)
-                switch (ch)
+            {
+                if (hasCenterAndLfe && ch == 2)              // FC — поровну в обе стороны
                 {
-                    case 2:                                  // FC — поровну в обе стороны
-                        _left[ch] = _right[ch] = Attenuated;
-                        break;
-                    case 3:                                  // LFE — намеренно мимо микса
-                        break;
-                    default:
-                        // Дальше идут парами: тыловые, затем боковые. Чётный — слева.
-                        if ((ch & 1) == 0) _left[ch] = Attenuated;
-                        else _right[ch] = Attenuated;
-                        break;
+                    _left[ch] = _right[ch] = Attenuated;
+                    continue;
                 }
+                if (ch == 3 && (hasCenterAndLfe || _sourceChannels == 3))
+                    continue;                                // LFE — намеренно мимо микса
+
+                // 2.1: третий канал низкочастотный, в стерео ему делать нечего
+                if (_sourceChannels == 3) continue;
+
+                // Остальное идёт парами (тыл, затем бок): чётный — слева, нечётный — справа
+                if ((ch & 1) == 0) _left[ch] = Attenuated;
+                else _right[ch] = Attenuated;
+            }
         }
 
         public int Read(float[] buffer, int offset, int count)

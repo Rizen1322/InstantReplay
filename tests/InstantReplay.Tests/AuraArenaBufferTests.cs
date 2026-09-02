@@ -42,7 +42,7 @@ public class AuraArenaBufferTests
         for (int i = 0; i < 60; i++)
             buffer.Add(Frame(i * (Second / 60), keyframe: i == 0, length: 1000 + i, seed: (byte)i));
 
-        var snapshot = buffer.SnapshotAndClear(5 * Second, out _);
+        var snapshot = buffer.TakeSnapshot(5 * Second, out _);
 
         Assert.Equal(60, snapshot.Count);
         for (int i = 0; i < snapshot.Count; i++)
@@ -69,7 +69,7 @@ public class AuraArenaBufferTests
         for (int i = 0; i < 1500; i++)
             buffer.Add(Frame(i * (Second / 60), keyframe: i % 120 == 0, frameSize, (byte)i));
 
-        var snapshot = buffer.SnapshotAndClear(long.MaxValue, out _);
+        var snapshot = buffer.TakeSnapshot(long.MaxValue, out _);
 
         Assert.NotEmpty(snapshot);
         // Кадры в снимке идут подряд и каждый обязан совпасть со своим узором:
@@ -106,8 +106,29 @@ public class AuraArenaBufferTests
         Assert.True(buffer.BufferedDurationTicks >= 10 * Second,
             $"в буфере {buffer.BufferedDurationTicks / (double)Second:F1} с вместо 10");
 
-        var snapshot = buffer.SnapshotAndClear(10 * Second, out _);
+        var snapshot = buffer.TakeSnapshot(10 * Second, out _);
         Assert.True(snapshot[0].IsKeyframe, "клип обязан начинаться с ключевого кадра");
+    }
+
+    [Fact]
+    public void Second_replay_right_after_first_still_has_content()
+    {
+        // Живой сценарий: «момент был чуть раньше — сохраню ещё раз». Раньше снимок
+        // очищал список кадров целиком, и второй повтор подряд содержал только то,
+        // что успело накопиться за секунды между нажатиями.
+        var buffer = Make(seconds: 10, bitrateBps: 20 * Megabit);
+        for (int i = 0; i < 60 * 20; i++)
+            buffer.Add(Frame(i * (Second / 60), keyframe: i % 120 == 0, length: 40_000, seed: (byte)i));
+
+        var first = buffer.TakeSnapshot(10 * Second, out long token);
+        Assert.NotEmpty(first);
+        buffer.ReleaseSnapshot(token);
+
+        var second = buffer.TakeSnapshot(10 * Second, out long token2);
+        buffer.ReleaseSnapshot(token2);
+
+        Assert.True(second.Count > first.Count / 2,
+            $"второй повтор почти пуст: {second.Count} кадров против {first.Count} у первого");
     }
 
     [Fact]
@@ -120,7 +141,7 @@ public class AuraArenaBufferTests
         for (int i = 0; i < 120; i++)
             buffer.Add(Frame(i * (Second / 60), keyframe: i % 120 == 0, length: 50_000, seed: (byte)i));
 
-        var snapshot = buffer.SnapshotAndClear(2 * Second, out long token);
+        var snapshot = buffer.TakeSnapshot(2 * Second, out long token);
         Assert.NotEmpty(snapshot);
 
         // Заливаем буфер заново с большим избытком: арена обязана защитить снимок
@@ -153,7 +174,7 @@ public class AuraArenaBufferTests
         for (int i = 0; i < 60 * 30; i++)
             buffer.Add(Frame(i * (Second / 60), keyframe: i % 120 == 0, length: 40_000, seed: (byte)i));
 
-        var snapshot = buffer.SnapshotAndClear(3 * Second, out long token);
+        var snapshot = buffer.TakeSnapshot(3 * Second, out long token);
         Assert.NotEmpty(snapshot);
         Assert.Equal(capacity, buffer.CapacityBytes);
 
@@ -183,7 +204,7 @@ public class AuraArenaBufferTests
         // После очистки блоки выделяются заново — буфер обязан продолжить работать
         buffer.Add(Frame(0, keyframe: true, length: 60_000, seed: 7));
         Assert.Equal(60_000, buffer.TotalBytes);
-        var snapshot = buffer.SnapshotAndClear(5 * Second, out _);
+        var snapshot = buffer.TakeSnapshot(5 * Second, out _);
         AssertPattern(Assert.Single(snapshot), 7);
     }
 
@@ -222,7 +243,7 @@ public class AuraArenaBufferTests
             buffer.Add(Frame(i * (Second / 60), keyframe: i == 0 || i == keyframeAt,
                              length: 1000, seed: (byte)i));
 
-        var snapshot = buffer.SnapshotAndClear(4 * Second, out _);
+        var snapshot = buffer.TakeSnapshot(4 * Second, out _);
 
         Assert.NotEmpty(snapshot);
         Assert.True(snapshot[0].IsKeyframe, "снимок начался не с ключевого кадра");

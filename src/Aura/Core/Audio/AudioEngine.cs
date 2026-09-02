@@ -293,7 +293,25 @@ public sealed class AudioMixerEngine : IDisposable
         public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
     }
 
+    /// <summary>Сколько раз подписчик уронил блок звука — считаем, чтобы не спамить в лог.</summary>
+    private long _blockFailures;
+
     private void MixLoop()
+    {
+        // Поток микшера фоновый, и необработанное исключение в нём завершает процесс
+        // без единой строки в логе. Запись без звука хуже записи со звуком, но
+        // несравнимо лучше, чем упавшее приложение посреди игры.
+        try
+        {
+            MixLoopCore();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Audio", $"Микшер остановлен: {ex}");
+        }
+    }
+
+    private void MixLoopCore()
     {
         // QPC → 100-нс тики: та же шкала, что frame.SystemRelativeTime у видео
         static long NowTicks() => (long)(System.Diagnostics.Stopwatch.GetTimestamp()
@@ -364,7 +382,18 @@ public sealed class AudioMixerEngine : IDisposable
             GamePeak = gPeak;
             MicPeak = mPeak;
 
-            BlockReady?.Invoke(new AudioBlock(gameOut, micOut, pts - latencyCompensation));
+            // Подписчиков двое (кольцевой буфер и запись в файл), и исключение любого
+            // из них раньше уходило прямо в поток микшера, где нет ни одного catch, —
+            // то есть убивало процесс. Звук важнее одного потерянного блока.
+            try
+            {
+                BlockReady?.Invoke(new AudioBlock(gameOut, micOut, pts - latencyCompensation));
+            }
+            catch (Exception ex)
+            {
+                if (Interlocked.Increment(ref _blockFailures) is 1 or 100 or 10_000)
+                    Log.Error("Audio", $"Подписчик уронил блок звука ({Interlocked.Read(ref _blockFailures)}-й раз): {ex.Message}");
+            }
             pts += blockTicks;
 
             // Держим темп по абсолютным дедлайнам (без дрейфа Thread.Sleep)

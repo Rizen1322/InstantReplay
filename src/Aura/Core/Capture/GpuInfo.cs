@@ -79,23 +79,47 @@ internal static class GpuInfo
     /// </summary>
     public static IDXGIAdapter1? OpenAdapterForMonitor(int monitorIndex)
     {
+        // Собираем «выход → его адаптер» в порядке перечисления DXGI — том же, в
+        // котором монитор выбирается в настройках и в GetMonitorHandle. Индекс за
+        // пределами списка КЛАМПИТСЯ так же, как там: иначе захват шёл бы по
+        // клампнутому монитору, а устройство создавалось на адаптере по умолчанию —
+        // ровно тот кросс-адаптерный случай, ради которого всё это и делалось.
+        var perOutput = new List<IDXGIAdapter1>();
         try
         {
             using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
-            int index = 0;
             for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
             {
-                bool keep = false;
+                int outputs = 0;
                 for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
-                    using (output)
-                        if (index++ == monitorIndex) { keep = true; break; }
+                {
+                    output.Dispose();
+                    outputs++;
+                }
 
-                if (keep) return adapter;
-                adapter.Dispose();
+                // По одной ссылке на каждый выход: владение простое и очевидное
+                for (int i = 0; i < outputs; i++)
+                    perOutput.Add(i == 0 ? adapter : adapter.QueryInterface<IDXGIAdapter1>());
+
+                if (outputs == 0) adapter.Dispose();
             }
+
+            if (perOutput.Count == 0) return null;
+
+            int index = Math.Clamp(monitorIndex, 0, perOutput.Count - 1);
+            var chosen = perOutput[index];
+            perOutput.RemoveAt(index);
+            return chosen;
         }
-        catch { }
-        return null;
+        catch (Exception ex)
+        {
+            Log.Warn("Capture", $"Адаптер монитора #{monitorIndex} не определяется: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            foreach (var spare in perOutput) spare.Dispose();
+        }
     }
 
     /// <summary>

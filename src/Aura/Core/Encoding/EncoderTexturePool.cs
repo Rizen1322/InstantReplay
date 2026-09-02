@@ -44,7 +44,7 @@ internal sealed class EncoderTexturePool : IDisposable
     {
         _device = device;
         long frameBytes = Math.Max((long)width * height * 3 / 2, 1); // NV12
-        _slots = new ID3D11Texture2D?[Math.Clamp(BudgetBytes(device) / frameBytes, 8, 96)];
+        _slots = new ID3D11Texture2D?[Math.Clamp(BudgetBytes(device) / frameBytes, 24, 96)];
     }
 
     /// <summary>Сколько байт видеопамяти пул готов занять прямо сейчас.</summary>

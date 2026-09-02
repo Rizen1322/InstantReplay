@@ -15,6 +15,28 @@ internal static partial class NativeMethods
     internal static partial bool UnhookWindowsHookEx(IntPtr hhk);
     [LibraryImport("user32.dll")] internal static partial short GetAsyncKeyState(int vKey);
 
+    // ---------------- Тождество файла (защита обновления от подмены каталога) ----------------
+
+    /// <summary>
+    /// Уникальный идентификатор файла в пределах тома. Пара «том + идентификатор»
+    /// не меняется при переименовании ни файла, ни любой папки над ним, поэтому
+    /// по ней видно, тот ли это файл, который мы проверяли и держим открытым.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FILE_ID_INFO
+    {
+        internal ulong VolumeSerialNumber;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+        internal byte[] FileId;
+    }
+
+    internal const int FileIdInfo = 18;   // FILE_INFO_BY_HANDLE_CLASS.FileIdInfo
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetFileInformationByHandleEx(
+        IntPtr hFile, int infoClass, out FILE_ID_INFO info, uint size);
+
     // ---------------- Перечисление окон (снап оверлея выделения) ----------------
     internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 

@@ -90,6 +90,38 @@ public class AudioFormatTests
     }
 
     [Fact]
+    public void КвадроНеТеряетТыловойКанал()
+    {
+        // QUAD — это FL FR BL BR, без центра и без LFE. Раскладка «индекс 2 = центр,
+        // индекс 3 = LFE» тут неверна: по ней тыл слева размазывался в оба канала,
+        // а тыл справа выбрасывался целиком.
+        var source = new FakeSource(channels: 4, sampleRate: Rate,
+            perChannel: [0f, 0f, 0f, 1.0f]);
+        var normalized = AudioFormat.Normalize(source);
+
+        var buffer = new float[2];
+        normalized.Read(buffer, 0, buffer.Length);
+
+        Assert.True(buffer[0] > 0 || buffer[1] > 0, "тыловой правый канал потерялся при сведении");
+    }
+
+    [Fact]
+    public void НизкочастотныйКаналВТрёхканальномНеИдётВМикс()
+    {
+        // 2POINT1 — это FL FR LFE. Принимать третий канал за центр значит гнать
+        // бас в обе стороны с коэффициентом 0.707 и перегружать микс.
+        var source = new FakeSource(channels: 3, sampleRate: Rate,
+            perChannel: [0f, 0f, 1.0f]);
+        var normalized = AudioFormat.Normalize(source);
+
+        var buffer = new float[2];
+        normalized.Read(buffer, 0, buffer.Length);
+
+        Assert.Equal(0f, buffer[0], 3);
+        Assert.Equal(0f, buffer[1], 3);
+    }
+
+    [Fact]
     public void МонофоническийИсточникПревращаетсяВСтерео()
     {
         var source = new FakeSource(channels: 1, sampleRate: Rate, perChannel: [0.5f]);

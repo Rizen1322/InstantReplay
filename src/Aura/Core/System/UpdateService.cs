@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json.Serialization;
+using Aura.Core.Interop;
 using Aura.Core.Logging;
 
 namespace Aura.Core.SystemIntegration;
@@ -39,6 +40,42 @@ public sealed class VerifiedInstaller : IDisposable
 
     /// <summary>Путь к файлу под замком.</summary>
     public string Path { get; }
+
+    /// <summary>
+    /// Указывает ли путь на ТОТ ЖЕ файл, который мы держим открытым.
+    ///
+    /// ЗАЧЕМ. Замок запрещает трогать сам файл, но не КАТАЛОГ над ним: NTFS
+    /// позволяет переименовать папку, внутри которой открыты файлы. Атака
+    /// выглядит так — папку update переименовывают, создают новую с тем же
+    /// именем и подложенным exe, и Process.Start по прежнему пути запускает
+    /// чужую программу с правами администратора и без запроса UAC.
+    ///
+    /// Пара «серийный номер тома + идентификатор файла» переименование папки
+    /// переживает, поэтому сверка по ней такую подмену и ловит.
+    /// </summary>
+    public bool StillPointsToVerifiedFile()
+    {
+        try
+        {
+            if (!TryGetIdentity(_held.SafeFileHandle.DangerousGetHandle(), out var held)) return false;
+
+            using var byPath = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (!TryGetIdentity(byPath.SafeFileHandle.DangerousGetHandle(), out var actual)) return false;
+
+            return held.VolumeSerialNumber == actual.VolumeSerialNumber
+                && held.FileId.AsSpan().SequenceEqual(actual.FileId);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Update", $"Не удалось сверить тождество установщика: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool TryGetIdentity(IntPtr handle, out NativeMethods.FILE_ID_INFO info) =>
+        NativeMethods.GetFileInformationByHandleEx(
+            handle, NativeMethods.FileIdInfo, out info,
+            (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.FILE_ID_INFO>());
 
     /// <summary>Размер проверенного файла в байтах.</summary>
     public long Length => _held.Length;
@@ -203,30 +240,52 @@ public sealed class UpdateService
 
         try
         {
-            var security = new DirectorySecurity();
-            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            foreach (var sid in new[] { WellKnownSidType.BuiltinAdministratorsSid, WellKnownSidType.LocalSystemSid })
-                security.AddAccessRule(new FileSystemAccessRule(
-                    new SecurityIdentifier(sid, null),
-                    FileSystemRights.FullControl,
-                    InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit,
-                    PropagationFlags.None,
-                    AccessControlType.Allow));
-
-            var info = new DirectoryInfo(dir);
-            if (info.Exists) info.SetAccessControl(security);
-            else info.Create(security);
-
+            // Укрепляем И родительскую папку: Create создаёт её с УНАСЛЕДОВАННЫМИ
+            // правами, а отладочная сборка (asInvoker) могла создать %ProgramData%\Aura
+            // от обычного пользователя. Владелец с неявными READ_CONTROL|WRITE_DAC
+            // вернул бы себе запись, сколько ни правь DACL.
+            string parent = Path.GetDirectoryName(dir)!;
+            Harden(parent);
+            Harden(dir);
             return dir;
         }
         catch (Exception ex)
         {
             string fallback = Path.Combine(Path.GetTempPath(), "AuraUpdate");
             Log.Warn("Update", $"Не удалось создать защищённый каталог обновления ({ex.Message}); " +
-                               $"качаю в {fallback} — файл всё равно удерживается под замком");
+                               $"качаю в {fallback}. Там подмена каталога не исключена правами, " +
+                               "её ловит сверка тождества файла перед запуском");
             Directory.CreateDirectory(fallback);
             return fallback;
         }
+    }
+
+    /// <summary>
+    /// Оставить у каталога только администраторов и SYSTEM — и сделать владельцем
+    /// администраторов.
+    ///
+    /// Одного DACL мало: владелец каталога всегда может переписать права на себя,
+    /// а папка, созданная когда-то от обычного пользователя, так и остаётся в его
+    /// владении. Поэтому выставляем и владельца.
+    /// </summary>
+    private static void Harden(string path)
+    {
+        var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+
+        var security = new DirectorySecurity();
+        security.SetOwner(admins);
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        foreach (var sid in new[] { WellKnownSidType.BuiltinAdministratorsSid, WellKnownSidType.LocalSystemSid })
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(sid, null),
+                FileSystemRights.FullControl,
+                InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit,
+                PropagationFlags.None,
+                AccessControlType.Allow));
+
+        var info = new DirectoryInfo(path);
+        if (info.Exists) info.SetAccessControl(security);
+        else info.Create(security);
     }
 
     /// <summary>Сопутствующий файл релиза; null — его нет или он не читается.</summary>
@@ -269,6 +328,15 @@ public sealed class UpdateService
     {
         try
         {
+            // Последняя сверка перед запуском: замок держит файл, но каталог над ним
+            // могли подменить переименованием — см. StillPointsToVerifiedFile
+            if (!installer.StillPointsToVerifiedFile())
+            {
+                Log.Error("Update", "Путь к установщику больше не указывает на проверенный файл — " +
+                                    "запуск отменён");
+                return false;
+            }
+
             var psi = new ProcessStartInfo(installer.Path) { UseShellExecute = true };
             psi.ArgumentList.Add("/update");
             psi.ArgumentList.Add(installRoot);

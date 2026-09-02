@@ -58,6 +58,17 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>Конвейер собран и кадры можно обрабатывать. Гасится первым при сносе.</summary>
     private volatile bool _pipelineOpen;
 
+    /// <summary>
+    /// Остановку попросили снаружи — восстанавливать конвейер больше нельзя.
+    ///
+    /// ЗАЧЕМ. Задача восстановления после потери устройства делает до десяти
+    /// попыток Start с паузами, то есть живёт около полуминуты. Если за это время
+    /// человек выключил запись, она включала её обратно. Тот же флаг проверяют
+    /// таймеры: Timer.Dispose не дожидается уже начатого колбэка, а SetState(Stopped)
+    /// стоит в самом конце сноса — то есть проверки «State == Stopped» им мало.
+    /// </summary>
+    private volatile bool _stopRequested;
+
     /// <summary>Идущее сохранение — Stop() обязан его дождаться, а не сносить буферы под ним.</summary>
     private Task? _saveTask;
     private int? _saveTaskId;
@@ -167,6 +178,7 @@ public sealed class ReplayEngine : IDisposable
     private void StartLocked()
     {
         if (_state != EngineState.Stopped) return;
+        _stopRequested = false;
         var s = _settings.Current;
         try
         {
@@ -279,11 +291,23 @@ public sealed class ReplayEngine : IDisposable
             {
                 Log.Warn("Engine", $"Потеряно устройство GPU ({reason}) — пересобираю конвейер");
                 Warning?.Invoke("Сброс драйвера GPU — перезапускаю запись");
-                try { Stop(); } catch (Exception ex) { Log.Warn("Engine", $"Остановка: {ex.Message}"); }
+                // Именно StopLocked, а не Stop(): публичный Stop означает «человек
+                // выключил запись» и запретил бы восстановление, которым мы заняты
+                try { lock (_lifecycle) StopLocked(); }
+                catch (Exception ex) { Log.Warn("Engine", $"Остановка: {ex.Message}"); }
 
                 for (int attempt = 1; attempt <= RecoveryAttempts; attempt++)
                 {
                     Thread.Sleep(attempt == 1 ? 1500 : 3000);
+
+                    // Пока мы спали, человек мог выключить запись — тогда включать
+                    // её обратно нельзя ни при каких обстоятельствах
+                    if (_stopRequested)
+                    {
+                        Log.Info("Engine", "Восстановление отменено: запись выключили вручную");
+                        return;
+                    }
+
                     try
                     {
                         Start();
@@ -291,7 +315,7 @@ public sealed class ReplayEngine : IDisposable
                         if (wasRecording)
                         {
                             // Прежний файл записи закрыт корректно в Stop(); продолжаем в новый
-                            try { StartRecordingToFile(); }
+                            try { StartRecordingToFile(); }   // возьмёт замок сам
                             catch (Exception ex) { Log.Warn("Engine", $"Запись не возобновилась: {ex.Message}"); }
                         }
                         Warning?.Invoke("Запись восстановлена");
@@ -366,13 +390,6 @@ public sealed class ReplayEngine : IDisposable
             string verdict = vram.UsedMb > vram.BudgetMb ? " — БЮДЖЕТ ПРЕВЫШЕН" : "";
             Log.Info("Engine", $"Видеопамять: занято {vram.UsedMb} из {vram.BudgetMb} МБ бюджета{verdict}");
 
-            // Бюджет назначает Windows и режет его, когда память нужна игре. Меньше
-            // полутора гигабайт означает, что игра забрала почти всю видеопамять:
-            // тогда рвётся и захват, и кодирование, причём по одним лишь fps причину
-            // не отличить от «слабого процессора» или «медленного диска».
-            if (vram.BudgetMb is > 0 and < 1536)
-                Warning?.Invoke($"Игра заняла почти всю видеопамять (нам осталось {vram.BudgetMb} МБ) — " +
-                                "запись может рваться. Помогут настройки текстур в игре или меньшее разрешение записи.");
         }
 
         // Где именно уходит бюджет кадра (16.7 мс при 60 fps)
@@ -477,7 +494,7 @@ public sealed class ReplayEngine : IDisposable
         _gameTimer?.Dispose();
         _gameTimer = new System.Threading.Timer(_ =>
         {
-            if (State == EngineState.Stopped) return;
+            if (!_pipelineOpen || _stopRequested) return;
             try
             {
                 string game = GameDetector.DetectForegroundGame();
@@ -545,7 +562,7 @@ public sealed class ReplayEngine : IDisposable
     private bool _probeEpisode;
     private int _probeQuiet;
 
-    /// <summary>Ниже этого числа кадров в секунду считаем, что идёт провал.</summary>
+    /// <summary>Ниже этого числа ЗАКОДИРОВАННЫХ кадров в секунду считаем, что идёт провал.</summary>
     private const int ProbeFpsFloor = 45;
 
     private void StartCaptureProbe()
@@ -562,7 +579,7 @@ public sealed class ReplayEngine : IDisposable
     {
         var cap = _capture;
         var enc = _encoder;
-        if (cap is null || enc is null || _state == EngineState.Stopped) return;
+        if (cap is null || enc is null || !_pipelineOpen || _stopRequested) return;
 
         try
         {
@@ -573,7 +590,13 @@ public sealed class ReplayEngine : IDisposable
             long dDrop = drop - _probeDrop, dDup = dup - _probeDup;
             _probeRecv = recv; _probeEnc = encoded; _probeReq = req; _probeDrop = drop; _probeDup = dup;
 
-            bool bad = dRecv < ProbeFpsFloor || dEnc < ProbeFpsFloor;
+            // Смотрим ТОЛЬКО на кодирование: именно оно попадает в файл. Низкий
+            // приток от WGC сам по себе нормален — на малоподвижной картинке система
+            // отдаёт меньше кадров, а пейсер добивает сетку дубликатами, и запись
+            // остаётся ровной. По прежнему порогу «или захват, или кодирование»
+            // диагностика срабатывала 725 раз за день на совершенно здоровой работе
+            // и топила в себе настоящие провалы.
+            bool bad = dEnc < ProbeFpsFloor;
 
             // Хвост после восстановления: по нему видно, что именно поднялось первым
             if (!bad && _probeEpisode && ++_probeQuiet > 3) { _probeEpisode = false; _probeQuiet = 0; return; }
@@ -583,7 +606,7 @@ public sealed class ReplayEngine : IDisposable
             if (!_probeEpisode)
             {
                 _probeEpisode = true;
-                Log.Warn("Probe", "Провал захвата — посекундная диагностика (кадры/с: получено, закодировано, " +
+                Log.Warn("Probe", "Провал записи — посекундная диагностика (кадры/с: получено, закодировано, " +
                                   "запросов MFT, дублей, дропов | очередь | видеопамять)");
             }
 
@@ -607,7 +630,7 @@ public sealed class ReplayEngine : IDisposable
         _watchdog = new System.Threading.Timer(_ =>
         {
             var cap = _capture;
-            if (cap is null || State == EngineState.Stopped) return;
+            if (cap is null || !_pipelineOpen || _stopRequested) return;
 
             long received = cap.FramesReceived;
             if (received != _wdLastReceived)
@@ -654,16 +677,20 @@ public sealed class ReplayEngine : IDisposable
 
     public void Stop()
     {
+        _stopRequested = true;
         lock (_lifecycle) StopLocked();
     }
 
     private void StopLocked()
     {
         DumpStats("на выключении");
-        _gameTimer?.Dispose(); _gameTimer = null;
-        _watchdog?.Dispose(); _watchdog = null;
-        _probeTimer?.Dispose(); _probeTimer = null;
-        _statsTimer?.Dispose(); _statsTimer = null;
+        // Дожидаемся уже начатых колбэков: обычный Dispose возвращается сразу, и
+        // вотчдог продолжал работать параллельно сносу — вплоть до попытки поднять
+        // захват на уже освобождённом источнике.
+        StopTimer(ref _gameTimer);
+        StopTimer(ref _watchdog);
+        StopTimer(ref _probeTimer);
+        StopTimer(ref _statsTimer);
 
         // Сохранение работает с буферами и клипом в арене — снести всё это под ним
         // означает потерять клип, который пользователю уже показали как сохранённый.
@@ -684,7 +711,7 @@ public sealed class ReplayEngine : IDisposable
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
         // а записи нет».
-        if (_recorder is not null) StopRecordingToFile(wait: true);
+        if (_recorder is not null) StopRecordingLocked(wait: true);
         _audio.BlockReady -= _audioBuffer.Add;
         _audio.Stop();
 
@@ -692,7 +719,8 @@ public sealed class ReplayEngine : IDisposable
         //
         // 1. Поток захвата не должен работать, когда освобождают видеопроцессор и
         //    текстуры пула: он ими пользуется прямо в кадре. Поэтому выше стоит
-        //    _capture.Stop() — он дожидается своего потока.
+        //    _capture.Stop() — он дожидается своего потока (DDA джойнит его, WGC
+        //    ждёт завершения колбэков).
         //
         // 2. Поток пейсера внутри энкодера держит КОНТЕКСТ, взятый у захвата
         //    (VideoEncoder._context), и дублирует им кадры для постоянного fps.
@@ -714,6 +742,21 @@ public sealed class ReplayEngine : IDisposable
         SetState(EngineState.Stopped);
         Log.Info("Engine", "Instant Replay выключен");
         ReleaseMemory();
+    }
+
+    /// <summary>
+    /// Погасить таймер и дождаться, пока завершится уже начатый колбэк.
+    /// Перегрузка Dispose(WaitHandle) для того и существует: без неё колбэк
+    /// продолжает работать параллельно разрушению того, чем он пользуется.
+    /// </summary>
+    private static void StopTimer(ref System.Threading.Timer? timer)
+    {
+        var t = timer;
+        if (t is null) return;
+        timer = null;
+
+        using var done = new ManualResetEvent(false);
+        if (t.Dispose(done)) done.WaitOne(TimeSpan.FromSeconds(5));
     }
 
     /// <summary>
@@ -777,10 +820,12 @@ public sealed class ReplayEngine : IDisposable
 
         // Снимок с очисткой: буфер начинает копиться заново, владение массивами
         // кадров переходит нам — вернём их в пул после записи файла.
-        var video = _videoBuffer.SnapshotAndClear(wanted, out long snapshotToken);
+        var video = _videoBuffer.TakeSnapshot(wanted, out long snapshotToken);
         if (video.Count == 0) { SaveFailed?.Invoke("Буфер ещё пуст"); return; }
+        // Звук тоже НЕ обнуляем: он должен остаться для следующего повтора ровно
+        // так же, как остаётся видео (см. TakeSnapshot). Кольцо само вытеснит
+        // лишнее по времени.
         var audio = _audioBuffer.Snapshot(video[0].PtsTicks, video[^1].PtsTicks);
-        _audioBuffer.Clear();
 
         // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip)
         string game = GameForClip();
@@ -868,11 +913,22 @@ public sealed class ReplayEngine : IDisposable
 
     // ---------------- Обычная запись в файл ----------------
 
-    /// <summary>Начать обычную запись в файл. Если буфер выключен — включает его.</summary>
+    /// <summary>
+    /// Начать обычную запись в файл. Если буфер выключен — включает его.
+    ///
+    /// Под тем же замком, что и остальной жизненный цикл: метод трогает _encoder,
+    /// _audio и _recorder, а параллельный Stop() обнуляет ровно их. Monitor
+    /// реентерантен, поэтому вызов из StopLocked и из восстановления проходит.
+    /// </summary>
     public void StartRecordingToFile()
     {
+        lock (_lifecycle) StartRecordingLocked();
+    }
+
+    private void StartRecordingLocked()
+    {
         if (_recorder is not null) return;
-        if (State == EngineState.Stopped) Start(); // может бросить — наружу, UI покажет
+        if (_state == EngineState.Stopped) StartLocked(); // может бросить — наружу, UI покажет
         if (_encoder?.OutputMediaType is null) return;
 
         var s = _settings.Current;
@@ -896,18 +952,33 @@ public sealed class ReplayEngine : IDisposable
     /// </summary>
     public string? StopRecordingToFile(bool wait = false)
     {
+        lock (_lifecycle) return StopRecordingLocked(wait);
+    }
+
+    private string? StopRecordingLocked(bool wait)
+    {
         var recorder = _recorder;
         if (recorder is null) return null;
         _recorder = null;
-        if (_encoder is not null) _encoder.FrameEncoded -= recorder.OnFrame;
+        // Одно чтение поля вместо двух: параллельный снос обнулял _encoder ровно
+        // между проверкой и использованием
+        var encoder = _encoder;
+        if (encoder is not null) encoder.FrameEncoded -= recorder.OnFrame;
         _audio.BlockReady -= recorder.OnAudio;
         RecordingChanged?.Invoke(false);
 
         var finish = Task.Run(() =>
         {
             var result = recorder.Finish();
-            foreach (var file in result.Files) _storage.RegisterSaved(file);
-            if (result.Ok) RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+
+            // Индекс наполняем ТОЛЬКО удачными файлами. Раньше RegisterSaved шёл до
+            // проверки Ok, и незакрытые части попадали в библиотеку и в статистику
+            // хранилища как полноценные записи — карточка есть, а файла нет.
+            if (result.Ok)
+            {
+                foreach (var file in result.Files) _storage.RegisterSaved(file);
+                RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+            }
             else SaveFailed?.Invoke(result.Error ?? "запись не закрылась");
         });
         if (wait) finish.Wait(TimeSpan.FromSeconds(70));

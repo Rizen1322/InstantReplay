@@ -492,6 +492,33 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Успевает ли энкодер за настроенной частотой.
+    ///
+    /// Смотрим на темп запросов MFT: подать больше, чем у нас попросили, всё равно
+    /// нельзя, и именно этот темп показывает реальный потолок кодирования. Меньше
+    /// трёх четвертей от нужного — значит очередь и так не разгребается, и добавлять
+    /// в неё дубликаты вредно.
+    /// </summary>
+    private bool EncoderIsBehind()
+    {
+        long now = NowQpcTicks();
+        long elapsed = now - _rateWindowStart;
+        if (elapsed < 10_000_000) return _encoderBehind;   // окно — секунда
+
+        long requests = Interlocked.Read(ref InputRequests);
+        double perSecond = (requests - _rateWindowRequests) * 10_000_000.0 / elapsed;
+
+        _rateWindowStart = now;
+        _rateWindowRequests = requests;
+        _encoderBehind = perSecond < Fps * 0.75;
+        return _encoderBehind;
+    }
+
+    private long _rateWindowStart;
+    private long _rateWindowRequests;
+    private volatile bool _encoderBehind;
+
     private void PacerLoopCore()
     {
         while (_running)
@@ -513,6 +540,18 @@ public sealed class VideoEncoder : IDisposable
                 int catchUp = 0;
                 while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 4)
                 {
+                    // Дубликат имеет смысл, только пока энкодер справляется. Когда он
+                    // отстаёт, Enqueue при переполнении выбрасывает САМЫЙ СТАРЫЙ кадр
+                    // очереди — то есть свежесозданный дубликат вытесняет настоящий
+                    // кадр. В замерах на просевшем GPU это давало «пейсер молчал 10282
+                    // раз» одновременно с дропами: мы тратили пропускную способность
+                    // энкодера на кадры без информации и теряли те, что несут картинку.
+                    if (EncoderIsBehind())
+                    {
+                        Interlocked.Increment(ref PacerBlocked);
+                        break;
+                    }
+
                     bool queueFull;
                     lock (_queueLock) queueFull = _inputQueue.Count >= _maxInputQueue - 1;
                     if (queueFull)
@@ -775,10 +814,21 @@ public sealed class VideoEncoder : IDisposable
         _needInput.Release(4);      // будим питателя, если ждал запрос
         _inputAvailable.Release(4); // и если ждал кадр
         _feedThread?.Join(2000);
-        _pacerThread?.Join(1000);
+
+        // Пейсер держит КОНТЕКСТ захвата и текстуры пула: пока он жив, ни то ни
+        // другое трогать нельзя. Секунды мало ровно в том сценарии, где он и
+        // залипает (GPU завален работой игры и CopyResource стоит), поэтому ждём
+        // дольше, а при неудаче оставляем пул сборщику — как это уже сделано с MFT.
+        bool pacerExited = _pacerThread?.Join(5000) ?? true;
         bool exited = _eventThread?.Join(2000) ?? true;
         lock (_queueLock) _inputQueue.Clear();
-        _copyPool?.Dispose(); _copyPool = null;
+
+        if (pacerExited) { _copyPool?.Dispose(); _copyPool = null; }
+        else
+        {
+            Log.Warn("Encoder", "Пейсер не завершился за 5 секунд — пул текстур оставлен сборщику");
+            _copyPool = null;
+        }
         if (!exited)
         {
             // Поток так и висит в GetEvent — освобождать COM-объекты под ним нельзя

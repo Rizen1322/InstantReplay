@@ -130,8 +130,12 @@ public sealed class ReplayVideoBuffer
     /// </summary>
     private const long MaxCapacityBytes = 4L << 30;
 
-    /// <summary>Запас сверх заказанной длительности: один GOP плюс страховка вытеснения.</summary>
-    private const int SlackSeconds = 15;
+    /// <summary>
+    /// Запас сверх заказанной длительности: один GOP плюс страховка вытеснения.
+    /// Не приватная: тем же запасом обязано жить кольцо звука, иначе клип начнётся
+    /// с тишины — снимок видео стартует с keyframe РАНЬШЕ заказанной границы.
+    /// </summary>
+    internal const int SlackSeconds = 15;
 
     /// <summary>
     /// Запас под запись файла. Пока сохраняется клип, его кадры остаются в арене
@@ -465,7 +469,7 @@ public sealed class ReplayVideoBuffer
     /// token нужен, чтобы вернуть именно этот снимок: если между снимком и концом
     /// записи конвейер перезапустили, арена уже другая и освобождать в ней нечего.
     /// </summary>
-    public List<EncodedFrame> SnapshotAndClear(long wantedTicks, out long token)
+    public List<EncodedFrame> TakeSnapshot(long wantedTicks, out long token)
     {
         lock (_sync)
         {
@@ -505,10 +509,21 @@ public sealed class ReplayVideoBuffer
                                             e.PtsTicks, e.DurationTicks, e.IsKeyframe));
             }
 
-            // Кадры до точки снимка освобождаются сразу, кадры снимка — держатся
-            // занятыми до ReleaseSnapshot. Позиция записи (_tail) не трогается:
-            // запись продолжится дальше по кольцу, за хвостом снимка.
-            _entries.Clear();
+            // Кадры ДО точки снимка освобождаются сразу; сами кадры снимка остаются
+            // и в арене, и в списке.
+            //
+            // ЗАЧЕМ ОСТАВЛЯТЬ. Раньше здесь стоял _entries.Clear(), то есть буфер
+            // начинался с нуля и ждал следующего keyframe — до двух секунд. Два
+            // повтора подряд («момент был чуть раньше, сохраню ещё раз») давали
+            // второй клип длиной в зазор между нажатиями. ShadowPlay так себя не
+            // ведёт, и люди справедливо считали это потерей записи.
+            //
+            // Блоки арены при этом держатся занятыми до ReleaseSnapshot, а позиция
+            // записи (_tail) не трогается: запись идёт дальше по кольцу за хвостом
+            // снимка, и вытеснение обойдёт занятое.
+            while (_entries.First is not null && !ReferenceEquals(_entries.First, start))
+                _entries.RemoveFirst();
+
             _used = reserved;
             _reserved = reserved;
             _reservedToken = token = _nextToken++;
@@ -578,8 +593,16 @@ public sealed class ReplayAudioBuffer
     /// <summary>Блок — 10 мс, значит в секунде их сто.</summary>
     private const int BlocksPerSecond = 100;
 
-    /// <summary>Запас сверх заказанной длительности — как у видео.</summary>
-    private const long SlackTicks = 10_000_000;
+    /// <summary>
+    /// Запас сверх заказанной длительности — ТОТ ЖЕ, что у видео (SlackSeconds).
+    ///
+    /// ЗАЧЕМ СТОЛЬКО. Снимок видео начинается с последнего keyframe ПЕРЕД точкой
+    /// среза, то есть раньше заказанной границы — на длину группы кадров, а при
+    /// сорванном GOP и на все десять секунд. Здесь раньше стояла одна секунда с
+    /// комментарием «как у видео», хотя у видео пятнадцать: этих первых секунд
+    /// в звуке просто не было, и каждый клип начинался с тишины.
+    /// </summary>
+    private const long SlackTicks = ReplayVideoBuffer.SlackSeconds * 10_000_000L;
 
     public long MaxDurationTicks { get; set; }
 
@@ -598,8 +621,9 @@ public sealed class ReplayAudioBuffer
     /// </summary>
     public void Allocate(int blockSamples, int seconds)
     {
-        // Плюс секунда — тот же запас, с которым работает вытеснение по времени
-        int capacity = Math.Max(BlocksPerSecond, (seconds + 1) * BlocksPerSecond);
+        // Арена обязана вмещать заказанное ПЛЮС тот же запас, что держит вытеснение
+        // по времени, иначе кольцо выбросит начало клипа раньше, чем его попросят
+        int capacity = Math.Max(BlocksPerSecond, (seconds + ReplayVideoBuffer.SlackSeconds) * BlocksPerSecond);
 
         lock (_sync)
         {

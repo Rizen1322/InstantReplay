@@ -175,9 +175,41 @@ public partial class App : Application
             var s = Services.Settings.Current;
             Core.Library.ClipThumbnails.PruneOrphans(
                 Core.Library.ClipLibrary.ScanAll(s.SaveRootPath, s.ScreenshotFolder));
+            PruneUnfinishedFiles(s.SaveRootPath);
         }
         catch (Exception ex) { Log.Warn("App", $"Уборка кэша: {ex.Message}"); }
     });
+
+    /// <summary>
+    /// Убрать недописанные файлы, оставшиеся от прерванных сохранений.
+    ///
+    /// Клип и части обычной записи пишутся как «.mp4.part» и переименовываются
+    /// только после успешной финализации. Если процесс убили или пропало питание,
+    /// такой хвост остаётся на диске навсегда: сам он никому не мешает, но место
+    /// занимает и накапливается. Трогаем только заведомо свои — по расширению.
+    /// </summary>
+    private static void PruneUnfinishedFiles(string root)
+    {
+        if (!Directory.Exists(root)) return;
+
+        int removed = 0;
+        long freed = 0;
+        foreach (string file in Directory.EnumerateFiles(root, "*.part", SearchOption.AllDirectories))
+            try
+            {
+                // Свежий .part может принадлежать идущему прямо сейчас сохранению
+                var info = new FileInfo(file);
+                if (DateTime.UtcNow - info.LastWriteTimeUtc < TimeSpan.FromMinutes(10)) continue;
+
+                freed += info.Length;
+                File.Delete(file);
+                removed++;
+            }
+            catch { /* занят или недоступен — попробуем в следующий раз */ }
+
+        if (removed > 0)
+            Log.Info("App", $"Убрано незавершённых файлов: {removed} ({freed / (1024 * 1024)} МБ)");
+    }
 
     /// <summary>
     /// Кодек, который система не сможет упаковать в MP4, молча превращает запись

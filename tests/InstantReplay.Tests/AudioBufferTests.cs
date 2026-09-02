@@ -16,6 +16,30 @@ public class AudioBufferTests
     private const int Samples = 4;   // блок из четырёх сэмплов: считать глазами проще
     private const long Second = 10_000_000;
 
+    // ---------------- Запас кольца ----------------
+
+    [Fact]
+    public void ЗвукХранитсяДольшеЗаказанного_ЧтобыКлипНеНачиналсяСТишины()
+    {
+        // Снимок видео начинается с ПОСЛЕДНЕГО keyframe перед точкой среза, то есть
+        // раньше заказанной границы — на длину группы кадров. Если звук хранит ровно
+        // заказанное плюс секунду, этих первых секунд клипа в нём просто нет, и запись
+        // начинается с тишины. Запас звука обязан быть не меньше, чем у видео.
+        var buffer = new ReplayAudioBuffer();
+        buffer.Allocate(blockSamples: Samples, seconds: 10);
+        buffer.MaxDurationTicks = TimeSpan.FromSeconds(10).Ticks;
+
+        // Кладём 25 секунд подряд: кольцо обязано удержать заметно больше десяти
+        for (int i = 0; i < 25 * 100; i++)
+            buffer.Add(new AudioBlock(Filled(1), Filled(2), i * 100_000L));
+
+        var all = buffer.Snapshot(0, long.MaxValue);
+        long held = all.Count > 1 ? all.PtsAt(all.Count - 1) - all.PtsAt(0) : 0;
+
+        Assert.True(held >= TimeSpan.FromSeconds(20).Ticks,
+            $"кольцо держит всего {TimeSpan.FromTicks(held).TotalSeconds:F1} с — начало клипа останется без звука");
+    }
+
     // ---------------- Владение данными ----------------
 
     [Fact]
@@ -58,31 +82,41 @@ public class AudioBufferTests
     [Fact]
     public void КольцоНеРастётСверхЁмкости()
     {
-        // Ёмкость = (секунды + 1) × 100 блоков, вытеснение по времени отключаем
-        // большим MaxDuration — интересует именно предел арены.
+        // Вытеснение по времени отключаем большим MaxDuration — интересует предел
+        // арены. Конкретную ёмкость не проверяем: она считается из запаса, общего
+        // с видеобуфером, и привязывать тест к её значению значит ломать его на
+        // каждой настройке запаса. Контракт же в другом: кольцо ограничено и
+        // хранит именно ПОСЛЕДНИЕ блоки, подряд.
+        const int added = 5000;
         var buffer = new ReplayAudioBuffer { MaxDurationTicks = 3600 * Second };
-        buffer.Allocate(Samples, seconds: 1);   // 200 блоков
+        buffer.Allocate(Samples, seconds: 1);
 
-        for (int i = 0; i < 250; i++)
+        for (int i = 0; i < added; i++)
             buffer.Add(new AudioBlock(Filled((short)i), Filled(0), i));
 
         var snapshot = buffer.Snapshot(0, long.MaxValue);
-        Assert.Equal(200, snapshot.Count);
-        Assert.Equal(50, snapshot.PtsAt(0));       // первые 50 вытеснены
-        Assert.Equal(249, snapshot.PtsAt(199));
+
+        Assert.True(snapshot.Count < added, "кольцо выросло сверх арены");
+        Assert.Equal(added - 1, snapshot.PtsAt(snapshot.Count - 1));          // новейший на месте
+        Assert.Equal(added - snapshot.Count, snapshot.PtsAt(0));              // окно непрерывно
     }
 
     [Fact]
     public void СтароеВытесняетсяПоВремени()
     {
-        var buffer = NewBuffer(maxSeconds: 1);   // держим 1 сек + 1 сек запаса
+        // Держим заказанное плюс запас. Точную величину запаса тест не знает —
+        // проверяем сам факт: далёкое прошлое уходит, а заказанный интервал цел.
+        const int seconds = 60;
+        var buffer = NewBuffer(maxSeconds: 1);
 
-        for (int i = 0; i <= 3; i++)
+        for (int i = 0; i <= seconds; i++)
             buffer.Add(new AudioBlock(Filled(1), Filled(1), i * Second));
 
         var snapshot = buffer.Snapshot(0, long.MaxValue);
-        Assert.Equal(3, snapshot.Count);
-        Assert.Equal(Second, snapshot.PtsAt(0));   // блок с pts = 0 ушёл
+
+        Assert.True(snapshot.Count <= seconds, "ничего не вытеснилось за минуту");
+        Assert.True(snapshot.PtsAt(0) > 0, "блок из далёкого прошлого остался в кольце");
+        Assert.Equal(seconds * Second, snapshot.PtsAt(snapshot.Count - 1));   // свежий цел
     }
 
     // ---------------- Снимок ----------------
@@ -200,12 +234,19 @@ public class AudioBufferTests
         var game = Filled(1);
         var mic = Filled(2);
 
-        // Прогрев: первые вызовы тянут за собой JIT
-        for (int i = 0; i < 100; i++) buffer.Add(new AudioBlock(game, mic, i));
+        // Меряем УСТАНОВИВШЕЕСЯ состояние. Разового прогрева мало: на первом прогоне
+        // после сборки метод ещё проходит уровни JIT, и само повышение уровня
+        // аллоцирует внутри измеряемого цикла — тест падал случайно, без регрессии.
+        long allocated = -1;
+        long pts = 0;
+        for (int attempt = 0; attempt < 5 && allocated != 0; attempt++)
+        {
+            for (int i = 0; i < 10_000; i++) buffer.Add(new AudioBlock(game, mic, pts++));
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 10_000; i++) buffer.Add(new AudioBlock(game, mic, 100 + i));
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++) buffer.Add(new AudioBlock(game, mic, pts++));
+            allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
 
         Assert.True(allocated == 0, $"десять тысяч блоков выделили {allocated} байт");
     }

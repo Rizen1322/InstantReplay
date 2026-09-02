@@ -75,7 +75,7 @@ public partial class RegionCaptureWindow : Window
     /// Снап по окнам: список собирается один раз при открытии оверлея,
     /// см. <see cref="WindowProbe"/>.
     /// </summary>
-    private List<PixelRect>? _windows;
+    private readonly List<PixelRect> _windows;
     private Rect? _candidate;
     private Point _lastProbePoint = new(double.NaN, double.NaN);
 
@@ -97,8 +97,8 @@ public partial class RegionCaptureWindow : Window
         _monitorX = x; _monitorY = y; _pixelWidth = width; _pixelHeight = height;
         _screenshotFolder = folder;
 
-        // Оверлей уже накрыл экран, картинка под ним застыла — список окон
-        // собираем один раз, а не на каждое движение мыши
+        // Список окон собираем один раз. Здесь окна оверлея ещё нет (конструктор
+        // отрабатывает до Show), поэтому оно и не попадёт в кандидаты — что и нужно
         _windows = WindowProbe.Collect(x, y, width, height);
 
         // Бинд области сам может содержать Ctrl — тогда снап включён уже при открытии,
@@ -402,8 +402,8 @@ public partial class RegionCaptureWindow : Window
             return;
         }
 
-        // Поиск идёт по пикселям и стоит заметно дороже отрисовки, а WPF шлёт
-        // MouseMove на каждый пиксель — считаем только когда курсор реально уехал
+        // WPF шлёт MouseMove на каждый пиксель, а перерисовка подсветки не бесплатна —
+        // пересчитываем, только когда курсор реально уехал
         if (!double.IsNaN(_lastProbePoint.X)
             && Math.Abs(point.X - _lastProbePoint.X) < 3
             && Math.Abs(point.Y - _lastProbePoint.Y) < 3)
@@ -469,8 +469,6 @@ public partial class RegionCaptureWindow : Window
     /// <summary>Самое верхнее окно под точкой; null — там ничего нет.</summary>
     private Rect? TopWindowAt(Point point)
     {
-        if (_windows is null) return null;
-
         var (px, py) = ToPixels(point);
         foreach (var w in _windows)
             if (px >= w.X && px < w.X + w.Width && py >= w.Y && py < w.Y + w.Height)

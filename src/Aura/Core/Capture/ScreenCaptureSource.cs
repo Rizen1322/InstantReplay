@@ -251,6 +251,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
         // (TryGetNextFrame, GetTexture, Recreate), которые и отдают DXGI_ERROR_DEVICE_REMOVED
         // при сбросе драйвера — то есть без этого перехвата потеря устройства роняла
         // приложение вместо того, чтобы дойти до восстановления конвейера.
+        Interlocked.Increment(ref _callbacksInFlight);
         try
         {
             DrainFrames(sender);
@@ -263,6 +264,10 @@ public sealed class ScreenCaptureSource : IScreenCapture
         catch (Exception ex)
         {
             Log.Error("Capture", $"WGC: кадр не обработан: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _callbacksInFlight);
         }
     }
 
@@ -322,11 +327,11 @@ public sealed class ScreenCaptureSource : IScreenCapture
     /// <summary>
     /// Сверить, на том ли адаптере идёт захват.
     ///
-    /// Устройство здесь создаётся в конструкторе на адаптере ПО УМОЛЧАНИЮ — тогда
-    /// ещё неизвестно, какой монитор попросят снимать. На системе с двумя графиками
-    /// это может оказаться не тот адаптер, к которому подключён монитор, и каждый
-    /// кадр начнёт ходить между ними через шину. В логе такое расхождение обязано
-    /// быть видно сразу, а не выясняться по косвенным признакам.
+    /// Устройство создаётся на адаптере целевого монитора (см. конструктор), но
+    /// индекс может устареть — например, монитор отключили после того, как его
+    /// выбрали в настройках. Тогда захват уедет на другой адаптер, и каждый кадр
+    /// пойдёт между видеокартами через шину. В логе это обязано быть видно сразу,
+    /// а не выясняться по косвенным признакам.
     /// </summary>
     private void LogAdapters(int monitorIndex)
     {
@@ -354,7 +359,21 @@ public sealed class ScreenCaptureSource : IScreenCapture
         _session?.Dispose(); _session = null;
         if (_framePool is not null) { _framePool.FrameArrived -= OnFrameArrived; _framePool.Dispose(); _framePool = null; }
         _item = null;
+
+        // Отписка НЕ дожидается уже начатого колбэка: он FreeThreaded и в этот
+        // момент может быть внутри CaptureCopy или Recreate. Движок дожидается
+        // только своего OnFrame, а эти два вызова живут вне его ворот — то есть
+        // без ожидания здесь Dispose освобождал бы устройство под ними.
+        var deadline = Environment.TickCount64 + 2000;
+        while (Volatile.Read(ref _callbacksInFlight) > 0 && Environment.TickCount64 < deadline)
+            Thread.Sleep(1);
+
+        if (Volatile.Read(ref _callbacksInFlight) > 0)
+            Log.Warn("Capture", "Колбэк WGC не завершился за 2 секунды — освобождаю сессию не дожидаясь");
     }
+
+    /// <summary>Сколько колбэков WGC сейчас внутри обработчика.</summary>
+    private int _callbacksInFlight;
 
     public void Dispose()
     {

@@ -50,6 +50,30 @@ public sealed class ManualRecorder : IDisposable
     /// </summary>
     private const long MaxSegmentBytes = 3_500L * 1024 * 1024;
 
+    /// <summary>Расширение недописанного файла — то же, что чистит ClipCleanup.</summary>
+    private const string PartSuffix = ".part";
+
+    /// <summary>
+    /// Довести часть до целевого имени или убрать за собой. Незавершённый MP4 не
+    /// должен получить имя записи: библиотека показала бы его обычной карточкой.
+    /// </summary>
+    private static void PublishOrDiscard(string partPath, string path, bool finalized)
+    {
+        if (!finalized)
+        {
+            try { File.Delete(partPath); }
+            catch (Exception ex) { Log.Warn("Recorder", $"Не удалось убрать незавершённую часть: {ex.Message}"); }
+            return;
+        }
+
+        try { File.Move(partPath, path, overwrite: true); }
+        catch (Exception ex)
+        {
+            Log.Error("Recorder", $"Часть записана, но переименовать не удалось ({ex.Message}). " +
+                                  $"Файл остался как {partPath}");
+        }
+    }
+
     /// <summary>Глубина очереди к писателю: ~8 секунд видео. Дальше лучше дропнуть.</summary>
     private const int QueueCapacity = 512;
 
@@ -165,13 +189,30 @@ public sealed class ManualRecorder : IDisposable
     {
         // Ждём место в очереди недолго: подвесить поток энкодера или микшера
         // из-за медленного диска — ровно та беда, от которой мы уходим.
-        if (_queue.IsAddingCompleted || !_queue.TryAdd(item, 250))
+        //
+        // TryAdd ОБЯЗАН быть под try. Проверка IsAddingCompleted его не защищает:
+        // между ней и самим вызовом писатель успевает выполнить CompleteAdding, и
+        // тогда TryAdd бросает InvalidOperationException. Окно открыто на каждой
+        // остановке записи — StopRecordingToFile отписывает обработчики, но уже
+        // начатый вызов отписки не видит. Раньше это исключение улетало из потока
+        // микшера, у которого нет ни одного catch, и убивало процесс ровно в тот
+        // момент, когда человек нажал «Остановить запись».
+        bool queued = false;
+        try
         {
-            ArrayPool<byte>.Shared.Return(item.Buffer);
-            if (Interlocked.Increment(ref _droppedFrames) is 1 or 100 or 1000)
-                Log.Warn("Recorder", $"Диск не успевает: очередь писателя переполнена, " +
-                                     $"потеряно {Interlocked.Read(ref _droppedFrames)} сэмплов");
+            queued = !_queue.IsAddingCompleted && _queue.TryAdd(item, 250);
         }
+        catch (InvalidOperationException)
+        {
+            // Очередь закрыли прямо сейчас — записывать больше некуда, и это норма
+        }
+
+        if (queued) return;
+
+        ArrayPool<byte>.Shared.Return(item.Buffer);
+        if (Interlocked.Increment(ref _droppedFrames) is 1 or 100 or 1000)
+            Log.Warn("Recorder", $"Диск не успевает: очередь писателя переполнена, " +
+                                 $"потеряно {Interlocked.Read(ref _droppedFrames)} сэмплов");
     }
 
     // ---------------- Поток писателя: единственный, кто трогает Media Foundation ----------------
@@ -262,7 +303,9 @@ public sealed class ManualRecorder : IDisposable
         using var videoType = _videoType();
         if (videoType is null) { Fail("энкодер не отдал тип видеопотока"); return; }
 
-        var writer = MfMp4Writer.Create(path);
+        // Пишем в .part и переименовываем при закрытии части: незавершённый MP4
+        // не должен носить имя записи и попадать в библиотеку (см. ReplaySaver)
+        var writer = MfMp4Writer.Create(path + PartSuffix);
         int videoStream = MfMp4Writer.AddPassthroughVideoStream(writer, videoType);
         var audioStreams = MfMp4Writer.AddAudioStreams(writer, _trackMode, _hasGame, _hasMic);
         writer.BeginWriting();
@@ -301,16 +344,24 @@ public sealed class ManualRecorder : IDisposable
         if (writer is null) return;
         _writer = null;
 
-        string path = _files.Count > 0 ? _files[^1] : _firstFilePath;
+        string path;
+        lock (_files) path = _files.Count > 0 ? _files[^1] : _firstFilePath;
+        string partPath = path + PartSuffix;
+        bool finalized = false;
+
         try
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             writer.Finalize();
             long bytes = 0;
-            try { bytes = new FileInfo(path).Length; } catch { }
+            try { bytes = new FileInfo(partPath).Length; } catch { }
             if (bytes < 1024) Fail($"файл {Path.GetFileName(path)} пуст после финализации");
-            else Log.Info("Recorder", $"Часть закрыта: {Path.GetFileName(path)}, " +
-                                      $"{bytes / (1024 * 1024)} МБ, финализация {sw.ElapsedMilliseconds} мс");
+            else
+            {
+                finalized = true;
+                Log.Info("Recorder", $"Часть закрыта: {Path.GetFileName(path)}, " +
+                                     $"{bytes / (1024 * 1024)} МБ, финализация {sw.ElapsedMilliseconds} мс");
+            }
         }
         catch (Exception ex)
         {
@@ -319,7 +370,11 @@ public sealed class ManualRecorder : IDisposable
             Fail(ex.Message);
             Log.Error("Recorder", $"Финализация {Path.GetFileName(path)} не удалась: {ex}");
         }
-        finally { writer.Dispose(); }
+        finally
+        {
+            writer.Dispose();                 // файл закрыт — только теперь переименование
+            PublishOrDiscard(partPath, path, finalized);
+        }
     }
 
     private void Fail(string message) => _error ??= message;
