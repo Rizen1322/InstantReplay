@@ -7,7 +7,7 @@ using Aura.Notifications;
 
 namespace Aura.Core.Notifications;
 
-public enum NotificationKind { ReplayOn, Saved, Stopped, Warning, Screenshot, Recording }
+public enum NotificationKind { ReplayOn, Saved, Stopped, Warning, Screenshot, Recording, Info }
 
 /// <summary>
 /// Уведомления поверх игры. Само окно и анимации — в <see cref="ToastWindow"/>,
@@ -88,6 +88,7 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
             NotificationKind.Recording  => "Ico.Rec",
             NotificationKind.Stopped    => "Ico.Stop",
             NotificationKind.Warning    => "Ico.Alert",
+            NotificationKind.Info       => "Ico.External",
             _                           => "Ico.Play"
         };
         string tint = kind switch

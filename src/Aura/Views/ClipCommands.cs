@@ -25,8 +25,13 @@ public static class ClipCommands
     public static ICommand Rename { get; } = new ClipAction(RenameAsync);
     public static ICommand Delete { get; } = new ClipAction(DeleteAsync);
 
-    /// <summary>Открыть в LosslessCut. Для скриншотов пункт неактивен.</summary>
+    /// <summary>
+    /// Открыть в LosslessCut. Для скриншотов пункт неактивен.
+    /// </summary>
     public static ICommand Trim { get; } = new ClipAction(TrimInLosslessCut, item => !item.IsScreenshot);
+
+    /// <summary>Открыть в браузерном редакторе OpenCut. Для скриншотов пункт неактивен.</summary>
+    public static ICommand EditInOpenCut { get; } = new ClipAction(OpenInOpenCut, item => !item.IsScreenshot);
 
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
     public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);
@@ -206,6 +211,48 @@ public static class ClipCommands
         {
             Dialogs.Say("Не удалось открыть LosslessCut", ex.Message);
         }
+    }
+
+    // ---------------- Редактирование в браузере ----------------
+
+    /// <summary>
+    /// Открыть клип в OpenCut — открытом (MIT) браузерном видеоредакторе с opencut.app,
+    /// файлы в нём не покидают устройство.
+    ///
+    /// Сначала пробуем передать файл автоматически (OpenCutAutoImport: отдельный
+    /// профиль Chromium и файл напрямую в скрытый input импорта через DevTools).
+    /// Не получилось — открываем сайт обычным способом и просим перетащить клип
+    /// мышью: карточки это умеют (DragFile), а редактор подхватывает drop-событие.
+    /// </summary>
+    private static void OpenInOpenCut(ClipItem item) => _ = Task.Run(() => OpenInOpenCutAsync(item));
+
+    private static async Task OpenInOpenCutAsync(ClipItem item)
+    {
+        if (await Core.Tools.OpenCutAutoImport.ImportAsync(item.FullPath))
+        {
+            Services.Notifications.Show(Core.Notifications.NotificationKind.Info,
+                "Клип загружен в OpenCut",
+                "Проект создан, файл уже в медиатеке — перетащи его на таймлайн.");
+            return;
+        }
+
+        try
+        {
+            // Через explorer.exe, а не напрямую: из процесса с правами администратора
+            // браузер из ShellExecute активируется криво — та же история, что с плеерами.
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"https://opencut.app/\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Library", $"OpenCut: {ex.Message}");
+            Dialogs.Say("Не удалось открыть OpenCut",
+                "Не получилось открыть браузер. Открой opencut.app вручную и перетащи туда файл.");
+            return;
+        }
+
+        Services.Notifications.Show(Core.Notifications.NotificationKind.Info,
+            "OpenCut открыт в браузере",
+            "Автопередача файла не удалась — перетащи клип из галереи в окно браузера мышью.");
     }
 
     /// <summary>Обычные места установки LosslessCut: установщик, portable, Scoop.</summary>

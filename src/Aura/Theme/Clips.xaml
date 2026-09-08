@@ -77,6 +77,16 @@
                                     Foreground="{DynamicResource Tx2Brush}"/>
                         </MenuItem.Icon>
                     </MenuItem>
+                    <!-- Пробует загрузить клип в OpenCut сам (DevTools выбранного Chromium-
+                         браузера, файл кладётся прямо в скрытый input импорта). Если не
+                         вышло — сайт открывается как обычно, файл перетаскивается мышью. -->
+                    <MenuItem Header="Редактировать в OpenCut" Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.EditInOpenCut}" CommandParameter="{Binding}">
+                        <MenuItem.Icon>
+                            <c:Icon Data="{DynamicResource Ico.External}" Size="14"
+                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
                     <Separator Style="{DynamicResource TrayMenuSeparator}"/>
                     <MenuItem Header="Переименовать" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Rename}" CommandParameter="{Binding}">
