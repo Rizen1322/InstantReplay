@@ -8,19 +8,17 @@ namespace Aura.Core.Encoding;
 /// Было жёстко 25 — быстрый пресет NVENC, выбранный когда энкодер не вытягивал 60 fps
 /// под нагрузкой. Причина той просадки оказалась другой (не применялся AVLowLatencyMode),
 /// а на быстром пресете при том же битрейте картинка заметно грубее в движении.
-/// Поэтому стартуем с качественного пресета и уходим на быстрый сами, только если
+/// Поэтому стартуем с высококачественного пресета и уходим на средний сами, только если
 /// энкодер действительно перестаёт успевать.
 ///
-/// Ключ есть не у всех: NVIDIA на IsSupported отвечает «нет» (при этом SetValue молча
-/// проглатывает значение — то есть прежняя жёсткая 25 у неё никогда ни на что не
-/// влияла). Там, где ключа нет, адаптация просто выключается.
+/// Ключ есть не у всех, а допустимый диапазон у разных MFT отличается. Там, где
+/// ключа нет, адаптация просто выключается; где есть — принятое значение читается
+/// обратно, потому что некоторые драйверы молча ограничивают запрос.
 /// </summary>
 internal sealed class QualityAdapter
 {
-    /// <summary>Качественный пресет — режим по умолчанию.</summary>
-    public const uint Balanced = 50;
-    /// <summary>Быстрый пресет: включается сам, когда энкодер не успевает.</summary>
-    public const uint Fast = 25;
+    private uint _qualityPreset = 75;
+    private uint _fallbackPreset = 50;
 
     /// <summary>Окно оценки. Короче — дёргано, длиннее — поздно реагируем.</summary>
     private const int WindowMs = 5000;
@@ -51,7 +49,7 @@ internal sealed class QualityAdapter
     private bool _unavailable;
 
     /// <summary>Текущий пресет — показывается в статистике конвейера.</summary>
-    public uint Preset { get; private set; } = Balanced;
+    public uint Preset { get; private set; }
 
     public QualityAdapter(CodecApi? codecApi, int fps)
     {
@@ -65,7 +63,23 @@ internal sealed class QualityAdapter
                                 "адаптация под нагрузку выключена, качество определяется битрейтом");
             return;
         }
-        codecApi.Set(CodecApiGuids.AVEncCommonQualityVsSpeed, Balanced);
+        // Диапазон зависит от MFT. Стандартный энкодер допускает 0–100, а
+        // NVIDIA HEVC на RTX 3070 сообщает 0–33 и молча зажимает 50/75 до 33.
+        // Берём реальный максимум вместо фиктивного универсального числа.
+        if (codecApi.TryGetUIntRange(CodecApiGuids.AVEncCommonQualityVsSpeed, out uint min, out uint max))
+        {
+            _qualityPreset = max >= 75 ? 75 : max;
+            _fallbackPreset = Math.Clamp((uint)Math.Round(_qualityPreset * 0.75), min, _qualityPreset);
+        }
+        codecApi.Set(CodecApiGuids.AVEncCommonQualityVsSpeed, _qualityPreset);
+        if (codecApi.TryReadUInt(CodecApiGuids.AVEncCommonQualityVsSpeed, out uint accepted))
+            Preset = _qualityPreset = accepted;
+        else
+            Preset = _qualityPreset;
+        if (_fallbackPreset == 0 || _fallbackPreset >= _qualityPreset)
+            _fallbackPreset = (uint)Math.Round(_qualityPreset * 0.75);
+
+        Log.Info("Encoder", $"Пресет качества: {Preset} (аварийный {_fallbackPreset})");
     }
 
     /// <summary>
@@ -96,7 +110,7 @@ internal sealed class QualityAdapter
         {
             _calmWindows = 0;
 
-            if (Preset != Fast)
+            if (Preset != _fallbackPreset)
             {
                 // Возврат к качеству не сработал — в следующий раз ждём дольше.
                 // Иначе получается флап 50 → 25 → 50 → 25 каждые пять секунд, и
@@ -107,17 +121,17 @@ internal sealed class QualityAdapter
                     Log.Info("Encoder", $"Возврат к качеству не удержался — следующая попытка " +
                                         $"через {_recoveryNeeded * WindowMs / 1000} с");
                 }
-                Apply(Fast, $"энкодер не успевает ({dEncoded / (WindowMs / 1000.0):F0} из {_fps} fps)");
+                Apply(_fallbackPreset, $"энкодер не успевает ({dEncoded / (WindowMs / 1000.0):F0} из {_fps} fps)");
                 _recoveryAttempted = false;
             }
         }
-        else if (Preset != Balanced && ++_calmWindows >= _recoveryNeeded)
+        else if (Preset != _qualityPreset && ++_calmWindows >= _recoveryNeeded)
         {
             _calmWindows = 0;
             _recoveryAttempted = true;   // если качество не удержится, порог вырастет
-            Apply(Balanced, "нагрузка спала");
+            Apply(_qualityPreset, "нагрузка спала");
         }
-        else if (Preset == Balanced && ++_calmWindows >= MaxRecoveryWindows)
+        else if (Preset == _qualityPreset && ++_calmWindows >= MaxRecoveryWindows)
         {
             // Давно спокойно и качество держится — снимаем накопленный штраф,
             // иначе один тяжёлый эпизод навсегда оставлял бы долгий порог

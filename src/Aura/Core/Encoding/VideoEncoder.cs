@@ -270,7 +270,7 @@ public sealed class VideoEncoder : IDisposable
     private QualityAdapter? _quality;
 
     /// <summary>Текущий пресет — показывается в статистике конвейера.</summary>
-    public uint QualityPreset => _quality?.Preset ?? QualityAdapter.Balanced;
+    public uint QualityPreset => _quality?.Preset ?? 0;
 
     /// <summary>
     /// Ключи ICodecAPI, которые задаются ДО установки медиатипов.
@@ -297,7 +297,7 @@ public sealed class VideoEncoder : IDisposable
         _codecApi.Set(CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
     }
 
-    /// <summary>Тюнинг через ICodecAPI: CBR, GOP = 2 сек, low-latency. Ошибки не фатальны.</summary>
+    /// <summary>Тюнинг через ICodecAPI: CBR, GOP = 2 сек, качество записи. Ошибки не фатальны.</summary>
     private void ConfigureCodecApi(int fps, long bitrateBps)
     {
         if (_codecApi is null) return;
@@ -319,14 +319,14 @@ public sealed class VideoEncoder : IDisposable
         // «ICodecAPI 9d3ecd55…: Value does not fall within the expected range».
         // Оставляем документированный VT_BOOL для тех MFT, где ключ работает,
         // а до NVENC добираемся двумя другими ключами ниже.
-        _codecApi.Set(CodecApiGuids.AVEncCommonLowLatency, true, optional: true);
+        _codecApi.Set(CodecApiGuids.AVEncCommonLowLatency, false, optional: true);
 
-        // Режим низкой задержки: под чужой нагрузкой (рядом стримит Discord) он
-        // поднял пропускную способность энкодера с 26 до 42 кадров в секунду.
-        // Подозревали, что он же ужимает буфер VBV до 3 Мбит — проверили с ним и
-        // без него, буфер был одинаковый. Дело было в другом: VBV принимается
-        // только ДО установки медиатипов (см. ConfigureCodecApiEarly).
-        _codecApi.Set(CodecApiGuids.AVLowLatencyMode, true);
+        // Aura пишет локальный Replay Buffer, а не передаёт интерактивный стрим:
+        // задержка в несколько кадров здесь невидима. Microsoft прямо указывает,
+        // что low-latency может снижать качество и запрещает энкодеру использовать
+        // много кадров одновременно для более точного анализа. Выключаем его;
+        // если кодировщик не вытянет высокий пресет, QualityAdapter сам откатится.
+        _codecApi.Set(CodecApiGuids.AVLowLatencyMode, false);
 
         // Буфер VBV — запас, из которого энкодер берёт биты на резкое усложнение
         // картинки, не разваливая её в блоки. Задаётся СТРОГО ПОСЛЕ режима низкой

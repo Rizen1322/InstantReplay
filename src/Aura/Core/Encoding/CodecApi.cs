@@ -56,6 +56,36 @@ internal sealed class CodecApi
         catch { return false; }
     }
 
+    /// <summary>Фактический диапазон целочисленного параметра конкретного драйвера.</summary>
+    public bool TryGetUIntRange(Guid api, out uint min, out uint max)
+    {
+        min = max = 0;
+        try
+        {
+            _managed.GetParameterRange(ref api, out object valueMin, out object valueMax, out _);
+            min = Convert.ToUInt32(valueMin);
+            max = Convert.ToUInt32(valueMax);
+            // Некоторые драйверы возвращают формально успешный 0..0, хотя после
+            // Set/Get параметр работает и принимает другое значение. Такой ответ
+            // диапазоном не считаем — иначе запросим заведомо неверный ноль.
+            return max > min;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Прочитать обратно принятое драйвером значение.</summary>
+    public bool TryReadUInt(Guid api, out uint value)
+    {
+        try
+        {
+            object? raw = Read(api);
+            if (raw is null) { value = 0; return false; }
+            value = Convert.ToUInt32(raw);
+            return true;
+        }
+        catch { value = 0; return false; }
+    }
+
     /// <summary>
     /// Задать значение через обёртку .NET.
     ///
@@ -132,7 +162,18 @@ internal sealed class CodecApi
                 ? $"{b / 1_000_000.0:F0} Мбит/с" : "не читается";
             string buffer = Read(CodecApiGuids.AVEncCommonBufferSize) is uint bs
                 ? $"{bs / 1_000_000.0:F0} Мбит" : "по умолчанию";
-            Log.Info("Encoder", $"Битрейт по факту: {mode}, {mean}, буфер {buffer}");
+            string complexity = Read(CodecApiGuids.AVEncCommonQualityVsSpeed) is uint q
+                ? q.ToString() : "не читается";
+            object? lowLatencyValue = Read(CodecApiGuids.AVLowLatencyMode);
+            string lowLatency = lowLatencyValue switch
+            {
+                bool value => value ? "вкл" : "выкл",
+                uint value => value != 0 ? "вкл" : "выкл",
+                int value => value != 0 ? "вкл" : "выкл",
+                _ => "не читается"
+            };
+            Log.Info("Encoder", $"Битрейт по факту: {mode}, {mean}, буфер {buffer}; " +
+                                $"сложность {complexity}, low-latency {lowLatency}");
         }
         catch (Exception ex)
         {

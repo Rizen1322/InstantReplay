@@ -59,12 +59,19 @@ public delegate void UseFrame(ID3D11Device device, ID3D11DeviceContext context, 
 /// </summary>
 public delegate bool LiveFrameProvider(UseFrame use);
 
-/// <summary>Выбор способа захвата под текущую ОС.</summary>
+/// <summary>Выбор способа захвата экрана.</summary>
 public static class ScreenCaptureFactory
 {
     /// <summary>
-    /// Windows 11 с выданным правом на захват без рамки — WGC (аппаратный курсор в кадре).
-    /// Иначе — Desktop Duplication: рамки там нет в принципе.
+    /// Для записи всего монитора используем Desktop Duplication на любой Windows.
+    ///
+    /// Причина не теоретическая: на RTX 3070 в borderless-игре с незажатым FPS
+    /// WGC отдавал 19–24 новых кадра/с, пока сам NVENC стабильно кодировал 60/с.
+    /// Desktop Duplication получает уже представленный рабочий стол напрямую через
+    /// DXGI, поддерживает полноэкранный DirectX и не зависит от WGC-сессии DWM.
+    /// Курсор эта реализация теперь дорисовывает сама, а рамки захвата у неё нет.
+    ///
+    /// WGC оставлен для диагностики через INSTANTREPLAY_CAPTURE=wgc.
     /// </summary>
     /// <param name="monitorIndex">
     /// Нужен уже здесь: устройство D3D создаётся на адаптере ЭТОГО монитора,
@@ -83,15 +90,9 @@ public static class ScreenCaptureFactory
     }
 
     /// <summary>
-    /// Достанется ли захвату WGC. Вынесено отдельно от <see cref="Create"/>, потому
-    /// что от этого зависит не только источник кадров: аппаратный курсор умеет класть
-    /// в кадр только WGC, и настройкам нужно знать это ДО запуска движка, чтобы не
-    /// обещать курсор там, где его не будет.
-    ///
-    /// Права на захват без рамки здесь НЕТ в условии намеренно: подменять источник
-    /// втихую хуже, чем попросить разрешение. Если права нет, приложение остаётся на
-    /// WGC (курсор в кадре) и открывает пользователю страницу разрешения — см.
-    /// App.AskBorderlessPermission.
+    /// Достанется ли захвату WGC. По умолчанию false: DDA надёжнее для записи
+    /// монитора под полной игровой нагрузкой. Переменная окружения сохраняет оба
+    /// принудительных режима для сравнения на конкретном железе.
     /// </summary>
     public static bool UsesWgc
     {
@@ -102,8 +103,7 @@ public static class ScreenCaptureFactory
             if (forced == "dda") return false;
             if (forced == "wgc") return true;
 
-            bool win11 = Environment.OSVersion.Version.Build >= 22000;
-            return win11 && CaptureAccess.IsBorderControlSupported;
+            return false;
         }
     }
 }

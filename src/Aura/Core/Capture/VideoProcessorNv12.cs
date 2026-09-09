@@ -62,7 +62,12 @@ public sealed class VideoProcessorNv12 : IDisposable
                 OutputFrameRate = new Rational((uint)fps, 1),
                 OutputWidth = (uint)OutWidth,
                 OutputHeight = (uint)OutHeight,
-                Usage = VideoUsage.PlaybackNormal
+                // При уменьшении разрешения драйвер выбирает более качественный
+                // фильтр масштабирования. В родном разрешении это только конверсия
+                // RGB→NV12, поэтому лишней работы не добавляем.
+                Usage = srcWidth != OutWidth || srcHeight != OutHeight
+                    ? VideoUsage.OptimalQuality
+                    : VideoUsage.PlaybackNormal
             };
             _enumerator = _videoDevice.CreateVideoProcessorEnumerator(desc);
             _processor = _videoDevice.CreateVideoProcessor(_enumerator, 0);
