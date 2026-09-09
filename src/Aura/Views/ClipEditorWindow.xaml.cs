@@ -71,15 +71,30 @@ public partial class ClipEditorWindow : Window
         window.ShowDialog();
     }
 
-    private void Window_Loaded(object sender, RoutedEventArgs e)
+    private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        Log.Info("Editor", $"Открываю {Path.GetFileName(_item.FullPath)}");
         try
         {
             // VideoLAN.LibVLC.Windows кладёт native runtime рядом с приложением;
-            // Initialize находит его сам, установленный VLC не нужен.
-            LibVLCSharp.Shared.Core.Initialize();
-            _libVlc = new LibVLC("--no-video-title-show", "--quiet");
-            _player = new VlcMediaPlayer(_libVlc) { EnableHardwareDecoding = true };
+            // Initialize находит его сам. Загрузка сотен codec plugins бывает
+            // ощутимой на первом старте, поэтому она не должна блокировать WPF.
+            var created = await Task.Run(() =>
+            {
+                LibVLCSharp.Shared.Core.Initialize();
+                var engine = new LibVLC("--no-video-title-show", "--quiet");
+                var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = true };
+                var media = new VlcMedia(engine, new Uri(_item.FullPath));
+                return (engine, player, media);
+            });
+
+            if (_disposed)
+            {
+                created.media.Dispose(); created.player.Dispose(); created.engine.Dispose();
+                return;
+            }
+
+            (_libVlc, _player, _media) = created;
             _player.LengthChanged += Player_LengthChanged;
             _player.EncounteredError += Player_EncounteredError;
             _player.Playing += Player_Playing;
@@ -87,9 +102,9 @@ public partial class ClipEditorWindow : Window
             _player.EndReached += Player_EndReached;
             Preview.MediaPlayer = _player;
 
-            _media = new VlcMedia(_libVlc, new Uri(_item.FullPath));
             if (!_player.Play(_media)) throw new InvalidOperationException("LibVLC не принял файл");
             _timer.Start();
+            Log.Info("Editor", "LibVLC запущен, жду первый кадр");
         }
         catch (Exception ex)
         {
@@ -106,6 +121,7 @@ public partial class ClipEditorWindow : Window
 
     private void Player_Playing(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
+        PreviewLoading.Visibility = Visibility.Collapsed;
         ConfigureAudioChoices();
         if (_pauseOnFirstFrame)
         {
@@ -231,9 +247,6 @@ public partial class ClipEditorWindow : Window
 
         _audioTrackIds = descriptions.Select(track => track.Id).ToArray();
         AudioBox.Items.Clear();
-        if (_audioTrackIds.Length > 1)
-            AudioBox.Items.Add(new ComboBoxItem { Content = "Игра + микрофон", Tag = -1 });
-
         for (int i = 0; i < _audioTrackIds.Length; i++)
         {
             string label = _audioTrackIds.Length == 1 ? "Единая аудиодорожка"
@@ -242,8 +255,12 @@ public partial class ClipEditorWindow : Window
                 : $"Только дорожка {i + 1}";
             AudioBox.Items.Add(new ComboBoxItem { Content = label, Tag = i });
         }
+        if (_audioTrackIds.Length > 1)
+            AudioBox.Items.Add(new ComboBoxItem { Content = "Игра + микрофон", Tag = -1 });
 
         AudioBox.IsEnabled = true;
+        // Одна дорожка не требует второго проигрывателя и открывается мгновенно.
+        // Общий микс остаётся доступен явным выбором пользователя.
         AudioBox.SelectedIndex = 0;
     }
 
@@ -284,10 +301,19 @@ public partial class ClipEditorWindow : Window
                 if (!_player.IsPlaying) _secondAudioPlayer.Pause();
             };
             _secondAudioMedia = new VlcMedia(_libVlc, new Uri(_item.FullPath));
+            _secondAudioMedia.AddOption(":no-video");
         }
 
         if (!_secondAudioPlayer.IsPlaying && _secondAudioMedia is not null)
-            _secondAudioPlayer.Play(_secondAudioMedia);
+        {
+            var player = _secondAudioPlayer;
+            var media = _secondAudioMedia;
+            _ = Task.Run(() =>
+            {
+                try { if (!_disposed) player.Play(media); }
+                catch (Exception ex) { Log.Warn("Editor", $"Вторая аудиодорожка: {ex.Message}"); }
+            });
+        }
     }
 
     private void StopSecondAudio()
@@ -464,6 +490,7 @@ public partial class ClipEditorWindow : Window
 
     private void ShowPreviewError(string message)
     {
+        PreviewLoading.Visibility = Visibility.Collapsed;
         Preview.Visibility = Visibility.Collapsed;
         PreviewError.Visibility = Visibility.Visible;
         PreviewErrorText.Text = message;

@@ -57,6 +57,11 @@
                     BorderThickness="1" CornerRadius="14" ClipToBounds="True">
                 <Grid>
                     <vlc:VideoView x:Name="Preview"/>
+                    <StackPanel x:Name="PreviewLoading" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <TextBlock Text="Открываю видео…" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                        <TextBlock Text="Первый запуск движка может занять пару секунд"
+                                   Foreground="{DynamicResource Tx2Brush}" Margin="0,5,0,0"/>
+                    </StackPanel>
                     <StackPanel x:Name="PreviewError" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <c:Icon Data="{DynamicResource Ico.Alert}" Size="30" Foreground="{DynamicResource Tx3Brush}" HorizontalAlignment="Center"/>
                         <TextBlock Text="Не удалось показать видео" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,0"/>
