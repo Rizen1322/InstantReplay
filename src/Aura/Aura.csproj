@@ -38,6 +38,10 @@
     <PackageReference Include="H.NotifyIcon.Wpf" Version="2.3.2" />
     <!-- WMI -->
     <PackageReference Include="System.Management" Version="10.0.12" />
+    <!-- Самодостаточный предпросмотр редактора: движок и кодеки приезжают вместе
+         с Aura, Windows Media Player и его optional feature не нужны. -->
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.10.1" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
   </ItemGroup>
 
   <ItemGroup>
