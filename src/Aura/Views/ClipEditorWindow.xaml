@@ -8,7 +8,7 @@
         Title="Редактор Aura" Width="1100" Height="760" MinWidth="820" MinHeight="640"
         WindowStyle="None" WindowStartupLocation="CenterOwner"
         Background="{DynamicResource CanvasBrush}" UseLayoutRounding="True"
-        KeyDown="Window_KeyDown">
+        PreviewKeyDown="Window_KeyDown">
     <WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0" CornerRadius="0" GlassFrameThickness="0"
                             ResizeBorderThickness="6" UseAeroCaptionButtons="False"/>
@@ -45,7 +45,7 @@
                     <TextBlock Text="Редактор клипа" FontFamily="{DynamicResource DispFont}" FontSize="19" FontWeight="SemiBold"/>
                     <TextBlock x:Name="FileNameText" Foreground="{DynamicResource Tx2Brush}" FontSize="11.5" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
-                <TextBlock Grid.Column="1" Text="Space — пауза   I / O — границы   ← / → — кадр"
+                <TextBlock Grid.Column="1" Text="Space — пауза   I / O — границы   ← / → — кадр   M — звук"
                            VerticalAlignment="Center" Margin="16,0,18,0" Foreground="{DynamicResource Tx3Brush}" FontSize="11.5"/>
                 <Button Grid.Column="2" Width="34" Height="34" Padding="0" Click="Close_Click" ToolTip="Закрыть (Esc)">
                     <c:Icon Data="{DynamicResource Ico.X}" Size="15"/>

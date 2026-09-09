@@ -244,6 +244,12 @@ public partial class ClipEditorWindow : Window
     private void Mute_Click(object sender, RoutedEventArgs e)
     {
         if (_player is null) return;
+        ToggleMute();
+    }
+
+    private void ToggleMute()
+    {
+        if (_player is null) return;
         _isMuted = !_isMuted;
         ApplyMuteState();
     }
@@ -576,12 +582,38 @@ public partial class ClipEditorWindow : Window
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape) { Close(); e.Handled = true; }
-        else if (e.Key == Key.Space) { TogglePlayback(); e.Handled = true; }
+        // PreviewKeyDown приходит ДО сфокусированной кнопки. Обычный KeyDown она
+        // поглощает сама: после клика Space повторно нажимал эту кнопку вместо
+        // управления видео. Автоповтор Space тоже блокируем, иначе удержание
+        // клавиши быстро переключает play/pause несколько раз.
+        if (e.Key == Key.Space)
+        {
+            e.Handled = true;
+            if (!e.IsRepeat) TogglePlayback();
+        }
+        else if (e.Key == Key.Escape) { Close(); e.Handled = true; }
         else if (e.Key == Key.I) { SetIn(); e.Handled = true; }
         else if (e.Key == Key.O) { SetOut(); e.Handled = true; }
-        else if (e.Key == Key.Left) { Step(-FrameStep); e.Handled = true; }
-        else if (e.Key == Key.Right) { Step(FrameStep); e.Handled = true; }
+        else if (e.Key == Key.M) { ToggleMute(); e.Handled = true; }
+        else if (e.Key == Key.Home) { Seek(_startSeconds); e.Handled = true; }
+        else if (e.Key == Key.End) { Seek(_endSeconds); e.Handled = true; }
+        else if (e.Key == Key.Left)
+        {
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(CurrentSeconds - 1);
+            else Step(-FrameStep);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Right)
+        {
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(CurrentSeconds + 1);
+            else Step(FrameStep);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.E && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            if (ExportButton.IsEnabled) Export_Click(ExportButton, new RoutedEventArgs());
+            e.Handled = true;
+        }
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
