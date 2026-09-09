@@ -114,12 +114,12 @@ public sealed class AppSettings
     public int TotalReplaysSaved { get; set; }
 
     /// <summary>
-    /// Чем открывать пункт «Обрезать» — путь к LosslessCut.exe. Пусто = ещё не
-    /// выбран: приложение сначала поищет его само, а если не найдёт — спросит.
+    /// Старый путь к LosslessCut оставлен для миграции: Aura может найти лежащий
+    /// рядом ffmpeg. Внешний редактор больше не запускается.
     /// </summary>
     public string? LosslessCutPath { get; set; }
 
-    /// <summary>Путь к ffmpeg.exe для «Сжать для Discord». Обычно находится сам рядом с LosslessCut.</summary>
+    /// <summary>Путь к ffmpeg.exe для сжатия и встроенного lossless-экспорта.</summary>
     public string? FfmpegPath { get; set; }
 
     /// <summary>Под какой размер вложения сжимать, МБ (у Discord без Nitro — 20).</summary>

@@ -37,7 +37,6 @@ public partial class FilesPage : PageBase
         ShotsPathText.Text = s.ScreenshotFolder;
         GroupSub.Text = Path.Combine(s.SaveRootPath, "Counter-Strike 2") + @"\…";
         GroupByGame.IsChecked = s.GroupByGame;
-        ShowTrimTool();
         _loading = false;
     }
 
@@ -93,44 +92,6 @@ public partial class FilesPage : PageBase
         }
         catch { /* нераспознаваемый путь — просто добавим подпапку */ }
         return Path.Combine(chosen, "Aura");
-    }
-
-    // ---------------- Программа для обрезки ----------------
-
-    /// <summary>
-    /// Пункт «Обрезать» в меню клипа открывает файл в LosslessCut. Путь ищется
-    /// автоматически при первом обращении, здесь его можно посмотреть и сменить.
-    /// </summary>
-    private void ShowTrimTool()
-    {
-        string? path = Services.Settings.Current.LosslessCutPath;
-        bool known = !string.IsNullOrWhiteSpace(path) && File.Exists(path);
-
-        TrimToolPath.Text = known
-            ? path!
-            : ClipCommands.FindLosslessCut() is { } found
-                ? found + "  (найден автоматически)"
-                : "не выбран — спросим при первой обрезке";
-        TrimToolClear.IsEnabled = known;
-    }
-
-    private void TrimTool_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "LosslessCut.exe",
-            Filter = "LosslessCut|LosslessCut.exe|Программы (*.exe)|*.exe"
-        };
-        if (dialog.ShowDialog() != true) return;
-
-        Services.Settings.Update(s => s.LosslessCutPath = dialog.FileName, "tools");
-        ShowTrimTool();
-    }
-
-    private void TrimToolClear_Click(object sender, RoutedEventArgs e)
-    {
-        Services.Settings.Update(s => s.LosslessCutPath = null, "tools");
-        ShowTrimTool();
     }
 
     /// <summary>

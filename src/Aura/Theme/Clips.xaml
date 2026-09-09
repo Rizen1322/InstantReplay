@@ -63,8 +63,8 @@
                                     Foreground="{DynamicResource Tx2Brush}"/>
                         </MenuItem.Icon>
                     </MenuItem>
-                    <MenuItem Header="Обрезать в LosslessCut" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.Trim}" CommandParameter="{Binding}">
+                    <MenuItem Header="Редактировать в Aura" Style="{DynamicResource TrayMenuItem}"
+                              Command="{x:Static v:ClipCommands.Edit}" CommandParameter="{Binding}">
                         <MenuItem.Icon>
                             <c:Icon Data="{DynamicResource Ico.Scissors}" Size="14"
                                     Foreground="{DynamicResource Tx2Brush}"/>
@@ -74,16 +74,6 @@
                               Command="{x:Static v:ClipCommands.Compress}" CommandParameter="{Binding}">
                         <MenuItem.Icon>
                             <c:Icon Data="{DynamicResource Ico.Box}" Size="14"
-                                    Foreground="{DynamicResource Tx2Brush}"/>
-                        </MenuItem.Icon>
-                    </MenuItem>
-                    <!-- Пробует загрузить клип в OpenCut сам (DevTools выбранного Chromium-
-                         браузера, файл кладётся прямо в скрытый input импорта). Если не
-                         вышло — сайт открывается как обычно, файл перетаскивается мышью. -->
-                    <MenuItem Header="Редактировать в OpenCut" Style="{DynamicResource TrayMenuItem}"
-                              Command="{x:Static v:ClipCommands.EditInOpenCut}" CommandParameter="{Binding}">
-                        <MenuItem.Icon>
-                            <c:Icon Data="{DynamicResource Ico.External}" Size="14"
                                     Foreground="{DynamicResource Tx2Brush}"/>
                         </MenuItem.Icon>
                     </MenuItem>

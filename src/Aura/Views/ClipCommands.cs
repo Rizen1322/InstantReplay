@@ -25,13 +25,8 @@ public static class ClipCommands
     public static ICommand Rename { get; } = new ClipAction(RenameAsync);
     public static ICommand Delete { get; } = new ClipAction(DeleteAsync);
 
-    /// <summary>
-    /// Открыть в LosslessCut. Для скриншотов пункт неактивен.
-    /// </summary>
-    public static ICommand Trim { get; } = new ClipAction(TrimInLosslessCut, item => !item.IsScreenshot);
-
-    /// <summary>Открыть в браузерном редакторе OpenCut. Для скриншотов пункт неактивен.</summary>
-    public static ICommand EditInOpenCut { get; } = new ClipAction(OpenInOpenCut, item => !item.IsScreenshot);
+    /// <summary>Открыть встроенный редактор Aura. Для скриншотов пункт неактивен.</summary>
+    public static ICommand Edit { get; } = new ClipAction(ClipEditorWindow.ShowFor, item => !item.IsScreenshot);
 
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
     public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);
@@ -180,133 +175,6 @@ public static class ClipCommands
         catch (Exception ex) { Dialogs.Say("Не удалось переименовать", ex.Message); }
     }
 
-    // ---------------- Обрезка во внешней программе ----------------
-
-    /// <summary>
-    /// Открыть клип в LosslessCut — он режет без перекодирования, то есть быстро
-    /// и без потери качества. Путь спрашиваем один раз: сначала ищем сами по
-    /// обычным местам установки, и только если не нашли — просим показать файл.
-    /// </summary>
-    private static void TrimInLosslessCut(ClipItem item)
-    {
-        string? exe = Services.Settings.Current.LosslessCutPath;
-        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
-        {
-            exe = FindLosslessCut() ?? AskForLosslessCut();
-            if (exe is null) return;
-            Services.Settings.Update(s => s.LosslessCutPath = exe, "tools");
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo(exe)
-            {
-                ArgumentList = { item.FullPath },
-                UseShellExecute = false,
-                WorkingDirectory = Path.GetDirectoryName(exe)!
-            });
-        }
-        catch (Exception ex)
-        {
-            Dialogs.Say("Не удалось открыть LosslessCut", ex.Message);
-        }
-    }
-
-    // ---------------- Редактирование в браузере ----------------
-
-    /// <summary>
-    /// Открыть клип в OpenCut — открытом (MIT) браузерном видеоредакторе с opencut.app,
-    /// файлы в нём не покидают устройство.
-    ///
-    /// Сначала пробуем передать файл автоматически (OpenCutAutoImport: отдельный
-    /// профиль Chromium и файл напрямую в скрытый input импорта через DevTools).
-    /// Не получилось — открываем сайт обычным способом и просим перетащить клип
-    /// мышью: карточки это умеют (DragFile), а редактор подхватывает drop-событие.
-    /// </summary>
-    private static void OpenInOpenCut(ClipItem item) => _ = Task.Run(() => OpenInOpenCutAsync(item));
-
-    private static async Task OpenInOpenCutAsync(ClipItem item)
-    {
-        if (await Core.Tools.OpenCutAutoImport.ImportAsync(item.FullPath))
-        {
-            Services.Notifications.Show(Core.Notifications.NotificationKind.Info,
-                "Клип загружен в OpenCut",
-                "Проект создан, файл уже в медиатеке — перетащи его на таймлайн.");
-            return;
-        }
-
-        try
-        {
-            // Через explorer.exe, а не напрямую: из процесса с правами администратора
-            // браузер из ShellExecute активируется криво — та же история, что с плеерами.
-            Process.Start(new ProcessStartInfo("explorer.exe", "\"https://opencut.app/\"") { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            Log.Warn("Library", $"OpenCut: {ex.Message}");
-            Dialogs.Say("Не удалось открыть OpenCut",
-                "Не получилось открыть браузер. Открой opencut.app вручную и перетащи туда файл.");
-            return;
-        }
-
-        Services.Notifications.Show(Core.Notifications.NotificationKind.Info,
-            "OpenCut открыт в браузере",
-            "Автопередача файла не удалась — перетащи клип из галереи в окно браузера мышью.");
-    }
-
-    /// <summary>Обычные места установки LosslessCut: установщик, portable, Scoop.</summary>
-    public static string? FindLosslessCut()
-    {
-        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string programs = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        string programsX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-        var candidates = new List<string>
-        {
-            Path.Combine(local, "Programs", "losslesscut", "LosslessCut.exe"),
-            Path.Combine(local, "Programs", "LosslessCut", "LosslessCut.exe"),
-            Path.Combine(local, "LosslessCut", "LosslessCut.exe"),
-            Path.Combine(programs, "LosslessCut", "LosslessCut.exe"),
-            Path.Combine(programsX86, "LosslessCut", "LosslessCut.exe"),
-            Path.Combine(profile, "scoop", "apps", "losslesscut", "current", "LosslessCut.exe"),
-        };
-
-        foreach (string path in candidates)
-            if (File.Exists(path)) return path;
-
-        // Портативная распаковка рядом: ...\LosslessCut-win-x64\LosslessCut.exe
-        foreach (string root in new[] { Path.Combine(local, "Programs"), programs, profile })
-            try
-            {
-                if (!Directory.Exists(root)) continue;
-                foreach (string dir in Directory.EnumerateDirectories(root, "LosslessCut*"))
-                {
-                    string exe = Path.Combine(dir, "LosslessCut.exe");
-                    if (File.Exists(exe)) return exe;
-                }
-            }
-            catch { }
-
-        return null;
-    }
-
-    /// <summary>Просим показать LosslessCut.exe и объясняем, зачем это нужно.</summary>
-    private static string? AskForLosslessCut()
-    {
-        bool ok = Dialogs.Ask("Где лежит LosslessCut?",
-            "Обрезка открывается в LosslessCut — он режет видео без перекодирования. " +
-            "Покажи его файл LosslessCut.exe, дальше Aura запомнит путь.", "Выбрать");
-        if (!ok) return null;
-
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "LosslessCut.exe",
-            Filter = "LosslessCut|LosslessCut.exe|Программы (*.exe)|*.exe"
-        };
-        return dialog.ShowDialog() == true ? dialog.FileName : null;
-    }
-
     // ---------------- Сжатие под вложение ----------------
 
     private static bool _compressing;
@@ -329,7 +197,7 @@ public static class ClipCommands
         if (ffmpeg is null)
         {
             bool ok = Dialogs.Ask("Нужен ffmpeg",
-                "Сжатие делает ffmpeg — он лежит рядом с LosslessCut. Покажи ffmpeg.exe, дальше Aura запомнит путь.",
+                "Сжатие делает ffmpeg. Покажи ffmpeg.exe — Aura запомнит путь и сможет также резать клипы без потери качества.",
                 "Выбрать");
             if (!ok) return;
 
