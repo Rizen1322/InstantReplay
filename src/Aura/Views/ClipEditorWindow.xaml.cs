@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -29,6 +28,11 @@ public partial class ClipEditorWindow : Window
     private LibVLC? _libVlc;
     private VlcMediaPlayer? _player;
     private VlcMedia? _media;
+    private VlcMediaPlayer? _secondAudioPlayer;
+    private VlcMedia? _secondAudioMedia;
+    private int[] _audioTrackIds = [];
+    // -1 = свести все дорожки, 0..N = оставить одну дорожку.
+    private int _audioSelection = -1;
     private double _durationSeconds;
     private double _startSeconds;
     private double _endSeconds;
@@ -44,7 +48,9 @@ public partial class ClipEditorWindow : Window
         FileNameText.Text = item.FileName;
 
         _ffmpeg = Ffmpeg.Find(Services.Settings.Current.FfmpegPath, Services.Settings.Current.LosslessCutPath);
-        if (_ffmpeg is null) LosslessButton.ToolTip = "При первом запуске выбери ffmpeg.exe";
+        ExportHint.Text = _ffmpeg is null
+            ? "Точный встроенный экспорт — никаких внешних программ."
+            : "Быстрый экспорт: видео копируется без потери качества.";
 
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += Timer_Tick;
@@ -100,6 +106,7 @@ public partial class ClipEditorWindow : Window
 
     private void Player_Playing(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
+        ConfigureAudioChoices();
         if (_pauseOnFirstFrame)
         {
             _pauseOnFirstFrame = false;
@@ -147,11 +154,13 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying)
         {
             _player.Pause();
+            _secondAudioPlayer?.Pause();
             return;
         }
         double position = CurrentSeconds;
         if (position < _startSeconds || position >= _endSeconds - 0.02) Seek(_startSeconds);
         _player.Play();
+        if (_audioSelection < 0 && _secondAudioPlayer is not null) _secondAudioPlayer.Play();
     }
 
     private void Timer_Tick(object? sender, EventArgs e)
@@ -161,9 +170,13 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying && position >= _endSeconds)
         {
             _player.Pause();
+            _secondAudioPlayer?.Pause();
             Seek(_endSeconds);
             return;
         }
+        if (_audioSelection < 0 && _secondAudioPlayer?.IsPlaying == true &&
+            Math.Abs(_secondAudioPlayer.Time - _player.Time) > 90)
+            _secondAudioPlayer.Time = _player.Time;
         UpdatePlayhead(position);
         UpdatePreviewTime(position);
     }
@@ -174,7 +187,11 @@ public partial class ClipEditorWindow : Window
     private void Step(TimeSpan delta)
     {
         if (_player is null) return;
-        if (_player.IsPlaying) _player.Pause();
+        if (_player.IsPlaying)
+        {
+            _player.Pause();
+            _secondAudioPlayer?.Pause();
+        }
         if (delta > TimeSpan.Zero)
         {
             _player.NextFrame();
@@ -193,6 +210,7 @@ public partial class ClipEditorWindow : Window
         if (_player is null || _durationSeconds <= 0) return;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
         _player.Time = (long)Math.Round(seconds * 1000);
+        if (_secondAudioPlayer is not null) _secondAudioPlayer.Time = _player.Time;
         UpdatePlayhead(seconds);
         UpdatePreviewTime(seconds);
     }
@@ -201,14 +219,82 @@ public partial class ClipEditorWindow : Window
     {
         if (_player is null) return;
         _player.Mute = !_player.Mute;
+        if (_secondAudioPlayer is not null) _secondAudioPlayer.Mute = _player.Mute;
         MuteButton.Content = _player.Mute ? "Звук: выкл" : "Звук: вкл";
     }
 
-    private void Speed_Changed(object sender, SelectionChangedEventArgs e)
+    private void ConfigureAudioChoices()
     {
-        if (_player is null || SpeedBox.SelectedItem is not ComboBoxItem { Tag: string value }) return;
-        if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float rate))
-            _player.SetRate(rate);
+        if (_player is null || _audioTrackIds.Length > 0) return;
+        var descriptions = _player.AudioTrackDescription?.Where(track => track.Id >= 0).ToArray() ?? [];
+        if (descriptions.Length == 0) return;
+
+        _audioTrackIds = descriptions.Select(track => track.Id).ToArray();
+        AudioBox.Items.Clear();
+        if (_audioTrackIds.Length > 1)
+            AudioBox.Items.Add(new ComboBoxItem { Content = "Игра + микрофон", Tag = -1 });
+
+        for (int i = 0; i < _audioTrackIds.Length; i++)
+        {
+            string label = _audioTrackIds.Length == 1 ? "Единая аудиодорожка"
+                : i == 0 ? "Только игра"
+                : i == 1 ? "Только микрофон"
+                : $"Только дорожка {i + 1}";
+            AudioBox.Items.Add(new ComboBoxItem { Content = label, Tag = i });
+        }
+
+        AudioBox.IsEnabled = true;
+        AudioBox.SelectedIndex = 0;
+    }
+
+    private void AudioTrack_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_player is null || AudioBox.SelectedItem is not ComboBoxItem { Tag: int selected }) return;
+        _audioSelection = selected;
+
+        if (selected >= 0)
+        {
+            StopSecondAudio();
+            if (selected < _audioTrackIds.Length) _player.SetAudioTrack(_audioTrackIds[selected]);
+            return;
+        }
+
+        // Один MediaPlayer LibVLC штатно включает только одну дорожку. Для режима
+        // «вместе» запускаем вторую аудиокопию того же файла без видео и
+        // держим её позицию синхронной с основной.
+        if (_audioTrackIds.Length > 1)
+        {
+            _player.SetAudioTrack(_audioTrackIds[0]);
+            StartSecondAudio();
+        }
+    }
+
+    private void StartSecondAudio()
+    {
+        if (_libVlc is null || _player is null || _audioTrackIds.Length < 2) return;
+        if (_secondAudioPlayer is null)
+        {
+            _secondAudioPlayer = new VlcMediaPlayer(_libVlc);
+            _secondAudioPlayer.Mute = _player.Mute;
+            _secondAudioPlayer.Playing += (_, _) =>
+            {
+                _secondAudioPlayer.SetVideoTrack(-1);
+                _secondAudioPlayer.SetAudioTrack(_audioTrackIds[1]);
+                _secondAudioPlayer.Time = _player.Time;
+                if (!_player.IsPlaying) _secondAudioPlayer.Pause();
+            };
+            _secondAudioMedia = new VlcMedia(_libVlc, new Uri(_item.FullPath));
+        }
+
+        if (!_secondAudioPlayer.IsPlaying && _secondAudioMedia is not null)
+            _secondAudioPlayer.Play(_secondAudioMedia);
+    }
+
+    private void StopSecondAudio()
+    {
+        if (_secondAudioPlayer is null) return;
+        _secondAudioPlayer.Pause();
+        _secondAudioPlayer.SetAudioTrack(-1);
     }
 
     private void Timeline_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateTimelineVisuals();
@@ -290,38 +376,50 @@ public partial class ClipEditorWindow : Window
         Canvas.SetLeft(Playhead, seconds / _durationSeconds * Timeline.ActualWidth - Playhead.Width / 2);
     }
 
-    private async void Precise_Click(object sender, RoutedEventArgs e) =>
-        await ExportAsync((start, end, progress, ct) =>
-            VideoEditor.TrimPreciseAsync(_item.FullPath, start, end, progress, ct), precise: true);
-
-    private async void Lossless_Click(object sender, RoutedEventArgs e)
+    private async void Export_Click(object sender, RoutedEventArgs e)
     {
-        if (_ffmpeg is null)
-        {
-            var dialog = new Microsoft.Win32.OpenFileDialog
+        await ExportAsync(SmartExportAsync, fast: _ffmpeg is not null);
+    }
+
+    /// <summary>
+    /// Одна кнопка, как в LosslessCut: быстрый remux при доступном ffmpeg, а если
+    /// конкретный контейнер ему не подошёл — автоматический точный fallback.
+    /// Никакого вопроса о выборе «режима экспорта» человеку не показываем.
+    /// </summary>
+    private async Task<string> SmartExportAsync(
+        TimeSpan start, TimeSpan end, IProgress<double>? progress, CancellationToken ct)
+    {
+        if (_ffmpeg is not null)
+            try
             {
-                Title = "Где лежит ffmpeg.exe",
-                Filter = "ffmpeg|ffmpeg.exe|Программы (*.exe)|*.exe"
-            };
-            if (dialog.ShowDialog(this) != true) return;
-            _ffmpeg = dialog.FileName;
-            Services.Settings.Update(s => s.FfmpegPath = _ffmpeg, "tools");
-            LosslessButton.ToolTip = "Очень быстро; границы по ключевым кадрам";
-        }
-        await ExportAsync((start, end, _, ct) =>
-            Ffmpeg.TrimLosslessAsync(_ffmpeg, _item.FullPath, start, end, ct), precise: false);
+                return await Ffmpeg.TrimLosslessAsync(
+                    _ffmpeg, _item.FullPath, start, end, _audioSelection,
+                    Math.Max(1, _audioTrackIds.Length), ct);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log.Warn("Editor", $"Быстрый экспорт не удался, перехожу на точный: {ex.Message}");
+                ExportStatus.Text = "Быстрый режим не подошёл — точный экспорт…";
+            }
+
+        return await VideoEditor.TrimPreciseAsync(
+            _item.FullPath, start, end, _audioSelection, progress, ct);
     }
 
     private async Task ExportAsync(
         Func<TimeSpan, TimeSpan, IProgress<double>?, CancellationToken, Task<string>> export,
-        bool precise)
+        bool fast)
     {
         if (_exportCancellation is not null || _durationSeconds <= 0) return;
         _player?.Pause();
+        _secondAudioPlayer?.Pause();
         _exportCancellation = new CancellationTokenSource();
-        SetExporting(true, precise);
-        ExportStatus.Text = precise ? "Точный экспорт…" : "Экспорт без потери…";
-        ExportHint.Text = precise ? "Точные границы, исходник остаётся нетронутым." : "Потоки копируются без изменения качества.";
+        SetExporting(true, fast);
+        ExportStatus.Text = "Экспортирую фрагмент…";
+        ExportHint.Text = fast
+            ? "Видео копируется без потери; выбранные аудиодорожки сохраняются."
+            : "Встроенный точный экспорт; исходник остаётся нетронутым.";
 
         var progress = new Progress<double>(value => ExportProgress.Value = value);
         try
@@ -351,17 +449,17 @@ public partial class ClipEditorWindow : Window
         {
             _exportCancellation.Dispose();
             _exportCancellation = null;
-            SetExporting(false, precise);
+            SetExporting(false, fast);
         }
     }
 
-    private void SetExporting(bool value, bool precise)
+    private void SetExporting(bool value, bool fast)
     {
-        PreciseButton.IsEnabled = !value;
-        LosslessButton.IsEnabled = !value;
+        ExportButton.IsEnabled = !value;
+        AudioBox.IsEnabled = !value && _audioTrackIds.Length > 0;
         CancelExportButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-        ExportProgress.IsIndeterminate = value && !precise;
+        ExportProgress.IsIndeterminate = value && fast;
     }
 
     private void ShowPreviewError(string message)
@@ -379,6 +477,9 @@ public partial class ClipEditorWindow : Window
         _exportCancellation?.Cancel();
         Preview.MediaPlayer = null;
         try { _player?.Stop(); } catch { }
+        try { _secondAudioPlayer?.Stop(); } catch { }
+        _secondAudioMedia?.Dispose();
+        _secondAudioPlayer?.Dispose();
         _media?.Dispose();
         _player?.Dispose();
         _libVlc?.Dispose();

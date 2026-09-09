@@ -80,10 +80,10 @@
                                    FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
                             <Button x:Name="MuteButton" Content="Звук: вкл" Click="Mute_Click"/>
-                            <ComboBox x:Name="SpeedBox" Width="78" Height="34" Margin="8,0,0,0" SelectedIndex="1"
-                                      SelectionChanged="Speed_Changed" ToolTip="Скорость предпросмотра">
-                                <ComboBoxItem Content="0,5×" Tag="0.5"/><ComboBoxItem Content="1×" Tag="1"/>
-                                <ComboBoxItem Content="1,5×" Tag="1.5"/><ComboBoxItem Content="2×" Tag="2"/>
+                            <ComboBox x:Name="AudioBox" Width="190" Height="34" Margin="8,0,0,0"
+                                      IsEnabled="False" SelectionChanged="AudioTrack_Changed"
+                                      ToolTip="Что слышно в предпросмотре и попадёт в экспорт">
+                                <ComboBoxItem Content="Поиск аудиодорожек…"/>
                             </ComboBox>
                         </StackPanel>
                     </Grid>
@@ -140,10 +140,9 @@
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button x:Name="CancelExportButton" Content="Отменить" Click="CancelExport_Click" Visibility="Collapsed" Margin="0,0,8,0"/>
-                        <Button x:Name="LosslessButton" Content="⚡ Без потери" Click="Lossless_Click" Margin="0,0,8,0"
-                                ToolTip="Очень быстро; границы по ключевым кадрам"/>
-                        <Button x:Name="PreciseButton" Content="Сохранить точно" Style="{StaticResource BtnPri}"
-                                Click="Precise_Click" ToolTip="Точные границы; видео будет перекодировано"/>
+                        <Button x:Name="ExportButton" Content="Экспортировать" MinWidth="150"
+                                Style="{StaticResource BtnPri}" Click="Export_Click"
+                                ToolTip="Сохранить выбранный фрагмент"/>
                     </StackPanel>
                 </Grid>
             </Border>

@@ -34,6 +34,7 @@ public static class VideoEditor
         string input,
         TimeSpan start,
         TimeSpan end,
+        int audioTrackIndex = -1,
         IProgress<double>? progress = null,
         CancellationToken ct = default)
     {
@@ -54,6 +55,16 @@ public static class VideoEditor
             clip.TrimTimeFromStart = start;
             clip.TrimTimeFromEnd = clip.OriginalDuration - end;
 
+            bool mixAll = audioTrackIndex < 0;
+            if (!mixAll && clip.EmbeddedAudioTracks.Count > 0)
+            {
+                int requested = Math.Clamp(audioTrackIndex, 0, clip.EmbeddedAudioTracks.Count - 1);
+                // MediaClip перечисляет embedded-аудио в обратном порядке относительно
+                // MP4 stream index (проверено на двухтональном файле). UI и ffmpeg идут
+                // в естественном порядке контейнера, поэтому здесь разворачиваем индекс.
+                clip.SelectedEmbeddedAudioTrackIndex = (uint)(clip.EmbeddedAudioTracks.Count - 1 - requested);
+            }
+
             var composition = new MediaComposition();
             composition.Clips.Add(clip);
 
@@ -61,12 +72,14 @@ public static class VideoEditor
             // режим «раздельно» создаёт две (игра + микрофон), поэтому остальные
             // добавляем как фоновые и теми же IN/OUT. Точный экспорт сводит их в
             // слышимый микс вместо тихой потери микрофона.
-            for (int i = 0; i < clip.EmbeddedAudioTracks.Count; i++)
+            for (int i = 0; mixAll && i < clip.EmbeddedAudioTracks.Count; i++)
             {
                 if (i == clip.SelectedEmbeddedAudioTrackIndex) continue;
                 var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(clip.EmbeddedAudioTracks[i]);
+                TimeSpan audioEnd = end > audio.OriginalDuration ? audio.OriginalDuration : end;
+                if (start >= audioEnd) continue;
                 audio.TrimTimeFromStart = start;
-                audio.TrimTimeFromEnd = audio.OriginalDuration - end;
+                audio.TrimTimeFromEnd = audio.OriginalDuration - audioEnd;
                 composition.BackgroundAudioTracks.Add(audio);
             }
 

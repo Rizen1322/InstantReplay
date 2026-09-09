@@ -140,12 +140,13 @@ public static class Ffmpeg
     }
 
     /// <summary>
-    /// Быстро вырезать диапазон без перекодирования. Граница попадает на ближайший
-    /// ключевой кадр — это ограничение stream-copy, зато качество и дорожки остаются
-    /// исходными, а экспорт обычно занимает секунды.
+    /// Быстро вырезать диапазон без перекодирования видео. Граница попадает на
+    /// ближайший ключевой кадр — это ограничение stream-copy. Одна выбранная
+    /// аудиодорожка тоже копируется; режим «вместе» сводит дорожки в AAC.
     /// </summary>
     public static async Task<string> TrimLosslessAsync(
-        string ffmpeg, string input, TimeSpan start, TimeSpan end, CancellationToken ct = default)
+        string ffmpeg, string input, TimeSpan start, TimeSpan end,
+        int audioTrackIndex = -1, int audioTrackCount = 1, CancellationToken ct = default)
     {
         VideoEditor.ValidateRange(start, end);
         string output = VideoEditor.CreateOutputPath(input);
@@ -164,16 +165,36 @@ public static class Ffmpeg
         psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(Seconds(start));
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(Seconds(end - start));
-        psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("0");
+
+        bool mixAudio = audioTrackIndex < 0 && audioTrackCount > 1;
+        if (mixAudio)
+        {
+            string inputs = string.Concat(Enumerable.Range(0, audioTrackCount).Select(i => $"[0:a:{i}]"));
+            psi.ArgumentList.Add("-filter_complex");
+            psi.ArgumentList.Add($"{inputs}amix=inputs={audioTrackCount}:duration=longest:normalize=0[aout]");
+            psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("0:v:0");
+            psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[aout]");
+            psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add("copy");
+            // Сведение дорожек математически требует нового аудиопотока. Видео —
+            // самая тяжёлая часть — по-прежнему копируется бит-в-бит.
+            psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
+            psi.ArgumentList.Add("-b:a"); psi.ArgumentList.Add("256k");
+        }
+        else
+        {
+            int selected = Math.Max(0, audioTrackIndex);
+            psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("0:v:0");
+            psi.ArgumentList.Add("-map"); psi.ArgumentList.Add($"0:a:{selected}?");
+            psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("copy");
+        }
         psi.ArgumentList.Add("-map_metadata"); psi.ArgumentList.Add("0");
         psi.ArgumentList.Add("-map_chapters"); psi.ArgumentList.Add("0");
-        psi.ArgumentList.Add("-c"); psi.ArgumentList.Add("copy");
         psi.ArgumentList.Add("-avoid_negative_ts"); psi.ArgumentList.Add("make_zero");
         psi.ArgumentList.Add("-movflags"); psi.ArgumentList.Add("+faststart");
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mp4");
         psi.ArgumentList.Add(partPath);
 
-        Log.Info("Editor", $"Lossless-экспорт {Path.GetFileName(input)}: {start} — {end}");
+        Log.Info("Editor", $"Быстрый экспорт {Path.GetFileName(input)}: {start} — {end}, audio={audioTrackIndex}");
         try
         {
             using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
