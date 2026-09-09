@@ -47,6 +47,9 @@ internal static partial class NativeMethods
     internal static partial bool IsWindowVisible(IntPtr hWnd);
 
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsWindow(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool IsIconic(IntPtr hWnd);
 
     /// <summary>
@@ -119,7 +122,8 @@ internal static partial class NativeMethods
 
     internal const int WH_KEYBOARD_LL = 13;
     internal const int WH_MOUSE_LL = 14;
-    internal const int WM_KEYDOWN = 0x0100, WM_SYSKEYDOWN = 0x0104, WM_QUIT = 0x0012;
+    internal const int WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101,
+                       WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105, WM_QUIT = 0x0012;
 
     // Кнопки мыши, которые можно назначать на действия. Левой и правой здесь нет
     // намеренно: перехватить их значило бы отобрать у человека мышь.

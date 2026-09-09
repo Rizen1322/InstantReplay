@@ -46,11 +46,13 @@ public partial class RegionCaptureWindow : Window
     ];
 
     private static RegionCaptureWindow? _open;
+    private static int _launching;
     private static byte[]? _pixels;
 
     private readonly BitmapSource _shot;
     private readonly int _monitorX, _monitorY, _pixelWidth, _pixelHeight;
     private readonly string _screenshotFolder;
+    private readonly IntPtr _returnFocus;
 
     private InkTool _tool = InkTool.None;
     private Color _color = Palette[0].Color;
@@ -90,12 +92,14 @@ public partial class RegionCaptureWindow : Window
     /// </summary>
     private Rect? _pressedCandidate;
 
-    private RegionCaptureWindow(BitmapSource shot, int x, int y, int width, int height, string folder)
+    private RegionCaptureWindow(
+        BitmapSource shot, int x, int y, int width, int height, string folder, IntPtr returnFocus)
     {
         InitializeComponent();
         _shot = shot;
         _monitorX = x; _monitorY = y; _pixelWidth = width; _pixelHeight = height;
         _screenshotFolder = folder;
+        _returnFocus = returnFocus;
 
         // Список окон собираем один раз. Здесь окна оверлея ещё нет (конструктор
         // отрабатывает до Show), поэтому оно и не попадёт в кандидаты — что и нужно
@@ -137,7 +141,11 @@ public partial class RegionCaptureWindow : Window
         // Затемнение рисуется по фактическому размеру окна — до Loaded он ещё нулевой
         Loaded += (_, _) => UpdateDim();
         SizeChanged += (_, _) => UpdateDim();
-        Closed += (_, _) => _open = null;
+        Closed += (_, _) =>
+        {
+            _open = null;
+            RestorePreviousWindow();
+        };
     }
 
     /// <summary>
@@ -148,27 +156,62 @@ public partial class RegionCaptureWindow : Window
     public static async Task ShowForAsync(int monitorIndex, bool cursor, LiveFrameProvider? live, string folder)
     {
         if (_open is not null) { _open.Activate(); return; }
+        if (Interlocked.CompareExchange(ref _launching, 1, 0) != 0) return;
 
-        // Буфер кадра переживает закрытие оверлея: 14 МБ на 2560×1440, и выделять их
-        // заново на каждое нажатие клавиши незачем. Оверлей всегда один (см. _open),
-        // так что делить буфер не с кем.
-        var (bgra, width, height) = await ScreenshotService.CapturePixelsAsync(monitorIndex, cursor, live, _pixels);
-        _pixels = bgra;
+        // Запоминаем игру ДО первого await: после показа overlay foreground уже Aura.
+        IntPtr returnFocus = NativeMethods.GetForegroundWindow();
+        try
+        {
+            // Буфер кадра переживает закрытие оверлея: 14 МБ на 2560×1440, и выделять их
+            // заново на каждое нажатие клавиши незачем. Оверлей всегда один (см. _open),
+            // так что делить буфер не с кем.
+            var (bgra, width, height) = await ScreenshotService.CapturePixelsAsync(
+                monitorIndex, cursor, live, _pixels);
+            _pixels = bgra;
 
-        // Bgr32, а не Bgra32: альфа в кадре захвата недостоверна (рабочий стол отдаёт
-        // её нулями), и картинка становится прозрачной. Обычный скриншот по той же
-        // причине кодируется с BitmapAlphaMode.Ignore.
-        var bitmap = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, bgra, width * 4);
-        bitmap.Freeze();
+            // Bgr32, а не Bgra32: альфа в кадре захвата недостоверна (рабочий стол отдаёт
+            // её нулями), и картинка становится прозрачной. Обычный скриншот по той же
+            // причине кодируется с BitmapAlphaMode.Ignore.
+            var bitmap = BitmapSource.Create(
+                width, height, 96, 96, PixelFormats.Bgr32, null, bgra, width * 4);
+            bitmap.Freeze();
 
-        var bounds = MonitorLayout.For(monitorIndex);
-        int x = bounds?.X ?? 0, y = bounds?.Y ?? 0;
-        int w = bounds?.Width ?? width, h = bounds?.Height ?? height;
+            var bounds = MonitorLayout.For(monitorIndex);
+            int x = bounds?.X ?? 0, y = bounds?.Y ?? 0;
+            int w = bounds?.Width ?? width, h = bounds?.Height ?? height;
 
-        _open = new RegionCaptureWindow(bitmap, x, y, w, h, folder);
-        _open.Show();
-        _open.Activate();
-        _open.Focus();
+            _open = new RegionCaptureWindow(bitmap, x, y, w, h, folder, returnFocus);
+            _open.Show();
+            _open.Activate();
+            _open.Focus();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _launching, 0);
+        }
+    }
+
+    /// <summary>
+    /// Вернуть фокус окну, из которого вызвали выделение. Эксклюзивная fullscreen-
+    /// игра при появлении внешнего WPF-окна неизбежно теряет фокус, но после закрытия
+    /// overlay она должна сама вернуться из свёрнутого/оконного состояния.
+    /// </summary>
+    private void RestorePreviousWindow()
+    {
+        if (_returnFocus == IntPtr.Zero || !NativeMethods.IsWindow(_returnFocus)) return;
+
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, () =>
+        {
+            try
+            {
+                if (!NativeMethods.IsWindow(_returnFocus)) return;
+                if (NativeMethods.IsIconic(_returnFocus))
+                    NativeMethods.ShowWindow(_returnFocus, NativeMethods.SW_RESTORE);
+                if (!NativeMethods.SetForegroundWindow(_returnFocus))
+                    Log.Warn("Screenshot", "Windows не разрешила вернуть фокус предыдущему окну");
+            }
+            catch (Exception ex) { Log.Warn("Screenshot", $"Возврат фокуса: {ex.Message}"); }
+        });
     }
 
     private void PlaceOverMonitor()

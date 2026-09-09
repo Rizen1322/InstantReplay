@@ -44,6 +44,12 @@ public sealed class HotkeyService : IDisposable
     private readonly Dictionary<(uint vk, bool ctrl, bool shift, bool alt, bool win), HotkeyAction> _map = new();
     private readonly object _mapLock = new();
 
+    // WH_KEYBOARD_LL присылает WM_KEYDOWN снова и снова, пока клавишу держат.
+    // Для действия нужен только переход «отпущена → нажата»; отдельно запоминаем
+    // съеденные клавиши, чтобы не отдавать игре их повторы и одинокий KEYUP.
+    private readonly HashSet<uint> _keysDown = [];
+    private readonly HashSet<uint> _consumedKeys = [];
+
     public HotkeyService(SettingsManager settings)
     {
         _settings = settings;
@@ -98,14 +104,33 @@ public sealed class HotkeyService : IDisposable
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && !Suspended && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
+        if (nCode >= 0)
         {
             // Читаем ТОЛЬКО vkCode — он лежит первым полем KBDLLHOOKSTRUCT.
             // Разбор всей структуры через PtrToStructure давал объект в куче на
             // каждое нажатие клавиши, а этот колбэк обязан возвращаться за <1 мс.
             uint vk = (uint)Marshal.ReadInt32(lParam);
 
-            if (TryFire(vk)) return new IntPtr(1); // комбинацию съедаем, в игру она не попадёт
+            if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
+            {
+                _keysDown.Remove(vk);
+                if (_consumedKeys.Remove(vk)) return new IntPtr(1);
+            }
+            else if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
+            {
+                // Уже нажата — это автоповтор Windows. Если первый DOWN был нашим,
+                // повтор тоже съедаем, но действие второй раз не запускаем.
+                if (!_keysDown.Add(vk))
+                    return _consumedKeys.Contains(vk)
+                        ? new IntPtr(1)
+                        : CallNextHookEx(_hook, nCode, wParam, lParam);
+
+                if (!Suspended && TryFire(vk))
+                {
+                    _consumedKeys.Add(vk);
+                    return new IntPtr(1); // комбинацию съедаем, в игру она не попадёт
+                }
+            }
         }
         return CallNextHookEx(_hook, nCode, wParam, lParam);
     }
