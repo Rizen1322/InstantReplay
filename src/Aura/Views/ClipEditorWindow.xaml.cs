@@ -28,8 +28,8 @@ public partial class ClipEditorWindow : Window
     private LibVLC? _libVlc;
     private VlcMediaPlayer? _player;
     private VlcMedia? _media;
-    private VlcMediaPlayer? _secondAudioPlayer;
-    private VlcMedia? _secondAudioMedia;
+    private VlcMediaPlayer? _mixedAudioPlayer;
+    private VlcMedia? _mixedAudioMedia;
     private int[] _audioTrackIds = [];
     // -1 = свести все дорожки, 0..N = оставить одну дорожку.
     private int _audioSelection = -1;
@@ -37,8 +37,13 @@ public partial class ClipEditorWindow : Window
     private double _startSeconds;
     private double _endSeconds;
     private bool _pauseOnFirstFrame = true;
+    private bool _isMuted;
     private bool _disposed;
+    private long _lastAudioSyncTick;
     private CancellationTokenSource? _exportCancellation;
+    private readonly CancellationTokenSource _previewMixCancellation = new();
+    private Task? _mixGenerationTask;
+    private string? _mixedAudioPath;
     private string? _ffmpeg;
 
     private ClipEditorWindow(ClipItem item)
@@ -170,13 +175,13 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying)
         {
             _player.Pause();
-            _secondAudioPlayer?.Pause();
+            _mixedAudioPlayer?.Pause();
             return;
         }
         double position = CurrentSeconds;
         if (position < _startSeconds || position >= _endSeconds - 0.02) Seek(_startSeconds);
         _player.Play();
-        if (_audioSelection < 0 && _secondAudioPlayer is not null) _secondAudioPlayer.Play();
+        if (_audioSelection < 0 && _mixedAudioPlayer is not null) _mixedAudioPlayer.Play();
     }
 
     private void Timer_Tick(object? sender, EventArgs e)
@@ -186,13 +191,18 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying && position >= _endSeconds)
         {
             _player.Pause();
-            _secondAudioPlayer?.Pause();
+            _mixedAudioPlayer?.Pause();
             Seek(_endSeconds);
             return;
         }
-        if (_audioSelection < 0 && _secondAudioPlayer?.IsPlaying == true &&
-            Math.Abs(_secondAudioPlayer.Time - _player.Time) > 90)
-            _secondAudioPlayer.Time = _player.Time;
+        long tick = Environment.TickCount64;
+        if (_audioSelection < 0 && _mixedAudioPlayer?.IsPlaying == true &&
+            tick - _lastAudioSyncTick >= 500)
+        {
+            _lastAudioSyncTick = tick;
+            if (Math.Abs(_mixedAudioPlayer.Time - _player.Time) > 120)
+                _mixedAudioPlayer.Time = _player.Time;
+        }
         UpdatePlayhead(position);
         UpdatePreviewTime(position);
     }
@@ -206,7 +216,7 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying)
         {
             _player.Pause();
-            _secondAudioPlayer?.Pause();
+            _mixedAudioPlayer?.Pause();
         }
         if (delta > TimeSpan.Zero)
         {
@@ -226,7 +236,7 @@ public partial class ClipEditorWindow : Window
         if (_player is null || _durationSeconds <= 0) return;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
         _player.Time = (long)Math.Round(seconds * 1000);
-        if (_secondAudioPlayer is not null) _secondAudioPlayer.Time = _player.Time;
+        if (_mixedAudioPlayer is not null) _mixedAudioPlayer.Time = _player.Time;
         UpdatePlayhead(seconds);
         UpdatePreviewTime(seconds);
     }
@@ -234,9 +244,8 @@ public partial class ClipEditorWindow : Window
     private void Mute_Click(object sender, RoutedEventArgs e)
     {
         if (_player is null) return;
-        _player.Mute = !_player.Mute;
-        if (_secondAudioPlayer is not null) _secondAudioPlayer.Mute = _player.Mute;
-        MuteButton.Content = _player.Mute ? "Звук: выкл" : "Звук: вкл";
+        _isMuted = !_isMuted;
+        ApplyMuteState();
     }
 
     private void ConfigureAudioChoices()
@@ -264,63 +273,109 @@ public partial class ClipEditorWindow : Window
         AudioBox.SelectedIndex = 0;
     }
 
-    private void AudioTrack_Changed(object sender, SelectionChangedEventArgs e)
+    private async void AudioTrack_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_player is null || AudioBox.SelectedItem is not ComboBoxItem { Tag: int selected }) return;
         _audioSelection = selected;
 
         if (selected >= 0)
         {
-            StopSecondAudio();
+            StopMixedAudio();
             if (selected < _audioTrackIds.Length) _player.SetAudioTrack(_audioTrackIds[selected]);
             return;
         }
 
-        // Один MediaPlayer LibVLC штатно включает только одну дорожку. Для режима
-        // «вместе» запускаем вторую аудиокопию того же файла без видео и
-        // держим её позицию синхронной с основной.
-        if (_audioTrackIds.Length > 1)
+        // LibVLC умеет проигрывать только одну встроенную дорожку за раз. Поэтому
+        // ffmpeg один раз в фоне сводит звук в маленький временный M4A. Второй
+        // плеер больше не открывает исходный HEVC и не может уронить видеодрайвер.
+        if (_audioTrackIds.Length > 1 && _ffmpeg is not null)
+        {
+            AudioBox.IsEnabled = false;
+            ExportStatus.Text = "Готовлю звук игры + микрофона…";
+            try
+            {
+                await EnsureMixedAudioAsync();
+                if (!_disposed && _audioSelection < 0)
+                {
+                    _player.SetAudioTrack(-1);
+                    StartMixedAudio();
+                    ExportStatus.Text = "Готово к экспорту";
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                Log.Warn("Editor", $"Предпросмотр общего звука: {ex.Message}");
+                if (!_disposed)
+                {
+                    _player.SetAudioTrack(_audioTrackIds[0]);
+                    ExportStatus.Text = "Предпросмотр общего звука недоступен";
+                    ExportHint.Text = "Экспорт всё равно сведёт игру и микрофон.";
+                }
+            }
+            finally
+            {
+                if (!_disposed && _exportCancellation is null) AudioBox.IsEnabled = true;
+            }
+        }
+        else if (_audioTrackIds.Length > 1)
         {
             _player.SetAudioTrack(_audioTrackIds[0]);
-            StartSecondAudio();
+            ExportStatus.Text = "В предпросмотре звучит игра";
+            ExportHint.Text = "При экспорте игра и микрофон будут сведены вместе.";
         }
     }
 
-    private void StartSecondAudio()
+    private Task EnsureMixedAudioAsync()
     {
-        if (_libVlc is null || _player is null || _audioTrackIds.Length < 2) return;
-        if (_secondAudioPlayer is null)
+        if (_ffmpeg is null || _audioTrackIds.Length < 2) return Task.CompletedTask;
+        if (_mixGenerationTask is not null) return _mixGenerationTask;
+        _mixedAudioPath = Path.Combine(Path.GetTempPath(), $"aura-editor-audio-{Guid.NewGuid():N}.m4a");
+        _mixGenerationTask = Ffmpeg.CreateMixedAudioPreviewAsync(
+            _ffmpeg, _item.FullPath, _audioTrackIds.Length, _mixedAudioPath, _previewMixCancellation.Token);
+        return _mixGenerationTask;
+    }
+
+    private void StartMixedAudio()
+    {
+        if (_libVlc is null || _player is null || _mixedAudioPath is null || !File.Exists(_mixedAudioPath)) return;
+        if (_mixedAudioPlayer is null)
         {
-            _secondAudioPlayer = new VlcMediaPlayer(_libVlc);
-            _secondAudioPlayer.Mute = _player.Mute;
-            _secondAudioPlayer.Playing += (_, _) =>
+            _mixedAudioPlayer = new VlcMediaPlayer(_libVlc);
+            _mixedAudioPlayer.Playing += (_, _) => Dispatcher.BeginInvoke(() =>
             {
-                _secondAudioPlayer.SetVideoTrack(-1);
-                _secondAudioPlayer.SetAudioTrack(_audioTrackIds[1]);
-                _secondAudioPlayer.Time = _player.Time;
-                if (!_player.IsPlaying) _secondAudioPlayer.Pause();
-            };
-            _secondAudioMedia = new VlcMedia(_libVlc, new Uri(_item.FullPath));
-            _secondAudioMedia.AddOption(":no-video");
+                if (_disposed || _mixedAudioPlayer is null || _player is null) return;
+                _mixedAudioPlayer.Time = _player.Time;
+                ApplyMuteState();
+                if (!_player.IsPlaying) _mixedAudioPlayer.Pause();
+            });
+            _mixedAudioMedia = new VlcMedia(_libVlc, new Uri(_mixedAudioPath));
         }
 
-        if (!_secondAudioPlayer.IsPlaying && _secondAudioMedia is not null)
+        if (!_mixedAudioPlayer.IsPlaying && _mixedAudioMedia is not null)
         {
-            var player = _secondAudioPlayer;
-            var media = _secondAudioMedia;
+            var player = _mixedAudioPlayer;
+            var media = _mixedAudioMedia;
             _ = Task.Run(() =>
             {
                 try { if (!_disposed) player.Play(media); }
-                catch (Exception ex) { Log.Warn("Editor", $"Вторая аудиодорожка: {ex.Message}"); }
+                catch (Exception ex) { Log.Warn("Editor", $"Общий звук: {ex.Message}"); }
             });
         }
     }
 
-    private void StopSecondAudio()
+    private void StopMixedAudio()
     {
-        if (_secondAudioPlayer is null) return;
-        _secondAudioPlayer.Pause();
-        _secondAudioPlayer.SetAudioTrack(-1);
+        _mixedAudioPlayer?.Pause();
+    }
+
+    private void ApplyMuteState()
+    {
+        // У LibVLC свойство Mute на части Windows-систем возвращает устаревшее
+        // состояние. Громкость задаём явно и храним истину в окне редактора.
+        if (_player is not null) _player.Volume = _isMuted ? 0 : 100;
+        if (_mixedAudioPlayer is not null) _mixedAudioPlayer.Volume = _isMuted ? 0 : 100;
+        MuteButton.Content = _isMuted ? "Звук выключен" : "Звук включён";
     }
 
     private void Timeline_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateTimelineVisuals();
@@ -439,7 +494,7 @@ public partial class ClipEditorWindow : Window
     {
         if (_exportCancellation is not null || _durationSeconds <= 0) return;
         _player?.Pause();
-        _secondAudioPlayer?.Pause();
+        _mixedAudioPlayer?.Pause();
         _exportCancellation = new CancellationTokenSource();
         SetExporting(true, fast);
         ExportStatus.Text = "Экспортирую фрагмент…";
@@ -502,14 +557,18 @@ public partial class ClipEditorWindow : Window
         _disposed = true;
         _timer.Stop();
         _exportCancellation?.Cancel();
+        _previewMixCancellation.Cancel();
         Preview.MediaPlayer = null;
         try { _player?.Stop(); } catch { }
-        try { _secondAudioPlayer?.Stop(); } catch { }
-        _secondAudioMedia?.Dispose();
-        _secondAudioPlayer?.Dispose();
+        try { _mixedAudioPlayer?.Stop(); } catch { }
+        _mixedAudioMedia?.Dispose();
+        _mixedAudioPlayer?.Dispose();
         _media?.Dispose();
         _player?.Dispose();
         _libVlc?.Dispose();
+        _previewMixCancellation.Dispose();
+        if (_mixedAudioPath is not null)
+            try { File.Delete(_mixedAudioPath); } catch { }
     }
 
     private void CancelExport_Click(object sender, RoutedEventArgs e) => _exportCancellation?.Cancel();

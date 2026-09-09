@@ -230,6 +230,69 @@ public static class Ffmpeg
         }
     }
 
+    /// <summary>
+    /// Создать лёгкую аудиокопию для предпросмотра режима «все дорожки».
+    /// Основной HEVC-файл при этом продолжает декодировать только видеоплеер:
+    /// повторное открытие того же видео двумя экземплярами LibVLC нестабильно на
+    /// некоторых драйверах и может уронить весь процесс нативным исключением.
+    /// </summary>
+    public static async Task CreateMixedAudioPreviewAsync(
+        string ffmpeg, string input, int audioTrackCount, string output, CancellationToken ct = default)
+    {
+        if (audioTrackCount < 2) throw new ArgumentOutOfRangeException(nameof(audioTrackCount));
+
+        var psi = new ProcessStartInfo(ffmpeg)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true
+        };
+        string inputs = string.Concat(Enumerable.Range(0, audioTrackCount).Select(i => $"[0:a:{i}]"));
+        psi.ArgumentList.Add("-y");
+        psi.ArgumentList.Add("-hide_banner");
+        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
+        psi.ArgumentList.Add("-filter_complex");
+        psi.ArgumentList.Add($"{inputs}amix=inputs={audioTrackCount}:duration=longest:normalize=0[aout]");
+        psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[aout]");
+        psi.ArgumentList.Add("-vn");
+        psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
+        psi.ArgumentList.Add("-b:a"); psi.ArgumentList.Add("192k");
+        psi.ArgumentList.Add("-movflags"); psi.ArgumentList.Add("+faststart");
+        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("ipod");
+        psi.ArgumentList.Add(output);
+
+        Log.Info("Editor", $"Готовлю общий звук для {Path.GetFileName(input)}");
+        try
+        {
+            using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
+            string errors;
+            try
+            {
+                errors = await process.StandardError.ReadToEndAsync(ct);
+                await process.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
+                throw;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                string tail = string.Join(" ", errors.Split('\n').TakeLast(4)).Trim();
+                throw new InvalidOperationException($"не удалось свести звук: {tail}");
+            }
+            if (!File.Exists(output) || new FileInfo(output).Length == 0)
+                throw new InvalidOperationException("не удалось создать общий звук");
+        }
+        catch
+        {
+            try { File.Delete(output); } catch { }
+            throw;
+        }
+    }
+
     private static string Seconds(TimeSpan value) =>
         value.TotalSeconds.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
 }
