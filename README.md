@@ -17,7 +17,7 @@ dotnet build -c Release -r win-x64 src/Aura/Aura.csproj
 
 Windows App SDK больше не нужен: WPF даёт интерфейс, а проекции WinRT
 (`Windows.Graphics.Capture`, `Windows.Storage`) приходят из самого TFM
-`net9.0-windows10.0.22621.0`.
+`net10.0-windows10.0.22621.0`.
 
 Для отладки вёрстки без запроса прав администратора собирается вариант с обычным манифестом,
 и можно открыть приложение сразу на нужном разделе:
@@ -174,8 +174,8 @@ SinkWriter, видео passthrough (remux без перекодирования)
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 ```
 
-Тест-проект (`net9.0`, xUnit) компилирует **исходники приложения напрямую** (`Compile Include`),
-а не ссылается на него: сам проект — WPF-приложение под `net9.0-windows10.x`, и
+Тест-проект (`net10.0`, xUnit) компилирует **исходники приложения напрямую** (`Compile Include`),
+а не ссылается на него: сам проект — WPF-приложение под `net10.0-windows10.x`, и
 `ProjectReference` притащил бы в тестовый хост весь графический стек. Поэтому покрывается
 логика без зависимостей от UI: `HotkeyParser`, `HotkeyConflicts`, `ClipIndex`, `FileNaming`,
 `ByteSize`, `ClipGrouping`, `ReplayBuffers`, `Log`, `ArenaMediaBuffer`, `UpdateVerification`.

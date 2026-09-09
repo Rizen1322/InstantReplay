@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Aura.Core.Logging;
+using Aura.Core.Storage;
 
 namespace Aura.Core.Tools;
 
@@ -69,9 +70,11 @@ public static class Ffmpeg
             _ => ""
         };
 
-        string output = Path.Combine(
+        string desiredOutput = Path.Combine(
             Path.GetDirectoryName(input)!,
             Path.GetFileNameWithoutExtension(input) + $" ({targetMegabytes} МБ).mp4");
+        string output = FileNaming.NextAvailablePath(desiredOutput, File.Exists);
+        string partPath = output + ".part";
 
         var psi = new ProcessStartInfo(ffmpeg)
         {
@@ -79,7 +82,7 @@ public static class Ffmpeg
             CreateNoWindow = true,
             RedirectStandardError = true
         };
-        psi.ArgumentList.Add("-y");
+        psi.ArgumentList.Add("-n");
         psi.ArgumentList.Add("-hide_banner");
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         if (scale.Length > 0) { psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(scale); }
@@ -92,21 +95,47 @@ public static class Ffmpeg
         psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
         psi.ArgumentList.Add("-b:a"); psi.ArgumentList.Add($"{audioKbps}k");
         psi.ArgumentList.Add("-movflags"); psi.ArgumentList.Add("+faststart");
-        psi.ArgumentList.Add(output);
+        // У временного файла расширение .part, поэтому контейнер задаём явно.
+        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mp4");
+        psi.ArgumentList.Add(partPath);
 
         Log.Info("Ffmpeg", $"Сжатие {Path.GetFileName(input)} → {videoKbps} кбит/с {scale}");
 
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
-        string errors = await process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
-
-        if (process.ExitCode != 0)
+        try
         {
-            try { File.Delete(output); } catch { }
-            string tail = string.Join(" ", errors.Split('\n').TakeLast(3)).Trim();
-            throw new InvalidOperationException($"ffmpeg вернул ошибку: {tail}");
-        }
+            using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
+            string errors;
+            try
+            {
+                errors = await process.StandardError.ReadToEndAsync(ct);
+                await process.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
+                throw;
+            }
 
-        return output;
+            if (process.ExitCode != 0)
+            {
+                string tail = string.Join(" ", errors.Split('\n').TakeLast(3)).Trim();
+                throw new InvalidOperationException($"ffmpeg вернул ошибку: {tail}");
+            }
+
+            long bytes = new FileInfo(partPath).Length;
+            long limitBytes = targetMegabytes * 1024L * 1024L;
+            if (bytes > limitBytes)
+                throw new InvalidOperationException(
+                    $"результат получился {ByteSize.Format(bytes)}, больше лимита {targetMegabytes} МБ");
+
+            File.Move(partPath, output);
+            return output;
+        }
+        catch
+        {
+            try { File.Delete(partPath); } catch { }
+            throw;
+        }
     }
 }

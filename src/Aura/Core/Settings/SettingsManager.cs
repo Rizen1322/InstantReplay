@@ -52,6 +52,7 @@ public sealed class SettingsManager
                 if (File.Exists(FilePath))
                 {
                     Current = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOpts) ?? new();
+                    Current.Normalize();
 
                     // Discord поднял лимит вложения с 10 МБ до 20. Настройку никто руками не
                     // задаёт — поля в интерфейсе нет, — так что записанная старая десятка это
@@ -65,7 +66,13 @@ public sealed class SettingsManager
                 Log.Error("Settings", $"Не удалось прочитать settings.json: {ex.Message}. Использую значения по умолчанию.");
                 Current = new();
             }
-            Directory.CreateDirectory(Current.SaveRootPath);
+            try { Directory.CreateDirectory(Current.SaveRootPath); }
+            catch (Exception ex)
+            {
+                Log.Error("Settings", $"Папка записей недоступна ({ex.Message}) — возвращаю стандартную.");
+                Current.SaveRootPath = new AppSettings().SaveRootPath;
+                Directory.CreateDirectory(Current.SaveRootPath);
+            }
         }
     }
 
@@ -76,8 +83,9 @@ public sealed class SettingsManager
         {
             Current = new AppSettings();
             Directory.CreateDirectory(Current.SaveRootPath);
+            SaveLocked();
         }
-        Save("");
+        Changed?.Invoke("");
     }
 
     /// <summary>
@@ -89,39 +97,48 @@ public sealed class SettingsManager
     /// </summary>
     public void Update(Action<AppSettings> change, string changedGroup = "")
     {
-        lock (_sync) change(Current);
-        Save(changedGroup);
+        lock (_sync)
+        {
+            change(Current);
+            SaveLocked();
+        }
+        Changed?.Invoke(changedGroup);
     }
 
     public void Save(string changedGroup = "")
     {
         lock (_sync)
         {
-            string tmp = TempPath;
-            try
-            {
-                Directory.CreateDirectory(Dir);
-                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Current, JsonOpts));
-
-                using (var file = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    file.Write(bytes);
-                    file.Flush(flushToDisk: true);   // FlushFileBuffers: данные реально на диске
-                }
-
-                if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
-                else File.Move(tmp, FilePath);
-            }
-            catch (Exception ex)
-            {
-                Log.Error("Settings", $"Не удалось сохранить настройки: {ex.Message}");
-                // Недописанный временный файл рядом с настройками никому не нужен
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-            }
+            SaveLocked();
         }
 
         // Обработчики зовём ВНЕ лока: на "video"/"audio"/"replay" движок целиком
         // пересобирает конвейер, и держать на этом лок настроек незачем и опасно.
         Changed?.Invoke(changedGroup);
+    }
+
+    private void SaveLocked()
+    {
+        string tmp = TempPath;
+        try
+        {
+            Current.Normalize();
+            Directory.CreateDirectory(Dir);
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Current, JsonOpts));
+
+            using (var file = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                file.Write(bytes);
+                file.Flush(flushToDisk: true);
+            }
+
+            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
+            else File.Move(tmp, FilePath);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Settings", $"Не удалось сохранить настройки: {ex.Message}");
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+        }
     }
 }

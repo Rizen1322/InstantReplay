@@ -174,8 +174,7 @@ public partial class MainWindow : Window
     /// <summary>Сохраняем в конце перетаскивания, а не на каждый пиксель движения.</summary>
     private void SideGrip_Done(object sender, DragCompletedEventArgs e)
     {
-        Services.Settings.Current.SidebarWidth = Side.Width;
-        Services.Settings.Save("ui");
+        Services.Settings.Update(s => s.SidebarWidth = Side.Width, "ui");
     }
 
     // ---------------- Навигация ----------------

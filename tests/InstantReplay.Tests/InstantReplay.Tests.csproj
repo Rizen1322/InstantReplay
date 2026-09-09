@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -21,7 +21,7 @@
 
   <!--
     Файлы приложения компилируются в тест ПРЯМОЙ ССЫЛКОЙ НА ИСХОДНИКИ, а не через
-    ProjectReference: сам Aura — WPF-приложение под net9.0-windows10.x, и ссылка на
+    ProjectReference: сам Aura — WPF-приложение под net10.0-windows10.x, и ссылка на
     него притащила бы в тестовый хост весь графический стек.
     Сюда попадает только логика без UI и без графики — её и проверяем.
   -->

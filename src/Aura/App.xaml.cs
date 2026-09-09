@@ -230,8 +230,7 @@ public partial class App : Application
         catch { }
 
         Log.Warn("App", $"{settings.Codec} нельзя сохранить в MP4 на этой Windows — переключаю на {fallback}");
-        settings.Codec = fallback;
-        Services.Settings.Save("video");
+        Services.Settings.Update(s => s.Codec = fallback, "video");
         Services.Notifications.Show(NotificationKind.Warning, "AV1 здесь не сохраняется",
                                     $"Переключил на {(fallback == Core.Settings.VideoCodec.HEVC ? "HEVC" : "H.264")}");
     }
@@ -424,8 +423,7 @@ public partial class App : Application
 
         if (last is null)
         {
-            s.LastSeenVersion = current.ToString(3);
-            Services.Settings.Save("app");
+            Services.Settings.Update(x => x.LastSeenVersion = current.ToString(3), "app");
             return;
         }
         if (last >= current) return;
@@ -433,8 +431,7 @@ public partial class App : Application
         var entries = Core.SystemIntegration.Changelog.Between(last, current);
         if (entries.Count == 0)
         {
-            s.LastSeenVersion = current.ToString(3);
-            Services.Settings.Save("app");
+            Services.Settings.Update(x => x.LastSeenVersion = current.ToString(3), "app");
             return;
         }
 
@@ -468,8 +465,7 @@ public partial class App : Application
 
         // Отметку ставим после показа: если диалог не открылся, человек не должен
         // потерять список из-за нашей ошибки.
-        Services.Settings.Current.LastSeenVersion = current.ToString(3);
-        Services.Settings.Save("app");
+        Services.Settings.Update(s => s.LastSeenVersion = current.ToString(3), "app");
     }
 
     /// <summary>
@@ -516,10 +512,8 @@ public partial class App : Application
         Services.Notifications.Show(NotificationKind.Warning, "Windows рисует рамку записи",
             "Разрешите захват без рамки в параметрах конфиденциальности");
 
-        var s = Services.Settings.Current;
-        if (s.BorderlessPermissionAsked) return;
-        s.BorderlessPermissionAsked = true;
-        Services.Settings.Save("system");
+        if (Services.Settings.Current.BorderlessPermissionAsked) return;
+        Services.Settings.Update(s => s.BorderlessPermissionAsked = true, "system");
         Core.Capture.CaptureAccess.OpenPermissionSettings();
     }
 

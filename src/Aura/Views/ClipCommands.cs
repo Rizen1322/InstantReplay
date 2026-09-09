@@ -194,8 +194,7 @@ public static class ClipCommands
         {
             exe = FindLosslessCut() ?? AskForLosslessCut();
             if (exe is null) return;
-            Services.Settings.Current.LosslessCutPath = exe;
-            Services.Settings.Save("tools");
+            Services.Settings.Update(s => s.LosslessCutPath = exe, "tools");
         }
 
         try
@@ -337,8 +336,7 @@ public static class ClipCommands
             var dialog = new Microsoft.Win32.OpenFileDialog { Title = "ffmpeg.exe", Filter = "ffmpeg|ffmpeg.exe" };
             if (dialog.ShowDialog() != true) return;
             ffmpeg = dialog.FileName;
-            settings.FfmpegPath = ffmpeg;
-            Services.Settings.Save("tools");
+            Services.Settings.Update(s => s.FfmpegPath = ffmpeg, "tools");
         }
 
         var duration = item.Duration ?? await ReadDurationAsync(item.FullPath);

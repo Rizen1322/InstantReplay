@@ -36,6 +36,20 @@ public class AuraArenaBufferTests
     }
 
     [Fact]
+    public void РасчётДлиныНеОбещаетБольшеЧемВмещаетАрена()
+    {
+        const long bitrate = 80 * Megabit;
+        int maximumSeconds = ReplayVideoBuffer.MaximumDurationSeconds(bitrate);
+        long capacity = ReplayVideoBuffer.AllocatedCapacityBytes(bitrate, maximumSeconds);
+
+        Assert.InRange(capacity, 1, ReplayVideoBuffer.MaximumCapacityBytes);
+        Assert.True(ReplayVideoBuffer.RequiredCapacityBytes(bitrate, maximumSeconds)
+                    <= ReplayVideoBuffer.MaximumCapacityBytes);
+        Assert.True(ReplayVideoBuffer.RequiredCapacityBytes(bitrate, maximumSeconds + 1)
+                    > ReplayVideoBuffer.MaximumCapacityBytes);
+    }
+
+    [Fact]
     public void Snapshot_returns_exactly_what_was_written()
     {
         var buffer = Make(seconds: 5, bitrateBps: 40 * Megabit);

@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Aura.Controls;
+using Aura.Core.Buffering;
 using Aura.Core.Capture;
 using Aura.Core.Encoding;
 using Aura.Core.Engine;
@@ -24,6 +25,7 @@ public partial class CapturePage : PageBase
     private bool _loading;
     private bool _dirty;
     private List<VideoCodec> _supported = [VideoCodec.H264, VideoCodec.HEVC];
+    private VideoCodec _selectedCodec;
 
     public override string Title => "Захват";
 
@@ -171,7 +173,7 @@ public partial class CapturePage : PageBase
                 Size = 16,
                 Foreground = (Brush)FindResource("AccentTxBrush"),
                 VerticalAlignment = VerticalAlignment.Center,
-                Visibility = Services.Settings.Current.Codec == codec ? Visibility.Visible : Visibility.Hidden
+                Visibility = _selectedCodec == codec ? Visibility.Visible : Visibility.Hidden
             };
             row.Children.Add(check);
 
@@ -194,6 +196,7 @@ public partial class CapturePage : PageBase
     {
         _loading = true;
         var s = Services.Settings.Current;
+        _selectedCodec = s.Codec;
 
         Select(ResolutionSeg, s.VerticalResolution.ToString());
         Select(FpsSeg, s.Fps.ToString());
@@ -271,31 +274,27 @@ public partial class CapturePage : PageBase
 
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
-        var s = Services.Settings.Current;
-
-        s.VerticalResolution = int.Parse((string)((ListBoxItem)ResolutionSeg.SelectedItem).Tag);
-        s.Fps = int.Parse((string)((ListBoxItem)FpsSeg.SelectedItem).Tag);
-        s.BitrateMbps = (int)Bitrate.Value;
-        s.ReplayLengthSeconds = ParseLength();
-        s.CaptureGameAudio = GameAudio.IsChecked == true;
-        s.CaptureMicrophone = MicAudio.IsChecked == true;
-        s.MicNoiseSuppression = NoiseGate.IsChecked == true;
-        s.MicNoiseGateDb = (float)Gate.Value;
-        s.RecordCursor = CursorSwitch.IsChecked == true;
-        s.TrackMode = Enum.Parse<AudioTrackMode>((string)((ComboBoxItem)TrackMode.SelectedItem).Tag);
-        s.RenderDeviceId = (string?)((ComboBoxItem)RenderDevice.SelectedItem)?.Tag;
-        s.CaptureDeviceId = (string?)((ComboBoxItem)CaptureDevice.SelectedItem)?.Tag;
-        s.MonitorIndex = (int)((ComboBoxItem)Monitor.SelectedItem).Tag;
-
-        Services.Settings.Save("video");
-        SetDirty(false);
-
-        // Конвейер пересобирается только если он работает
-        if (Services.Engine.State != EngineState.Stopped)
+        int replayLength = ParseLength();
+        Services.Settings.Update(s =>
         {
-            Services.Engine.Stop();
-            App.SafeStartEngine();
-        }
+            s.VerticalResolution = int.Parse((string)((ListBoxItem)ResolutionSeg.SelectedItem).Tag);
+            s.Fps = int.Parse((string)((ListBoxItem)FpsSeg.SelectedItem).Tag);
+            s.BitrateMbps = (int)Bitrate.Value;
+            s.Codec = _selectedCodec;
+            s.ReplayLengthSeconds = replayLength;
+            s.CaptureGameAudio = GameAudio.IsChecked == true;
+            s.CaptureMicrophone = MicAudio.IsChecked == true;
+            s.MicNoiseSuppression = NoiseGate.IsChecked == true;
+            s.MicNoiseGateDb = (float)Gate.Value;
+            s.RecordCursor = CursorSwitch.IsChecked == true;
+            s.TrackMode = Enum.Parse<AudioTrackMode>((string)((ComboBoxItem)TrackMode.SelectedItem).Tag);
+            s.RenderDeviceId = (string?)((ComboBoxItem)RenderDevice.SelectedItem)?.Tag;
+            s.CaptureDeviceId = (string?)((ComboBoxItem)CaptureDevice.SelectedItem)?.Tag;
+            s.MonitorIndex = (int)((ComboBoxItem)Monitor.SelectedItem).Tag;
+        }, "video");
+        CustomLength.Text = Services.Settings.Current.ReplayLengthSeconds.ToString();
+        HighlightLength(Services.Settings.Current.ReplayLengthSeconds);
+        SetDirty(false);
     }
 
     private void Revert_Click(object sender, RoutedEventArgs e) => LoadFromSettings();
@@ -340,16 +339,14 @@ public partial class CapturePage : PageBase
     {
         UpdateGateRow();
         if (_loading) return;
-        Services.Settings.Current.MicNoiseSuppression = NoiseGate.IsChecked == true;
-        Services.Settings.Save("audio-live");
+        Services.Settings.Update(s => s.MicNoiseSuppression = NoiseGate.IsChecked == true, "audio-live");
     }
 
     private void Gate_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         GateValue.Text = $"−{Math.Abs((int)Gate.Value)} дБ";
         if (_loading) return;
-        Services.Settings.Current.MicNoiseGateDb = (float)Gate.Value;
-        Services.Settings.Save("audio-live");
+        Services.Settings.Update(s => s.MicNoiseGateDb = (float)Gate.Value, "audio-live");
     }
 
     private void UpdateGateRow()
@@ -378,7 +375,7 @@ public partial class CapturePage : PageBase
     private void Codec_Click(object sender, RoutedEventArgs e)
     {
         if (((Button)sender).Tag is not VideoCodec codec) return;
-        Services.Settings.Current.Codec = codec;
+        _selectedCodec = codec;
         BuildCodecs();
         // Битрейт не трогаем: человек выбрал число сам или взял его из набора,
         // и подмена под другой кодек ломала бы подсветку набора без спроса.
@@ -419,7 +416,9 @@ public partial class CapturePage : PageBase
     private int ParseLength()
     {
         if (!int.TryParse(CustomLength.Text, out int seconds)) seconds = 180;
-        return Math.Clamp(seconds, 5, 1800);
+        int bitrate = Math.Max(1, (int)Bitrate.Value) * 1_000_000;
+        int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate));
+        return Math.Clamp(seconds, 5, supported);
     }
 
     private static void Select(Segmented segmented, string tag)
@@ -497,7 +496,7 @@ public partial class CapturePage : PageBase
     /// <summary>Границы ползунка. Совпадают с Minimum/Maximum в разметке.</summary>
     private const int MinBitrate = 4, MaxBitrate = 80;
 
-    private static VideoCodec CurrentCodec() => Services.Settings.Current.Codec;
+    private VideoCodec CurrentCodec() => _selectedCodec;
 
     /// <summary>Какому уровню соответствует текущий битрейт; null — ни одному.</summary>
     private string? QualityForCurrent()
@@ -553,9 +552,12 @@ public partial class CapturePage : PageBase
         // блоков по 16 МБ. Показываем именно занимаемое, а не полезное — иначе цифра
         // в настройках расходится с тем, что видно в диспетчере задач.
         int seconds = ParseLength();
-        double wanted = (int)Bitrate.Value * 0.125 * (seconds + 15) * 1.05 + 64;
-        double megabytes = Math.Ceiling(Math.Max(wanted, 16) / 16) * 16;
-        RamEstimate.Text = $"≈ {megabytes:0} МБ RAM";
+        long bitrate = Math.Max(1, (int)Bitrate.Value) * 1_000_000L;
+        long bytes = ReplayVideoBuffer.AllocatedCapacityBytes(bitrate, seconds);
+        int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate));
+        RamEstimate.Text = seconds >= supported
+            ? $"≈ {bytes / (1024 * 1024)} МБ RAM · максимум {LengthWords(supported)}"
+            : $"≈ {bytes / (1024 * 1024)} МБ RAM";
     }
 
     private void ShowLevels()

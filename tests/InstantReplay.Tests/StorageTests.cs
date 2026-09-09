@@ -81,6 +81,18 @@ public class FileNamingTests
 
         Assert.Equal(Path.Combine(@"C:\Videos", "CS2 (3).mp4"), path);
     }
+
+    [Fact]
+    public void НезавершённыйФайлТожеРезервируетИмя()
+    {
+        string desired = Path.Combine(@"C:\Videos", "CS2.mp4");
+        var taken = new HashSet<string> { desired + ".part" };
+
+        string path = FileNaming.BuildPath(@"C:\Videos", groupByGame: false, "{game}", "CS2",
+                                           Moment, "1080p60", "replay", taken.Contains);
+
+        Assert.Equal(Path.Combine(@"C:\Videos", "CS2 (2).mp4"), path);
+    }
 }
 
 public class ClipIndexTests : IDisposable

@@ -39,8 +39,22 @@ public static class FileNaming
         string dir = groupByGame ? Path.Combine(root, game) : root;
 
         string path = Path.Combine(dir, name + ".mp4");
-        for (int i = 2; exists(path); i++)
-            path = Path.Combine(dir, $"{name} ({i}).mp4");
+        return NextAvailablePath(path, exists);
+    }
+
+    /// <summary>
+    /// Следующее свободное имя. Учитывается и соседний .part: финализирующийся
+    /// writer уже занял логическое имя, хотя итогового MP4 пока ещё нет.
+    /// </summary>
+    public static string NextAvailablePath(string desiredPath, Func<string, bool>? exists = null)
+    {
+        exists ??= File.Exists;
+        string dir = Path.GetDirectoryName(desiredPath) ?? "";
+        string name = Path.GetFileNameWithoutExtension(desiredPath);
+        string ext = Path.GetExtension(desiredPath);
+        string path = desiredPath;
+        for (int i = 2; exists(path) || exists(path + ".part"); i++)
+            path = Path.Combine(dir, $"{name} ({i}){ext}");
         return path;
     }
 }

@@ -22,17 +22,18 @@ public sealed class AudioCaptureSource : IDisposable
     public const int Channels = 2;
 
     private readonly IWaveIn _capture;
+    private readonly MMDevice _device;
     private readonly BufferedWaveProvider _buffered;
     private readonly ISampleProvider _pipeline;
 
     public AudioCaptureSource(bool loopback, string? deviceId)
     {
-        var enumerator = new MMDeviceEnumerator();
+        using var enumerator = new MMDeviceEnumerator();
         var flow = loopback ? DataFlow.Render : DataFlow.Capture;
-        MMDevice device = Resolve(enumerator, flow, deviceId, loopback);
+        _device = Resolve(enumerator, flow, deviceId, loopback);
 
-        _capture = loopback ? new WasapiLoopbackCapture(device)
-                            : new WasapiCapture(device) { ShareMode = AudioClientShareMode.Shared };
+        _capture = loopback ? new WasapiLoopbackCapture(_device)
+                            : new WasapiCapture(_device) { ShareMode = AudioClientShareMode.Shared };
 
         _buffered = new BufferedWaveProvider(_capture.WaveFormat)
         {
@@ -43,7 +44,11 @@ public sealed class AudioCaptureSource : IDisposable
         _capture.DataAvailable += (_, e) => _buffered.AddSamples(e.Buffer, 0, e.BytesRecorded);
         _capture.RecordingStopped += (_, e) =>
         {
-            if (e.Exception is not null) Log.Error("Audio", $"Источник остановился: {e.Exception.Message}");
+            if (e.Exception is not null)
+            {
+                Log.Error("Audio", $"Источник остановился: {e.Exception.Message}");
+                Failed?.Invoke(e.Exception);
+            }
         };
 
         // Приведение к 48k/stereo/float — включая устройства с 5.1 и 7.1,
@@ -51,7 +56,7 @@ public sealed class AudioCaptureSource : IDisposable
         _pipeline = AudioFormat.Normalize(_buffered.ToSampleProvider());
 
         _capture.StartRecording();
-        Log.Info("Audio", $"Источник запущен: {(loopback ? "loopback" : "mic")} {device.FriendlyName} ({_capture.WaveFormat})");
+        Log.Info("Audio", $"Источник запущен: {(loopback ? "loopback" : "mic")} {_device.FriendlyName} ({_capture.WaveFormat})");
         if (_capture.WaveFormat.Channels != Channels)
             Log.Info("Audio", $"Устройство отдаёт {_capture.WaveFormat.Channels} канала(ов) — свожу в стерео");
     }
@@ -62,6 +67,7 @@ public sealed class AudioCaptureSource : IDisposable
     /// об этом человеку, а не оставить его с немой записью.
     /// </summary>
     public string? FellBackTo { get; private set; }
+    public event Action<Exception>? Failed;
 
     /// <summary>
     /// Найти устройство по сохранённому идентификатору, а если его больше нет —
@@ -114,6 +120,7 @@ public sealed class AudioCaptureSource : IDisposable
     {
         try { _capture.StopRecording(); } catch { }
         _capture.Dispose();
+        _device.Dispose();
     }
 }
 
@@ -183,6 +190,7 @@ public sealed class AudioMixerEngine : IDisposable
             try
             {
                 _game = new AudioCaptureSource(loopback: true, renderDeviceId);
+                _game.Failed += _ => RestartSource(DataFlow.Render);
                 if (_game.FellBackTo is { } name)
                     Warning?.Invoke($"Выбранное устройство вывода не найдено — пишу звук с «{name}»");
             }
@@ -195,6 +203,7 @@ public sealed class AudioMixerEngine : IDisposable
             try
             {
                 _mic = new AudioCaptureSource(loopback: false, captureDeviceId);
+                _mic.Failed += _ => RestartSource(DataFlow.Capture);
                 if (_mic.FellBackTo is { } name)
                     Warning?.Invoke($"Выбранный микрофон не найден — пишу с «{name}»");
             }
@@ -240,37 +249,53 @@ public sealed class AudioMixerEngine : IDisposable
     }
 
     private readonly object _restartSync = new();
+    private int _generation;
 
     private void RestartSource(DataFlow flow)
     {
+        int generation = Volatile.Read(ref _generation);
         // Windows шлёт уведомление до того, как новое устройство готово принимать
         // клиентов, поэтому даём ему мгновение и уходим с потока уведомлений.
         Task.Run(() =>
         {
             Thread.Sleep(300);
-            lock (_restartSync)
+            AudioCaptureSource? replacement = null;
+            try
             {
-                if (!_running) return;
-                try
+                if (!_running || generation != Volatile.Read(ref _generation)) return;
+                replacement = new AudioCaptureSource(
+                    loopback: flow == DataFlow.Render,
+                    flow == DataFlow.Render ? _renderDeviceId : _captureDeviceId);
+                replacement.Failed += _ => RestartSource(flow);
+
+                AudioCaptureSource? old;
+                lock (_restartSync)
                 {
+                    if (!_running || generation != _generation)
+                    {
+                        replacement.Dispose();
+                        return;
+                    }
                     if (flow == DataFlow.Render)
                     {
-                        var replacement = new AudioCaptureSource(loopback: true, null);
-                        var old = _game;
+                        old = _game;
                         _game = replacement;
-                        old?.Dispose();
                         Log.Info("Audio", "Устройство вывода сменилось — источник звука игры пересоздан");
                     }
                     else
                     {
-                        var replacement = new AudioCaptureSource(loopback: false, null);
-                        var old = _mic;
+                        old = _mic;
                         _mic = replacement;
-                        old?.Dispose();
                         Log.Info("Audio", "Устройство ввода сменилось — микрофон пересоздан");
                     }
                 }
-                catch (Exception ex) { Log.Error("Audio", $"Не удалось пересоздать источник: {ex.Message}"); }
+                old?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                replacement?.Dispose();
+                Log.Error("Audio", $"Не удалось пересоздать источник: {ex.Message}");
+                Warning?.Invoke("Источник звука остановился — не удалось подключить его заново");
             }
         });
     }
@@ -339,22 +364,27 @@ public sealed class AudioMixerEngine : IDisposable
         {
             // Раз в секунду следим за хвостом буферов: под игровой нагрузкой WASAPI
             // отдаёт данные пачками, хвост растёт — звук всё сильнее отстаёт.
-            if (++backlogCheck >= 100)
-            {
-                backlogCheck = 0;
-                if (_game is { BufferedMs: > 120 } g) g.DiscardExcess(40);
-                if (_mic is { BufferedMs: > 120 } m) m.DiscardExcess(40);
-            }
             // Читаем РОВНО 480 фреймов из каждого источника; если данных нет —
             // BufferedWaveProvider вернёт тишину. Поток не останавливается никогда.
-            if (_game is not null) _game.Read(gameBuf, BlockSamples); else Array.Clear(gameBuf);
-            if (_mic is not null) _mic.Read(micBuf, BlockSamples); else Array.Clear(micBuf);
+            bool hasMic;
+            lock (_restartSync)
+            {
+                if (++backlogCheck >= 100)
+                {
+                    backlogCheck = 0;
+                    if (_game is { BufferedMs: > 120 } g) g.DiscardExcess(40);
+                    if (_mic is { BufferedMs: > 120 } m) m.DiscardExcess(40);
+                }
+                if (_game is not null) _game.Read(gameBuf, BlockSamples); else Array.Clear(gameBuf);
+                if (_mic is not null) _mic.Read(micBuf, BlockSamples); else Array.Clear(micBuf);
+                hasMic = _mic is not null;
+            }
 
             // Noise gate микрофона: ниже порога плавно закрываемся. Порог задаётся
             // пользователем в дБ (см. MicGateThresholdDb), быстрая атака (голос не
             // «съедается»), медленный релиз (нет щёлканья).
             float gate = 1f;
-            if (MicNoiseGate && _mic is not null)
+            if (MicNoiseGate && hasMic)
             {
                 double sum = 0;
                 for (int i = 0; i < BlockSamples; i++) sum += micBuf[i] * micBuf[i];
@@ -412,6 +442,8 @@ public sealed class AudioMixerEngine : IDisposable
 
     public void Stop()
     {
+        Interlocked.Increment(ref _generation);
+        _running = false;
         try
         {
             if (_deviceWatcher is not null && _deviceWatchEnumerator is not null)
@@ -422,10 +454,12 @@ public sealed class AudioMixerEngine : IDisposable
         _deviceWatchEnumerator?.Dispose();
         _deviceWatchEnumerator = null;
 
-        _running = false;
         _thread?.Join(500); _thread = null;
-        _game?.Dispose(); _game = null;
-        _mic?.Dispose(); _mic = null;
+        lock (_restartSync)
+        {
+            _game?.Dispose(); _game = null;
+            _mic?.Dispose(); _mic = null;
+        }
     }
 
     public void Dispose() => Stop();

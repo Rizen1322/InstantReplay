@@ -51,8 +51,7 @@ public partial class FilesPage : PageBase
     private void Setting_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
-        Services.Settings.Current.GroupByGame = GroupByGame.IsChecked == true;
-        Services.Settings.Save("storage");
+        Services.Settings.Update(s => s.GroupByGame = GroupByGame.IsChecked == true, "storage");
     }
 
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => App.OpenRecordingsFolder();
@@ -73,9 +72,8 @@ public partial class FilesPage : PageBase
         if (dialog.ShowDialog() != true) return;
 
         string folder = AuraFolderIn(dialog.FolderName);
-        Services.Settings.Current.ScreenshotFolder = folder;
         Directory.CreateDirectory(folder);
-        Services.Settings.Save("storage");
+        Services.Settings.Update(s => s.ScreenshotFolder = folder, "storage");
         Load();
         ClipCommands.NotifyLibraryChanged();
     }
@@ -125,15 +123,13 @@ public partial class FilesPage : PageBase
         };
         if (dialog.ShowDialog() != true) return;
 
-        Services.Settings.Current.LosslessCutPath = dialog.FileName;
-        Services.Settings.Save("tools");
+        Services.Settings.Update(s => s.LosslessCutPath = dialog.FileName, "tools");
         ShowTrimTool();
     }
 
     private void TrimToolClear_Click(object sender, RoutedEventArgs e)
     {
-        Services.Settings.Current.LosslessCutPath = null;
-        Services.Settings.Save("tools");
+        Services.Settings.Update(s => s.LosslessCutPath = null, "tools");
         ShowTrimTool();
     }
 
@@ -151,9 +147,8 @@ public partial class FilesPage : PageBase
         if (dialog.ShowDialog() != true) return;
 
         string folder = AuraFolderIn(dialog.FolderName);
-        Services.Settings.Current.SaveRootPath = folder;
         Directory.CreateDirectory(folder);
-        Services.Settings.Save("storage");
+        Services.Settings.Update(s => s.SaveRootPath = folder, "storage");
         Load();
         ShowStats(Services.Storage.GetStats());
     }

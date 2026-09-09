@@ -5,6 +5,7 @@ using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
 using Aura.Core.Logging;
 using Aura.Core.Settings;
+using Aura.Core.Storage;
 
 namespace Aura.Core.Saving;
 
@@ -57,20 +58,38 @@ public sealed class ManualRecorder : IDisposable
     /// Довести часть до целевого имени или убрать за собой. Незавершённый MP4 не
     /// должен получить имя записи: библиотека показала бы его обычной карточкой.
     /// </summary>
-    private static void PublishOrDiscard(string partPath, string path, bool finalized)
+    private static string PublishOrDiscard(string partPath, string path, bool finalized)
     {
         if (!finalized)
         {
             try { File.Delete(partPath); }
             catch (Exception ex) { Log.Warn("Recorder", $"Не удалось убрать незавершённую часть: {ex.Message}"); }
-            return;
+            return path;
         }
 
-        try { File.Move(partPath, path, overwrite: true); }
+        try
+        {
+            File.Move(partPath, path);
+            return path;
+        }
         catch (Exception ex)
         {
-            Log.Error("Recorder", $"Часть записана, но переименовать не удалось ({ex.Message}). " +
-                                  $"Файл остался как {partPath}");
+            // Целевое имя мог занять другой параллельный writer. Валидный MP4 не
+            // оставляем под .part: очистка считает такие файлы незавершёнными.
+            string recovered = FileNaming.NextAvailablePath(path, File.Exists);
+            try
+            {
+                File.Move(partPath, recovered);
+                Log.Warn("Recorder", $"Имя части оказалось занято ({ex.Message}); сохранено как {recovered}");
+                return recovered;
+            }
+            catch (Exception recoveryEx)
+            {
+                Log.Error("Recorder", $"Часть записана, но не опубликована: {recoveryEx.Message}. " +
+                                      $"Файл остался как {partPath}");
+                throw new IOException(
+                    $"Часть записана, но не опубликована. Готовый файл сохранён как «{partPath}».", recoveryEx);
+            }
         }
     }
 
@@ -185,10 +204,11 @@ public sealed class ManualRecorder : IDisposable
         return new Item(bytes, byteCount, _chunkStart[s], fill * 100_000L, s, false);
     }
 
-    private void Enqueue(Item item)
+    private void Enqueue(Item item, int timeoutMs = 0)
     {
-        // Ждём место в очереди недолго: подвесить поток энкодера или микшера
-        // из-за медленного диска — ровно та беда, от которой мы уходим.
+        // В callback не ждём вообще: подвесить поток энкодера или микшера из-за
+        // медленного диска — ровно та беда, от которой мы уходим. Только Finish
+        // может подождать хвостовой аудиоблок, потому что он уже работает в фоне.
         //
         // TryAdd ОБЯЗАН быть под try. Проверка IsAddingCompleted его не защищает:
         // между ней и самим вызовом писатель успевает выполнить CompleteAdding, и
@@ -200,7 +220,7 @@ public sealed class ManualRecorder : IDisposable
         bool queued = false;
         try
         {
-            queued = !_queue.IsAddingCompleted && _queue.TryAdd(item, 250);
+            queued = !_queue.IsAddingCompleted && _queue.TryAdd(item, timeoutMs);
         }
         catch (InvalidOperationException)
         {
@@ -296,7 +316,8 @@ public sealed class ManualRecorder : IDisposable
 
     private void OpenSegment(long ptsBase)
     {
-        string path = _segmentIndex == 0 ? _firstFilePath : PartPath(_firstFilePath, _segmentIndex + 1);
+        string desiredPath = _segmentIndex == 0 ? _firstFilePath : PartPath(_firstFilePath, _segmentIndex + 1);
+        string path = FileNaming.NextAvailablePath(desiredPath, File.Exists);
         // Фабрика отдаёт КОПИЮ выходного типа, а не ссылку на поле энкодера: запись
         // переживает остановку конвейера, и Dispose энкодера не должен освобождать
         // тип под нашим SinkWriter. Копия нужна только на время AddStream.
@@ -373,7 +394,9 @@ public sealed class ManualRecorder : IDisposable
         finally
         {
             writer.Dispose();                 // файл закрыт — только теперь переименование
-            PublishOrDiscard(partPath, path, finalized);
+            string published = PublishOrDiscard(partPath, path, finalized);
+            if (finalized && !string.Equals(published, path, StringComparison.OrdinalIgnoreCase))
+                lock (_files) _files[^1] = published;
         }
     }
 
@@ -400,7 +423,7 @@ public sealed class ManualRecorder : IDisposable
         lock (_audioSync)
             for (int s = 0; s < _chunkFill.Length; s++)
                 if (_chunkFill[s] > 0) tail.Add(TakeChunk(s));
-        foreach (var item in tail) Enqueue(item);
+        foreach (var item in tail) Enqueue(item, timeoutMs: 5000);
 
         _queue.CompleteAdding();
         if (!_writerThread.Join(TimeSpan.FromSeconds(60)))

@@ -1,7 +1,7 @@
 name: CI
 
 # Приложение — WPF под Windows, поэтому и сборка, и тесты идут только на
-# windows-runner: linux-образ не соберёт TFM net9.0-windows10.0.22621.0.
+# windows-runner: linux-образ не соберёт TFM net10.0-windows10.0.22621.0.
 on:
   push:
     branches: [main]
@@ -19,7 +19,7 @@ jobs:
       - name: Установить .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       # Тесты первыми: они собирают исходники приложения напрямую
       # (см. InstantReplay.Tests.csproj) и падают быстрее полной сборки WPF.

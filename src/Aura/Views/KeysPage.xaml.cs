@@ -205,34 +205,36 @@ public partial class KeysPage : PageBase
 
     private static void Save(HotkeyAction action, string combo)
     {
-        var s = Services.Settings.Current;
-        switch (action)
+        Services.Settings.Update(s =>
         {
-            case HotkeyAction.SaveReplay: s.HotkeySaveReplay = combo; break;
-            case HotkeyAction.SaveLast30: s.HotkeySaveLast30 = combo; break;
-            case HotkeyAction.ToggleInstantReplay: s.HotkeyToggleInstantReplay = combo; break;
-            case HotkeyAction.StartRecording: s.HotkeyStartRecording = combo; break;
-            case HotkeyAction.StopRecording: s.HotkeyStopRecording = combo; break;
-            case HotkeyAction.Screenshot: s.HotkeyScreenshot = combo; break;
-            case HotkeyAction.ScreenshotRegion: s.HotkeyScreenshotRegion = combo; break;
-            case HotkeyAction.OpenFolder: s.HotkeyOpenFolder = combo; break;
-        }
-        Services.Settings.Save("hotkeys");
+            switch (action)
+            {
+                case HotkeyAction.SaveReplay: s.HotkeySaveReplay = combo; break;
+                case HotkeyAction.SaveLast30: s.HotkeySaveLast30 = combo; break;
+                case HotkeyAction.ToggleInstantReplay: s.HotkeyToggleInstantReplay = combo; break;
+                case HotkeyAction.StartRecording: s.HotkeyStartRecording = combo; break;
+                case HotkeyAction.StopRecording: s.HotkeyStopRecording = combo; break;
+                case HotkeyAction.Screenshot: s.HotkeyScreenshot = combo; break;
+                case HotkeyAction.ScreenshotRegion: s.HotkeyScreenshotRegion = combo; break;
+                case HotkeyAction.OpenFolder: s.HotkeyOpenFolder = combo; break;
+            }
+        }, "hotkeys");
     }
 
     private void Reset_Click(object sender, RoutedEventArgs e)
     {
         var defaults = new AppSettings();
-        var s = Services.Settings.Current;
-        s.HotkeySaveReplay = defaults.HotkeySaveReplay;
-        s.HotkeySaveLast30 = defaults.HotkeySaveLast30;
-        s.HotkeyToggleInstantReplay = defaults.HotkeyToggleInstantReplay;
-        s.HotkeyStartRecording = defaults.HotkeyStartRecording;
-        s.HotkeyStopRecording = defaults.HotkeyStopRecording;
-        s.HotkeyScreenshot = defaults.HotkeyScreenshot;
-        s.HotkeyScreenshotRegion = defaults.HotkeyScreenshotRegion;
-        s.HotkeyOpenFolder = defaults.HotkeyOpenFolder;
-        Services.Settings.Save("hotkeys");
+        Services.Settings.Update(s =>
+        {
+            s.HotkeySaveReplay = defaults.HotkeySaveReplay;
+            s.HotkeySaveLast30 = defaults.HotkeySaveLast30;
+            s.HotkeyToggleInstantReplay = defaults.HotkeyToggleInstantReplay;
+            s.HotkeyStartRecording = defaults.HotkeyStartRecording;
+            s.HotkeyStopRecording = defaults.HotkeyStopRecording;
+            s.HotkeyScreenshot = defaults.HotkeyScreenshot;
+            s.HotkeyScreenshotRegion = defaults.HotkeyScreenshotRegion;
+            s.HotkeyOpenFolder = defaults.HotkeyOpenFolder;
+        }, "hotkeys");
         Build();
     }
 }

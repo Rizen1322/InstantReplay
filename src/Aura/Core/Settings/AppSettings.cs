@@ -173,4 +173,50 @@ public sealed class AppSettings
 
     [JsonIgnore]
     public long BitrateBps => BitrateMbps * 1_000_000L;
+
+    /// <summary>
+    /// Нормализовать значения, пришедшие из settings.json. Файл настроек доступен
+    /// пользователю и переживает версии приложения, поэтому UI не может быть
+    /// единственной границей валидации.
+    /// </summary>
+    public void Normalize()
+    {
+        ReplayLengthSeconds = Math.Clamp(ReplayLengthSeconds, 5, 1800);
+        VerticalResolution = Math.Clamp(VerticalResolution, 360, 4320);
+        Fps = Math.Clamp(Fps, 15, 240);
+        BitrateMbps = Math.Clamp(BitrateMbps, 1, 200);
+        MonitorIndex = Math.Max(0, MonitorIndex);
+        MicNoiseGateDb = float.IsFinite(MicNoiseGateDb) ? Math.Clamp(MicNoiseGateDb, -70f, -10f) : -44f;
+        AttachmentSizeMb = Math.Clamp(AttachmentSizeMb, 2, 2048);
+        NotificationDurationSeconds = double.IsFinite(NotificationDurationSeconds)
+            ? Math.Clamp(NotificationDurationSeconds, 0.5, 30) : 3.5;
+        SidebarWidth = double.IsFinite(SidebarWidth) ? Math.Clamp(SidebarWidth, 120, 600) : 236;
+        UiScale = !double.IsFinite(UiScale) || UiScale == 0 ? 0 : Math.Clamp(UiScale, 0.75, 2.0);
+
+        if (!Enum.IsDefined(Codec)) Codec = VideoCodec.H264;
+        if (!Enum.IsDefined(TrackMode)) TrackMode = AudioTrackMode.Mixed;
+        if (!Enum.IsDefined(NotificationPosition)) NotificationPosition = NotificationPosition.BottomRight;
+        if (!Enum.IsDefined(Theme)) Theme = AppTheme.Dark;
+        if (!Enum.IsDefined(Language)) Language = AppLanguage.Ru;
+        if (!Enum.IsDefined(SaveSound)) SaveSound = SaveSound.Soft;
+
+        SaveRootPath = ValidDirectoryOrDefault(SaveRootPath,
+            Environment.SpecialFolder.MyVideos, "Aura");
+        ScreenshotFolder = ValidDirectoryOrDefault(ScreenshotFolder,
+            Environment.SpecialFolder.MyPictures, "Aura");
+        FileNameTemplate = string.IsNullOrWhiteSpace(FileNameTemplate)
+            ? FileNamingFallback
+            : FileNameTemplate.Trim();
+    }
+
+    private const string FileNamingFallback = "{game} {date} - {time}";
+
+    private static string ValidDirectoryOrDefault(
+        string? value, Environment.SpecialFolder specialFolder, string child)
+    {
+        string fallback = Path.Combine(Environment.GetFolderPath(specialFolder), child);
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+        try { return Path.GetFullPath(value.Trim()); }
+        catch { return fallback; }
+    }
 }

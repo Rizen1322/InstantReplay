@@ -132,14 +132,15 @@ public partial class AppSettingsPage : PageBase
     private void System_Changed(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
-        var s = Services.Settings.Current;
-        s.AutoStartWithWindows = AutoStart.IsChecked == true;
-        s.StartMinimizedToTray = StartInTray.IsChecked == true;
-        s.AutoStartReplayBuffer = AutoBuffer.IsChecked == true;
-        s.ShowNotifications = ShowNotifications.IsChecked == true;
-        s.CheckForUpdates = CheckUpdates.IsChecked == true;
-        s.CheckNvidiaDriver = DriverWatch.IsChecked == true;
-        Services.Settings.Save("system");
+        Services.Settings.Update(s =>
+        {
+            s.AutoStartWithWindows = AutoStart.IsChecked == true;
+            s.StartMinimizedToTray = StartInTray.IsChecked == true;
+            s.AutoStartReplayBuffer = AutoBuffer.IsChecked == true;
+            s.ShowNotifications = ShowNotifications.IsChecked == true;
+            s.CheckForUpdates = CheckUpdates.IsChecked == true;
+            s.CheckNvidiaDriver = DriverWatch.IsChecked == true;
+        }, "system");
     }
 
     /// <summary>Общий выключатель уведомлений заодно убирает их настройки с глаз.</summary>
@@ -157,15 +158,13 @@ public partial class AppSettingsPage : PageBase
     {
         DurationValue.Text = $"{Duration.Value:0.#} с".Replace('.', ',');
         if (_loading) return;
-        Services.Settings.Current.NotificationDurationSeconds = Duration.Value;
-        Services.Settings.Save("ui");
+        Services.Settings.Update(s => s.NotificationDurationSeconds = Duration.Value, "ui");
     }
 
     private void Position_Click(object sender, RoutedEventArgs e)
     {
         if (((Button)sender).Tag is not NotificationPosition position) return;
-        Services.Settings.Current.NotificationPosition = position;
-        Services.Settings.Save("ui");
+        Services.Settings.Update(s => s.NotificationPosition = position, "ui");
         HighlightPosition(position);
         Services.Notifications.Show(NotificationKind.ReplayOn, "Уведомления теперь здесь");
     }
@@ -187,6 +186,7 @@ public partial class AppSettingsPage : PageBase
         var tag = (string?)((ComboBoxItem)Sound.SelectedItem).Tag ?? "Soft";
         var sound = Enum.Parse<SaveSound>(tag);
 
+        string? customPath = null;
         if (sound == SaveSound.Custom)
         {
             var dialog = new Microsoft.Win32.OpenFileDialog
@@ -195,12 +195,15 @@ public partial class AppSettingsPage : PageBase
                 Filter = "Звук (*.wav)|*.wav"
             };
             if (dialog.ShowDialog() == true)
-                Services.Settings.Current.CustomSaveSoundPath = dialog.FileName;
+                customPath = dialog.FileName;
             else { SelectTag(Sound, Services.Settings.Current.SaveSound.ToString()); return; }
         }
 
-        Services.Settings.Current.SaveSound = sound;
-        Services.Settings.Save("ui");
+        Services.Settings.Update(s =>
+        {
+            s.SaveSound = sound;
+            if (customPath is not null) s.CustomSaveSoundPath = customPath;
+        }, "ui");
         PlaySound_Click(sender, e);
     }
 
@@ -219,17 +222,16 @@ public partial class AppSettingsPage : PageBase
     private void Theme_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || Theme.SelectedItem is not ListBoxItem item) return;
-        Services.Settings.Current.Theme = Enum.Parse<AppTheme>((string)item.Tag);
-        Services.Settings.Save("ui");
-        App.ApplyTheme(Services.Settings.Current.Theme);
+        var theme = Enum.Parse<AppTheme>((string)item.Tag);
+        Services.Settings.Update(s => s.Theme = theme, "ui");
+        App.ApplyTheme(theme);
     }
 
     private void Scale_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || Scale.SelectedItem is not ListBoxItem item) return;
         double value = double.Parse((string)item.Tag, System.Globalization.CultureInfo.InvariantCulture);
-        Services.Settings.Current.UiScale = value;
-        Services.Settings.Save("ui");
+        Services.Settings.Update(s => s.UiScale = value, "ui");
         (Window.GetWindow(this) as MainWindow)?.ApplyUiScale(value);
     }
 

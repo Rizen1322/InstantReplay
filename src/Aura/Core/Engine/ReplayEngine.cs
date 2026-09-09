@@ -72,6 +72,10 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>Идущее сохранение — Stop() обязан его дождаться, а не сносить буферы под ним.</summary>
     private Task? _saveTask;
     private int? _saveTaskId;
+    private readonly object _writerTasksSync = new();
+    private readonly HashSet<Task> _writerTasks = [];
+    private readonly object _pathSync = new();
+    private readonly HashSet<string> _reservedPaths = new(StringComparer.OrdinalIgnoreCase);
 
     private volatile EngineState _state = EngineState.Stopped;
     public EngineState State => _state;
@@ -182,16 +186,30 @@ public sealed class ReplayEngine : IDisposable
         var s = _settings.Current;
         try
         {
-            _videoBuffer.MaxDurationTicks = TimeSpan.FromSeconds(s.ReplayLengthSeconds).Ticks;
+            int effectiveReplaySeconds = Math.Min(
+                s.ReplayLengthSeconds,
+                ReplayVideoBuffer.MaximumDurationSeconds(s.BitrateBps));
+            if (effectiveReplaySeconds < s.ReplayLengthSeconds)
+            {
+                Log.Warn("Engine", $"Повтор {s.ReplayLengthSeconds} с не помещается в арену при " +
+                                   $"{s.BitrateMbps} Мбит/с — ограничен до {effectiveReplaySeconds} с");
+                Warning?.Invoke($"Длина повтора ограничена до {TimeSpan.FromSeconds(effectiveReplaySeconds):m\\:ss} из-за объёма RAM");
+            }
+
+            _videoBuffer.MaxDurationTicks = TimeSpan.FromSeconds(effectiveReplaySeconds).Ticks;
             _audioBuffer.MaxDurationTicks = _videoBuffer.MaxDurationTicks;
             _videoBuffer.Clear();
             _audioBuffer.Release();
             // Арена под кадры: размер считается из длительности и битрейта, дальше
             // память не растёт — сколько выделено, столько буфер и занимает.
-            _videoBuffer.Allocate(s.BitrateBps, s.ReplayLengthSeconds);
+            _videoBuffer.Allocate(s.BitrateBps, effectiveReplaySeconds);
             // Своя арена под звук, по той же причине: раньше микшер выделял пару
             // массивов каждые 10 мс, и буфер держал их все живыми.
-            _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, s.ReplayLengthSeconds);
+            bool captureAudio = s.CaptureGameAudio || s.CaptureMicrophone;
+            if (captureAudio)
+                _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, effectiveReplaySeconds);
+            else
+                _audioBuffer.Release();
 
             _capture = ScreenCaptureFactory.Create(s.MonitorIndex);
             _capture.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
@@ -215,8 +233,11 @@ public sealed class ReplayEngine : IDisposable
 
             _audio.MicNoiseGate = s.MicNoiseSuppression;
             _audio.MicGateThresholdDb = s.MicNoiseGateDb;
-            _audio.BlockReady += _audioBuffer.Add;
-            _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
+            if (captureAudio)
+            {
+                _audio.BlockReady += _audioBuffer.Add;
+                _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
+            }
 
             // Меньше блокирующих GC-пауз, пока идёт запись
             System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
@@ -694,7 +715,7 @@ public sealed class ReplayEngine : IDisposable
 
         // Сохранение работает с буферами и клипом в арене — снести всё это под ним
         // означает потерять клип, который пользователю уже показали как сохранённый.
-        WaitForPendingSave();
+        WaitForPendingWrites();
 
         // Гасим ворота и отписываемся: с этого момента новые кадры в конвейер не идут
         _pipelineOpen = false;
@@ -780,15 +801,26 @@ public sealed class ReplayEngine : IDisposable
     /// Дождаться фонового сохранения повтора. Вызов из самого сохраняющего потока
     /// (например, через обработчик изменения настроек) не ждёт сам себя.
     /// </summary>
-    private void WaitForPendingSave()
+    private void WaitForPendingWrites()
     {
-        var pending = _saveTask;
-        if (pending is null || pending.IsCompleted) return;
-        if (Task.CurrentId is int id && id == _saveTaskId) return;
+        var pending = new List<Task>();
+        if (_saveTask is { IsCompleted: false } replay &&
+            !(Task.CurrentId is int current && current == _saveTaskId))
+            pending.Add(replay);
+        lock (_writerTasksSync)
+            pending.AddRange(_writerTasks.Where(t => !t.IsCompleted && t.Id != Task.CurrentId));
+        if (pending.Count == 0) return;
 
-        Log.Info("Engine", "Останов ждёт, пока допишется сохраняемый клип");
-        if (!pending.Wait(TimeSpan.FromSeconds(70)))
-            Log.Warn("Engine", "Сохранение не уложилось в 70 секунд — останавливаюсь без него");
+        Log.Info("Engine", $"Останов ждёт фоновые записи: {pending.Count}");
+        try
+        {
+            if (!Task.WaitAll([.. pending], TimeSpan.FromMinutes(2)))
+                Log.Warn("Engine", "Фоновые записи не закончились за 2 минуты — продолжаю останов");
+        }
+        catch (AggregateException ex)
+        {
+            Log.Warn("Engine", $"Фоновая запись закончилась с ошибкой: {ex.GetBaseException().Message}");
+        }
     }
 
     public void Toggle()
@@ -822,6 +854,10 @@ public sealed class ReplayEngine : IDisposable
         // кадров переходит нам — вернём их в пул после записи файла.
         var video = _videoBuffer.TakeSnapshot(wanted, out long snapshotToken);
         if (video.Count == 0) { SaveFailed?.Invoke("Буфер ещё пуст"); return; }
+        SnapshotLease? lease = new(_videoBuffer, snapshotToken, video);
+        string? reservedFile = null;
+        try
+        {
         // Звук тоже НЕ обнуляем: он должен остаться для следующего повтора ровно
         // так же, как остаётся видео (см. TakeSnapshot). Кольцо само вытеснит
         // лишнее по времени.
@@ -829,11 +865,12 @@ public sealed class ReplayEngine : IDisposable
 
         // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip)
         string game = GameForClip();
-        string file = BuildFilePath(game, "replay");
+        string file = reservedFile = ReserveFilePath(game, "replay");
         // Копия, а не ссылка на поле энкодера: запись файла переживёт остановку
         // конвейера, а Dispose энкодера освободил бы тип прямо под SinkWriter.
         var mediaType = _encoder.CloneOutputMediaType();
         if (mediaType is null) { SaveFailed?.Invoke("Энкодер ещё не отдал тип видеопотока"); return; }
+        lease.MediaType = mediaType;
         int seconds = (int)Math.Round(TimeSpan.FromTicks(video[^1].PtsTicks - video[0].PtsTicks).TotalSeconds);
 
         // Данные уже вырваны из кольцевого буфера и никуда не денутся — говорим об этом
@@ -843,6 +880,7 @@ public sealed class ReplayEngine : IDisposable
         ReplayCaptured?.Invoke(Math.Max(seconds, 1));
 
         SetState(EngineState.Saving);
+        SnapshotLease saveLease = lease;
         _saveTask = Task.Run(() =>
         {
             _saveTaskId = Task.CurrentId;
@@ -865,10 +903,10 @@ public sealed class ReplayEngine : IDisposable
             using var backgroundIo = Saving.BackgroundIoScope.BeginIf(inGame);
             try
             {
-                ReplaySaver.Save(file, video, audio, mediaType, s.TrackMode,
-                                 s.CaptureGameAudio, s.CaptureMicrophone,
-                                 p => SaveProgress = p);
-                _storage.RegisterSaved(file); // индекс папки — без повторного обхода диска
+                string publishedFile = ReplaySaver.Save(file, video, audio, mediaType, s.TrackMode,
+                                                        s.CaptureGameAudio, s.CaptureMicrophone,
+                                                        p => SaveProgress = p);
+                _storage.RegisterSaved(publishedFile); // индекс папки — без повторного обхода диска
                 // Правку счётчика делает фоновый поток — идём через Update, чтобы она
                 // не столкнулась с сохранением настроек из потока интерфейса.
                 //
@@ -877,7 +915,7 @@ public sealed class ReplayEngine : IDisposable
                 // Stop() как раз в это время ждёт завершения ЭТОЙ задачи, держа тот же
                 // замок, — получился бы дедлок. Здесь мы внутри сохраняющего потока.
                 _settings.Update(x => x.TotalReplaysSaved++, "stats");
-                ReplaySaved?.Invoke(file, Math.Max(seconds, 1));
+                ReplaySaved?.Invoke(publishedFile, Math.Max(seconds, 1));
             }
             catch (Exception ex)
             {
@@ -889,9 +927,8 @@ public sealed class ReplayEngine : IDisposable
                 // Файл записан — возвращаем буферу место, которое занимали кадры
                 // клипа. Новой памяти на сохранение не тратилось вовсе: всё это
                 // время клип лежал в той же арене, а запись шла в её свободную часть.
-                _videoBuffer.ReleaseSnapshot(snapshotToken);
-                video.Clear();
-                mediaType.Dispose();                   // копия принадлежала этому сохранению
+                saveLease.Dispose();
+                ReleaseFilePath(file);
                 // Писатель закрыт — сводим освободившиеся нативные блоки вместе,
                 // иначе память, занятая под клип, остаётся за процессом до выхода.
                 Diagnostics.MemoryMap.Log("после сохранения");
@@ -899,16 +936,59 @@ public sealed class ReplayEngine : IDisposable
                 SetState(_state == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
             }
         });
+        lease = null; // владение ресурсами снимка перешло фоновой задаче
+        reservedFile = null; // и резерв пути тоже
+        }
+        finally
+        {
+            // Любая ошибка между TakeSnapshot и успешным Task.Run раньше навсегда
+            // оставляла арену зарезервированной, после чего новые кадры отбрасывались.
+            lease?.Dispose();
+            if (reservedFile is not null) ReleaseFilePath(reservedFile);
+        }
+    }
+
+    /// <summary>Транзакционное владение snapshot и клоном MediaType.</summary>
+    private sealed class SnapshotLease(ReplayVideoBuffer owner, long token, List<EncodedFrame> frames) : IDisposable
+    {
+        private ReplayVideoBuffer? _owner = owner;
+        private List<EncodedFrame>? _frames = frames;
+        private IMFMediaType? _mediaType;
+
+        public IMFMediaType? MediaType
+        {
+            set => _mediaType = value;
+        }
+
+        public void Dispose()
+        {
+            var currentOwner = Interlocked.Exchange(ref _owner, null);
+            if (currentOwner is null) return;
+            currentOwner.ReleaseSnapshot(token);
+            Interlocked.Exchange(ref _frames, null)?.Clear();
+            Interlocked.Exchange(ref _mediaType, null)?.Dispose();
+        }
     }
 
     /// <summary>
     /// Путь файла по шаблону из настроек. {game} {date} {time} {preset} + раскладка по папкам игр.
     /// </summary>
-    private string BuildFilePath(string game, string fallbackPrefix)
+    private string ReserveFilePath(string game, string fallbackPrefix)
     {
         var s = _settings.Current;
-        return FileNaming.BuildPath(s.SaveRootPath, s.GroupByGame, s.FileNameTemplate, game,
-                                    DateTime.Now, $"{s.VerticalResolution}p{s.Fps}", fallbackPrefix);
+        lock (_pathSync)
+        {
+            string path = FileNaming.BuildPath(s.SaveRootPath, s.GroupByGame, s.FileNameTemplate, game,
+                DateTime.Now, $"{s.VerticalResolution}p{s.Fps}", fallbackPrefix,
+                candidate => File.Exists(candidate) || _reservedPaths.Contains(candidate));
+            _reservedPaths.Add(path);
+            return path;
+        }
+    }
+
+    private void ReleaseFilePath(string path)
+    {
+        lock (_pathSync) _reservedPaths.Remove(path);
     }
 
     // ---------------- Обычная запись в файл ----------------
@@ -936,8 +1016,18 @@ public sealed class ReplayEngine : IDisposable
         // Тип видеопотока берётся не сейчас, а в момент создания файла (первый keyframe):
         // сразу после старта конвейера энкодер ещё не дописал в него заголовки кодека,
         // и файл, открытый с таким типом, не собирается на финализации.
-        var recorder = new ManualRecorder(BuildFilePath(game, "recording"),
-            () => _encoder?.CloneOutputMediaType(), s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
+        string file = ReserveFilePath(game, "recording");
+        ManualRecorder recorder;
+        try
+        {
+            recorder = new ManualRecorder(file, () => _encoder?.CloneOutputMediaType(),
+                s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
+        }
+        catch
+        {
+            ReleaseFilePath(file);
+            throw;
+        }
         _encoder.FrameEncoded += recorder.OnFrame;
         _audio.BlockReady += recorder.OnAudio;
         _recorder = recorder;
@@ -969,18 +1059,36 @@ public sealed class ReplayEngine : IDisposable
 
         var finish = Task.Run(() =>
         {
-            var result = recorder.Finish();
-
-            // Индекс наполняем ТОЛЬКО удачными файлами. Раньше RegisterSaved шёл до
-            // проверки Ok, и незакрытые части попадали в библиотеку и в статистику
-            // хранилища как полноценные записи — карточка есть, а файла нет.
-            if (result.Ok)
+            try
             {
-                foreach (var file in result.Files) _storage.RegisterSaved(file);
-                RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+                var result = recorder.Finish();
+
+                // Индекс наполняем ТОЛЬКО удачными файлами. Раньше RegisterSaved шёл до
+                // проверки Ok, и незакрытые части попадали в библиотеку и в статистику
+                // хранилища как полноценные записи — карточка есть, а файла нет.
+                if (result.Ok)
+                {
+                    foreach (var file in result.Files) _storage.RegisterSaved(file);
+                    RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+                }
+                else SaveFailed?.Invoke(result.Error ?? "запись не закрылась");
             }
-            else SaveFailed?.Invoke(result.Error ?? "запись не закрылась");
+            catch (Exception ex)
+            {
+                Log.Error("Recorder", ex);
+                SaveFailed?.Invoke(ex.Message);
+            }
+            finally
+            {
+                try { recorder.Dispose(); }
+                finally { ReleaseFilePath(recorder.FilePath); }
+            }
         });
+        lock (_writerTasksSync) _writerTasks.Add(finish);
+        _ = finish.ContinueWith(completed =>
+        {
+            lock (_writerTasksSync) _writerTasks.Remove(completed);
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         if (wait) finish.Wait(TimeSpan.FromSeconds(70));
         return recorder.FilePath;
     }

@@ -80,7 +80,7 @@ public static class ReplaySaver
         return "этот кодек";
     }
 
-    public static void Save(
+    public static string Save(
         string filePath,
         List<EncodedFrame> video,
         AudioSnapshot audio,
@@ -111,13 +111,13 @@ public static class ReplaySaver
         // его обычной карточкой, а открыть его было нельзя. Теперь незавершённый файл
         // не носит имени клипа и удаляется сам.
         string partPath = filePath + ".part";
-        try { if (File.Exists(partPath)) File.Delete(partPath); } catch { }
 
         IMFSinkWriter writer = MfMp4Writer.Create(partPath);
         var handles = new List<System.Runtime.InteropServices.GCHandle>();
         // Своя партия буферов на это сохранение — по ней и ждём разгрузки писателя
         var batch = new ArenaBufferBatch();
         bool finalized = false;
+        string publishedPath = filePath;
         try
         {
 
@@ -300,8 +300,9 @@ public static class ReplaySaver
             writer.Dispose();  // отпускает удержанные сэмплы
             UnpinWhenWriterDone(batch, handles);
             // Только теперь файл закрыт и его можно переименовать
-            PublishOrDiscard(partPath, filePath, finalized);
+            publishedPath = PublishOrDiscard(partPath, filePath, finalized);
         }
+        return publishedPath;
     }
 
     /// <summary>
@@ -310,25 +311,36 @@ public static class ReplaySaver
     /// Переименование выполняется, только если Finalize прошёл: незавершённый MP4
     /// не должен получить имя клипа и попасть в библиотеку.
     /// </summary>
-    private static void PublishOrDiscard(string partPath, string filePath, bool finalized)
+    private static string PublishOrDiscard(string partPath, string filePath, bool finalized)
     {
         if (!finalized)
         {
             try { File.Delete(partPath); }
             catch (Exception ex) { Log.Warn("Saver", $"Не удалось убрать незавершённый файл: {ex.Message}"); }
-            return;
+            return filePath;
         }
 
         try
         {
-            File.Move(partPath, filePath, overwrite: true);
+            File.Move(partPath, filePath);
+            return filePath;
         }
         catch (Exception ex)
         {
-            // Файл записан целиком, но переименовать не вышло. Оставляем .part на
-            // диске: он валиден, и потерять запись хуже, чем оставить странное имя.
-            Log.Error("Saver", $"Клип записан, но переименовать не удалось ({ex.Message}). " +
-                               $"Файл остался как {partPath}");
+            string recovered = Storage.FileNaming.NextAvailablePath(filePath, File.Exists);
+            try
+            {
+                File.Move(partPath, recovered);
+                Log.Warn("Saver", $"Имя клипа оказалось занято ({ex.Message}); сохранено как {recovered}");
+                return recovered;
+            }
+            catch (Exception recoveryEx)
+            {
+                Log.Error("Saver", $"Клип записан, но не опубликован: {recoveryEx.Message}. " +
+                                   $"Файл остался как {partPath}");
+                throw new IOException(
+                    $"Клип записан, но не опубликован. Готовый файл сохранён как «{partPath}».", recoveryEx);
+            }
         }
     }
 

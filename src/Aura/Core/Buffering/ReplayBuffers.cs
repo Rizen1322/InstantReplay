@@ -128,7 +128,7 @@ public sealed class ReplayVideoBuffer
     /// столько никто не даст. При превышении буфер будет короче заказанного,
     /// о чём пишем в лог.
     /// </summary>
-    private const long MaxCapacityBytes = 4L << 30;
+    public const long MaximumCapacityBytes = 4L << 30;
 
     /// <summary>
     /// Запас сверх заказанной длительности: один GOP плюс страховка вытеснения.
@@ -232,8 +232,8 @@ public sealed class ReplayVideoBuffer
     /// </summary>
     public void Allocate(long bitrateBps, int seconds)
     {
-        long wanted = (long)(bitrateBps / 8.0 * (seconds + SlackSeconds) * 1.05) + SaveHeadroomBytes;
-        long capped = Math.Clamp(wanted, ChunkBytes, MaxCapacityBytes);
+        long wanted = RequiredCapacityBytes(bitrateBps, seconds);
+        long capped = Math.Clamp(wanted, ChunkBytes, MaximumCapacityBytes);
         int chunks = (int)((capped + ChunkBytes - 1) / ChunkBytes);
 
         lock (_sync)
@@ -257,8 +257,25 @@ public sealed class ReplayVideoBuffer
                            $"на {seconds} сек при {bitrateBps / 1_000_000} Мбит/с");
         if (capped < wanted)
             Log.Warn("Buffer", $"Для {seconds} сек при {bitrateBps / 1_000_000} Мбит/с нужно " +
-                               $"{wanted / (1024 * 1024)} МБ — ограничено {MaxCapacityBytes / (1024 * 1024)} МБ, " +
+                               $"{wanted / (1024 * 1024)} МБ — ограничено {MaximumCapacityBytes / (1024 * 1024)} МБ, " +
                                "буфер будет короче заданного");
+    }
+
+    public static long RequiredCapacityBytes(long bitrateBps, int seconds) =>
+        (long)(Math.Max(1, bitrateBps) / 8.0 * (Math.Max(0, seconds) + SlackSeconds) * 1.05)
+        + SaveHeadroomBytes;
+
+    public static long AllocatedCapacityBytes(long bitrateBps, int seconds)
+    {
+        long capped = Math.Clamp(RequiredCapacityBytes(bitrateBps, seconds), ChunkBytes, MaximumCapacityBytes);
+        return ((capped + ChunkBytes - 1) / ChunkBytes) * ChunkBytes;
+    }
+
+    public static int MaximumDurationSeconds(long bitrateBps)
+    {
+        double usable = Math.Max(0, MaximumCapacityBytes - SaveHeadroomBytes);
+        double seconds = usable * 8 / Math.Max(1, bitrateBps) / 1.05 - SlackSeconds;
+        return Math.Max(5, (int)Math.Floor(seconds));
     }
 
     public void Add(EncodedFrame frame)
@@ -682,35 +699,62 @@ public sealed class ReplayAudioBuffer
     /// </summary>
     public AudioSnapshot Snapshot(long fromTicks, long toTicks)
     {
+        int plannedCount;
+        int blockSamples;
         lock (_sync)
         {
             if (_count == 0 || _blockSamples == 0) return AudioSnapshot.Empty;
-
-            int first = -1, last = -2;
-            for (int i = 0; i < _count; i++)
-            {
-                long stamp = _pts[(_head + i) % _capacity];
-                if (stamp < fromTicks) continue;
-                if (stamp > toTicks) break;
-                if (first < 0) first = i;
-                last = i;
-            }
+            (int first, int last) = FindRangeLocked(fromTicks, toTicks);
             if (first < 0) return AudioSnapshot.Empty;
+            plannedCount = last - first + 1;
+            blockSamples = _blockSamples;
+        }
 
-            int count = last - first + 1;
-            var game = new short[count * _blockSamples];
-            var mic = new short[count * _blockSamples];
-            var pts = new long[count];
+        // Большие массивы zero-fill'ятся при создании. Раньше это происходило под
+        // _sync и на десятки/сотни миллисекунд останавливало realtime audio mixer.
+        var game = new short[plannedCount * blockSamples];
+        var mic = new short[plannedCount * blockSamples];
+        var pts = new long[plannedCount];
 
-            for (int i = 0; i < count; i++)
+        int actualCount;
+        lock (_sync)
+        {
+            if (_count == 0 || _blockSamples != blockSamples) return AudioSnapshot.Empty;
+            (int first, int last) = FindRangeLocked(fromTicks, toTicks);
+            if (first < 0) return AudioSnapshot.Empty;
+            actualCount = Math.Min(last - first + 1, plannedCount);
+
+            for (int i = 0; i < actualCount; i++)
             {
                 int slot = (_head + first + i) % _capacity;
-                _game.AsSpan(slot * _blockSamples, _blockSamples).CopyTo(game.AsSpan(i * _blockSamples));
-                _mic.AsSpan(slot * _blockSamples, _blockSamples).CopyTo(mic.AsSpan(i * _blockSamples));
+                _game.AsSpan(slot * blockSamples, blockSamples).CopyTo(game.AsSpan(i * blockSamples));
+                _mic.AsSpan(slot * blockSamples, blockSamples).CopyTo(mic.AsSpan(i * blockSamples));
                 pts[i] = _pts[slot];
             }
-            return new AudioSnapshot(game, mic, pts, _blockSamples);
         }
+
+        // За время аллокации кольцо могло вытеснить начало диапазона.
+        if (actualCount != plannedCount)
+        {
+            Array.Resize(ref game, actualCount * blockSamples);
+            Array.Resize(ref mic, actualCount * blockSamples);
+            Array.Resize(ref pts, actualCount);
+        }
+        return new AudioSnapshot(game, mic, pts, blockSamples);
+    }
+
+    private (int First, int Last) FindRangeLocked(long fromTicks, long toTicks)
+    {
+        int first = -1, last = -2;
+        for (int i = 0; i < _count; i++)
+        {
+            long stamp = _pts[(_head + i) % _capacity];
+            if (stamp < fromTicks) continue;
+            if (stamp > toTicks) break;
+            if (first < 0) first = i;
+            last = i;
+        }
+        return (first, last);
     }
 
     /// <summary>
