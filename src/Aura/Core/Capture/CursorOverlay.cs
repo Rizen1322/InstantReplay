@@ -22,18 +22,13 @@ namespace Aura.Core.Capture;
 ///                  цветом, а ИНВЕРТИРУЕТ фон и потому виден на любом.
 ///   Маскированный  BGRA, где альфа — признак: 0 положить цвет, 255 инвертировать фон.
 ///
-/// ГЛАВНОЕ РЕШЕНИЕ: фон под курсором НЕ читается. Первая версия копировала кусок
-/// кадра в отдельную текстуру, чтобы шейдер мог прочитать его для инверсии, и тут же
-/// рисовала в тот же кадр — «читаем то, во что только что писали». Каждый кадр GPU
-/// выстраивал это в цепочку, цикл захвата замедлялся вдвое: 118 кадров в секунду
-/// превращались в 70, запись — 60 fps в 53.
-///
-/// Вместо чтения фона обе операции выражены РЕЖИМАМИ СМЕШИВАНИЯ, ровно как их делает
-/// сама Windows двумя вызовами BitBlt (SRCAND, затем SRCINVERT):
+/// Монохромная форма обходится без чтения фона: обе операции выражены режимами
+/// смешивания, ровно как два вызова BitBlt (SRCAND, затем SRCINVERT):
 ///   И:            итог = 0·исток + фон·исток      → фон·A
-///   ИСКЛ.ИЛИ:     итог = исток·(1−фон) + фон·(1−исток)
-///                 при X=1 даёт 1−фон, при X=0 оставляет фон — точное ИСКЛ.ИЛИ для
-///                 масок 0/1, а 1−цвет для восьми бит равно ИСКЛ.ИЛИ с 255.
+///   ИСКЛ.ИЛИ:     исток·(1−фон) + фон·(1−исток), точно для битов 0/1.
+/// Маскированная цветная форма умеет XOR произвольного RGB. Только для неё копируем
+/// маленький прямоугольник фона размером с курсор и считаем XOR в шейдере. Обычные
+/// цветные и монохромные курсоры этого дополнительного копирования не платят.
 /// Положение задаётся областью вывода, поэтому нет ни буфера констант, ни его
 /// обновления на каждый кадр.
 /// </summary>
@@ -49,6 +44,7 @@ internal sealed class CursorOverlay : IDisposable
     private ID3D11VertexShader? _vs;
     private ID3D11PixelShader? _psAnd;      // выдаёт маску AND
     private ID3D11PixelShader? _psXor;      // выдаёт маску XOR
+    private ID3D11PixelShader? _psMasked;   // masked-color с точным XOR копии фона
     private ID3D11PixelShader? _psColor;    // выдаёт цвет с прозрачностью
     /// <summary>Готов ли курсор рисоваться. false — шейдер не собрался, наложения не будет.</summary>
     public bool IsReady => _ready;
@@ -66,6 +62,8 @@ internal sealed class CursorOverlay : IDisposable
 
     private ID3D11Texture2D? _target;
     private ID3D11RenderTargetView? _targetView;
+    private ID3D11Texture2D? _maskedBackground;
+    private ID3D11ShaderResourceView? _maskedBackgroundView;
 
     private int _x, _y;
     private bool _visible;
@@ -78,9 +76,11 @@ internal sealed class CursorOverlay : IDisposable
     }
 
     /// <summary>Забрать из кадра позицию курсора и, если сменилась, его форму.</summary>
-    public void Update(IDXGIOutputDuplication duplication, in OutduplFrameInfo info)
+    public bool Update(IDXGIOutputDuplication duplication, in OutduplFrameInfo info)
     {
-        if (!_ready) return;
+        if (!_ready) return false;
+
+        bool changed = false;
 
         // Позиция приходит только когда курсор двигался или менял видимость;
         // в остальных кадрах поле нулевое и трогать состояние нельзя.
@@ -89,9 +89,10 @@ internal sealed class CursorOverlay : IDisposable
             _visible = info.PointerPosition.Visible;
             _x = info.PointerPosition.Position.X;
             _y = info.PointerPosition.Position.Y;
+            changed = true;
         }
 
-        if (info.PointerShapeBufferSize <= 0) return;
+        if (info.PointerShapeBufferSize <= 0) return changed;
 
         try
         {
@@ -102,10 +103,13 @@ internal sealed class CursorOverlay : IDisposable
                 duplication.GetFramePointerShape((uint)buffer.Length, handle.AddrOfPinnedObject(),
                     out uint _, out OutduplPointerShapeInfo shape).CheckError();
                 BuildShapeTexture(buffer, shape);
+                changed = true;
             }
             finally { handle.Free(); }
         }
         catch (Exception ex) { Log.Warn("Capture", $"Форма курсора не прочитана: {ex.Message}"); }
+
+        return changed;
     }
 
     /// <summary>Наложить курсор на кадр. Вызывается после того, как кадр возвращён системе.</summary>
@@ -116,11 +120,17 @@ internal sealed class CursorOverlay : IDisposable
         var desc = frame.Description;
         int frameWidth = (int)desc.Width, frameHeight = (int)desc.Height;
 
-        int left = _x - _hotspotX, top = _y - _hotspotY;
+        // DXGI сообщает уже левый верхний угол bitmap формы, не положение hotspot.
+        // Повторное вычитание hotspot сдвигало некоторые курсоры вверх-влево.
+        var (left, top) = CursorShapePixels.GetDrawOrigin(
+            _x, _y, _hotspotX, _hotspotY);
         if (left + _shapeWidth <= 0 || top + _shapeHeight <= 0 || left >= frameWidth || top >= frameHeight) return;
 
         try
         {
+            if (_shapeType == ShapeMaskedColor)
+                CopyMaskedBackground(frame, left, top, frameWidth, frameHeight);
+
             EnsureTargetView(frame);
             _context.OMSetRenderTargets(_targetView!);
             // Область вывода задаёт положение курсора: за краями экрана она может
@@ -139,6 +149,13 @@ internal sealed class CursorOverlay : IDisposable
                 _context.OMSetBlendState(_blendAlpha);
                 _context.Draw(4, 0);
             }
+            else if (_shapeType == ShapeMaskedColor)
+            {
+                _context.PSSetShaderResources(0, [_shapeView, _maskedBackgroundView!]);
+                _context.PSSetShader(_psMasked);
+                _context.OMSetBlendState(null);
+                _context.Draw(4, 0);
+            }
             else
             {
                 // Два прохода, как у Windows: сначала И с маской, потом ИСКЛ.ИЛИ
@@ -152,7 +169,7 @@ internal sealed class CursorOverlay : IDisposable
             }
 
             // Снимаем привязки: тот же кадр следом читает видеопроцессор
-            _context.PSSetShaderResources(0, [null!]);
+            _context.PSSetShaderResources(0, [null!, null!]);
             _context.OMSetRenderTargets((ID3D11RenderTargetView)null!);
             _context.OMSetBlendState(null);
         }
@@ -178,8 +195,8 @@ internal sealed class CursorOverlay : IDisposable
 
         var pixels = _shapeType switch
         {
-            ShapeMonochrome => ExpandMonochrome(buffer, width, height, (int)shape.Pitch),
-            ShapeMaskedColor => ExpandMaskedColor(buffer, width, height, (int)shape.Pitch),
+            ShapeMonochrome => CursorShapePixels.ExpandMonochrome(buffer, width, height, (int)shape.Pitch),
+            ShapeMaskedColor => CursorShapePixels.ExpandMaskedColor(buffer, width, height, (int)shape.Pitch),
             _ => CopyColor(buffer, width, height, (int)shape.Pitch)
         };
 
@@ -211,61 +228,6 @@ internal sealed class CursorOverlay : IDisposable
         _shapeHeight = height;
     }
 
-    /// <summary>
-    /// Монохромный курсор: две битовые маски подряд. Раскладываем так, чтобы каждый
-    /// проход отрисовки просто взял свой канал: синий — маска AND, зелёный — XOR.
-    /// </summary>
-    private static byte[] ExpandMonochrome(byte[] buffer, int width, int height, int pitch)
-    {
-        var pixels = new byte[width * height * 4];
-        for (int y = 0; y < height; y++)
-        {
-            int andRow = y * pitch;
-            int xorRow = (y + height) * pitch;
-            for (int x = 0; x < width; x++)
-            {
-                int mask = 0x80 >> (x & 7);
-                int index = x >> 3;
-
-                bool andBit = andRow + index < buffer.Length && (buffer[andRow + index] & mask) != 0;
-                bool xorBit = xorRow + index < buffer.Length && (buffer[xorRow + index] & mask) != 0;
-
-                int p = (y * width + x) * 4;
-                pixels[p + 0] = andBit ? (byte)255 : (byte)0; // B — маска AND
-                pixels[p + 1] = xorBit ? (byte)255 : (byte)0; // G — маска XOR
-                pixels[p + 2] = 0;
-                pixels[p + 3] = 255;
-            }
-        }
-        return pixels;
-    }
-
-    /// <summary>
-    /// Маскированный цветной приводим к тем же двум маскам: альфа 0 — положить цвет
-    /// (маска AND = 0, XOR = цвет), альфа 255 — инвертировать фон (AND = 1, XOR = 1).
-    /// </summary>
-    private static byte[] ExpandMaskedColor(byte[] buffer, int width, int height, int pitch)
-    {
-        var pixels = new byte[width * height * 4];
-        for (int y = 0; y < height; y++)
-        {
-            int row = y * pitch;
-            for (int x = 0; x < width; x++)
-            {
-                int source = row + x * 4;
-                if (source + 3 >= buffer.Length) continue;
-
-                bool invert = buffer[source + 3] != 0;
-                int p = (y * width + x) * 4;
-                pixels[p + 0] = invert ? (byte)255 : (byte)0;              // AND
-                pixels[p + 1] = invert ? (byte)255 : buffer[source + 0];   // XOR (цвет как есть)
-                pixels[p + 2] = invert ? (byte)255 : buffer[source + 1];
-                pixels[p + 3] = invert ? (byte)255 : buffer[source + 2];
-            }
-        }
-        return pixels;
-    }
-
     private static byte[] CopyColor(byte[] buffer, int width, int height, int pitch)
     {
         var pixels = new byte[width * height * 4];
@@ -294,8 +256,9 @@ internal sealed class CursorOverlay : IDisposable
     // короче, чем текст: на Windows 10 у друга сборка обрывалась на 26-й строке с
     // «unexpected end of file», хотя на машине разработчика всё компилировалось.
     // Пояснения к шейдеру — здесь, в коде:
-    //   PsAnd   — выдаёт маску AND (синий канал текстуры формы)
-    //   PsXor   — выдаёт маску XOR (зелёный; для маскированного цветного там же цвет)
+    //   PsAnd   — выдаёт маску AND (alpha текстуры формы)
+    //   PsXor   — выдаёт монохромную маску XOR
+    //   PsMasked — заменяет цвет или XOR-ит его с маленькой копией фона
     //   PsColor — обычный цветной курсор с прозрачностью
     private const string ShaderSource = """
         struct VsOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
@@ -310,23 +273,36 @@ internal sealed class CursorOverlay : IDisposable
         }
 
         Texture2D Shape : register(t0);
+        Texture2D Background : register(t1);
         SamplerState Point : register(s0);
 
         float4 PsAnd(VsOut i) : SV_Target
         {
-            float a = Shape.Sample(Point, i.uv).b;
+            float a = Shape.Sample(Point, i.uv).a;
             return float4(a, a, a, 1);
         }
 
         float4 PsXor(VsOut i) : SV_Target
         {
-            float3 x = Shape.Sample(Point, i.uv).gra;
+            float3 x = Shape.Sample(Point, i.uv).rgb;
             return float4(x, 1);
         }
 
         float4 PsColor(VsOut i) : SV_Target
         {
             return Shape.Sample(Point, i.uv);
+        }
+
+        float4 PsMasked(VsOut i) : SV_Target
+        {
+            float4 shape = Shape.Sample(Point, i.uv);
+            uint3 rgb = (uint3)round(shape.rgb * 255.0);
+            if (shape.a >= 0.5)
+            {
+                uint3 background = (uint3)round(Background.Sample(Point, i.uv).rgb * 255.0);
+                rgb ^= background;
+            }
+            return float4((float3)rgb / 255.0, 1);
         }
 
         """;
@@ -338,6 +314,7 @@ internal sealed class CursorOverlay : IDisposable
             _vs = _device.CreateVertexShader(Compiler.Compile(ShaderSource, "VsMain", "cursor.hlsl", "vs_4_0").Span);
             _psAnd = _device.CreatePixelShader(Compiler.Compile(ShaderSource, "PsAnd", "cursor.hlsl", "ps_4_0").Span);
             _psXor = _device.CreatePixelShader(Compiler.Compile(ShaderSource, "PsXor", "cursor.hlsl", "ps_4_0").Span);
+            _psMasked = _device.CreatePixelShader(Compiler.Compile(ShaderSource, "PsMasked", "cursor.hlsl", "ps_4_0").Span);
             _psColor = _device.CreatePixelShader(Compiler.Compile(ShaderSource, "PsColor", "cursor.hlsl", "ps_4_0").Span);
 
             _sampler = _device.CreateSamplerState(new SamplerDescription
@@ -352,8 +329,10 @@ internal sealed class CursorOverlay : IDisposable
 
             // фон · маска
             _blendAnd = _device.CreateBlendState(Blend(Vortice.Direct3D11.Blend.Zero, Vortice.Direct3D11.Blend.SourceColor));
-            // маска·(1−фон) + фон·(1−маска) — точное ИСКЛ.ИЛИ для масок 0/1
-            _blendXor = _device.CreateBlendState(Blend(Vortice.Direct3D11.Blend.InverseDestinationColor, Vortice.Direct3D11.Blend.InverseSourceColor));
+            // Для монохромного XOR 0/1 арифметическое смешивание даёт точный битовый результат.
+            _blendXor = _device.CreateBlendState(Blend(
+                Vortice.Direct3D11.Blend.InverseDestinationColor,
+                Vortice.Direct3D11.Blend.InverseSourceColor));
             // обычная прозрачность для цветных курсоров
             _blendAlpha = _device.CreateBlendState(Blend(Vortice.Direct3D11.Blend.SourceAlpha, Vortice.Direct3D11.Blend.InverseSourceAlpha));
             return true;
@@ -380,12 +359,53 @@ internal sealed class CursorOverlay : IDisposable
         return description;
     }
 
+    /// <summary>
+    /// Копирует только пересечение курсора с кадром. Позиция назначения сохраняет
+    /// координаты внутри полной формы, поэтому UV шейдера совпадает и у краёв экрана.
+    /// </summary>
+    private void CopyMaskedBackground(ID3D11Texture2D frame, int left, int top,
+                                      int frameWidth, int frameHeight)
+    {
+        if (_maskedBackground is null ||
+            _maskedBackground.Description.Width != (uint)_shapeWidth ||
+            _maskedBackground.Description.Height != (uint)_shapeHeight)
+        {
+            _maskedBackgroundView?.Dispose();
+            _maskedBackground?.Dispose();
+            _maskedBackground = _device.CreateTexture2D(new Texture2DDescription
+            {
+                Width = (uint)_shapeWidth,
+                Height = (uint)_shapeHeight,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = frame.Description.Format,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.ShaderResource
+            });
+            _maskedBackgroundView = _device.CreateShaderResourceView(_maskedBackground);
+        }
+
+        int sourceLeft = Math.Max(0, left);
+        int sourceTop = Math.Max(0, top);
+        int sourceRight = Math.Min(frameWidth, left + _shapeWidth);
+        int sourceBottom = Math.Min(frameHeight, top + _shapeHeight);
+        if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return;
+
+        var sourceBox = new Box(sourceLeft, sourceTop, 0, sourceRight, sourceBottom, 1);
+        _context.CopySubresourceRegion(
+            _maskedBackground, 0,
+            (uint)(sourceLeft - left), (uint)(sourceTop - top), 0,
+            frame, 0, sourceBox);
+    }
+
     public void Dispose()
     {
+        _maskedBackgroundView?.Dispose(); _maskedBackground?.Dispose();
         _targetView?.Dispose(); _target = null;
         _shapeView?.Dispose(); _shape?.Dispose();
         _blendAlpha?.Dispose(); _blendXor?.Dispose(); _blendAnd?.Dispose();
         _sampler?.Dispose();
-        _psColor?.Dispose(); _psXor?.Dispose(); _psAnd?.Dispose(); _vs?.Dispose();
+        _psColor?.Dispose(); _psMasked?.Dispose(); _psXor?.Dispose(); _psAnd?.Dispose(); _vs?.Dispose();
     }
 }

@@ -242,9 +242,11 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                 // одного кадра, и одноразовый захват отваливался по таймауту.
                 // Позицию и форму курсора забираем ДО отбора кадров: система присылает
                 // их и в кадрах, где картинка не менялась, а второй раз их не повторит.
-                _cursor?.Update(dup, frameInfo);
+                bool cursorChanged = _cursor?.Update(dup, frameInfo) == true;
 
-                if (frameInfo.AccumulatedFrames == 0 && !_firstFrameSinceStart) continue;
+                if (!DesktopFramePolicy.ShouldCapture(
+                        frameInfo.AccumulatedFrames, _firstFrameSinceStart, cursorChanged))
+                    continue;
                 _firstFrameSinceStart = false;
 
                 Interlocked.Increment(ref _framesReceived);

@@ -42,6 +42,9 @@
     <Compile Include="..\..\src\Aura\Core\System\TrustedUrl.cs" Link="App\TrustedUrl.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioFormat.cs" Link="App\AudioFormat.cs" />
     <Compile Include="..\..\src\Aura\Core\GameDetection\GameDatabase.cs" Link="App\GameDatabase.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\CursorShapePixels.cs" Link="App\CursorShapePixels.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\DesktopFramePolicy.cs" Link="App\DesktopFramePolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
   </ItemGroup>
 
 </Project>

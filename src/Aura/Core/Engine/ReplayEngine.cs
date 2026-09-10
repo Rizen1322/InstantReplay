@@ -644,10 +644,21 @@ public sealed class ReplayEngine : IDisposable
 
     private void StartCaptureWatchdog()
     {
+        _watchdog?.Dispose();
+        _watchdog = null;
+
+        // DDA не присылает кадры, пока изображение рабочего стола не меняется —
+        // это штатное поведение AcquireNextFrame, а не зависание. Его состояние
+        // контролируется через ACCESS_LOST/Failed внутри самого источника.
+        if (_capture is DesktopDuplicationSource)
+        {
+            Log.Info("Engine", "Watchdog тишины не нужен для Desktop Duplication");
+            return;
+        }
+
         _wdLastReceived = -1;
         _wdFailures = 0;
         _wdLastActivity = DateTime.UtcNow;
-        _watchdog?.Dispose();
         _watchdog = new System.Threading.Timer(_ =>
         {
             var cap = _capture;

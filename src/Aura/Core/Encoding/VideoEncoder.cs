@@ -319,14 +319,12 @@ public sealed class VideoEncoder : IDisposable
         // «ICodecAPI 9d3ecd55…: Value does not fall within the expected range».
         // Оставляем документированный VT_BOOL для тех MFT, где ключ работает,
         // а до NVENC добираемся двумя другими ключами ниже.
-        _codecApi.Set(CodecApiGuids.AVEncCommonLowLatency, false, optional: true);
+        _codecApi.Set(CodecApiGuids.AVEncCommonLowLatency, true, optional: true);
 
-        // Aura пишет локальный Replay Buffer, а не передаёт интерактивный стрим:
-        // задержка в несколько кадров здесь невидима. Microsoft прямо указывает,
-        // что low-latency может снижать качество и запрещает энкодеру использовать
-        // много кадров одновременно для более точного анализа. Выключаем его;
-        // если кодировщик не вытянет высокий пресет, QualityAdapter сам откатится.
-        _codecApi.Set(CodecApiGuids.AVLowLatencyMode, false);
+        // На NVIDIA этот режим нужен не только для задержки: под игровой нагрузкой
+        // без него MFT в реальном логе запрашивал лишь 39–44 кадра/с при полной
+        // очереди. С ним тот же NVENC держал целевые 60 кадров/с.
+        _codecApi.Set(CodecApiGuids.AVLowLatencyMode, true);
 
         // Буфер VBV — запас, из которого энкодер берёт биты на резкое усложнение
         // картинки, не разваливая её в блоки. Задаётся СТРОГО ПОСЛЕ режима низкой
@@ -502,22 +500,25 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     private bool EncoderIsBehind()
     {
+        bool requestWaitingForFrame = Volatile.Read(ref _inputRequestWaitingForFrame) != 0;
         long now = NowQpcTicks();
         long elapsed = now - _rateWindowStart;
-        if (elapsed < 10_000_000) return _encoderBehind;   // окно — секунда
+        if (elapsed < 10_000_000)
+            return requestWaitingForFrame ? false : _encoderBehind;   // окно — секунда
 
         long requests = Interlocked.Read(ref InputRequests);
         double perSecond = (requests - _rateWindowRequests) * 10_000_000.0 / elapsed;
 
         _rateWindowStart = now;
         _rateWindowRequests = requests;
-        _encoderBehind = perSecond < Fps * 0.75;
+        _encoderBehind = EncoderPacingPolicy.IsBehind(perSecond, Fps, requestWaitingForFrame);
         return _encoderBehind;
     }
 
     private long _rateWindowStart;
     private long _rateWindowRequests;
     private volatile bool _encoderBehind;
+    private int _inputRequestWaitingForFrame;
 
     private void PacerLoopCore()
     {
@@ -621,7 +622,15 @@ public sealed class VideoEncoder : IDisposable
             {
                 if (!_needInput.Wait(200)) continue;      // ждём запрос NeedInput
                 bool gotFrame = false;
-                while (_running && !(gotFrame = _inputAvailable.Wait(200))) { } // ждём кадр, запрос держим
+                Volatile.Write(ref _inputRequestWaitingForFrame, 1);
+                try
+                {
+                    while (_running && !(gotFrame = _inputAvailable.Wait(200))) { } // ждём кадр, запрос держим
+                }
+                finally
+                {
+                    Volatile.Write(ref _inputRequestWaitingForFrame, 0);
+                }
                 if (!gotFrame) break;
 
                 (ID3D11Texture2D tex, long ticks) item;
