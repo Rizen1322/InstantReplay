@@ -506,7 +506,7 @@ public partial class App : Application
     /// </summary>
     private static void AskBorderlessPermission()
     {
-        if (!Core.Capture.ScreenCaptureFactory.UsesWgc) return;      // без WGC рамки нет вовсе
+        if (Core.Capture.ScreenCaptureFactory.Selection.Backend != Core.Capture.CaptureBackend.Wgc) return;
         if (Core.Capture.CaptureAccess.BorderlessGranted) return;
 
         Services.Notifications.Show(NotificationKind.Warning, "Windows рисует рамку записи",

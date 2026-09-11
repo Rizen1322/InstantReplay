@@ -141,7 +141,7 @@ public static class ScreenshotService
         var tcs = new TaskCompletionSource<(byte[] Bgra, int W, int H)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var source = ScreenCaptureFactory.Create(monitorIndex);
+        using var source = ScreenCaptureFactory.Create(ScreenCaptureFactory.Selection.Backend, monitorIndex);
         source.FrameArrived += (texture, _) =>
         {
             if (tcs.Task.IsCompleted) return;

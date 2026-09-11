@@ -77,9 +77,13 @@ public static class ScreenCaptureFactory
     /// Нужен уже здесь: устройство D3D создаётся на адаптере ЭТОГО монитора,
     /// а не на адаптере по умолчанию (см. <see cref="ScreenCaptureSource"/>).
     /// </param>
-    public static IScreenCapture Create(int monitorIndex)
+    internal static CaptureBackendSelection Selection => CaptureBackendPolicy.SelectInitial(
+        Environment.OSVersion.Version.Build,
+        Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE"));
+
+    public static IScreenCapture Create(CaptureBackend backend, int monitorIndex)
     {
-        if (UsesWgc)
+        if (backend == CaptureBackend.Wgc)
         {
             Logging.Log.Info("Capture", "Захват через Windows Graphics Capture");
             return new ScreenCaptureSource(monitorIndex);
@@ -89,21 +93,4 @@ public static class ScreenCaptureFactory
         return new DesktopDuplicationSource();
     }
 
-    /// <summary>
-    /// Достанется ли захвату WGC. По умолчанию false: DDA надёжнее для записи
-    /// монитора под полной игровой нагрузкой. Переменная окружения сохраняет оба
-    /// принудительных режима для сравнения на конкретном железе.
-    /// </summary>
-    public static bool UsesWgc
-    {
-        get
-        {
-            // Принудительный выбор для диагностики: INSTANTREPLAY_CAPTURE=dda | wgc
-            string? forced = Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE")?.Trim().ToLowerInvariant();
-            if (forced == "dda") return false;
-            if (forced == "wgc") return true;
-
-            return false;
-        }
-    }
 }

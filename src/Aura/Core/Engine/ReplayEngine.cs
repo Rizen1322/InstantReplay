@@ -211,7 +211,7 @@ public sealed class ReplayEngine : IDisposable
             else
                 _audioBuffer.Release();
 
-            _capture = ScreenCaptureFactory.Create(s.MonitorIndex);
+            _capture = ScreenCaptureFactory.Create(ScreenCaptureFactory.Selection.Backend, s.MonitorIndex);
             _capture.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
 
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
