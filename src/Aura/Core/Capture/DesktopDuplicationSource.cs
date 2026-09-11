@@ -138,57 +138,79 @@ public sealed class DesktopDuplicationSource : IScreenCapture
         // Ищем адаптер+выход по сквозному индексу монитора (тот же порядок, что у WGC-пути)
         IDXGIAdapter1? targetAdapter = null;
         IDXGIOutput? targetOutput = null;
-        int index = 0;
-        for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+        try
         {
-            bool used = false;
-            for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
-            {
-                if (index++ == _monitorIndex) { targetAdapter = adapter; targetOutput = output; used = true; break; }
-                output.Dispose();
-            }
-            if (used) break;
-            adapter.Dispose();
-        }
-
-        // Индекс вне диапазона — берём первый доступный выход
-        if (targetOutput is null)
-        {
+            int index = 0;
             for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
             {
-                if (adapter.EnumOutputs(0, out IDXGIOutput output).Success)
-                { targetAdapter = adapter; targetOutput = output; break; }
+                bool used = false;
+                for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
+                {
+                    if (index++ == _monitorIndex) { targetAdapter = adapter; targetOutput = output; used = true; break; }
+                    output.Dispose();
+                }
+                if (used) break;
                 adapter.Dispose();
             }
+
+            // Индекс вне диапазона — берём первый доступный выход
+            if (targetOutput is null)
+            {
+                for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
+                {
+                    if (adapter.EnumOutputs(0, out IDXGIOutput output).Success)
+                    { targetAdapter = adapter; targetOutput = output; break; }
+                    adapter.Dispose();
+                }
+            }
+            if (targetAdapter is null || targetOutput is null)
+                throw new InvalidOperationException("Мониторы не найдены");
+
+            var desc = targetOutput.Description;
+            Width = desc.DesktopCoordinates.Right - desc.DesktopCoordinates.Left;
+            Height = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
+
+            if (_device is null)
+            {
+                var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
+                FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
+                D3D11.D3D11CreateDevice(targetAdapter, DriverType.Unknown, flags, levels,
+                    out ID3D11Device device, out _, out ID3D11DeviceContext context).CheckError();
+                _device = device;
+                _context = context;
+
+                // Кодировщик и захват работают в разных потоках
+                using var mt = _device.QueryInterface<ID3D11Multithread>();
+                mt.SetMultithreadProtected(true);
+
+                GpuPriority.TryRaise(_device);
+            }
+
+            // Публикуем новые COM-объекты в поля только после успешного
+            // DuplicateOutput: при ошибке временные ссылки освободятся здесь же.
+            IDXGIOutput1? newOutput = null;
+            IDXGIOutputDuplication? newDuplication = null;
+            try
+            {
+                newOutput = targetOutput.QueryInterface<IDXGIOutput1>();
+                newDuplication = newOutput.DuplicateOutput(_device!);
+
+                _output = newOutput;
+                newOutput = null; // владение перешло в поле
+                _duplication = newDuplication;
+                newDuplication = null;
+            }
+            finally
+            {
+                newDuplication?.Dispose();
+                newOutput?.Dispose();
+            }
         }
-        if (targetAdapter is null || targetOutput is null)
-            throw new InvalidOperationException("Мониторы не найдены");
-
-        var desc = targetOutput.Description;
-        Width = desc.DesktopCoordinates.Right - desc.DesktopCoordinates.Left;
-        Height = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
-
-        if (_device is null)
+        finally
         {
-            var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
-            FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
-            D3D11.D3D11CreateDevice(targetAdapter, DriverType.Unknown, flags, levels,
-                out ID3D11Device device, out _, out ID3D11DeviceContext context).CheckError();
-            _device = device;
-            _context = context;
-
-            // Кодировщик и захват работают в разных потоках
-            using var mt = _device.QueryInterface<ID3D11Multithread>();
-            mt.SetMultithreadProtected(true);
-
-            GpuPriority.TryRaise(_device);
+            targetOutput?.Dispose();
+            targetAdapter?.Dispose();
         }
-
-        _output = targetOutput.QueryInterface<IDXGIOutput1>();
-        targetOutput.Dispose();
-        targetAdapter.Dispose();
-
-        _duplication = _output.DuplicateOutput(_device!);
     }
 
     /// <summary>Признак «этому потоку ещё работать». Свой на каждый запуск захвата.</summary>
@@ -205,7 +227,14 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             try
             {
                 var dup = _duplication;
-                if (dup is null) { Thread.Sleep(50); continue; }
+                if (dup is null)
+                {
+                    // Предыдущая попытка могла попасть в короткое окно E_ACCESSDENIED
+                    // при смене режима/secure desktop. Не остаёмся навсегда с null:
+                    // повторяем создание, пока доступ не вернётся или нас не остановят.
+                    RecreateDuplication(token);
+                    continue;
+                }
                 dupHeld = dup;
 
                 // Ритм захвата: ждём слот сетки ДО обращения к системе.
@@ -327,19 +356,45 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     private void RecreateDuplication(RunToken token)
     {
-        try
+        var result = DuplicationRecovery.Run(
+            isRunning: () => token.Running,
+            resetCurrent: () =>
+            {
+                _duplication?.Dispose(); _duplication = null;
+                _output?.Dispose(); _output = null;
+            },
+            create: CreateDeviceAndDuplication,
+            delay: Thread.Sleep,
+            isTemporary: IsTemporaryDuplicationFailure,
+            temporaryFailure: ex =>
+                Log.Warn("Capture", $"Не удалось восстановить дупликацию: {ex.Message}"));
+
+        if (result.Status == DuplicationRecoveryStatus.Restored)
         {
-            _duplication?.Dispose(); _duplication = null;
-            _output?.Dispose(); _output = null;
-            Thread.Sleep(200); // системе нужно время на смену режима
-            if (!token.Running) return; // захват уже останавливают — не создаём заново
-            CreateDeviceAndDuplication();
+            Log.Info("Capture", "Дупликация восстановлена");
+            return;
         }
-        catch (Exception ex)
+
+        if (result.Status == DuplicationRecoveryStatus.Failed && result.Error is { } error)
         {
-            Log.Warn("Capture", $"Не удалось восстановить дупликацию: {ex.Message}");
-            Thread.Sleep(500);
+            token.Running = false;
+            Log.Warn("Capture", $"Дупликацию нельзя восстановить на текущем GPU-устройстве: {error.Message}");
+            Failed?.Invoke(error);
         }
+    }
+
+    private static bool IsTemporaryDuplicationFailure(Exception ex)
+    {
+        for (Exception? current = ex; current is not null; current = current.InnerException)
+        {
+            int code = current is SharpGen.Runtime.SharpGenException sharpGen
+                ? sharpGen.ResultCode.Code
+                : current.HResult;
+            if (DuplicationRecovery.IsTemporaryHResult(code))
+                return true;
+        }
+
+        return false;
     }
 
     public void Stop()

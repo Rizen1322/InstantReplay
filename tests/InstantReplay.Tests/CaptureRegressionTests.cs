@@ -80,4 +80,92 @@ public sealed class CaptureRegressionTests
             firstFrameSinceStart: false,
             cursorChanged: false));
     }
+
+    [Fact]
+    public void DuplicationRecoveryRetriesTemporaryFailuresUntilSuccess()
+    {
+        int attempts = 0;
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true,
+            resetCurrent: () => { },
+            create: () =>
+            {
+                attempts++;
+                if (attempts < 3) throw new UnauthorizedAccessException();
+            },
+            delay: _ => { },
+            isTemporary: ex => ex is UnauthorizedAccessException);
+
+        Assert.Equal(DuplicationRecoveryStatus.Restored, result.Status);
+        Assert.Null(result.Error);
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
+    public void DuplicationRecoveryStopsRetryingWhenCaptureStops()
+    {
+        bool running = true;
+        int attempts = 0;
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => running,
+            resetCurrent: () => { },
+            create: () =>
+            {
+                attempts++;
+                throw new UnauthorizedAccessException();
+            },
+            delay: milliseconds =>
+            {
+                if (milliseconds == DuplicationRecovery.RetryDelayMilliseconds)
+                    running = false;
+            },
+            isTemporary: ex => ex is UnauthorizedAccessException);
+
+        Assert.Equal(DuplicationRecoveryStatus.Stopped, result.Status);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public void DuplicationRecoveryEscalatesPermanentFailureWithoutLooping()
+    {
+        int attempts = 0;
+        var permanent = new InvalidOperationException("wrong adapter");
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true,
+            resetCurrent: () => { },
+            create: () =>
+            {
+                attempts++;
+                throw permanent;
+            },
+            delay: _ => { },
+            isTemporary: _ => false);
+
+        Assert.Equal(DuplicationRecoveryStatus.Failed, result.Status);
+        Assert.Same(permanent, result.Error);
+        Assert.Equal(1, attempts);
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x80070005))] // E_ACCESSDENIED: secure desktop / смена режима
+    [InlineData(unchecked((int)0x887A0004))] // DXGI_ERROR_UNSUPPORTED: текущий desktop mode
+    [InlineData(unchecked((int)0x887A0022))] // DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
+    [InlineData(unchecked((int)0x887A0025))] // DXGI_ERROR_MODE_CHANGE_IN_PROGRESS
+    [InlineData(unchecked((int)0x887A0026))] // DXGI_ERROR_ACCESS_LOST
+    [InlineData(unchecked((int)0x887A0028))] // DXGI_ERROR_SESSION_DISCONNECTED
+    public void DuplicationRecoveryRecognizesTemporaryHResults(int hresult)
+    {
+        Assert.True(DuplicationRecovery.IsTemporaryHResult(hresult));
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x80070057))] // E_INVALIDARG: неверный адаптер
+    [InlineData(unchecked((int)0x887A0005))] // DXGI_ERROR_DEVICE_REMOVED
+    public void DuplicationRecoveryEscalatesNonTemporaryHResults(int hresult)
+    {
+        Assert.False(DuplicationRecovery.IsTemporaryHResult(hresult));
+    }
 }

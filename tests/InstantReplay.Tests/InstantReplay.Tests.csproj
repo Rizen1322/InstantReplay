@@ -44,6 +44,7 @@
     <Compile Include="..\..\src\Aura\Core\GameDetection\GameDatabase.cs" Link="App\GameDatabase.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CursorShapePixels.cs" Link="App\CursorShapePixels.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DesktopFramePolicy.cs" Link="App\DesktopFramePolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\DuplicationRecovery.cs" Link="App\DuplicationRecovery.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
   </ItemGroup>
 
