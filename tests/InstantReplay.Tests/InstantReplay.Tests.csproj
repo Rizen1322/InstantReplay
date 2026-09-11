@@ -46,6 +46,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\DesktopFramePolicy.cs" Link="App\DesktopFramePolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureBackendPolicy.cs" Link="App\CaptureBackendPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFailure.cs" Link="App\CaptureFailure.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DuplicationRecovery.cs" Link="App\DuplicationRecovery.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
   </ItemGroup>
