@@ -63,15 +63,11 @@ public delegate bool LiveFrameProvider(UseFrame use);
 public static class ScreenCaptureFactory
 {
     /// <summary>
-    /// Для записи всего монитора используем Desktop Duplication на любой Windows.
-    ///
-    /// Причина не теоретическая: на RTX 3070 в borderless-игре с незажатым FPS
-    /// WGC отдавал 19–24 новых кадра/с, пока сам NVENC стабильно кодировал 60/с.
-    /// Desktop Duplication получает уже представленный рабочий стол напрямую через
-    /// DXGI, поддерживает полноэкранный DirectX и не зависит от WGC-сессии DWM.
-    /// Курсор эта реализация теперь дорисовывает сама, а рамки захвата у неё нет.
-    ///
-    /// WGC оставлен для диагностики через INSTANTREPLAY_CAPTURE=wgc.
+    /// Windows 11 стартует с WGC: Windows сама композит курсор и этот
+    /// путь лучше переживает обычные fullscreen/borderless-переходы. Windows 10
+    /// стартует с DDA, чтобы не было неотключаемой рамки захвата. Движок
+    /// может автоматически выбрать второй backend при отказе или доказанном
+    /// голодании WGC. INSTANTREPLAY_CAPTURE=wgc|dda оставлен только как diagnostic override.
     /// </summary>
     /// <param name="monitorIndex">
     /// Нужен уже здесь: устройство D3D создаётся на адаптере ЭТОГО монитора,

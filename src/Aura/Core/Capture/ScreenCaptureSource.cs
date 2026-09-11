@@ -284,10 +284,18 @@ public sealed class ScreenCaptureSource : IScreenCapture
             // Смена разрешения монитора — пересоздаём пул
             if (frame.ContentSize.Width != Width || frame.ContentSize.Height != Height)
             {
+                int previousWidth = Width;
+                int previousHeight = Height;
                 Width = frame.ContentSize.Width;
                 Height = frame.ContentSize.Height;
                 sender.Recreate(_winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, PoolSizeFor(Height),
                     new SizeInt32 { Width = Width, Height = Height });
+                var formatError = new InvalidOperationException(
+                    $"Размер экрана изменился: {previousWidth}x{previousHeight} → {Width}x{Height}");
+                Log.Warn("Capture", $"WGC: {formatError.Message} — пересобираю видеоконвейер");
+                Failed?.Invoke(new CaptureFailure(
+                    CaptureFailureKind.CaptureFormatChanged, formatError,
+                    "WGC: сменился режим монитора"));
                 return;
             }
 

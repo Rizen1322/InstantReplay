@@ -38,6 +38,7 @@ public sealed class ReplayEngine : IDisposable
     private VideoCodec _bufferCodec;
     private int _bufferWidth, _bufferHeight, _bufferFps;
     private byte[]? _bufferSequenceHeader;
+    private volatile bool _encodedStreamReady;
 
     private readonly ReplayVideoBuffer _videoBuffer = new();
     private readonly ReplayAudioBuffer _audioBuffer = new();
@@ -88,6 +89,7 @@ public sealed class ReplayEngine : IDisposable
     private readonly HashSet<string> _reservedPaths = new(StringComparer.OrdinalIgnoreCase);
 
     private volatile EngineState _state = EngineState.Stopped;
+    private readonly object _stateSync = new();
     public EngineState State => _state;
     public event Action<EngineState>? StateChanged;
     /// <summary>
@@ -291,6 +293,7 @@ public sealed class ReplayEngine : IDisposable
             encoder.Initialize(_capture.D3DDevice, _processor.OutWidth, _processor.OutHeight,
                                s.Fps, s.BitrateBps, s.Codec);
             bool awaitingRestartKeyframe = validateSequenceHeader;
+            _encodedStreamReady = !awaitingRestartKeyframe;
             encoder.FrameEncoded += frame =>
             {
                 // До первого keyframe нового MFT кадры не добавляем: их
@@ -309,6 +312,7 @@ public sealed class ReplayEngine : IDisposable
                     }
                     _bufferSequenceHeader = currentSequenceHeader;
                     awaitingRestartKeyframe = false;
+                    _encodedStreamReady = true;
                 }
                 else if (frame.IsKeyframe)
                 {
@@ -487,9 +491,19 @@ public sealed class ReplayEngine : IDisposable
                             if (_stopRequested ||
                                 restartGeneration != Interlocked.Read(ref _captureGeneration)) return;
                             StartLocked(preserveBuffers: true, candidate);
+                            if (_stopRequested)
+                            {
+                                StopLocked(PipelineStopIntent.UserStop);
+                                return;
+                            }
                             // Читаем intent под тем же lifecycle-lock: если человек
                             // нажал «остановить» в промежутке, новый файл не создаём.
                             if (_continuousRecordingRequested) StartRecordingLocked();
+                            if (_stopRequested)
+                            {
+                                StopLocked(PipelineStopIntent.UserStop);
+                                return;
+                            }
                         }
                         Log.Info("Engine", $"Конвейер восстановлен на {candidate} (попытка {attempt})");
                         Warning?.Invoke("Запись восстановлена");
@@ -968,6 +982,7 @@ public sealed class ReplayEngine : IDisposable
 
         // Гасим ворота и отписываемся: с этого момента новые кадры в конвейер не идут
         _pipelineOpen = false;
+        _encodedStreamReady = false;
         if (_capture is not null)
         {
             _capture.FrameArrived -= OnFrame;
@@ -1110,7 +1125,8 @@ public sealed class ReplayEngine : IDisposable
 
     private void SaveReplayLocked(int? secondsOverride)
     {
-        if (_state != EngineState.Running || _encoder?.OutputMediaType is null) return;
+        if (_state != EngineState.Running || !_encodedStreamReady ||
+            _encoder?.OutputMediaType is null) return;
 
         DumpStats("к моменту сохранения"); // короткий сеанс тоже должен оставить следы в логе
 
@@ -1200,7 +1216,7 @@ public sealed class ReplayEngine : IDisposable
                 // иначе память, занятая под клип, остаётся за процессом до выхода.
                 Diagnostics.MemoryMap.Log("после сохранения");
                 self.Priority = previousPriority;      // поток уходит обратно в пул потоков
-                SetState(_state == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
+                CompleteSavingState();
             }
         });
         lease = null; // владение ресурсами снимка перешло фоновой задаче
@@ -1274,7 +1290,7 @@ public sealed class ReplayEngine : IDisposable
             _continuousRecordingRequested = true;
             // Recovery уже владеет обязанностью поднять конвейер. Здесь достаточно
             // записать пользовательский intent; новый сегмент откроется после старта.
-            if (Volatile.Read(ref _recovering) != 0) return;
+            if (_state == EngineState.Recovering) return;
             try
             {
                 StartRecordingLocked();
@@ -1384,8 +1400,25 @@ public sealed class ReplayEngine : IDisposable
 
     private void SetState(EngineState st)
     {
-        _state = st;
+        lock (_stateSync) _state = st;
         StateChanged?.Invoke(st);
+    }
+
+    /// <summary>
+    /// Фоновое сохранение не имеет права затереть более новое состояние recovery.
+    /// Переход выполняется атомарно относительно SetState, но без lifecycle-lock:
+    /// StopLocked может ждать эту задачу, уже удерживая lifecycle.
+    /// </summary>
+    private void CompleteSavingState()
+    {
+        EngineState next;
+        lock (_stateSync)
+        {
+            if (_state != EngineState.Saving) return;
+            next = _pipelineOpen ? EngineState.Running : EngineState.Stopped;
+            _state = next;
+        }
+        StateChanged?.Invoke(next);
     }
 
     public void Dispose()
