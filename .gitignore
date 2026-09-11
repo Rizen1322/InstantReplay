@@ -42,5 +42,8 @@ package-lock.json
 # Локальные настройки Claude Code этой машины
 .claude/settings.local.json
 
+# Изолированные рабочие деревья Codex/Claude
+.worktrees/
+
 # npm-зависимости (headroom-ai и т.п.) — ставятся локально через npm install
 node_modules/
