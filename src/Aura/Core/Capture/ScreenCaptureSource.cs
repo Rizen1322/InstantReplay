@@ -29,7 +29,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
     public event Action<ID3D11Texture2D, long>? FrameArrived;
 
     /// <inheritdoc />
-    public event Action<Exception>? Failed;
+    public event Action<CaptureFailure>? Failed;
 
     private readonly IDirect3DDevice _winrtDevice;
     private GraphicsCaptureItem? _item;
@@ -259,7 +259,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
         catch (Exception ex) when (DeviceLoss.IsDeviceLost(ex))
         {
             Log.Warn("Capture", $"WGC: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
-            Failed?.Invoke(ex);
+            Failed?.Invoke(new CaptureFailure(CaptureFailureKind.DeviceLost, ex, "WGC: потеряно GPU-устройство"));
         }
         catch (Exception ex)
         {

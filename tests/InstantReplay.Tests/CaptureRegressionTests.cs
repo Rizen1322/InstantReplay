@@ -168,4 +168,56 @@ public sealed class CaptureRegressionTests
     {
         Assert.False(DuplicationRecovery.IsTemporaryHResult(hresult));
     }
+
+    [Fact]
+    public void TemporaryDdaFailureWithinGracePeriodRestoresWithoutEscalation()
+    {
+        long elapsed = 0;
+        int attempts = 0;
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true,
+            resetCurrent: () => { },
+            create: () =>
+            {
+                if (++attempts < 6) throw new UnauthorizedAccessException();
+            },
+            delay: milliseconds => elapsed += milliseconds,
+            isTemporary: ex => ex is UnauthorizedAccessException,
+            maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => elapsed);
+
+        Assert.Equal(DuplicationRecoveryStatus.Restored, result.Status);
+        Assert.Equal(6, attempts);
+    }
+
+    [Fact]
+    public void TemporaryDdaFailurePastFiveSecondsTimesOutWithLastError()
+    {
+        long elapsed = 0;
+        var denied = new UnauthorizedAccessException();
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true,
+            resetCurrent: () => { },
+            create: () => throw denied,
+            delay: milliseconds => elapsed += milliseconds,
+            isTemporary: ex => ex is UnauthorizedAccessException,
+            maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => elapsed);
+
+        Assert.Equal(DuplicationRecoveryStatus.TimedOut, result.Status);
+        Assert.Same(denied, result.Error);
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x887A0005))]
+    [InlineData(unchecked((int)0x887A0006))]
+    [InlineData(unchecked((int)0x887A0007))]
+    [InlineData(unchecked((int)0x887A0020))]
+    [InlineData(unchecked((int)0xC00D3E85))]
+    public void DeviceLossHResultsAreClassified(int hresult)
+    {
+        Assert.True(CaptureFailureClassifier.IsDeviceLossHResult(hresult));
+    }
 }

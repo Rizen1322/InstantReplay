@@ -34,7 +34,7 @@ public interface IScreenCapture : IDisposable
     /// У DDA свой поток захвата, где исключение просто уходило в лог, и запись
     /// молча не возвращалась. Обоим нужен путь «сказать движку», и он один.
     /// </summary>
-    event Action<Exception>? Failed;
+    event Action<CaptureFailure>? Failed;
 
     /// <summary>
     /// Дать последний захваченный кадр во временное пользование (для скриншота).

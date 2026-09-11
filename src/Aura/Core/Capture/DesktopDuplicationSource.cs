@@ -34,7 +34,7 @@ public sealed class DesktopDuplicationSource : IScreenCapture
     public event Action<ID3D11Texture2D, long>? FrameArrived;
 
     /// <inheritdoc />
-    public event Action<Exception>? Failed;
+    public event Action<CaptureFailure>? Failed;
 
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
@@ -340,7 +340,7 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                 if (DeviceLoss.IsDeviceLost(ex))
                 {
                     Log.Warn("Capture", $"DDA: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
-                    Failed?.Invoke(ex);
+                    Failed?.Invoke(new CaptureFailure(CaptureFailureKind.DeviceLost, ex, "DDA: потеряно GPU-устройство"));
                     break;
                 }
                 Log.Error("Capture", ex);
@@ -366,6 +366,8 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             create: CreateDeviceAndDuplication,
             delay: Thread.Sleep,
             isTemporary: IsTemporaryDuplicationFailure,
+            maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => Environment.TickCount64,
             temporaryFailure: ex =>
                 Log.Warn("Capture", $"Не удалось восстановить дупликацию: {ex.Message}"));
 
@@ -375,11 +377,18 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             return;
         }
 
-        if (result.Status == DuplicationRecoveryStatus.Failed && result.Error is { } error)
+        if (result.Status is DuplicationRecoveryStatus.Failed or DuplicationRecoveryStatus.TimedOut &&
+            result.Error is { } error)
         {
             token.Running = false;
             Log.Warn("Capture", $"Дупликацию нельзя восстановить на текущем GPU-устройстве: {error.Message}");
-            Failed?.Invoke(error);
+            var kind = DeviceLoss.IsDeviceLost(error)
+                ? CaptureFailureKind.DeviceLost
+                : CaptureFailureKind.BackendUnavailable;
+            Failed?.Invoke(new CaptureFailure(kind, error,
+                result.Status == DuplicationRecoveryStatus.TimedOut
+                    ? "DDA: доступ не вернулся за 5 секунд"
+                    : "DDA: дупликация недоступна"));
         }
     }
 

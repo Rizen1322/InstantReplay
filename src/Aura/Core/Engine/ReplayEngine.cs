@@ -289,8 +289,8 @@ public sealed class ReplayEngine : IDisposable
     }
 
     /// <summary>Источник кадров сообщил о потере устройства — пересобираем конвейер.</summary>
-    private void OnCaptureFailed(Exception ex) =>
-        RecoverFromDeviceLoss($"источник кадров остановился: {ex.Message}");
+    private void OnCaptureFailed(CaptureFailure failure) =>
+        RecoverFromDeviceLoss($"источник кадров остановился: {failure.Reason}: {failure.Error.Message}");
 
     // ---------------- Восстановление после потери GPU-устройства ----------------
 
