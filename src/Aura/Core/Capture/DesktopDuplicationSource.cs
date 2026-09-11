@@ -356,6 +356,8 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     private void RecreateDuplication(RunToken token)
     {
+        int previousWidth = Width;
+        int previousHeight = Height;
         var result = DuplicationRecovery.Run(
             isRunning: () => token.Running,
             resetCurrent: () =>
@@ -373,6 +375,17 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
         if (result.Status == DuplicationRecoveryStatus.Restored)
         {
+            if (Width != previousWidth || Height != previousHeight)
+            {
+                token.Running = false;
+                var formatError = new InvalidOperationException(
+                    $"Размер экрана изменился: {previousWidth}x{previousHeight} → {Width}x{Height}");
+                Log.Warn("Capture", $"DDA: {formatError.Message} — пересобираю видеоконвейер");
+                Failed?.Invoke(new CaptureFailure(
+                    CaptureFailureKind.CaptureFormatChanged, formatError,
+                    "DDA: сменился режим монитора"));
+                return;
+            }
             Log.Info("Capture", "Дупликация восстановлена");
             return;
         }

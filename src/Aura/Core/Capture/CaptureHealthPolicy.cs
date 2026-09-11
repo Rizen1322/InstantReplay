@@ -101,10 +101,16 @@ internal sealed class CaptureHealthPolicy
         CaptureBackend active,
         CaptureFailureKind failureKind,
         bool backendForced,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        CaptureBackend? preferredBackend = null)
     {
-        if (backendForced || failureKind == CaptureFailureKind.DeviceLost)
+        if (backendForced || failureKind == CaptureFailureKind.CaptureFormatChanged)
             return active;
+        if (failureKind == CaptureFailureKind.DeviceLost)
+        {
+            CaptureBackend preferred = preferredBackend ?? active;
+            return CanUse(preferred, now) ? preferred : active;
+        }
 
         Quarantine(active, now,
             failureKind == CaptureFailureKind.BackendStalled

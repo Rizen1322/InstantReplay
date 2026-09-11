@@ -57,6 +57,18 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Параметры сжатого потока (SPS/PPS/VPS и аналог). Они появляются после
+    /// первого keyframe и определяют, можно ли смешивать кадры двух сессий MFT.
+    /// </summary>
+    public byte[]? TryGetSequenceHeader()
+    {
+        var type = OutputMediaType;
+        if (type is null) return null;
+        try { return type.GetBlob(MediaTypeAttributeKeys.MpegSequenceHeader); }
+        catch { return null; }
+    }
+
     public int Width { get; private set; }
     public int Height { get; private set; }
     public int Fps { get; private set; }

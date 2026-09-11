@@ -130,6 +130,32 @@ public sealed class CaptureHealthPolicyTests
     }
 
     [Fact]
+    public void DeviceLossReturnsToConfiguredPreferredBackend()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend selected = policy.SelectAfterFailure(
+            CaptureBackend.DesktopDuplication, CaptureFailureKind.DeviceLost,
+            backendForced: false, Now, preferredBackend: CaptureBackend.Wgc);
+
+        Assert.Equal(CaptureBackend.Wgc, selected);
+        Assert.True(policy.CanUse(CaptureBackend.DesktopDuplication, Now));
+    }
+
+    [Fact]
+    public void CaptureFormatChangeRebuildsSameBackendWithoutQuarantine()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend selected = policy.SelectAfterFailure(
+            CaptureBackend.DesktopDuplication, CaptureFailureKind.CaptureFormatChanged,
+            backendForced: false, Now);
+
+        Assert.Equal(CaptureBackend.DesktopDuplication, selected);
+        Assert.True(policy.CanUse(CaptureBackend.DesktopDuplication, Now));
+    }
+
+    [Fact]
     public void DiagnosticOverrideNeverChangesBackend()
     {
         var policy = new CaptureHealthPolicy();
