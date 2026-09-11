@@ -278,6 +278,18 @@ public sealed class ReplayVideoBuffer
         return Math.Max(5, (int)Math.Floor(seconds));
     }
 
+    /// <summary>
+    /// Подготовить RAM-арену к пересборке захвата. При том же формате ничего
+    /// не трогаем; при смене формата старые сжатые кадры нельзя смешивать с новыми,
+    /// поэтому перевыделяем арену, но ничего не пишем на диск.
+    /// </summary>
+    public bool PrepareForCaptureRestart(bool formatCompatible, long bitrateBps, int seconds)
+    {
+        if (formatCompatible) return true;
+        Allocate(bitrateBps, seconds);
+        return false;
+    }
+
     public void Add(EncodedFrame frame)
     {
         lock (_sync)

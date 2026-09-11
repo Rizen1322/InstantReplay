@@ -103,6 +103,57 @@ public sealed class CaptureHealthPolicyTests
         Assert.True(policy.TryRecordSwitch(Now.AddMinutes(11)));
     }
 
+    [Fact]
+    public void BackendUnavailableSelectsAlternativeAndQuarantinesFailedBackend()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend selected = policy.SelectAfterFailure(
+            CaptureBackend.Wgc, CaptureFailureKind.BackendUnavailable,
+            backendForced: false, Now);
+
+        Assert.Equal(CaptureBackend.DesktopDuplication, selected);
+        Assert.False(policy.CanUse(CaptureBackend.Wgc, Now.AddMinutes(1)));
+    }
+
+    [Fact]
+    public void DeviceLossRebuildsSameBackendWithoutQuarantine()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend selected = policy.SelectAfterFailure(
+            CaptureBackend.Wgc, CaptureFailureKind.DeviceLost,
+            backendForced: false, Now);
+
+        Assert.Equal(CaptureBackend.Wgc, selected);
+        Assert.True(policy.CanUse(CaptureBackend.Wgc, Now));
+    }
+
+    [Fact]
+    public void DiagnosticOverrideNeverChangesBackend()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend selected = policy.SelectAfterFailure(
+            CaptureBackend.Wgc, CaptureFailureKind.BackendUnavailable,
+            backendForced: true, Now);
+
+        Assert.Equal(CaptureBackend.Wgc, selected);
+    }
+
+    [Fact]
+    public void SoftStallSelectsAlternativeAndQuarantinesWgcForProcessSession()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend selected = policy.SelectAfterFailure(
+            CaptureBackend.Wgc, CaptureFailureKind.BackendStalled,
+            backendForced: false, Now);
+
+        Assert.Equal(CaptureBackend.DesktopDuplication, selected);
+        Assert.False(policy.CanUse(CaptureBackend.Wgc, Now.AddDays(30)));
+    }
+
     private static CaptureHealthSample StarvedWgc() => new(
         Backend: CaptureBackend.Wgc,
         TargetFps: 60,

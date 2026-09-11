@@ -96,4 +96,23 @@ internal sealed class CaptureHealthPolicy
             return true;
         }
     }
+
+    public CaptureBackend SelectAfterFailure(
+        CaptureBackend active,
+        CaptureFailureKind failureKind,
+        bool backendForced,
+        DateTimeOffset now)
+    {
+        if (backendForced || failureKind == CaptureFailureKind.DeviceLost)
+            return active;
+
+        Quarantine(active, now,
+            failureKind == CaptureFailureKind.BackendStalled
+                ? CaptureQuarantine.ProcessSession
+                : CaptureQuarantine.Transient);
+        CaptureBackend alternative = CaptureBackendPolicy.Alternative(active);
+        return CanUse(alternative, now) && TryRecordSwitch(now)
+            ? alternative
+            : active;
+    }
 }
