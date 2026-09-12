@@ -57,6 +57,8 @@ Each provider instance has a monotonically increasing generation. Callbacks, fai
 - immutable cursor revision used for composition;
 - an explicit `Free`, `Writing`, `Ready`, or `Reading` ownership state.
 
+For WGC, where Windows already composed the cursor, the clean and output roles may alias the same texture so the broker performs only one full-frame copy. For DDA they remain separate resources so cursor rendering can never modify the retained clean desktop image.
+
 The provider copies the acquired surface into a `Writing` slot, releases the Windows frame, and atomically publishes the slot as the newest `Ready` frame. The encoder leases only a completed `Ready` slot. A slot cannot be reused until its lease is returned. When the producer outruns the consumer, the broker discards the oldest unleased `Ready` slot and retains the newest image; it never blocks capture behind stale video.
 
 GPU commands use the existing multithread-protected immediate context. Command ordering on that context guarantees that the copy and cursor composition precede video processing. CPU ownership states prevent resource reuse or disposal while a frame callback is active. If a later implementation introduces deferred contexts or cross-device textures, it must add an explicit D3D synchronization primitive rather than relying on the current ordering guarantee.
