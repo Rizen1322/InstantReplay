@@ -11,7 +11,8 @@ public enum CaptureFailureKind
 public readonly record struct CaptureFailure(
     CaptureFailureKind Kind,
     Exception Error,
-    string Reason);
+    string Reason,
+    long Generation);
 
 internal static class CaptureFailureClassifier
 {

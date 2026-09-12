@@ -18,7 +18,7 @@ namespace Aura.Core.Capture;
 /// WGC работает и с fullscreen, и с borderless (в отличие от Desktop Duplication,
 /// WGC не отваливается при смене режимов и UAC).
 /// </summary>
-public sealed class ScreenCaptureSource : IScreenCapture
+internal sealed class ScreenCaptureSource : IScreenCapture
 {
     public ID3D11Device D3DDevice { get; }
     public ID3D11DeviceContext D3DContext { get; }
@@ -26,7 +26,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
     public int Height { get; private set; }
 
     /// <summary>Кадр: текстура BGRA в VRAM + время кадра (QPC, 100-нс тики).</summary>
-    public event Action<ID3D11Texture2D, long>? FrameArrived;
+    public event Action<CapturedSurface>? FrameArrived;
 
     /// <inheritdoc />
     public event Action<CaptureFailure>? Failed;
@@ -36,6 +36,11 @@ public sealed class ScreenCaptureSource : IScreenCapture
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _session;
     private readonly object _sync = new();
+    private int _monitorIndex;
+    private int _targetFps;
+    private long _generation;
+    private bool _prepared;
+    private bool _started;
 
     private long _minFrameIntervalTicks; // ограничение FPS на стороне захвата
     private long _nextFrameDeadline;     // абсолютный дедлайн следующего кадра (без биений)
@@ -44,6 +49,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
     public long FramesReceived => Interlocked.Read(ref _framesReceived);
     /// <summary>Сколько прошло фильтр и ушло в конвейер.</summary>
     public long FramesAccepted => Interlocked.Read(ref _framesAccepted);
+    public long InvalidCursorShapes => 0;
     private long _framesReceived, _framesAccepted;
 
     /// <summary>
@@ -62,7 +68,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
     /// Windows это меняет — отсюда «на прошлой винде такого не было» при том же железе.
     /// Desktop Duplication выбирал адаптер правильно с самого начала; теперь и WGC.
     /// </summary>
-    public ScreenCaptureSource(int monitorIndex)
+    internal ScreenCaptureSource(int monitorIndex)
     {
         var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
         FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
@@ -85,65 +91,6 @@ public sealed class ScreenCaptureSource : IScreenCapture
         GpuPriority.TryRaise(D3DDevice);
 
         _winrtDevice = CaptureInterop.CreateWinRtDevice(D3DDevice);
-    }
-
-    // ---------------- Кадр для скриншота ----------------
-    // Постоянную копию каждого кадра не держим: это лишняя копия в горячем пути.
-    // Вместо этого копия делается ПО ЗАПРОСУ — скриншот поднимает флаг, ближайший
-    // кадр копируется в переиспользуемую текстуру, и вызывающий получает её.
-    //
-    // Раньше здесь стоял просто `=> false`, и скриншот на Windows 11 каждый раз
-    // поднимал ВТОРУЮ сессию WGC: создание устройства, пула кадров и сессии, ожидание
-    // кадра и снос всего этого — на глазах у пользователя приложение подвисало
-    // на секунды. На Windows 10 (Desktop Duplication) кадр отдавался сразу, поэтому
-    // там проблемы и не было.
-    private readonly object _copyLock = new();
-    private ID3D11Texture2D? _frameCopy;
-    private readonly ManualResetEventSlim _copyReady = new(false);
-    private volatile bool _copyRequested;
-
-    public bool TryUseLatestFrame(Action<ID3D11Texture2D> use)
-    {
-        _copyReady.Reset();
-        _copyRequested = true;
-
-        // Полсекунды — с запасом на кадр даже при 2 fps на статичном экране
-        if (!_copyReady.Wait(500))
-        {
-            _copyRequested = false;
-            return false;
-        }
-
-        lock (_copyLock)
-        {
-            if (_frameCopy is null) return false;
-            use(_frameCopy);
-            return true;
-        }
-    }
-
-    /// <summary>Скопировать кадр в собственную текстуру (вызывается только по запросу).</summary>
-    private void CaptureCopy(ID3D11Texture2D source)
-    {
-        lock (_copyLock)
-        {
-            var desc = source.Description;
-            if (_frameCopy is null || _frameCopy.Description.Width != desc.Width
-                                   || _frameCopy.Description.Height != desc.Height)
-            {
-                _frameCopy?.Dispose();
-                _frameCopy = D3DDevice.CreateTexture2D(desc with
-                {
-                    Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.ShaderResource,
-                    CPUAccessFlags = CpuAccessFlags.None,
-                    MiscFlags = ResourceOptionFlags.None
-                });
-            }
-            D3DContext.CopyResource(_frameCopy, source);
-            D3DContext.Flush();
-        }
-        _copyReady.Set();
     }
 
     /// <summary>
@@ -189,14 +136,21 @@ public sealed class ScreenCaptureSource : IScreenCapture
         return monitors[Math.Clamp(index, 0, monitors.Count - 1)];
     }
 
-    public void Start(int monitorIndex, int targetFps, bool captureCursor = true)
+    public void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation)
     {
         lock (_sync)
         {
             StopInternal();
 
+            _monitorIndex = monitorIndex;
+            _targetFps = targetFps;
+            _generation = generation;
+            _prepared = false;
+            _started = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _nextFrameDeadline = 0;
+            Interlocked.Exchange(ref _framesReceived, 0);
+            Interlocked.Exchange(ref _framesAccepted, 0);
 
             _item = CaptureInterop.CreateItemForMonitor(GetMonitorHandle(monitorIndex));
             Width = _item.Size.Width;
@@ -237,10 +191,24 @@ public sealed class ScreenCaptureSource : IScreenCapture
             try { _session.IsCursorCaptureEnabled = captureCursor; }
             catch (Exception ex) { Log.Warn("Capture", $"Настройка курсора недоступна: {ex.Message}"); }
 
-            _session.StartCapture();
+            _prepared = true;
+        }
+    }
 
-            Log.Info("Capture", $"Захват запущен: монитор #{monitorIndex}, {Width}x{Height}, target {targetFps} fps");
-            LogAdapters(monitorIndex);
+    public void Start()
+    {
+        lock (_sync)
+        {
+            if (!_prepared || _session is null)
+                throw new InvalidOperationException("WGC не подготовлен");
+            if (_started)
+                throw new InvalidOperationException("WGC уже запущен");
+
+            _session.StartCapture();
+            _started = true;
+            Log.Info("Capture", $"Захват запущен: монитор #{_monitorIndex}, " +
+                                $"{Width}x{Height}, target {_targetFps} fps");
+            LogAdapters(_monitorIndex);
         }
     }
 
@@ -259,7 +227,9 @@ public sealed class ScreenCaptureSource : IScreenCapture
         catch (Exception ex) when (DeviceLoss.IsDeviceLost(ex))
         {
             Log.Warn("Capture", $"WGC: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
-            Failed?.Invoke(new CaptureFailure(CaptureFailureKind.DeviceLost, ex, "WGC: потеряно GPU-устройство"));
+            Failed?.Invoke(new CaptureFailure(
+                CaptureFailureKind.DeviceLost, ex,
+                "WGC: потеряно GPU-устройство", _generation));
         }
         catch (Exception ex)
         {
@@ -295,7 +265,7 @@ public sealed class ScreenCaptureSource : IScreenCapture
                 Log.Warn("Capture", $"WGC: {formatError.Message} — пересобираю видеоконвейер");
                 Failed?.Invoke(new CaptureFailure(
                     CaptureFailureKind.CaptureFormatChanged, formatError,
-                    "WGC: сменился режим монитора"));
+                    "WGC: сменился режим монитора", _generation));
                 return;
             }
 
@@ -318,15 +288,8 @@ public sealed class ScreenCaptureSource : IScreenCapture
             Interlocked.Increment(ref _framesAccepted);
             using var texture = CaptureInterop.GetTexture(frame.Surface);
 
-            // Скриншот попросил кадр — копируем его себе, пока текстура ещё жива
-            if (_copyRequested)
-            {
-                _copyRequested = false;
-                try { CaptureCopy(texture); }
-                catch (Exception ex) { Log.Warn("Capture", $"Копия кадра для скриншота: {ex.Message}"); }
-            }
-
-            FrameArrived?.Invoke(texture, ticks);
+            FrameArrived?.Invoke(new CapturedSurface(
+                texture, ticks, _generation, CaptureCursorUpdate.SystemComposed));
             // texture освобождается на каждой итерации; получатель обязан скопировать её
             // (GPU-copy в свою NV12-текстуру) внутри колбэка.
         }
@@ -364,13 +327,15 @@ public sealed class ScreenCaptureSource : IScreenCapture
 
     private void StopInternal()
     {
+        _prepared = false;
+        _started = false;
         _session?.Dispose(); _session = null;
         if (_framePool is not null) { _framePool.FrameArrived -= OnFrameArrived; _framePool.Dispose(); _framePool = null; }
         _item = null;
 
         // Отписка НЕ дожидается уже начатого колбэка: он FreeThreaded и в этот
-        // момент может быть внутри CaptureCopy или Recreate. Движок дожидается
-        // только своего OnFrame, а эти два вызова живут вне его ворот — то есть
+        // момент может быть внутри обработчика кадра или Recreate. Движок дожидается
+        // только своего обработчика, а Recreate живёт вне его ворот — то есть
         // без ожидания здесь Dispose освобождал бы устройство под ними.
         var deadline = Environment.TickCount64 + 2000;
         while (Volatile.Read(ref _callbacksInFlight) > 0 && Environment.TickCount64 < deadline)
@@ -386,8 +351,6 @@ public sealed class ScreenCaptureSource : IScreenCapture
     public void Dispose()
     {
         Stop();
-        lock (_copyLock) { _frameCopy?.Dispose(); _frameCopy = null; }
-        _copyReady.Dispose();
         _winrtDevice?.Dispose();
         D3DContext.Dispose();
         D3DDevice.Dispose();

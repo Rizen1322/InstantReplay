@@ -58,15 +58,13 @@ internal sealed class CursorOverlay : IDisposable
     private ID3D11Texture2D? _shape;
     private ID3D11ShaderResourceView? _shapeView;
     private int _shapeWidth, _shapeHeight, _shapeType;
-    private int _hotspotX, _hotspotY;
+    private long _shapeRevision = long.MinValue;
+    private DdaCursorShape? _uploadedShape;
 
     private ID3D11Texture2D? _target;
     private ID3D11RenderTargetView? _targetView;
     private ID3D11Texture2D? _maskedBackground;
     private ID3D11ShaderResourceView? _maskedBackgroundView;
-
-    private int _x, _y;
-    private bool _visible;
 
     public CursorOverlay(ID3D11Device device, ID3D11DeviceContext context)
     {
@@ -75,63 +73,31 @@ internal sealed class CursorOverlay : IDisposable
         _ready = TryBuildPipeline();
     }
 
-    /// <summary>Забрать из кадра позицию курсора и, если сменилась, его форму.</summary>
-    public bool Update(IDXGIOutputDuplication duplication, in OutduplFrameInfo info)
+    /// <summary>Копирует чистый кадр и накладывает только проверенный снимок курсора.</summary>
+    public void Compose(
+        ID3D11Texture2D clean,
+        ID3D11Texture2D output,
+        in DdaCursorSnapshot cursor)
     {
-        if (!_ready) return false;
-
-        bool changed = false;
-
-        // Позиция приходит только когда курсор двигался или менял видимость;
-        // в остальных кадрах поле нулевое и трогать состояние нельзя.
-        if (info.LastMouseUpdateTime != 0)
-        {
-            _visible = info.PointerPosition.Visible;
-            _x = info.PointerPosition.Position.X;
-            _y = info.PointerPosition.Position.Y;
-            changed = true;
-        }
-
-        if (info.PointerShapeBufferSize <= 0) return changed;
+        _context.CopyResource(output, clean);
 
         try
         {
-            var buffer = new byte[(int)info.PointerShapeBufferSize];
-            var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-            try
-            {
-                duplication.GetFramePointerShape((uint)buffer.Length, handle.AddrOfPinnedObject(),
-                    out uint _, out OutduplPointerShapeInfo shape).CheckError();
-                BuildShapeTexture(buffer, shape);
-                changed = true;
-            }
-            finally { handle.Free(); }
-        }
-        catch (Exception ex) { Log.Warn("Capture", $"Форма курсора не прочитана: {ex.Message}"); }
+            if (!_ready || !cursor.Visible || cursor.Shape is null) return;
 
-        return changed;
-    }
+            EnsureShapeTexture(cursor.Revision, cursor.Shape);
+            if (_shapeView is null || _shapeWidth <= 0) return;
 
-    /// <summary>Наложить курсор на кадр. Вызывается после того, как кадр возвращён системе.</summary>
-    public void Draw(ID3D11Texture2D frame)
-    {
-        if (!_ready || !_visible || _shapeView is null || _shapeWidth <= 0) return;
+            var desc = output.Description;
+            int frameWidth = (int)desc.Width, frameHeight = (int)desc.Height;
+            int left = cursor.X, top = cursor.Y;
+            if (left + _shapeWidth <= 0 || top + _shapeHeight <= 0 ||
+                left >= frameWidth || top >= frameHeight) return;
 
-        var desc = frame.Description;
-        int frameWidth = (int)desc.Width, frameHeight = (int)desc.Height;
-
-        // DXGI сообщает уже левый верхний угол bitmap формы, не положение hotspot.
-        // Повторное вычитание hotspot сдвигало некоторые курсоры вверх-влево.
-        var (left, top) = CursorShapePixels.GetDrawOrigin(
-            _x, _y, _hotspotX, _hotspotY);
-        if (left + _shapeWidth <= 0 || top + _shapeHeight <= 0 || left >= frameWidth || top >= frameHeight) return;
-
-        try
-        {
             if (_shapeType == ShapeMaskedColor)
-                CopyMaskedBackground(frame, left, top, frameWidth, frameHeight);
+                CopyMaskedBackground(output, left, top, frameWidth, frameHeight);
 
-            EnsureTargetView(frame);
+            EnsureTargetView(output);
             _context.OMSetRenderTargets(_targetView!);
             // Область вывода задаёт положение курсора: за краями экрана она может
             // уходить в минус, растеризатор обрежет сам. Так не нужен ни буфер
@@ -168,37 +134,32 @@ internal sealed class CursorOverlay : IDisposable
                 _context.Draw(4, 0);
             }
 
-            // Снимаем привязки: тот же кадр следом читает видеопроцессор
-            _context.PSSetShaderResources(0, [null!, null!]);
-            _context.OMSetRenderTargets((ID3D11RenderTargetView)null!);
-            _context.OMSetBlendState(null);
         }
         catch (Exception ex)
         {
             Log.Warn("Capture", $"Курсор не отрисован: {ex.Message}");
             _ready = false; // одной ошибки достаточно: не сыпать её каждый кадр
         }
+        finally
+        {
+            // Тот же output сразу читает видеопроцессор: никаких D3D-привязок не оставляем.
+            _context.PSSetShaderResources(0, [null!, null!]);
+            _context.OMSetRenderTargets((ID3D11RenderTargetView)null!);
+            _context.OMSetBlendState(null);
+        }
     }
 
     // ---------------- Форма курсора ----------------
 
-    private void BuildShapeTexture(byte[] buffer, OutduplPointerShapeInfo shape)
+    private void EnsureShapeTexture(long revision, DdaCursorShape shape)
     {
-        _shapeType = (int)shape.Type;
-        _hotspotX = shape.HotSpot.X;
-        _hotspotY = shape.HotSpot.Y;
+        if (_shapeRevision == revision) return;
+        _shapeRevision = revision;
+        if (ReferenceEquals(_uploadedShape, shape)) return;
 
-        int width = (int)shape.Width;
-        // У монохромного курсора в буфере две маски одна под другой
-        int height = _shapeType == ShapeMonochrome ? (int)shape.Height / 2 : (int)shape.Height;
-        if (width <= 0 || height <= 0) return;
-
-        var pixels = _shapeType switch
-        {
-            ShapeMonochrome => CursorShapePixels.ExpandMonochrome(buffer, width, height, (int)shape.Pitch),
-            ShapeMaskedColor => CursorShapePixels.ExpandMaskedColor(buffer, width, height, (int)shape.Pitch),
-            _ => CopyColor(buffer, width, height, (int)shape.Pitch)
-        };
+        _shapeType = (int)shape.Kind;
+        int width = shape.Width;
+        int height = shape.Height;
 
         _shapeView?.Dispose();
         _shape?.Dispose();
@@ -215,7 +176,7 @@ internal sealed class CursorOverlay : IDisposable
             BindFlags = BindFlags.ShaderResource
         };
 
-        var handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+        var handle = GCHandle.Alloc(shape.Pixels, GCHandleType.Pinned);
         try
         {
             var data = new SubresourceData(handle.AddrOfPinnedObject(), (uint)(width * 4));
@@ -226,19 +187,7 @@ internal sealed class CursorOverlay : IDisposable
         _shapeView = _device.CreateShaderResourceView(_shape);
         _shapeWidth = width;
         _shapeHeight = height;
-    }
-
-    private static byte[] CopyColor(byte[] buffer, int width, int height, int pitch)
-    {
-        var pixels = new byte[width * height * 4];
-        for (int y = 0; y < height; y++)
-        {
-            int source = y * pitch;
-            int target = y * width * 4;
-            int length = Math.Min(width * 4, Math.Max(0, buffer.Length - source));
-            if (length > 0) Buffer.BlockCopy(buffer, source, pixels, target, length);
-        }
-        return pixels;
+        _uploadedShape = shape;
     }
 
     private void EnsureTargetView(ID3D11Texture2D frame)

@@ -36,6 +36,7 @@
     <Compile Include="..\..\src\Aura\Core\Library\ClipGrouping.cs" Link="App\ClipGrouping.cs" />
     <Compile Include="..\..\src\Aura\Core\Buffering\ReplayBuffers.cs" Link="App\ReplayBuffers.cs" />
     <Compile Include="..\..\src\Aura\Core\Logging\Log.cs" Link="App\Log.cs" />
+    <Compile Include="..\..\src\Aura\Core\Diagnostics\PipelineProbe.cs" Link="App\PipelineProbe.cs" />
     <!-- Чистый COM-интероп без графики: подключается к тестам как есть -->
     <Compile Include="..\..\src\Aura\Core\Saving\ArenaMediaBuffer.cs" Link="App\ArenaMediaBuffer.cs" />
     <Compile Include="..\..\src\Aura\Core\System\UpdateVerification.cs" Link="App\UpdateVerification.cs" />
@@ -50,7 +51,9 @@
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFailure.cs" Link="App\CaptureFailure.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\PipelineRestartPolicy.cs" Link="App\PipelineRestartPolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Engine\CaptureRecoveryBackoff.cs" Link="App\CaptureRecoveryBackoff.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DuplicationRecovery.cs" Link="App\DuplicationRecovery.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\DdaDuplicationPolicy.cs" Link="App\DdaDuplicationPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncodedStreamCompatibility.cs" Link="App\EncodedStreamCompatibility.cs" />
   </ItemGroup>

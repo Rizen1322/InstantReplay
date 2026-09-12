@@ -49,6 +49,10 @@ internal static class CursorShapePixels
         return pixels;
     }
 
+    /// <summary>Применяет один канал masked-color курсора по правилам DXGI.</summary>
+    public static byte ComposeMaskedChannel(byte mask, byte shape, byte background) =>
+        mask == 0 ? shape : (byte)(shape ^ background);
+
     /// <summary>
     /// У монохромной формы идут две 1-bpp маски: AND, затем XOR. Для шейдеров
     /// раскладываем XOR во все каналы BGR, AND — в alpha.

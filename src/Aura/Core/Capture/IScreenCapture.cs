@@ -9,7 +9,7 @@ namespace Aura.Core.Capture;
 /// Контракт один: текстура в событии валидна ТОЛЬКО внутри обработчика,
 /// получатель обязан сделать GPU-копию сразу.
 /// </summary>
-public interface IScreenCapture : IDisposable
+internal interface IScreenCapture : IDisposable
 {
     ID3D11Device D3DDevice { get; }
     ID3D11DeviceContext D3DContext { get; }
@@ -20,9 +20,10 @@ public interface IScreenCapture : IDisposable
     long FramesReceived { get; }
     /// <summary>Сколько прошло фильтр и ушло в конвейер.</summary>
     long FramesAccepted { get; }
+    long InvalidCursorShapes { get; }
 
-    /// <summary>Кадр: текстура BGRA в VRAM + время кадра (QPC, 100-нс тики).</summary>
-    event Action<ID3D11Texture2D, long>? FrameArrived;
+    /// <summary>Кадр BGRA в VRAM, валидный только во время обработчика.</summary>
+    event Action<CapturedSurface>? FrameArrived;
 
     /// <summary>
     /// Источник кадров умер безвозвратно — потеряно устройство D3D (TDR, обновление
@@ -36,17 +37,8 @@ public interface IScreenCapture : IDisposable
     /// </summary>
     event Action<CaptureFailure>? Failed;
 
-    /// <summary>
-    /// Дать последний захваченный кадр во временное пользование (для скриншота).
-    /// Текстура валидна ТОЛЬКО внутри колбэка. false — источник кадр не хранит.
-    ///
-    /// Нужно, потому что на Windows 10 DXGI не даёт открыть вторую дупликацию того
-    /// же монитора: при включённом буфере скриншот своей сессией захвата падал
-    /// с DuplicateOutput → E_INVALIDARG.
-    /// </summary>
-    bool TryUseLatestFrame(Action<ID3D11Texture2D> use);
-
-    void Start(int monitorIndex, int targetFps, bool captureCursor = true);
+    void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation);
+    void Start();
     void Stop();
 }
 
@@ -77,7 +69,7 @@ public static class ScreenCaptureFactory
         Environment.OSVersion.Version.Build,
         Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE"));
 
-    public static IScreenCapture Create(CaptureBackend backend, int monitorIndex)
+    internal static IScreenCapture Create(CaptureBackend backend, int monitorIndex)
     {
         if (backend == CaptureBackend.Wgc)
         {

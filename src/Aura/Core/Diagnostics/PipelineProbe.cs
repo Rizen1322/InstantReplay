@@ -2,6 +2,21 @@ using System.Diagnostics;
 
 namespace Aura.Core.Diagnostics;
 
+internal readonly record struct CaptureBrokerDiagnostics(
+    long Generation,
+    long FramesPublished,
+    long FramesDroppedNoSlot,
+    long LatestTimestamp,
+    long CursorRevision,
+    long InvalidCursorShapes)
+{
+    public static long AgeMilliseconds(long nowTimestamp, long latestTimestamp)
+    {
+        if (latestTimestamp <= 0 || nowTimestamp <= latestTimestamp) return 0;
+        return (nowTimestamp - latestTimestamp) / 10_000;
+    }
+}
+
 /// <summary>
 /// Замер времени по стадиям конвейера записи.
 ///

@@ -5,6 +5,18 @@ namespace InstantReplay.Tests;
 
 public sealed class PipelineRestartPolicyTests
 {
+    [Theory]
+    [InlineData((int)PipelineStopIntent.UserStop, false, false)]
+    [InlineData((int)PipelineStopIntent.UserStop, true, true)]
+    [InlineData((int)PipelineStopIntent.CaptureRestart, false, false)]
+    [InlineData((int)PipelineStopIntent.CaptureRestart, false, true)]
+    [InlineData((int)PipelineStopIntent.CaptureRestart, true, false)]
+    [InlineData((int)PipelineStopIntent.CaptureRestart, true, true)]
+    public void LifecyclePolicyNeverWritesReplayAutomatically(
+        int intent, bool recording, bool compatible) =>
+        Assert.False(PipelineRestartPolicy.For(
+            (PipelineStopIntent)intent, recording, compatible).SaveReplay);
+
     [Fact]
     public void CaptureRestartKeepsCompatibleRamBuffersAndNeverSavesReplay()
     {
