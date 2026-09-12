@@ -44,7 +44,20 @@ The focused recovery, capture-health, and persistence-boundary group passed 35/3
 
 ## Hardware matrix
 
-Status: **pending interactive Minecraft run**. Automated verification and packaging do not establish that Minecraft Java F11 fullscreen is fixed.
+Status: **GameHookRequired**. The interactive Minecraft Java F11 run on 2026-09-13 disproved the system-capture fallback.
+
+Relevant evidence from `%LocalAppData%\Aura\logs\app-2026-09-13.log`:
+
+```text
+02:55:47.766 Wgc -> WgcWindow; WGC starved for 10 consecutive seconds
+02:55:48.162 Capture started (WGC window javaw r2), 2560x1440@60
+02:55:57.339 received/accepted 1/1, duplicated 544, encoded 545 over 9 seconds
+02:55:59.330 source size changed 2560x1440 -> 927x562
+```
+
+The `DDA 1/1` label on the third line is a legacy `DumpStats` classification bug; the surrounding provider start and generation lines prove that the active provider was `WGC-window`. It received only its initial fullscreen frame, while the encoder correctly repeated that frozen frame. Therefore monitor WGC and HWND WGC both lack a live composed surface for this Minecraft/OpenGL fullscreen path. More switching or timeout tuning cannot restore missing source frames.
+
+This outcome requires either changing Minecraft to borderless/windowed composition or implementing an in-process OpenGL game-capture hook. The current implementation intentionally does not fall back to a monitor source inside the same verified fullscreen episode because that would reintroduce desktop-frame leakage.
 
 Run against the installer above and attach the relevant application-log interval:
 
@@ -56,4 +69,4 @@ Run against the installer above and attach the relevant application-log interval
 - [ ] Press Save around transitions: the resulting clip is playable and has stable geometry/cadence.
 - [ ] Repeat without pressing Save: no video file is created.
 
-Acceptance requires capture cadence near the configured FPS instead of duplicate-filled 5 FPS, no desktop frame inside an active fullscreen target episode, correct cursor output, and no DDA recreation storm. If `WGC-window` itself stalls or returns unusable Minecraft content, record `GameHookRequired` with the log evidence; do not fall back to monitor capture that flashes the desktop.
+Acceptance requires capture cadence near the configured FPS instead of duplicate-filled 5 FPS, no desktop frame inside an active fullscreen target episode, correct cursor output, and no DDA recreation storm. This run failed the cadence criterion and is recorded as `GameHookRequired`; the fullscreen defect is not marked fixed.

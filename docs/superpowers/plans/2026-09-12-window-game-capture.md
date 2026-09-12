@@ -540,7 +540,7 @@ Get-FileHash ./dist/* -Algorithm SHA256
 
 - [ ] Acceptance criteria: actual capture cadence stays near configured FPS rather than being filled by duplicates; no desktop frame appears inside the active fullscreen game episode; cursor shape/position remain correct; recovery stabilizes without DDA recreation storms; explicit Save produces a playable clip; the no-Save run creates no video file.
 
-- [ ] If WGC window capture itself stalls or returns unusable game content, record `GameHookRequired` with OS/GPU/game mode/log evidence and stop. Do not silently fall back to desktop-flashing monitor capture and do not add injected hooks in this implementation.
+- [x] If WGC window capture itself stalls or returns unusable game content, record `GameHookRequired` with OS/GPU/game mode/log evidence and stop. Do not silently fall back to desktop-flashing monitor capture and do not add injected hooks in this implementation.
 
 - [ ] Re-run the complete verification after any packaging-only correction, then commit the evidence and any targeted correction.
 
@@ -563,4 +563,4 @@ git commit -m "Verify window game capture release"
 - [x] Cursor capture is target-relative and stale cursor shapes are cleared.
 - [ ] Recovery never invokes clip persistence; no-Save hardware run creates no video.
 - [x] Installer signature and SHA256 are recorded.
-- [ ] Minecraft hardware evidence supports either acceptance or the explicit `GameHookRequired` outcome.
+- [x] Minecraft hardware evidence supports either acceptance or the explicit `GameHookRequired` outcome.
