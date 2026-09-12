@@ -48,6 +48,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFrameBroker.cs" Link="App\CaptureFrameBroker.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFrameAdmissionGate.cs" Link="App\CaptureFrameAdmissionGate.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\VideoOutputGeometry.cs" Link="App\VideoOutputGeometry.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\WindowCursorPolicy.cs" Link="App\WindowCursorPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DesktopFramePolicy.cs" Link="App\DesktopFramePolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureBackendPolicy.cs" Link="App\CaptureBackendPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureRecoveryPolicy.cs" Link="App\CaptureRecoveryPolicy.cs" />

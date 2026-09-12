@@ -13,6 +13,10 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     private readonly WindowFrameNormalizer? _windowNormalizer;
     private readonly CaptureFrameAdmissionGate _admissionGate;
     private readonly CaptureFrameBroker<GpuCaptureFrameSlot> _broker;
+    private readonly ID3D11Device _device;
+    private readonly object _publishSync = new();
+    private ID3D11Texture2D? _windowCursorClean;
+    private ID3D11Texture2D? _windowCursorComposed;
     private bool _disposed;
     private long _framesRejected;
 
@@ -31,6 +35,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
         if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
 
+        _device = device;
         _context = context;
         _separateCursor = separateCursor;
         _cursorOverlay = separateCursor ? new CursorOverlay(device, context) : null;
@@ -68,35 +73,85 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
 
     public bool Publish(in CapturedSurface surface)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        CapturedSurface captured = surface;
-        if (!_admissionGate.Accept(
-                captured.Generation,
-                captured.TargetRevision,
-                captured.Scope))
+        lock (_publishSync)
         {
-            Interlocked.Increment(ref _framesRejected);
-            return false;
-        }
-
-        DdaCursorSnapshot cursor = default;
-        if (_separateCursor)
-        {
-            _cursorState.Apply(captured.Generation, captured.Cursor);
-            cursor = _cursorState.Current;
-        }
-
-        return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
-        {
-            if (!_separateCursor)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            CapturedSurface captured = surface;
+            if (!_admissionGate.Accept(
+                    captured.Generation,
+                    captured.TargetRevision,
+                    captured.Scope))
             {
-                CopyFrame(captured, slot.Output);
-                return;
+                Interlocked.Increment(ref _framesRejected);
+                return false;
             }
 
-            CopyFrame(captured, slot.Clean!);
-            _cursorOverlay!.Compose(slot.Clean!, slot.Output, cursor);
-        });
+            DdaCursorSnapshot cursor = default;
+            if (_separateCursor)
+            {
+                _cursorState.Apply(captured.Generation, captured.Cursor);
+                cursor = _cursorState.Current;
+            }
+
+            return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
+            {
+                if (!_separateCursor)
+                {
+                    CopyFrame(captured, slot.Output);
+                    return;
+                }
+
+                if (captured.Scope == CaptureSurfaceScope.GameWindow)
+                {
+                    ComposeWindowFrame(captured.Texture, slot.Output, cursor);
+                    return;
+                }
+
+                CopyFrame(captured, slot.Clean!);
+                _cursorOverlay!.Compose(slot.Clean!, slot.Output, cursor);
+            });
+        }
+    }
+
+    private void ComposeWindowFrame(
+        ID3D11Texture2D source,
+        ID3D11Texture2D destination,
+        in DdaCursorSnapshot cursor)
+    {
+        EnsureWindowCursorTextures(source.Description);
+        _context.CopyResource(_windowCursorClean!, source);
+        _cursorOverlay!.Compose(_windowCursorClean!, _windowCursorComposed!, cursor);
+        (_windowNormalizer ?? throw new InvalidOperationException(
+            "Оконный normalizer не создан"))
+            .Normalize(_windowCursorComposed!, destination);
+    }
+
+    private void EnsureWindowCursorTextures(in Texture2DDescription source)
+    {
+        if (_windowCursorClean is not null &&
+            _windowCursorClean.Description.Width == source.Width &&
+            _windowCursorClean.Description.Height == source.Height)
+        {
+            return;
+        }
+
+        _windowCursorComposed?.Dispose();
+        _windowCursorClean?.Dispose();
+        var description = new Texture2DDescription
+        {
+            Width = source.Width,
+            Height = source.Height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = Format.B8G8R8A8_UNorm,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            CPUAccessFlags = CpuAccessFlags.None,
+            MiscFlags = ResourceOptionFlags.None,
+            BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget
+        };
+        _windowCursorClean = _device.CreateTexture2D(description);
+        _windowCursorComposed = _device.CreateTexture2D(description);
     }
 
     private void CopyFrame(in CapturedSurface captured, ID3D11Texture2D destination)
@@ -142,11 +197,16 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        _cursorOverlay?.Dispose();
-        _windowNormalizer?.Dispose();
-        _broker.Dispose();
+        lock (_publishSync)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _cursorOverlay?.Dispose();
+            _windowCursorComposed?.Dispose();
+            _windowCursorClean?.Dispose();
+            _windowNormalizer?.Dispose();
+            _broker.Dispose();
+        }
     }
 }
 

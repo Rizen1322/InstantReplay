@@ -291,7 +291,7 @@ public sealed class ReplayEngine : IDisposable
                 _capture.D3DContext,
                 canvasWidth,
                 canvasHeight,
-                separateCursor: _captureBackend == CaptureBackend.DesktopDuplication,
+                separateCursor: _captureBackend is CaptureBackend.DesktopDuplication or CaptureBackend.WgcWindow,
                 generation);
 
             if (preserveBuffers)

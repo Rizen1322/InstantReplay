@@ -397,7 +397,7 @@ git commit -m "Gate capture frames and preserve output geometry"
 
 **Produces:** `CaptureCursorUpdate` in source-client coordinates, or a hidden update when outside the target; the composed source is then scaled together with the game image.
 
-- [ ] Add failing pure tests for screen-to-client mapping, hotspot preservation, outside-target hiding, negative desktop coordinates, stationary cursor reuse, and target-revision reset.
+- [x] Add failing pure tests for screen-to-client mapping, hotspot preservation, outside-target hiding, negative desktop coordinates, stationary cursor reuse, and target-revision reset.
 
 ```csharp
 [Fact]
@@ -411,17 +411,17 @@ public void Maps_screen_cursor_to_window_client_coordinates()
 }
 ```
 
-- [ ] Run the focused test and confirm the missing-policy failure.
+- [x] Run the focused test and confirm the missing-policy failure.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~WindowCursorPolicyTests
 ```
 
-- [ ] Implement the pure mapping policy and `WindowCursorSampler`. Treat `GetCursorInfo` position as the hotspot in screen coordinates, subtract the target client origin and the icon hotspot to obtain the source-image draw origin. Use `CopyIcon`, `GetIconInfo`, and `GetDIBits` for shape pixels. Release copied icons, bitmaps, device contexts, and selected GDI objects in `finally` blocks. Cache shape pixels by cursor handle/shape identity; always refresh position and visibility.
+- [x] Implement the pure mapping policy and `WindowCursorSampler`. Treat `GetCursorInfo` position as the hotspot in screen coordinates, subtract the target client origin and the icon hotspot to obtain the source-image draw origin. Use `CopyIcon`, `GetIconInfo`, and `GetDIBits` for shape pixels. Release copied icons, bitmaps, device contexts, and selected GDI objects in `finally` blocks. Cache shape pixels by cursor handle/shape identity; always refresh position and visibility.
 
-- [ ] Disable WGC system cursor capture for the window provider and feed sampled updates to the existing separate-cursor compositor. For window scope, compose into a source-sized scratch texture before `WindowFrameNormalizer` scales the combined game image and cursor into the fixed canvas; this keeps position, hotspot, and cursor size under the same transform. Keep the existing fixed-size DDA composition path. Clear cursor state and scratch textures on target revision or source-size changes so a stale colorful square cannot be reused.
+- [x] Disable WGC system cursor capture for the window provider and feed sampled updates to the existing separate-cursor compositor. For window scope, compose into a source-sized scratch texture before `WindowFrameNormalizer` scales the combined game image and cursor into the fixed canvas; this keeps position, hotspot, and cursor size under the same transform. Keep the existing fixed-size DDA composition path. Clear cursor state and scratch textures on target revision or source-size changes so a stale colorful square cannot be reused.
 
-- [ ] Run focused/full tests and a Debug build.
+- [x] Run focused/full tests and a Debug build.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~WindowCursorPolicyTests
@@ -429,7 +429,7 @@ dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 dotnet build src/Aura/Aura.csproj -c Debug
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Capture/WindowCursorSampler.cs src/Aura/Core/Capture/DdaCursorState.cs src/Aura/Core/Capture/WindowGraphicsCaptureSource.cs src/Aura/Core/Capture/GpuCaptureFrameBroker.cs src/Aura/Core/Interop/NativeMethods.cs tests/InstantReplay.Tests/WindowCursorPolicyTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj

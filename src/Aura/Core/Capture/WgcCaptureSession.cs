@@ -18,6 +18,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private readonly string _sourceName;
     private readonly bool _forceCursorDisabled;
     private readonly bool _targetCanClose;
+    private readonly Func<CaptureCursorUpdate>? _sampleCursor;
     private readonly IDirect3DDevice _winrtDevice;
     private readonly object _sync = new();
 
@@ -43,7 +44,8 @@ internal sealed class WgcCaptureSession : IScreenCapture
         long targetRevision,
         string sourceName,
         bool forceCursorDisabled,
-        bool targetCanClose)
+        bool targetCanClose,
+        Func<CaptureCursorUpdate>? sampleCursor = null)
     {
         _createItem = createItem ?? throw new ArgumentNullException(nameof(createItem));
         _scope = scope;
@@ -51,6 +53,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
         _sourceName = sourceName;
         _forceCursorDisabled = forceCursorDisabled;
         _targetCanClose = targetCanClose;
+        _sampleCursor = sampleCursor;
 
         var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
         FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
@@ -240,7 +243,8 @@ internal sealed class WgcCaptureSession : IScreenCapture
 
             Interlocked.Increment(ref _framesAccepted);
             using var texture = CaptureInterop.GetTexture(frame.Surface);
-            CaptureCursorUpdate cursor = _forceCursorDisabled
+            CaptureCursorUpdate cursor = _sampleCursor?.Invoke() ??
+                (_forceCursorDisabled
                 ? new CaptureCursorUpdate(
                     CaptureCursorMode.Separate,
                     HasPosition: false,
@@ -248,7 +252,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
                     X: 0,
                     Y: 0,
                     Shape: null)
-                : CaptureCursorUpdate.SystemComposed;
+                : CaptureCursorUpdate.SystemComposed);
             FrameArrived?.Invoke(new CapturedSurface(
                 texture,
                 ticks,

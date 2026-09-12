@@ -8,6 +8,13 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] internal static partial IntPtr GetForegroundWindow();
     [LibraryImport("user32.dll")] internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [LibraryImport("user32.dll")] internal static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetCursorInfo(ref CURSORINFO cursorInfo);
+    [LibraryImport("user32.dll")] internal static partial IntPtr CopyIcon(IntPtr icon);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool DestroyIcon(IntPtr icon);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetIconInfo(IntPtr icon, out ICONINFO iconInfo);
     [LibraryImport("user32.dll")] internal static partial IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetClientRect(IntPtr hwnd, out RECT rect);
@@ -93,6 +100,84 @@ internal static partial class NativeMethods
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct CURSORINFO
+    {
+        internal int cbSize;
+        internal uint flags;
+        internal IntPtr hCursor;
+        internal POINT ptScreenPos;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ICONINFO
+    {
+        internal int fIcon;
+        internal uint xHotspot;
+        internal uint yHotspot;
+        internal IntPtr hbmMask;
+        internal IntPtr hbmColor;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAP
+    {
+        internal int bmType;
+        internal int bmWidth;
+        internal int bmHeight;
+        internal int bmWidthBytes;
+        internal ushort bmPlanes;
+        internal ushort bmBitsPixel;
+        internal IntPtr bmBits;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAPINFOHEADER
+    {
+        internal uint biSize;
+        internal int biWidth;
+        internal int biHeight;
+        internal ushort biPlanes;
+        internal ushort biBitCount;
+        internal uint biCompression;
+        internal uint biSizeImage;
+        internal int biXPelsPerMeter;
+        internal int biYPelsPerMeter;
+        internal uint biClrUsed;
+        internal uint biClrImportant;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAPINFO
+    {
+        internal BITMAPINFOHEADER bmiHeader;
+        internal uint bmiColors;
+    }
+
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetObjectW(IntPtr handle, int size, out BITMAP bitmap);
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DeleteObject(IntPtr handle);
+    [DllImport("gdi32.dll")]
+    internal static extern int GetDIBits(
+        IntPtr dc,
+        IntPtr bitmap,
+        uint startScan,
+        uint scanLines,
+        [Out] byte[] bits,
+        ref BITMAPINFO bitmapInfo,
+        uint usage);
+
+    internal const uint CURSOR_SHOWING = 1;
+    internal const uint BI_RGB = 0;
+    internal const uint DIB_RGB_COLORS = 0;
 
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);

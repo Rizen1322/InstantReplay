@@ -8,11 +8,14 @@ namespace Aura.Core.Capture;
 internal sealed class WindowGraphicsCaptureSource : IScreenCapture
 {
     private readonly GameCaptureTarget _target;
+    private readonly WindowCursorSampler _cursorSampler;
     private readonly WgcCaptureSession _inner;
+    private bool _captureCursor;
 
     internal WindowGraphicsCaptureSource(in GameCaptureTarget target)
     {
         _target = target;
+        _cursorSampler = new WindowCursorSampler(target);
         _inner = new WgcCaptureSession(
             target.MonitorIndex,
             CreateCaptureItem,
@@ -20,7 +23,8 @@ internal sealed class WindowGraphicsCaptureSource : IScreenCapture
             target.Revision,
             sourceName: $"WGC window {target.ExecutableName} r{target.Revision}",
             forceCursorDisabled: true,
-            targetCanClose: true);
+            targetCanClose: true,
+            sampleCursor: () => _cursorSampler.Sample(_captureCursor));
     }
 
     public ID3D11Device D3DDevice => _inner.D3DDevice;
@@ -29,7 +33,7 @@ internal sealed class WindowGraphicsCaptureSource : IScreenCapture
     public int Height => _inner.Height;
     public long FramesReceived => _inner.FramesReceived;
     public long FramesAccepted => _inner.FramesAccepted;
-    public long InvalidCursorShapes => _inner.InvalidCursorShapes;
+    public long InvalidCursorShapes => _cursorSampler.InvalidShapes;
     public event Action<CapturedSurface>? FrameArrived
     {
         add => _inner.FrameArrived += value;
@@ -45,6 +49,8 @@ internal sealed class WindowGraphicsCaptureSource : IScreenCapture
     {
         if (monitorIndex != _target.MonitorIndex)
             throw new InvalidOperationException("Игровое окно больше не принадлежит выбранному монитору");
+        _captureCursor = captureCursor;
+        _cursorSampler.Reset(_target.Revision, force: true);
         _inner.Prepare(monitorIndex, targetFps, captureCursor, generation);
     }
 
