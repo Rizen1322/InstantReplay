@@ -14,7 +14,8 @@ public readonly record struct CaptureFailure(
     CaptureFailureKind Kind,
     Exception Error,
     string Reason,
-    long Generation);
+    long Generation,
+    long TargetRevision = 0);
 
 internal static class CaptureFailureClassifier
 {

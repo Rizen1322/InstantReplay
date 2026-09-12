@@ -49,7 +49,21 @@ internal static class CaptureInterop
         var interop = GetActivationFactory<IGraphicsCaptureItemInterop>("Windows.Graphics.Capture.GraphicsCaptureItem");
         var iid = GraphicsCaptureItemIid;
         IntPtr abi = interop.CreateForMonitor(hMonitor, ref iid);
-        return GraphicsCaptureItem.FromAbi(abi);
+        // CreateFor* возвращает принадлежащую вызывающему COM-ссылку. FromAbi
+        // создаёт свою managed-ссылку, поэтому исходную освобождаем ровно один раз.
+        try { return GraphicsCaptureItem.FromAbi(abi); }
+        finally { Marshal.Release(abi); }
+    }
+
+    /// <summary>Создаёт GraphicsCaptureItem для проверенного top-level HWND.</summary>
+    public static GraphicsCaptureItem CreateItemForWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) throw new ArgumentException("HWND не задан", nameof(hwnd));
+        var interop = GetActivationFactory<IGraphicsCaptureItemInterop>("Windows.Graphics.Capture.GraphicsCaptureItem");
+        var iid = GraphicsCaptureItemIid;
+        IntPtr abi = interop.CreateForWindow(hwnd, ref iid);
+        try { return GraphicsCaptureItem.FromAbi(abi); }
+        finally { Marshal.Release(abi); }
     }
 
     /// <summary>Оборачивает Vortice ID3D11Device в WinRT IDirect3DDevice для FramePool.</summary>

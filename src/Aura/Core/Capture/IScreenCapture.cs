@@ -69,16 +69,32 @@ public static class ScreenCaptureFactory
         Environment.OSVersion.Version.Build,
         Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE"));
 
-    internal static IScreenCapture Create(CaptureBackend backend, int monitorIndex)
+    internal static IScreenCapture Create(CaptureSourceRequest request)
     {
-        if (backend == CaptureBackend.Wgc)
+        if (request.Backend == CaptureBackend.Wgc)
         {
             Logging.Log.Info("Capture", "Захват через Windows Graphics Capture");
-            return new ScreenCaptureSource(monitorIndex);
+            return new ScreenCaptureSource(request.MonitorIndex);
         }
 
-        Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");
-        return new DesktopDuplicationSource();
+        if (request.Backend == CaptureBackend.WgcWindow)
+        {
+            GameCaptureTarget target = request.Target ??
+                throw new ArgumentException("Оконному WGC требуется target", nameof(request));
+            Logging.Log.Info("Capture", $"Захват игрового окна через WGC: " +
+                                        $"{target.ExecutableName}, revision {target.Revision}");
+            return new WindowGraphicsCaptureSource(target);
+        }
+
+        if (request.Backend == CaptureBackend.DesktopDuplication)
+        {
+            Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");
+            return new DesktopDuplicationSource();
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(request), request.Backend, "Неизвестный backend");
     }
 
+    internal static IScreenCapture Create(CaptureBackend backend, int monitorIndex) =>
+        Create(CaptureSourceRequest.Create(backend, monitorIndex, target: null));
 }

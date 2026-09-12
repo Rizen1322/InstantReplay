@@ -141,7 +141,9 @@ public static class ScreenshotService
         var tcs = new TaskCompletionSource<(byte[] Bgra, int W, int H)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var source = ScreenCaptureFactory.Create(ScreenCaptureFactory.Selection.Backend, monitorIndex);
+        CaptureBackend backend = ScreenCaptureFactory.Selection.Backend;
+        using var source = ScreenCaptureFactory.Create(
+            CaptureSourceRequest.Create(backend, monitorIndex, target: null));
         const long generation = 1;
         source.Prepare(monitorIndex, 0, cursor, generation);
         source.FrameArrived += frame =>

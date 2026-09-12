@@ -18,6 +18,19 @@ public sealed class CaptureRegressionTests
     }
 
     [Fact]
+    public void CaptureFailureRetainsWindowTargetRevision()
+    {
+        var failure = new CaptureFailure(
+            CaptureFailureKind.CaptureTargetClosed,
+            new InvalidOperationException("closed"),
+            "window closed",
+            Generation: 12,
+            TargetRevision: 7);
+
+        Assert.Equal(7, failure.TargetRevision);
+    }
+
+    [Fact]
     public void PacerMayFillWhenMftIsAlreadyWaitingForAFrame()
     {
         Assert.False(EncoderPacingPolicy.IsBehind(

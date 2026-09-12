@@ -316,7 +316,13 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 Interlocked.Increment(ref _framesAccepted);
 
                 using var texture = resource.QueryInterface<ID3D11Texture2D>();
-                FrameArrived?.Invoke(new CapturedSurface(texture, ticks, _generation, cursor));
+                FrameArrived?.Invoke(new CapturedSurface(
+                    texture,
+                    ticks,
+                    _generation,
+                    cursor,
+                    CaptureSurfaceScope.Monitor,
+                    TargetRevision: 0));
             }
             catch (Exception ex)
             {

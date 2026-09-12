@@ -259,7 +259,7 @@ git commit -m "Route capture recovery by game episode"
 
 **Produces:** WGC frames tagged with provider scope and target revision; typed failure when the capture item closes or changes size.
 
-- [ ] Add a factory contract test in `CaptureBackendPolicyTests` or a new pure `CaptureSourceRequestTests` file proving that `WgcWindow` requires a target and monitor providers reject accidental target scope.
+- [x] Add a factory contract test in `CaptureBackendPolicyTests` or a new pure `CaptureSourceRequestTests` file proving that `WgcWindow` requires a target and monitor providers reject accidental target scope.
 
 ```csharp
 [Fact]
@@ -270,17 +270,17 @@ public void Window_request_requires_a_verified_target()
 }
 ```
 
-- [ ] Run the focused test and confirm it is red.
+- [x] Run the focused test and confirm it is red.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~CaptureSourceRequestTests
 ```
 
-- [ ] Expose `CaptureInterop.CreateItemForWindow(nint hwnd)` through the existing `IGraphicsCaptureItemInterop.CreateForWindow`. Before changing pointer release behavior, characterize the existing `CreateForMonitor` wrapper and CsWinRT `GraphicsCaptureItem.FromAbi` ownership contract; apply the same verified ownership rule to both wrappers.
+- [x] Expose `CaptureInterop.CreateItemForWindow(nint hwnd)` through the existing `IGraphicsCaptureItemInterop.CreateForWindow`. Before changing pointer release behavior, characterize the existing `CreateForMonitor` wrapper and CsWinRT `GraphicsCaptureItem.FromAbi` ownership contract; apply the same verified ownership rule to both wrappers.
 
-- [ ] Extract the common WGC device, frame-pool, resize, border, cursor, close-event, and disposal mechanics from `ScreenCaptureSource` into `WgcCaptureSession`. Keep `ScreenCaptureSource` as monitor selection and create `WindowGraphicsCaptureSource` as target selection; do not duplicate the full WGC session loop.
+- [x] Extract the common WGC device, frame-pool, resize, border, cursor, close-event, and disposal mechanics from `ScreenCaptureSource` into `WgcCaptureSession`. Keep `ScreenCaptureSource` as monitor selection and create `WindowGraphicsCaptureSource` as target selection; do not duplicate the full WGC session loop.
 
-- [ ] Extend surface metadata explicitly.
+- [x] Extend surface metadata explicitly.
 
 ```csharp
 internal enum CaptureSurfaceScope { Monitor, GameWindow }
@@ -294,16 +294,16 @@ internal readonly record struct CapturedSurface(
     long TargetRevision);
 ```
 
-- [ ] Make `ScreenCaptureFactory.Create(CaptureSourceRequest request)` instantiate the correct provider. Keep `ScreenshotService` monitor-only. Subscribe to `GraphicsCaptureItem.Closed` in the window provider and raise a new typed `CaptureTargetClosed` failure for the same generation/target revision.
+- [x] Make `ScreenCaptureFactory.Create(CaptureSourceRequest request)` instantiate the correct provider. Keep `ScreenshotService` monitor-only. Subscribe to `GraphicsCaptureItem.Closed` in the window provider and raise a new typed `CaptureTargetClosed` failure for the same generation/target revision.
 
-- [ ] Build and run the full suite to catch WinRT signature and lifetime errors.
+- [x] Build and run the full suite to catch WinRT signature and lifetime errors.
 
 ```powershell
 dotnet build src/Aura/Aura.csproj -c Debug
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Interop/CaptureInterop.cs src/Aura/Core/Capture/ScreenCaptureSource.cs src/Aura/Core/Capture/WgcCaptureSession.cs src/Aura/Core/Capture/WindowGraphicsCaptureSource.cs src/Aura/Core/Capture/CaptureSourceRequest.cs src/Aura/Core/Capture/IScreenCapture.cs src/Aura/Core/Capture/CapturedSurface.cs src/Aura/Core/Capture/CaptureFailure.cs src/Aura/Core/Capture/ScreenshotService.cs tests/InstantReplay.Tests/CaptureSourceRequestTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj
