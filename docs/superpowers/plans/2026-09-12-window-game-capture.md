@@ -515,7 +515,7 @@ git commit -m "Integrate automatic game-window recovery"
 
 **Produces:** signed installer plus a reproducible test record, or a documented `GameHookRequired` result with no claim that the fullscreen defect is fixed.
 
-- [ ] Run clean verification and capture exact totals/output in the test record.
+- [x] Run clean verification and capture exact totals/output in the test record.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
@@ -523,13 +523,13 @@ dotnet build src/Aura/Aura.csproj -c Release
 git diff --check
 ```
 
-- [ ] Build the installer with the repository script. If packaging fails, diagnose the exact path/signing input and add a targeted packaging regression check before changing scripts.
+- [x] Build the installer with the repository script. If packaging fails, diagnose the exact path/signing input and add a targeted packaging regression check before changing scripts.
 
 ```powershell
 ./build_setup.ps1
 ```
 
-- [ ] Verify the produced installer signature and hash, recording the absolute artifact path.
+- [x] Verify the produced installer signature and hash, recording the absolute artifact path.
 
 ```powershell
 Get-AuthenticodeSignature ./dist/* | Format-List Status,StatusMessage,SignerCertificate,Path
@@ -555,12 +555,12 @@ git commit -m "Verify window game capture release"
 ## Completion Checklist
 
 - [ ] Every task has its own green focused test and a green full test run.
-- [ ] Windows 11 still starts on monitor WGC and Windows 10 still starts on DDA by default.
-- [ ] Target identity is revalidated across HWND reuse, focus changes, and target revisions.
-- [ ] DDA storms are quarantined and transition desktop frames never reach the broker.
-- [ ] Window WGC uses shared, ownership-correct WGC lifetime code.
-- [ ] Output dimensions remain fixed and window content is black-bar fitted.
-- [ ] Cursor capture is target-relative and stale cursor shapes are cleared.
+- [x] Windows 11 still starts on monitor WGC and Windows 10 still starts on DDA by default.
+- [x] Target identity is revalidated across HWND reuse, focus changes, and target revisions.
+- [x] DDA storms are quarantined and transition desktop frames never reach the broker.
+- [x] Window WGC uses shared, ownership-correct WGC lifetime code.
+- [x] Output dimensions remain fixed and window content is black-bar fitted.
+- [x] Cursor capture is target-relative and stale cursor shapes are cleared.
 - [ ] Recovery never invokes clip persistence; no-Save hardware run creates no video.
-- [ ] Installer signature and SHA256 are recorded.
+- [x] Installer signature and SHA256 are recorded.
 - [ ] Minecraft hardware evidence supports either acceptance or the explicit `GameHookRequired` outcome.
