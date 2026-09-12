@@ -329,7 +329,7 @@ git commit -m "Add target-scoped WGC window capture"
 
 **Produces:** fixed monitor-aspect output with centered black bars and an admission decision before any GPU copy.
 
-- [ ] Add failing geometry tests. For a 1280×1024 source fitted into 1920×1080, assert a 1350×1080 destination at x=285/y=0. Cover exact aspect, pillarbox, letterbox, even dimensions, and zero-size rejection.
+- [x] Add failing geometry tests. For a 1280×1024 source fitted into 1920×1080, assert a 1350×1080 destination at x=285/y=0. Cover exact aspect, pillarbox, letterbox, even dimensions, and zero-size rejection.
 
 ```csharp
 [Fact]
@@ -340,7 +340,7 @@ public void Four_by_threeish_window_is_centered_in_sixteen_by_nine_output()
 }
 ```
 
-- [ ] Add failing gate tests for stale generation, stale target revision, monitor scope during a quarantined fullscreen episode, and valid window scope.
+- [x] Add failing gate tests for stale generation, stale target revision, monitor scope during a quarantined fullscreen episode, and valid window scope.
 
 ```csharp
 [Fact]
@@ -352,19 +352,19 @@ public void Monitor_frame_is_rejected_during_window_episode()
 }
 ```
 
-- [ ] Run focused tests and confirm they fail.
+- [x] Run focused tests and confirm they fail.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter "FullyQualifiedName~VideoOutputGeometryTests|FullyQualifiedName~CaptureFrameAdmissionGateTests"
 ```
 
-- [ ] Implement `VideoOutputGeometry.Fit` with integer arithmetic and even dimensions. Implement `WindowFrameNormalizer` with a D3D11 video-processor blit: clear the fixed BGRA destination to opaque black, then scale the window texture into the fitted rectangle without a CPU readback.
+- [x] Implement `VideoOutputGeometry.Fit` with integer arithmetic and even dimensions. Implement `WindowFrameNormalizer` with a D3D11 video-processor blit: clear the fixed BGRA destination to opaque black, then scale the window texture into the fitted rectangle without a CPU readback.
 
-- [ ] Apply `CaptureFrameAdmissionGate` in `GpuCaptureFrameBroker.Publish` before any GPU copy. Construct broker slots at the selected monitor canvas dimensions. Exact-size monitor frames retain the direct-copy path; game-window frames pass through `WindowFrameNormalizer` into the slot. A rejected frame may increment diagnostics but must not mutate the current GPU frame.
+- [x] Apply `CaptureFrameAdmissionGate` in `GpuCaptureFrameBroker.Publish` before any GPU copy. Construct broker slots at the selected monitor canvas dimensions. Exact-size monitor frames retain the direct-copy path; game-window frames pass through `WindowFrameNormalizer` into the slot. A rejected frame may increment diagnostics but must not mutate the current GPU frame.
 
-- [ ] In `ReplayEngine`, configure `VideoProcessorNv12` and the encoder from the fixed monitor canvas dimensions rather than the current provider dimensions. The encoder therefore repeats the last accepted game canvas during hold and retains one format across provider switches.
+- [x] In `ReplayEngine`, configure `VideoProcessorNv12` and the encoder from the fixed monitor canvas dimensions rather than the current provider dimensions. The encoder therefore repeats the last accepted game canvas during hold and retains one format across provider switches.
 
-- [ ] Run focused tests, full tests, and a Release build.
+- [x] Run focused tests, full tests, and a Release build.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter "FullyQualifiedName~VideoOutputGeometryTests|FullyQualifiedName~CaptureFrameAdmissionGateTests"
@@ -372,7 +372,7 @@ dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 dotnet build src/Aura/Aura.csproj -c Release
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Capture/VideoOutputGeometry.cs src/Aura/Core/Capture/WindowFrameNormalizer.cs src/Aura/Core/Capture/CaptureFrameAdmissionGate.cs src/Aura/Core/Capture/GpuCaptureFrameBroker.cs src/Aura/Core/Engine/ReplayEngine.cs tests/InstantReplay.Tests/VideoOutputGeometryTests.cs tests/InstantReplay.Tests/CaptureFrameAdmissionGateTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj

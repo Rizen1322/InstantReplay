@@ -279,14 +279,18 @@ public sealed class ReplayEngine : IDisposable
             _capture = ScreenCaptureFactory.Create(_captureBackend, s.MonitorIndex);
             _capture.Prepare(s.MonitorIndex, s.Fps, s.RecordCursor, generation);
 
+            var monitorCanvas = MonitorLayout.For(s.MonitorIndex);
+            int canvasWidth = monitorCanvas?.Width ?? _capture.Width;
+            int canvasHeight = monitorCanvas?.Height ?? _capture.Height;
+
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
-            _processor.Configure(_capture.Width, _capture.Height, s.VerticalResolution, s.Fps);
+            _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps);
 
             _frameBroker = new GpuCaptureFrameBroker(
                 _capture.D3DDevice,
                 _capture.D3DContext,
-                _capture.Width,
-                _capture.Height,
+                canvasWidth,
+                canvasHeight,
                 separateCursor: _captureBackend == CaptureBackend.DesktopDuplication,
                 generation);
 

@@ -46,6 +46,8 @@
     <Compile Include="..\..\src\Aura\Core\Capture\CursorShapePixels.cs" Link="App\CursorShapePixels.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DdaCursorState.cs" Link="App\DdaCursorState.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFrameBroker.cs" Link="App\CaptureFrameBroker.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\CaptureFrameAdmissionGate.cs" Link="App\CaptureFrameAdmissionGate.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\VideoOutputGeometry.cs" Link="App\VideoOutputGeometry.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DesktopFramePolicy.cs" Link="App\DesktopFramePolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureBackendPolicy.cs" Link="App\CaptureBackendPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureRecoveryPolicy.cs" Link="App\CaptureRecoveryPolicy.cs" />

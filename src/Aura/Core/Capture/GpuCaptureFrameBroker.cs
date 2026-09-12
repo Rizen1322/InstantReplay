@@ -10,8 +10,11 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     private readonly bool _separateCursor;
     private readonly DdaCursorState _cursorState = new();
     private readonly CursorOverlay? _cursorOverlay;
+    private readonly WindowFrameNormalizer? _windowNormalizer;
+    private readonly CaptureFrameAdmissionGate _admissionGate;
     private readonly CaptureFrameBroker<GpuCaptureFrameSlot> _broker;
     private bool _disposed;
+    private long _framesRejected;
 
     public GpuCaptureFrameBroker(
         ID3D11Device device,
@@ -19,7 +22,9 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         int width,
         int height,
         bool separateCursor,
-        long generation)
+        long generation,
+        long targetRevision = 0,
+        bool windowEpisode = false)
     {
         ArgumentNullException.ThrowIfNull(device);
         ArgumentNullException.ThrowIfNull(context);
@@ -29,6 +34,13 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         _context = context;
         _separateCursor = separateCursor;
         _cursorOverlay = separateCursor ? new CursorOverlay(device, context) : null;
+        _windowNormalizer = windowEpisode
+            ? new WindowFrameNormalizer(device, context, width, height)
+            : null;
+        _admissionGate = new CaptureFrameAdmissionGate(
+            generation,
+            targetRevision,
+            windowEpisode);
         _broker = new CaptureFrameBroker<GpuCaptureFrameSlot>(
             () => new GpuCaptureFrameSlot(device, width, height, separateCursor),
             slot => slot.Dispose());
@@ -40,6 +52,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     public long FramesDroppedNoSlot => _broker.FramesDroppedNoSlot;
     public long LatestTimestamp => _broker.LatestTimestamp;
     public long Generation => _broker.Generation;
+    public long FramesRejected => Interlocked.Read(ref _framesRejected);
 
     public CaptureBrokerDiagnostics GetDiagnostics(long invalidCursorShapes)
     {
@@ -57,6 +70,15 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         CapturedSurface captured = surface;
+        if (!_admissionGate.Accept(
+                captured.Generation,
+                captured.TargetRevision,
+                captured.Scope))
+        {
+            Interlocked.Increment(ref _framesRejected);
+            return false;
+        }
+
         DdaCursorSnapshot cursor = default;
         if (_separateCursor)
         {
@@ -68,13 +90,26 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         {
             if (!_separateCursor)
             {
-                _context.CopyResource(slot.Output, captured.Texture);
+                CopyFrame(captured, slot.Output);
                 return;
             }
 
-            _context.CopyResource(slot.Clean!, captured.Texture);
+            CopyFrame(captured, slot.Clean!);
             _cursorOverlay!.Compose(slot.Clean!, slot.Output, cursor);
         });
+    }
+
+    private void CopyFrame(in CapturedSurface captured, ID3D11Texture2D destination)
+    {
+        if (captured.Scope == CaptureSurfaceScope.GameWindow)
+        {
+            (_windowNormalizer ?? throw new InvalidOperationException(
+                "Оконный кадр пришёл в мониторный GPU-брокер"))
+                .Normalize(captured.Texture, destination);
+            return;
+        }
+
+        _context.CopyResource(destination, captured.Texture);
     }
 
     public bool TryLeaseLatest(long generation, out GpuCaptureFrameLease? lease)
@@ -110,6 +145,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cursorOverlay?.Dispose();
+        _windowNormalizer?.Dispose();
         _broker.Dispose();
     }
 }
