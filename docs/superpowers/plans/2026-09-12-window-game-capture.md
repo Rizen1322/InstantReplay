@@ -37,7 +37,7 @@
 
 **Produces:** immutable `GameCaptureTarget` with HWND, PID, process start time, monitor index, client size, and monotonically increasing target revision.
 
-- [ ] Add failing pure selector tests for a valid Minecraft foreground window, a desktop-classified process, minimized/cloaked windows, an empty client rectangle, an undersized window, and reuse of the same HWND by a different process identity.
+- [x] Add failing pure selector tests for a valid Minecraft foreground window, a desktop-classified process, minimized/cloaked windows, an empty client rectangle, an undersized window, and reuse of the same HWND by a different process identity.
 
 ```csharp
 [Fact]
@@ -65,13 +65,13 @@ public void Select_rejects_window_below_fullscreen_coverage_threshold()
 }
 ```
 
-- [ ] Link only the pure target/selector files into the test project, then run the focused test and confirm it fails because the types do not exist.
+- [x] Link only the pure target/selector files into the test project, then run the focused test and confirm it fails because the types do not exist.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~GameWindowSelectorTests
 ```
 
-- [ ] Implement `WindowCaptureSnapshot`, `GameCaptureTarget`, and `GameWindowSelector.Select`. Require foreground status, root owner, visible state, non-minimized/non-cloaked state, recognized non-Desktop game, non-empty client area, same selected monitor, and at least 90% monitor-area coverage. Preserve the revision only while HWND, PID, and process-start identity all match; increment it for a new identity.
+- [x] Implement `WindowCaptureSnapshot`, `GameCaptureTarget`, and `GameWindowSelector.Select`. Require foreground status, root owner, visible state, non-minimized/non-cloaked state, recognized non-Desktop game, non-empty client area, same selected monitor, and at least 90% monitor-area coverage. Preserve the revision only while HWND, PID, and process-start identity all match; increment it for a new identity.
 
 ```csharp
 internal readonly record struct GameCaptureTarget(
@@ -94,16 +94,16 @@ internal static class GameWindowSelector
 }
 ```
 
-- [ ] Implement `ForegroundGameWindowProbe` as the Win32 adapter. Resolve `GetForegroundWindow`, `GetAncestor(GA_ROOT)`, `GetWindowThreadProcessId`, `GetClientRect`, `ClientToScreen`, `IsWindowVisible`, `IsIconic`, `DwmGetWindowAttribute(DWMWA_CLOAKED)`, process start time, and monitor identity. Revalidate HWND/PID/start time immediately before returning the target.
+- [x] Implement `ForegroundGameWindowProbe` as the Win32 adapter. Resolve `GetForegroundWindow`, `GetAncestor(GA_ROOT)`, `GetWindowThreadProcessId`, `GetClientRect`, `ClientToScreen`, `IsWindowVisible`, `IsIconic`, `DwmGetWindowAttribute(DWMWA_CLOAKED)`, process start time, and monitor identity. Revalidate HWND/PID/start time immediately before returning the target.
 
-- [ ] Run focused and full tests.
+- [x] Run focused and full tests.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~GameWindowSelectorTests
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Capture/GameCaptureTarget.cs src/Aura/Core/Capture/GameWindowSelector.cs src/Aura/Core/Capture/ForegroundGameWindowProbe.cs src/Aura/Core/Interop/NativeMethods.cs tests/InstantReplay.Tests/GameWindowSelectorTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj

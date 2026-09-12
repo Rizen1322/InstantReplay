@@ -8,6 +8,11 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] internal static partial IntPtr GetForegroundWindow();
     [LibraryImport("user32.dll")] internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [LibraryImport("user32.dll")] internal static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    [LibraryImport("user32.dll")] internal static partial IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetClientRect(IntPtr hwnd, out RECT rect);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ClientToScreen(IntPtr hwnd, ref POINT point);
     [LibraryImport("user32.dll", SetLastError = true)]
     internal static partial IntPtr SetWindowsHookExW(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
     [LibraryImport("user32.dll")] internal static partial IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
@@ -132,6 +137,8 @@ internal static partial class NativeMethods
     /// <summary>Какая боковая кнопка нажата — лежит в старшем слове mouseData.</summary>
     internal const uint XBUTTON1 = 0x0001, XBUTTON2 = 0x0002;
     internal const uint MONITOR_DEFAULTTOPRIMARY = 1;
+    internal const uint MONITOR_DEFAULTTONEAREST = 2;
+    internal const uint GA_ROOTOWNER = 3;
 
     internal const int GWL_EXSTYLE = -20;
     internal const int WS_EX_TOOLWINDOW = 0x00000080, WS_EX_NOACTIVATE = 0x08000000,
