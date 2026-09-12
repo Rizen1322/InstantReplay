@@ -141,16 +141,18 @@ public static class ScreenshotService
         var tcs = new TaskCompletionSource<(byte[] Bgra, int W, int H)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var source = ScreenCaptureFactory.Create(monitorIndex);
-        source.FrameArrived += (texture, _) =>
+        using var source = ScreenCaptureFactory.Create(ScreenCaptureFactory.Selection.Backend, monitorIndex);
+        const long generation = 1;
+        source.Prepare(monitorIndex, 0, cursor, generation);
+        source.FrameArrived += frame =>
         {
             if (tcs.Task.IsCompleted) return;
             // Всё внутри колбэка: текстура валидна только здесь
-            try { tcs.TrySetResult(ReadPixels(source.D3DDevice, source.D3DContext, texture)); }
+            try { tcs.TrySetResult(ReadPixels(source.D3DDevice, source.D3DContext, frame.Texture)); }
             catch (Exception ex) { tcs.TrySetException(ex); }
         };
 
-        source.Start(monitorIndex, 0, cursor);
+        source.Start();
         return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
     }
 

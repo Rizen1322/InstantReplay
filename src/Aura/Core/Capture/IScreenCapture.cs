@@ -9,7 +9,7 @@ namespace Aura.Core.Capture;
 /// Контракт один: текстура в событии валидна ТОЛЬКО внутри обработчика,
 /// получатель обязан сделать GPU-копию сразу.
 /// </summary>
-public interface IScreenCapture : IDisposable
+internal interface IScreenCapture : IDisposable
 {
     ID3D11Device D3DDevice { get; }
     ID3D11DeviceContext D3DContext { get; }
@@ -20,9 +20,10 @@ public interface IScreenCapture : IDisposable
     long FramesReceived { get; }
     /// <summary>Сколько прошло фильтр и ушло в конвейер.</summary>
     long FramesAccepted { get; }
+    long InvalidCursorShapes { get; }
 
-    /// <summary>Кадр: текстура BGRA в VRAM + время кадра (QPC, 100-нс тики).</summary>
-    event Action<ID3D11Texture2D, long>? FrameArrived;
+    /// <summary>Кадр BGRA в VRAM, валидный только во время обработчика.</summary>
+    event Action<CapturedSurface>? FrameArrived;
 
     /// <summary>
     /// Источник кадров умер безвозвратно — потеряно устройство D3D (TDR, обновление
@@ -34,19 +35,10 @@ public interface IScreenCapture : IDisposable
     /// У DDA свой поток захвата, где исключение просто уходило в лог, и запись
     /// молча не возвращалась. Обоим нужен путь «сказать движку», и он один.
     /// </summary>
-    event Action<Exception>? Failed;
+    event Action<CaptureFailure>? Failed;
 
-    /// <summary>
-    /// Дать последний захваченный кадр во временное пользование (для скриншота).
-    /// Текстура валидна ТОЛЬКО внутри колбэка. false — источник кадр не хранит.
-    ///
-    /// Нужно, потому что на Windows 10 DXGI не даёт открыть вторую дупликацию того
-    /// же монитора: при включённом буфере скриншот своей сессией захвата падал
-    /// с DuplicateOutput → E_INVALIDARG.
-    /// </summary>
-    bool TryUseLatestFrame(Action<ID3D11Texture2D> use);
-
-    void Start(int monitorIndex, int targetFps, bool captureCursor = true);
+    void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation);
+    void Start();
     void Stop();
 }
 
@@ -63,23 +55,23 @@ public delegate bool LiveFrameProvider(UseFrame use);
 public static class ScreenCaptureFactory
 {
     /// <summary>
-    /// Для записи всего монитора используем Desktop Duplication на любой Windows.
-    ///
-    /// Причина не теоретическая: на RTX 3070 в borderless-игре с незажатым FPS
-    /// WGC отдавал 19–24 новых кадра/с, пока сам NVENC стабильно кодировал 60/с.
-    /// Desktop Duplication получает уже представленный рабочий стол напрямую через
-    /// DXGI, поддерживает полноэкранный DirectX и не зависит от WGC-сессии DWM.
-    /// Курсор эта реализация теперь дорисовывает сама, а рамки захвата у неё нет.
-    ///
-    /// WGC оставлен для диагностики через INSTANTREPLAY_CAPTURE=wgc.
+    /// Windows 11 стартует с WGC: Windows сама композит курсор и этот
+    /// путь лучше переживает обычные fullscreen/borderless-переходы. Windows 10
+    /// стартует с DDA, чтобы не было неотключаемой рамки захвата. Движок
+    /// может автоматически выбрать второй backend при отказе или доказанном
+    /// голодании WGC. INSTANTREPLAY_CAPTURE=wgc|dda оставлен только как diagnostic override.
     /// </summary>
     /// <param name="monitorIndex">
     /// Нужен уже здесь: устройство D3D создаётся на адаптере ЭТОГО монитора,
     /// а не на адаптере по умолчанию (см. <see cref="ScreenCaptureSource"/>).
     /// </param>
-    public static IScreenCapture Create(int monitorIndex)
+    internal static CaptureBackendSelection Selection => CaptureBackendPolicy.SelectInitial(
+        Environment.OSVersion.Version.Build,
+        Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE"));
+
+    internal static IScreenCapture Create(CaptureBackend backend, int monitorIndex)
     {
-        if (UsesWgc)
+        if (backend == CaptureBackend.Wgc)
         {
             Logging.Log.Info("Capture", "Захват через Windows Graphics Capture");
             return new ScreenCaptureSource(monitorIndex);
@@ -89,21 +81,4 @@ public static class ScreenCaptureFactory
         return new DesktopDuplicationSource();
     }
 
-    /// <summary>
-    /// Достанется ли захвату WGC. По умолчанию false: DDA надёжнее для записи
-    /// монитора под полной игровой нагрузкой. Переменная окружения сохраняет оба
-    /// принудительных режима для сравнения на конкретном железе.
-    /// </summary>
-    public static bool UsesWgc
-    {
-        get
-        {
-            // Принудительный выбор для диагностики: INSTANTREPLAY_CAPTURE=dda | wgc
-            string? forced = Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE")?.Trim().ToLowerInvariant();
-            if (forced == "dda") return false;
-            if (forced == "wgc") return true;
-
-            return false;
-        }
-    }
 }

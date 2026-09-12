@@ -7,6 +7,17 @@ namespace InstantReplay.Tests;
 public sealed class CaptureRegressionTests
 {
     [Fact]
+    public void CaptureFailureRetainsProviderGeneration()
+    {
+        var error = new InvalidOperationException("lost");
+        var failure = new CaptureFailure(
+            CaptureFailureKind.BackendUnavailable, error, "DDA unavailable", 12);
+
+        Assert.Equal(12, failure.Generation);
+        Assert.Same(error, failure.Error);
+    }
+
+    [Fact]
     public void PacerMayFillWhenMftIsAlreadyWaitingForAFrame()
     {
         Assert.False(EncoderPacingPolicy.IsBehind(
@@ -38,6 +49,26 @@ public sealed class CaptureRegressionTests
 
         Assert.Equal(shape, packed);
     }
+
+    [Fact]
+    public void ColorShapeSkipsPitchPadding()
+    {
+        byte[] source = [
+            1, 2, 3, 4, 9, 9, 9, 9,
+            5, 6, 7, 8, 9, 9, 9, 9
+        ];
+
+        Assert.Equal(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 },
+            CursorShapePixels.CopyColor(source, width: 1, height: 2, pitch: 8));
+    }
+
+    [Theory]
+    [InlineData(0, 10, 20, 10)]
+    [InlineData(255, 10, 20, 30)]
+    public void MaskedColorUsesReplaceOrXor(
+        byte mask, byte shape, byte background, byte expected) =>
+        Assert.Equal(expected,
+            CursorShapePixels.ComposeMaskedChannel(mask, shape, background));
 
     [Fact]
     public void MonochromeShapePacksAndMaskWithTheSameXorInEveryColorChannel()
@@ -167,5 +198,57 @@ public sealed class CaptureRegressionTests
     public void DuplicationRecoveryEscalatesNonTemporaryHResults(int hresult)
     {
         Assert.False(DuplicationRecovery.IsTemporaryHResult(hresult));
+    }
+
+    [Fact]
+    public void TemporaryDdaFailureWithinGracePeriodRestoresWithoutEscalation()
+    {
+        long elapsed = 0;
+        int attempts = 0;
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true,
+            resetCurrent: () => { },
+            create: () =>
+            {
+                if (++attempts < 6) throw new UnauthorizedAccessException();
+            },
+            delay: milliseconds => elapsed += milliseconds,
+            isTemporary: ex => ex is UnauthorizedAccessException,
+            maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => elapsed);
+
+        Assert.Equal(DuplicationRecoveryStatus.Restored, result.Status);
+        Assert.Equal(6, attempts);
+    }
+
+    [Fact]
+    public void TemporaryDdaFailurePastFiveSecondsTimesOutWithLastError()
+    {
+        long elapsed = 0;
+        var denied = new UnauthorizedAccessException();
+
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true,
+            resetCurrent: () => { },
+            create: () => throw denied,
+            delay: milliseconds => elapsed += milliseconds,
+            isTemporary: ex => ex is UnauthorizedAccessException,
+            maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => elapsed);
+
+        Assert.Equal(DuplicationRecoveryStatus.TimedOut, result.Status);
+        Assert.Same(denied, result.Error);
+    }
+
+    [Theory]
+    [InlineData(unchecked((int)0x887A0005))]
+    [InlineData(unchecked((int)0x887A0006))]
+    [InlineData(unchecked((int)0x887A0007))]
+    [InlineData(unchecked((int)0x887A0020))]
+    [InlineData(unchecked((int)0xC00D3E85))]
+    public void DeviceLossHResultsAreClassified(int hresult)
+    {
+        Assert.True(CaptureFailureClassifier.IsDeviceLossHResult(hresult));
     }
 }

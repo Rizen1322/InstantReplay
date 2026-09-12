@@ -20,7 +20,7 @@ namespace Aura.Core.Capture;
 /// • Аппаратный курсор в кадр не входит (DDA отдаёт его отдельно). Курсор,
 ///   нарисованный самой игрой, в кадре есть — для записи геймплея это то, что нужно.
 /// </summary>
-public sealed class DesktopDuplicationSource : IScreenCapture
+internal sealed class DesktopDuplicationSource : IScreenCapture
 {
     public ID3D11Device D3DDevice => _device ?? throw new InvalidOperationException("Захват не запущен");
     public ID3D11DeviceContext D3DContext => _context ?? throw new InvalidOperationException("Захват не запущен");
@@ -29,12 +29,14 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     public long FramesReceived => Interlocked.Read(ref _framesReceived);
     public long FramesAccepted => Interlocked.Read(ref _framesAccepted);
+    public long InvalidCursorShapes => Interlocked.Read(ref _invalidCursorShapes);
     private long _framesReceived, _framesAccepted;
+    private long _invalidCursorShapes;
 
-    public event Action<ID3D11Texture2D, long>? FrameArrived;
+    public event Action<CapturedSurface>? FrameArrived;
 
     /// <inheritdoc />
-    public event Action<Exception>? Failed;
+    public event Action<CaptureFailure>? Failed;
 
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
@@ -43,32 +45,13 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     private Thread? _thread;
     private int _monitorIndex;
+    private int _targetFps;
+    private long _generation;
+    private bool _captureCursor;
+    private bool _prepared;
+    private int _resetCursorOnNextFrame;
+    private readonly HashSet<string> _cursorValidationWarnings = new(StringComparer.Ordinal);
     private readonly object _sync = new();
-
-    // Собственная копия кадра: держать захваченный кадр во время конвертации и
-    // кодирования нельзя — пока кадр не отпущен, система не отдаёт следующий,
-    // рабочий стол подтормаживает и половина слотов сетки теряется.
-    private ID3D11Texture2D? _frameCopy;
-    private CursorOverlay? _cursor;
-    // Защищает _frameCopy от пересоздания/освобождения, пока его читает скриншот.
-    // В горячем пути лок незанят (скриншот — редкость), стоит десятки наносекунд.
-    private readonly object _frameLock = new();
-
-    /// <summary>
-    /// Последний захваченный кадр — для скриншота при включённом буфере.
-    /// Вторую дупликацию того же монитора DXGI не даёт (E_INVALIDARG), поэтому
-    /// скриншот переиспользует уже захваченный кадр. Заодно работает и на
-    /// статичном экране: здесь лежит последний реальный кадр.
-    /// </summary>
-    public bool TryUseLatestFrame(Action<ID3D11Texture2D> use)
-    {
-        lock (_frameLock)
-        {
-            if (_frameCopy is null) return false;
-            use(_frameCopy);
-            return true;
-        }
-    }
 
     private long _minFrameIntervalTicks;
     private long _nextFrameDeadline;
@@ -77,40 +60,39 @@ public sealed class DesktopDuplicationSource : IScreenCapture
     private static long QpcToTicks(long qpc) =>
         (long)(qpc * (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
 
-    public void Start(int monitorIndex, int targetFps, bool captureCursor = true)
+    public void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation)
     {
         lock (_sync)
         {
             StopInternal();
 
             _monitorIndex = monitorIndex;
+            _targetFps = targetFps;
+            _generation = generation;
+            _captureCursor = captureCursor;
+            _prepared = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _nextFrameDeadline = 0;
             _firstFrameSinceStart = true;
+            _resetCursorOnNextFrame = 1;
+            _cursorValidationWarnings.Clear();
+            Interlocked.Exchange(ref _framesReceived, 0);
+            Interlocked.Exchange(ref _framesAccepted, 0);
+            Interlocked.Exchange(ref _invalidCursorShapes, 0);
 
             CreateDeviceAndDuplication();
+            _prepared = true;
+        }
+    }
 
-            // Курсор дупликация отдаёт отдельно от кадра — дорисовываем сами.
-            // Замер на 2560x1440@60: 60,3 кадра в секунду и ноль дропов, столько же,
-            // сколько без курсора; подача в энкодер 0,6 мс против 0,4 мс.
-            _cursor?.Dispose();
-            _cursor = null;
-            if (captureCursor)
-            {
-                var cursor = new CursorOverlay(_device!, _context!);
-                // Не готов — не держим и не врём в лог, что курсор рисуется:
-                // причину CursorOverlay уже написал предупреждением.
-                if (cursor.IsReady)
-                {
-                    _cursor = cursor;
-                    Log.Info("Capture", "Курсор дорисовывается в кадр");
-                }
-                else
-                {
-                    cursor.Dispose();
-                    Log.Warn("Capture", "Курсор в кадр не попадёт");
-                }
-            }
+    public void Start()
+    {
+        lock (_sync)
+        {
+            if (!_prepared || _duplication is null)
+                throw new InvalidOperationException("DDA не подготовлен");
+            if (_run is not null)
+                throw new InvalidOperationException("DDA уже запущен");
 
             // Признак работы СВОЙ у каждого потока, а не общее поле. Иначе брошенный
             // поток (не успевший выйти к моменту перезапуска) оживал бы вместе с новым:
@@ -125,8 +107,8 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             };
             _thread.Start();
 
-            Log.Info("Capture", $"Захват запущен (Desktop Duplication): монитор #{monitorIndex}, " +
-                                $"{Width}x{Height}, target {targetFps} fps");
+            Log.Info("Capture", $"Захват запущен (Desktop Duplication): монитор #{_monitorIndex}, " +
+                                $"{Width}x{Height}, target {_targetFps} fps");
         }
     }
 
@@ -193,7 +175,20 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             try
             {
                 newOutput = targetOutput.QueryInterface<IDXGIOutput1>();
-                newDuplication = newOutput.DuplicateOutput(_device!);
+                try
+                {
+                    using IDXGIOutput5 output5 = targetOutput.QueryInterface<IDXGIOutput5>();
+                    newDuplication = output5.DuplicateOutput1(
+                        _device!, [Format.B8G8R8A8_UNorm]);
+                    Log.Info("Capture", "DDA DuplicateOutput1: BGRA8, " +
+                        $"режим {newDuplication.Description.ModeDescription.Format}");
+                }
+                catch (Exception ex) when (DdaDuplicationPolicy.ShouldFallBackToLegacy(
+                                               DuplicationHResult(ex)))
+                {
+                    Log.Info("Capture", "DuplicateOutput1 недоступен — использую DuplicateOutput");
+                    newDuplication = newOutput.DuplicateOutput(_device!);
+                }
 
                 _output = newOutput;
                 newOutput = null; // владение перешло в поле
@@ -271,7 +266,8 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                 // одного кадра, и одноразовый захват отваливался по таймауту.
                 // Позицию и форму курсора забираем ДО отбора кадров: система присылает
                 // их и в кадрах, где картинка не менялась, а второй раз их не повторит.
-                bool cursorChanged = _cursor?.Update(dup, frameInfo) == true;
+                CaptureCursorUpdate cursor = ReadCursorUpdate(dup, frameInfo);
+                bool cursorChanged = cursor.HasPosition || cursor.Shape is not null;
 
                 if (!DesktopFramePolicy.ShouldCapture(
                         frameInfo.AccumulatedFrames, _firstFrameSinceStart, cursorChanged))
@@ -296,40 +292,8 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
                 Interlocked.Increment(ref _framesAccepted);
 
-                // Быстрая GPU-копия и немедленный ReleaseFrame — только после этого
-                // отдаём кадр в конвейер (конвертация NV12 + кодирование).
-                long copyStart = Diagnostics.PipelineProbe.Now();
-                using (var texture = resource.QueryInterface<ID3D11Texture2D>())
-                lock (_frameLock)
-                {
-                    var srcDesc = texture.Description;
-                    if (_frameCopy is null ||
-                        _frameCopy.Description.Width != srcDesc.Width ||
-                        _frameCopy.Description.Height != srcDesc.Height)
-                    {
-                        _frameCopy?.Dispose();
-                        srcDesc.MiscFlags = ResourceOptionFlags.None; // снимаем «расшаренность»
-                        srcDesc.CPUAccessFlags = CpuAccessFlags.None;
-                        srcDesc.Usage = ResourceUsage.Default;
-                        srcDesc.BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget;
-                        _frameCopy = _device!.CreateTexture2D(srcDesc);
-                    }
-                    _context!.CopyResource(_frameCopy, texture);
-                }
-                Diagnostics.PipelineProbe.CaptureCopy.Add(copyStart, Diagnostics.PipelineProbe.Now());
-
-                resource.Dispose(); resource = null;
-                // Освобождаем кадр у ТОЙ дупликации, у которой его взяли: между
-                // захватом и освобождением она могла быть пересоздана.
-                try { dup.ReleaseFrame(); } catch { }
-                frameHeld = false;
-
-                // Курсор дорисовываем ПОСЛЕ возврата кадра системе: пока кадр у нас,
-                // дупликация не отдаёт следующий, и любая задержка тут душит захват.
-                // Рисуем в свою копию — исходная текстура принадлежит системе.
-                if (_cursor is not null) lock (_frameLock) _cursor.Draw(_frameCopy!);
-
-                FrameArrived?.Invoke(_frameCopy!, ticks);
+                using var texture = resource.QueryInterface<ID3D11Texture2D>();
+                FrameArrived?.Invoke(new CapturedSurface(texture, ticks, _generation, cursor));
             }
             catch (Exception ex)
             {
@@ -340,7 +304,9 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                 if (DeviceLoss.IsDeviceLost(ex))
                 {
                     Log.Warn("Capture", $"DDA: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
-                    Failed?.Invoke(ex);
+                    Failed?.Invoke(new CaptureFailure(
+                        CaptureFailureKind.DeviceLost, ex,
+                        "DDA: потеряно GPU-устройство", _generation));
                     break;
                 }
                 Log.Error("Capture", ex);
@@ -354,8 +320,86 @@ public sealed class DesktopDuplicationSource : IScreenCapture
         }
     }
 
+    private CaptureCursorUpdate ReadCursorUpdate(
+        IDXGIOutputDuplication duplication,
+        in OutduplFrameInfo info)
+    {
+        bool resetState = Interlocked.Exchange(ref _resetCursorOnNextFrame, 0) != 0;
+        if (!_captureCursor)
+            return new CaptureCursorUpdate(
+                CaptureCursorMode.Separate, false, false, 0, 0, null, resetState);
+
+        bool hasPosition = info.LastMouseUpdateTime != 0;
+        bool visible = hasPosition && info.PointerPosition.Visible;
+        int x = hasPosition ? info.PointerPosition.Position.X : 0;
+        int y = hasPosition ? info.PointerPosition.Position.Y : 0;
+        DdaCursorShape? cursorShape = null;
+
+        if (info.PointerShapeBufferSize > 0)
+        {
+            try
+            {
+                int bufferSize = checked((int)info.PointerShapeBufferSize);
+                if (bufferSize > 16 * 1024 * 1024)
+                {
+                    WarnInvalidCursorShape($"Буфер формы курсора слишком велик: {bufferSize} байт.");
+                }
+                else
+                {
+                    byte[] buffer = new byte[bufferSize];
+                    unsafe
+                    {
+                        fixed (byte* pointer = buffer)
+                        {
+                            duplication.GetFramePointerShape(
+                                (uint)buffer.Length,
+                                (nint)pointer,
+                                out uint required,
+                                out OutduplPointerShapeInfo shapeInfo).CheckError();
+
+                            int payloadLength = checked((int)Math.Min(required, (uint)buffer.Length));
+                            if (!DdaCursorShape.TryCreate(
+                                    (int)shapeInfo.Type,
+                                    checked((int)shapeInfo.Width),
+                                    checked((int)shapeInfo.Height),
+                                    checked((int)shapeInfo.Pitch),
+                                    buffer.AsSpan(0, payloadLength),
+                                    out cursorShape,
+                                    out string reason))
+                            {
+                                WarnInvalidCursorShape(reason);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                WarnInvalidCursorShape($"Форма курсора не прочитана: {ex.Message}");
+            }
+        }
+
+        return new CaptureCursorUpdate(
+            CaptureCursorMode.Separate,
+            hasPosition,
+            visible,
+            x,
+            y,
+            cursorShape,
+            resetState);
+    }
+
+    private void WarnInvalidCursorShape(string reason)
+    {
+        Interlocked.Increment(ref _invalidCursorShapes);
+        if (_cursorValidationWarnings.Add(reason))
+            Log.Warn("Capture", $"DDA: форма курсора пропущена: {reason}");
+    }
+
     private void RecreateDuplication(RunToken token)
     {
+        int previousWidth = Width;
+        int previousHeight = Height;
         var result = DuplicationRecovery.Run(
             isRunning: () => token.Running,
             resetCurrent: () =>
@@ -366,20 +410,43 @@ public sealed class DesktopDuplicationSource : IScreenCapture
             create: CreateDeviceAndDuplication,
             delay: Thread.Sleep,
             isTemporary: IsTemporaryDuplicationFailure,
+            maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => Environment.TickCount64,
             temporaryFailure: ex =>
                 Log.Warn("Capture", $"Не удалось восстановить дупликацию: {ex.Message}"));
 
         if (result.Status == DuplicationRecoveryStatus.Restored)
         {
+            if (Width != previousWidth || Height != previousHeight)
+            {
+                token.Running = false;
+                var formatError = new InvalidOperationException(
+                    $"Размер экрана изменился: {previousWidth}x{previousHeight} → {Width}x{Height}");
+                Log.Warn("Capture", $"DDA: {formatError.Message} — пересобираю видеоконвейер");
+                Failed?.Invoke(new CaptureFailure(
+                    CaptureFailureKind.CaptureFormatChanged, formatError,
+                    "DDA: сменился режим монитора", _generation));
+                return;
+            }
+            Volatile.Write(ref _resetCursorOnNextFrame, 1);
+            _firstFrameSinceStart = true;
             Log.Info("Capture", "Дупликация восстановлена");
             return;
         }
 
-        if (result.Status == DuplicationRecoveryStatus.Failed && result.Error is { } error)
+        if (result.Status is DuplicationRecoveryStatus.Failed or DuplicationRecoveryStatus.TimedOut &&
+            result.Error is { } error)
         {
             token.Running = false;
             Log.Warn("Capture", $"Дупликацию нельзя восстановить на текущем GPU-устройстве: {error.Message}");
-            Failed?.Invoke(error);
+            var kind = DeviceLoss.IsDeviceLost(error)
+                ? CaptureFailureKind.DeviceLost
+                : CaptureFailureKind.BackendUnavailable;
+            Failed?.Invoke(new CaptureFailure(kind, error,
+                result.Status == DuplicationRecoveryStatus.TimedOut
+                    ? "DDA: доступ не вернулся за 5 секунд"
+                    : "DDA: дупликация недоступна",
+                _generation));
         }
     }
 
@@ -397,6 +464,11 @@ public sealed class DesktopDuplicationSource : IScreenCapture
         return false;
     }
 
+    private static int DuplicationHResult(Exception ex) =>
+        ex is SharpGen.Runtime.SharpGenException sharpGen
+            ? sharpGen.ResultCode.Code
+            : ex.HResult;
+
     public void Stop()
     {
         lock (_sync) StopInternal();
@@ -404,6 +476,7 @@ public sealed class DesktopDuplicationSource : IScreenCapture
 
     private void StopInternal()
     {
+        _prepared = false;
         if (_run is not null) _run.Running = false;
         _run = null;
 
@@ -424,14 +497,12 @@ public sealed class DesktopDuplicationSource : IScreenCapture
                                 "объекты дупликации оставлены сборщику, чтобы не уронить процесс");
             _duplication = null;
             _output = null;
-            lock (_frameLock) _frameCopy = null;
             _threadStuck = true;   // Dispose не должен трогать устройство и контекст
             return;
         }
 
         _duplication?.Dispose(); _duplication = null;
         _output?.Dispose(); _output = null;
-        lock (_frameLock) { _frameCopy?.Dispose(); _frameCopy = null; }
     }
 
     /// <summary>Поток захвата не вышел — им ещё пользуются устройство и контекст.</summary>
@@ -441,7 +512,7 @@ public sealed class DesktopDuplicationSource : IScreenCapture
     {
         Stop();
 
-        // Если поток застрял, он продолжает звать CopyResource и AcquireNextFrame
+        // Если поток застрял, он продолжает звать AcquireNextFrame и обработчик кадра
         // ровно на этих объектах. StopInternal их уже пощадил — здесь тоже нельзя,
         // иначе получается ровно тот краш, от которого защищались строчкой выше.
         if (_threadStuck)

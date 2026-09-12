@@ -11,7 +11,7 @@ using Aura.Core.Storage;
 
 namespace Aura.Core.Engine;
 
-public enum EngineState { Stopped, Running, Saving }
+public enum EngineState { Stopped, Running, Saving, Recovering }
 
 /// <summary>
 /// Главный движок Instant Replay: конвейер
@@ -27,7 +27,21 @@ public sealed class ReplayEngine : IDisposable
     private IScreenCapture? _capture;
     private VideoProcessorNv12? _processor;
     private VideoEncoder? _encoder;
+    private GpuCaptureFrameBroker? _frameBroker;
     private readonly AudioMixerEngine _audio = new();
+    private readonly CaptureHealthPolicy _captureHealth = new();
+    private CaptureBackend _captureBackend;
+    private readonly CaptureBackend _preferredCaptureBackend;
+    private readonly bool _captureBackendForced;
+    private long _captureGeneration;
+    private Action<CapturedSurface>? _captureFrameHandler;
+    private Action<CaptureFailure>? _captureFailureHandler;
+    private CancellationTokenSource? _recoveryCancellation;
+    private DateTimeOffset _pipelineStartedAt;
+    private VideoCodec _bufferCodec;
+    private int _bufferWidth, _bufferHeight, _bufferFps;
+    private byte[]? _bufferSequenceHeader;
+    private volatile bool _encodedStreamReady;
 
     private readonly ReplayVideoBuffer _videoBuffer = new();
     private readonly ReplayAudioBuffer _audioBuffer = new();
@@ -45,7 +59,7 @@ public sealed class ReplayEngine : IDisposable
     private readonly object _lifecycle = new();
 
     /// <summary>
-    /// Ворота «кадров в полёте». <see cref="OnFrame"/> держит читательский замок на
+    /// Ворота «кадров в полёте». Обработчик кадра держит читательский замок на
     /// время работы с D3D, снос конвейера берёт писательский — и тем самым ждёт,
     /// пока текущий кадр досчитается.
     ///
@@ -54,6 +68,9 @@ public sealed class ReplayEngine : IDisposable
     /// его не ловит ни try/catch в OnFrame, ни глобальный обработчик.
     /// </summary>
     private readonly ReaderWriterLockSlim _frameGate = new(LockRecursionPolicy.NoRecursion);
+    private AutoResetEvent? _frameReady;
+    private Thread? _frameWorker;
+    private FrameWorkerToken? _frameWorkerToken;
 
     /// <summary>Конвейер собран и кадры можно обрабатывать. Гасится первым при сносе.</summary>
     private volatile bool _pipelineOpen;
@@ -78,6 +95,7 @@ public sealed class ReplayEngine : IDisposable
     private readonly HashSet<string> _reservedPaths = new(StringComparer.OrdinalIgnoreCase);
 
     private volatile EngineState _state = EngineState.Stopped;
+    private readonly object _stateSync = new();
     public EngineState State => _state;
     public event Action<EngineState>? StateChanged;
     /// <summary>
@@ -99,6 +117,7 @@ public sealed class ReplayEngine : IDisposable
     public string EncoderLabel => _encoder?.EncoderLabel ?? "";
     /// <summary>Вендор активного энкодера (NVIDIA/AMD/Intel).</summary>
     public string EncoderVendor => _encoder?.EncoderVendor ?? "";
+    public CaptureBackend ActiveCaptureBackend => _captureBackend;
     /// <summary>Живые пиковые уровни аудио (0..1) — для индикаторов.</summary>
     public (float Game, float Mic) AudioLevels => (_audio.GamePeak, _audio.MicPeak);
 
@@ -130,14 +149,22 @@ public sealed class ReplayEngine : IDisposable
         try
         {
             var cap = _capture;
-            if (cap is null || !_pipelineOpen) return false;
-            return cap.TryUseLatestFrame(tex => use(cap.D3DDevice, cap.D3DContext, tex));
+            var broker = _frameBroker;
+            long generation = Interlocked.Read(ref _captureGeneration);
+            if (cap is null || broker is null || !_pipelineOpen) return false;
+            return broker.TryUseLatest(
+                generation,
+                texture => use(cap.D3DDevice, cap.D3DContext, texture));
         }
         finally { _frameGate.ExitReadLock(); }
     }
 
     // ---- Обычная запись в файл («Начать запись») ----
     private ManualRecorder? _recorder;
+    // Это именно желание человека, а не факт наличия текущего writer.
+    // Во время recovery writer закрывается, но intent остаётся true; явная
+    // команда «остановить» меняет его даже в промежутке между сегментами.
+    private bool _continuousRecordingRequested;
     public bool IsRecordingToFile => _recorder is not null;
     /// <summary>Сколько идёт обычная запись; null — не пишем.</summary>
     public TimeSpan? RecordingElapsed => _recorder is { } r ? DateTime.Now - r.StartedAt : null;
@@ -151,6 +178,10 @@ public sealed class ReplayEngine : IDisposable
     {
         _settings = settings;
         _storage = storage;
+        var selection = ScreenCaptureFactory.Selection;
+        _captureBackend = selection.Backend;
+        _preferredCaptureBackend = selection.Backend;
+        _captureBackendForced = selection.Forced;
         // Проблемы со звуком должны доходить до человека сразу: немой клип
         // обнаруживается уже после того, как момент упущен
         _audio.Warning += msg => Warning?.Invoke(msg);
@@ -169,20 +200,49 @@ public sealed class ReplayEngine : IDisposable
                 Log.Info("Engine", $"Настройки '{group}' изменены — перезапускаю конвейер");
                 // Под одним замком: между Stop и Start не должен вклиниться ни хоткей
                 // сохранения, ни вотчдог со своим перезапуском
-                lock (_lifecycle) { StopLocked(); StartLocked(); }
+                lock (_lifecycle) { StopLocked(); StartWithFallbackLocked(preserveBuffers: false); }
             }
         };
     }
 
     public void Start()
     {
-        lock (_lifecycle) StartLocked();
+        lock (_lifecycle) StartWithFallbackLocked(preserveBuffers: false);
     }
 
-    private void StartLocked()
+    private void StartWithFallbackLocked(bool preserveBuffers)
     {
         if (_state != EngineState.Stopped) return;
-        _stopRequested = false;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        CaptureBackend desired = preserveBuffers ? _captureBackend : _preferredCaptureBackend;
+        CaptureBackend candidate = _captureHealth.CanUse(desired, now)
+            ? desired
+            : CaptureBackendPolicy.Alternative(desired);
+
+        try
+        {
+            StartLocked(preserveBuffers, candidate);
+        }
+        catch when (!_captureBackendForced)
+        {
+            _captureHealth.Quarantine(candidate, now, CaptureQuarantine.Transient);
+            CaptureBackend alternative = CaptureBackendPolicy.Alternative(candidate);
+            if (!_captureHealth.CanUse(alternative, now) ||
+                !_captureHealth.TryRecordSwitch(now)) throw;
+
+            Log.Warn("Engine", $"Захват {candidate} не запустился — пробую {alternative}");
+            StartLocked(preserveBuffers, alternative);
+        }
+    }
+
+    private void StartLocked(bool preserveBuffers, CaptureBackend backend)
+    {
+        if (_state != EngineState.Stopped && !(preserveBuffers && _state == EngineState.Recovering))
+            throw new InvalidOperationException("Видеоконвейер ещё не остановлен");
+        if (preserveBuffers && _stopRequested)
+            throw new OperationCanceledException("Автовосстановление отменено человеком");
+        if (!preserveBuffers) _stopRequested = false;
+        _captureBackend = backend;
         var s = _settings.Current;
         try
         {
@@ -198,42 +258,109 @@ public sealed class ReplayEngine : IDisposable
 
             _videoBuffer.MaxDurationTicks = TimeSpan.FromSeconds(effectiveReplaySeconds).Ticks;
             _audioBuffer.MaxDurationTicks = _videoBuffer.MaxDurationTicks;
-            _videoBuffer.Clear();
-            _audioBuffer.Release();
             // Арена под кадры: размер считается из длительности и битрейта, дальше
             // память не растёт — сколько выделено, столько буфер и занимает.
-            _videoBuffer.Allocate(s.BitrateBps, effectiveReplaySeconds);
             // Своя арена под звук, по той же причине: раньше микшер выделял пару
             // массивов каждые 10 мс, и буфер держал их все живыми.
             bool captureAudio = s.CaptureGameAudio || s.CaptureMicrophone;
-            if (captureAudio)
-                _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, effectiveReplaySeconds);
-            else
-                _audioBuffer.Release();
+            bool validateSequenceHeader = false;
+            byte[]? previousSequenceHeader = null;
+            if (!preserveBuffers)
+            {
+                _videoBuffer.Allocate(s.BitrateBps, effectiveReplaySeconds);
+                _bufferSequenceHeader = null;
+                if (captureAudio)
+                    _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, effectiveReplaySeconds);
+                else
+                    _audioBuffer.Release();
+            }
 
-            _capture = ScreenCaptureFactory.Create(s.MonitorIndex);
-            _capture.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
+            long generation = Interlocked.Increment(ref _captureGeneration);
+            _capture = ScreenCaptureFactory.Create(_captureBackend, s.MonitorIndex);
+            _capture.Prepare(s.MonitorIndex, s.Fps, s.RecordCursor, generation);
 
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
             _processor.Configure(_capture.Width, _capture.Height, s.VerticalResolution, s.Fps);
 
-            _encoder = new VideoEncoder();
-            _encoder.Initialize(_capture.D3DDevice, _processor.OutWidth, _processor.OutHeight,
-                                s.Fps, s.BitrateBps, s.Codec);
-            _encoder.FrameEncoded += _videoBuffer.Add;
+            _frameBroker = new GpuCaptureFrameBroker(
+                _capture.D3DDevice,
+                _capture.D3DContext,
+                _capture.Width,
+                _capture.Height,
+                separateCursor: _captureBackend == CaptureBackend.DesktopDuplication,
+                generation);
 
-            // Ворота открываем последним действием перед подпиской: до этого момента
-            // кадр, прилетевший от уже стартовавшего захвата, не должен идти в конвейер
+            if (preserveBuffers)
+            {
+                bool compatible = _bufferCodec == s.Codec &&
+                                  _bufferWidth == _processor.OutWidth &&
+                                  _bufferHeight == _processor.OutHeight &&
+                                  _bufferFps == s.Fps;
+                if (!_videoBuffer.PrepareForCaptureRestart(compatible, s.BitrateBps, effectiveReplaySeconds))
+                {
+                    _bufferSequenceHeader = null;
+                    Log.Warn("Engine", "Формат видео изменился — несовместимая часть RAM-буфера очищена");
+                }
+                else if (_videoBuffer.TotalBytes > 0)
+                {
+                    validateSequenceHeader = true;
+                    previousSequenceHeader = _bufferSequenceHeader;
+                }
+            }
+
+            var encoder = _encoder = new VideoEncoder();
+            encoder.Initialize(_capture.D3DDevice, _processor.OutWidth, _processor.OutHeight,
+                               s.Fps, s.BitrateBps, s.Codec);
+            bool awaitingRestartKeyframe = validateSequenceHeader;
+            _encodedStreamReady = !awaitingRestartKeyframe;
+            encoder.FrameEncoded += frame =>
+            {
+                // До первого keyframe нового MFT кадры не добавляем: их
+                // нельзя декодировать от старого GOP. На keyframe уже доступен
+                // sequence header и можно безопасно решить, сохранять ли хвост.
+                if (awaitingRestartKeyframe)
+                {
+                    if (!frame.IsKeyframe) return;
+                    byte[]? currentSequenceHeader = encoder.TryGetSequenceHeader();
+                    if (!EncodedStreamCompatibility.SameSequenceHeader(
+                            previousSequenceHeader, currentSequenceHeader))
+                    {
+                        _videoBuffer.Clear();
+                        Log.Warn("Engine", "Параметры новой сессии энкодера отличаются — " +
+                                           "старая видеочасть RAM-буфера очищена");
+                    }
+                    _bufferSequenceHeader = currentSequenceHeader;
+                    awaitingRestartKeyframe = false;
+                    _encodedStreamReady = true;
+                }
+                else if (frame.IsKeyframe)
+                {
+                    _bufferSequenceHeader = encoder.TryGetSequenceHeader();
+                }
+                _videoBuffer.Add(frame);
+            };
+            _bufferCodec = s.Codec;
+            _bufferWidth = _processor.OutWidth;
+            _bufferHeight = _processor.OutHeight;
+            _bufferFps = s.Fps;
+
+            // Сначала подписываем полностью готовый конвейер и только потом запускаем
+            // источник: так не теряется единственный первый кадр статичного DDA-экрана.
+            _captureFrameHandler = frame => OnCapturedSurface(frame, generation);
+            _captureFailureHandler = failure => OnCaptureFailed(failure, generation);
+            _capture.FrameArrived += _captureFrameHandler;
+            _capture.Failed += _captureFailureHandler;
             _pipelineOpen = true;
-            _capture.FrameArrived += OnFrame;
+            StartFrameWorker(generation);
+            _capture.Start();
             // Источник сам не оживёт после потери устройства — пересобираем конвейер.
             // Для WGC это единственный путь: там кадры приходят в колбэк WinRT, из
             // которого исключение не выпустить, не уронив процесс.
-            _capture.Failed += OnCaptureFailed;
+            _pipelineStartedAt = DateTimeOffset.UtcNow;
 
             _audio.MicNoiseGate = s.MicNoiseSuppression;
             _audio.MicGateThresholdDb = s.MicNoiseGateDb;
-            if (captureAudio)
+            if (captureAudio && !preserveBuffers)
             {
                 _audio.BlockReady += _audioBuffer.Add;
                 _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
@@ -246,33 +373,32 @@ public sealed class ReplayEngine : IDisposable
             StartStatsTimer();
             StartCaptureWatchdog();
             StartCaptureProbe();
-            StartGameTracker();
+            StartGameTracker(preserveHistory: preserveBuffers);
             Log.Info("Engine", "Instant Replay включен");
         }
         catch (Exception ex)
         {
             Log.Error("Engine", ex);
-            StopLocked();
+            StopLocked(preserveBuffers ? PipelineStopIntent.CaptureRestart : PipelineStopIntent.UserStop);
             throw;
         }
     }
 
-    private void OnFrame(Vortice.Direct3D11.ID3D11Texture2D bgra, long ticks)
+    private void OnCapturedSurface(in CapturedSurface surface, long observedGeneration)
     {
+        if (surface.Generation != observedGeneration ||
+            observedGeneration != Interlocked.Read(ref _captureGeneration)) return;
         // Идёт снос конвейера — кадр уже некуда девать. Ждать нельзя: поток захвата
         // заблокировал бы сам снос, которого он дожидается.
         if (!_frameGate.TryEnterReadLock(0)) return;
         try
         {
-            if (!_pipelineOpen) return;
-
-            long t0 = Diagnostics.PipelineProbe.Now();
-            var nv12 = _processor!.Convert(bgra);
-            long t1 = Diagnostics.PipelineProbe.Now();
-            _encoder!.SubmitFrame(nv12, ticks, _capture!.D3DContext);
-            long t2 = Diagnostics.PipelineProbe.Now();
-            Diagnostics.PipelineProbe.Convert.Add(t0, t1);
-            Diagnostics.PipelineProbe.Submit.Add(t1, t2);
+            if (!_pipelineOpen || _frameBroker is null) return;
+            long copyStart = Diagnostics.PipelineProbe.Now();
+            if (!_frameBroker.Publish(surface)) return;
+            Diagnostics.PipelineProbe.CaptureCopy.Add(
+                copyStart, Diagnostics.PipelineProbe.Now());
+            _frameReady?.Set();
         }
         catch (Exception ex)
         {
@@ -280,7 +406,9 @@ public sealed class ReplayEngine : IDisposable
             // сам не выберется: все объекты D3D мертвы, нужно пересобирать с нуля.
             if (DeviceLoss.IsDeviceLost(ex))
             {
-                RecoverFromDeviceLoss($"ошибка кадра: {ex.Message}");
+                OnCaptureFailed(new CaptureFailure(
+                    CaptureFailureKind.DeviceLost, ex, $"ошибка кадра: {ex.Message}",
+                    observedGeneration), observedGeneration);
                 return;
             }
             Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
@@ -288,73 +416,251 @@ public sealed class ReplayEngine : IDisposable
         finally { _frameGate.ExitReadLock(); }
     }
 
-    /// <summary>Источник кадров сообщил о потере устройства — пересобираем конвейер.</summary>
-    private void OnCaptureFailed(Exception ex) =>
-        RecoverFromDeviceLoss($"источник кадров остановился: {ex.Message}");
+    private sealed class FrameWorkerToken
+    {
+        public volatile bool Running = true;
+    }
 
-    // ---------------- Восстановление после потери GPU-устройства ----------------
+    private void StartFrameWorker(long generation)
+    {
+        if (_frameWorker is not null)
+            throw new InvalidOperationException("Обработчик кадров уже запущен");
+
+        _frameReady = new AutoResetEvent(false);
+        var token = new FrameWorkerToken();
+        _frameWorkerToken = token;
+        _frameWorker = new Thread(() => FrameWorkerLoop(token, generation))
+        {
+            IsBackground = true,
+            Name = "AuraFrameWorker",
+            Priority = ThreadPriority.AboveNormal
+        };
+        _frameWorker.Start();
+    }
+
+    private void FrameWorkerLoop(FrameWorkerToken token, long generation)
+    {
+        while (token.Running)
+        {
+            AutoResetEvent? ready = _frameReady;
+            if (ready is null || !ready.WaitOne(100)) continue;
+            if (!token.Running) break;
+            ProcessLatestFrame(generation);
+        }
+    }
+
+    private void ProcessLatestFrame(long generation)
+    {
+        if (generation != Interlocked.Read(ref _captureGeneration) ||
+            !_frameGate.TryEnterReadLock(0)) return;
+
+        try
+        {
+            if (!_pipelineOpen || _frameBroker is null ||
+                !_frameBroker.TryLeaseLatest(generation, out GpuCaptureFrameLease? lease)) return;
+
+            GpuCaptureFrameLease current = lease!;
+            using (current)
+            {
+                long t0 = Diagnostics.PipelineProbe.Now();
+                var nv12 = _processor!.Convert(current.Texture);
+                long t1 = Diagnostics.PipelineProbe.Now();
+                _encoder!.SubmitFrame(nv12, current.Timestamp, _capture!.D3DContext);
+                Diagnostics.PipelineProbe.Convert.Add(t0, t1);
+                Diagnostics.PipelineProbe.Submit.Add(t1, Diagnostics.PipelineProbe.Now());
+            }
+        }
+        catch (Exception ex)
+        {
+            if (DeviceLoss.IsDeviceLost(ex))
+            {
+                OnCaptureFailed(new CaptureFailure(
+                    CaptureFailureKind.DeviceLost, ex, $"ошибка кадра: {ex.Message}",
+                    generation), generation);
+            }
+            else
+            {
+                Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
+            }
+        }
+        finally
+        {
+            _frameGate.ExitReadLock();
+        }
+    }
+
+    private void StopFrameWorker()
+    {
+        FrameWorkerToken? token = _frameWorkerToken;
+        _frameWorkerToken = null;
+        if (token is not null) token.Running = false;
+        _frameReady?.Set();
+
+        Thread? worker = _frameWorker;
+        _frameWorker = null;
+        bool stopped = worker is null || worker.Join(5000);
+        if (!stopped)
+        {
+            Log.Warn("Engine", "Обработчик кадра не завершился за 5 секунд");
+            return;
+        }
+
+        _frameReady?.Dispose();
+        _frameReady = null;
+    }
+
+    /// <summary>Источник остановился или подтверждённо голодает.</summary>
+    private void OnCaptureFailed(CaptureFailure failure, long observedGeneration)
+    {
+        if (failure.Generation != observedGeneration ||
+            observedGeneration != Interlocked.Read(ref _captureGeneration) ||
+            _stopRequested) return;
+        // Источник, probe и watchdog могут одновременно увидеть один и тот же
+        // обрыв. Забираем право на восстановление ДО изменения health-policy,
+        // иначе дубль зря карантинил backend и съедал второй switch-slot.
+        if (Interlocked.CompareExchange(ref _recovering, 1, 0) != 0) return;
+
+        try
+        {
+            // Между первой проверкой и CompareExchange человек мог успеть
+            // выключить replay. В таком случае ничего не перезапускаем.
+            if (observedGeneration != Interlocked.Read(ref _captureGeneration) || _stopRequested)
+            {
+                Interlocked.Exchange(ref _recovering, 0);
+                return;
+            }
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            CaptureBackend next = _captureHealth.SelectAfterFailure(
+                _captureBackend, failure.Kind, _captureBackendForced, now,
+                _preferredCaptureBackend);
+            RequestCaptureRestart(next,
+                $"{failure.Reason}: {failure.Error.Message}", failure.Kind, observedGeneration);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _recovering, 0);
+            throw;
+        }
+    }
+
+    // ---------------- Восстановление и автосмена backend ----------------
 
     private int _recovering;
 
-    /// <summary>
-    /// Пересобрать конвейер после потери устройства (TDR, обновление драйвера, смена GPU).
-    /// Работа уходит в пул потоков: вызывают из колбэка захвата, а внутри мы этот же
-    /// захват останавливаем. Драйверу нужно время подняться, поэтому попытки с паузами.
-    /// </summary>
-    private void RecoverFromDeviceLoss(string reason)
+    private void RequestCaptureRestart(
+        CaptureBackend next,
+        string reason,
+        CaptureFailureKind failureKind,
+        long observedGeneration)
     {
-        if (Interlocked.Exchange(ref _recovering, 1) == 1) return; // уже восстанавливаемся
-        bool wasRecording = IsRecordingToFile;
+        CaptureBackend previous = _captureBackend;
+        var cancellation = new CancellationTokenSource();
+        CancellationTokenSource? replaced = Interlocked.Exchange(
+            ref _recoveryCancellation, cancellation);
+        replaced?.Cancel();
 
         Task.Run(() =>
         {
             try
             {
-                Log.Warn("Engine", $"Потеряно устройство GPU ({reason}) — пересобираю конвейер");
-                Warning?.Invoke("Сброс драйвера GPU — перезапускаю запись");
-                // Именно StopLocked, а не Stop(): публичный Stop означает «человек
-                // выключил запись» и запретил бы восстановление, которым мы заняты
-                try { lock (_lifecycle) StopLocked(); }
-                catch (Exception ex) { Log.Warn("Engine", $"Остановка: {ex.Message}"); }
+                Log.Warn("Engine", $"Захват generation {observedGeneration}: {previous} → {next}; {reason}");
+                Warning?.Invoke(previous == next
+                    ? "Перезапускаю захват экрана"
+                    : $"Переключаю захват: {previous} → {next}");
 
-                for (int attempt = 1; attempt <= RecoveryAttempts; attempt++)
+                try
                 {
-                    Thread.Sleep(attempt == 1 ? 1500 : 3000);
+                    lock (_lifecycle)
+                    {
+                        if (_stopRequested || observedGeneration != Interlocked.Read(ref _captureGeneration)) return;
+                        StopLocked(PipelineStopIntent.CaptureRestart);
+                        if (_state != EngineState.Recovering)
+                            throw new InvalidOperationException("Остановка видеоконвейера не завершилась");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Engine", $"Автовосстановление отменено: конвейер не остановился ({ex.Message})");
+                    Warning?.Invoke("Не удалось безопасно перезапустить захват");
+                    return;
+                }
+
+                long restartGeneration = Interlocked.Read(ref _captureGeneration);
+                CaptureBackend candidate = next;
+                for (int attempt = 1; ; attempt = attempt == int.MaxValue ? attempt : attempt + 1)
+                {
+                    int delay = CaptureRecoveryBackoff.DelayMilliseconds(
+                        attempt, failureKind == CaptureFailureKind.DeviceLost);
+                    if (cancellation.Token.WaitHandle.WaitOne(delay)) return;
 
                     // Пока мы спали, человек мог выключить запись — тогда включать
                     // её обратно нельзя ни при каких обстоятельствах
-                    if (_stopRequested)
+                    if (_stopRequested ||
+                        restartGeneration != Interlocked.Read(ref _captureGeneration))
                     {
-                        Log.Info("Engine", "Восстановление отменено: запись выключили вручную");
+                        Log.Info("Engine", "Восстановление отменено: состояние конвейера уже изменилось");
                         return;
                     }
 
                     try
                     {
-                        Start();
-                        Log.Info("Engine", $"Конвейер восстановлен (попытка {attempt})");
-                        if (wasRecording)
+                        lock (_lifecycle)
                         {
-                            // Прежний файл записи закрыт корректно в Stop(); продолжаем в новый
-                            try { StartRecordingToFile(); }   // возьмёт замок сам
-                            catch (Exception ex) { Log.Warn("Engine", $"Запись не возобновилась: {ex.Message}"); }
+                            if (_stopRequested ||
+                                restartGeneration != Interlocked.Read(ref _captureGeneration)) return;
+                            StartLocked(preserveBuffers: true, candidate);
+                            if (_stopRequested)
+                            {
+                                StopLocked(PipelineStopIntent.UserStop);
+                                return;
+                            }
+                            // Читаем intent под тем же lifecycle-lock: если человек
+                            // нажал «остановить» в промежутке, новый файл не создаём.
+                            if (_continuousRecordingRequested) StartRecordingLocked();
+                            if (_stopRequested)
+                            {
+                                StopLocked(PipelineStopIntent.UserStop);
+                                return;
+                            }
                         }
+                        Log.Info("Engine", $"Конвейер восстановлен на {candidate} (попытка {attempt})");
                         Warning?.Invoke("Запись восстановлена");
+                        return;
+                    }
+                    catch (OperationCanceledException) when (_stopRequested)
+                    {
                         return;
                     }
                     catch (Exception ex)
                     {
-                        Log.Warn("Engine", $"Восстановление, попытка {attempt}: {ex.Message}");
+                        Log.Warn("Engine", $"Восстановление {candidate}, попытка {attempt}: {ex.Message}");
+                        restartGeneration = Interlocked.Read(ref _captureGeneration);
+                        CaptureBackend selected = _captureHealth.SelectAfterFailure(
+                            candidate, CaptureFailureKind.BackendUnavailable,
+                            _captureBackendForced, DateTimeOffset.UtcNow,
+                            _preferredCaptureBackend);
+                        // Если запасной backend тоже не стартует, карантин обоих
+                        // не должен запирать нас на заведомо нерабочем варианте.
+                        // Последний работавший backend остаётся bounded last resort.
+                        candidate = selected == candidate && candidate != previous && !_captureBackendForced
+                            ? previous
+                            : selected;
                     }
                 }
-                Log.Error("Engine", "Восстановить конвейер не удалось");
-                Warning?.Invoke("Не удалось восстановить запись — включите Instant Replay заново");
             }
-            finally { Interlocked.Exchange(ref _recovering, 0); }
+            finally
+            {
+                if (ReferenceEquals(
+                        Interlocked.CompareExchange(ref _recoveryCancellation, null, cancellation),
+                        cancellation))
+                {
+                    cancellation.Dispose();
+                }
+                Interlocked.Exchange(ref _recovering, 0);
+            }
         });
     }
-
-    private const int RecoveryAttempts = 10;
 
     // Раз в минуту — здоровье конвейера в лог: по этим цифрам видно, ГДЕ теряются
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
@@ -394,11 +700,12 @@ public sealed class ReplayEngine : IDisposable
         if (seconds < 2) return; // только что выгружали — нечего показывать
 
         // fps по каждой стадии: сразу видно, кто именно не дотягивает до настроенного.
-        Log.Info("Engine", $"Конвейер {label} ({seconds:F0} с): WGC {rcv - _lastReceived}/{acc - _lastAccepted} " +
+        string captureName = _captureBackend == CaptureBackend.Wgc ? "WGC" : "DDA";
+        Log.Info("Engine", $"Конвейер {label} ({seconds:F0} с): {captureName} {rcv - _lastReceived}/{acc - _lastAccepted} " +
             $"(получено/принято), захвачено {s - _lastSubmitted}, " +
             $"дубликатов {dup - _lastDuplicated}, закодировано {e - _lastEncoded}, " +
             $"дропнуто {d - _lastDropped} (буфер {(int)BufferedDuration.TotalSeconds} сек) | " +
-            $"fps: WGC {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
+            $"fps: {captureName} {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
             $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
             $", пресет {enc.QualityPreset}, кадров внутри MFT до {Interlocked.Exchange(ref enc.MaxInFlight, 0)}" +
             (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (очередь полна)" : ""));
@@ -509,9 +816,10 @@ public sealed class ReplayEngine : IDisposable
     private readonly object _gameSync = new();
     private System.Threading.Timer? _gameTimer;
 
-    private void StartGameTracker()
+    private void StartGameTracker(bool preserveHistory = false)
     {
-        lock (_gameSync) _gameSamples.Clear();
+        if (!preserveHistory)
+            lock (_gameSync) _gameSamples.Clear();
         _gameTimer?.Dispose();
         _gameTimer = new System.Threading.Timer(_ =>
         {
@@ -561,13 +869,12 @@ public sealed class ReplayEngine : IDisposable
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,
     // сброс драйвера) — сессия захвата может умереть насовсем. Буфер при этом жив
     // (пейсер дублирует последний кадр), но реальная картинка не вернётся сама.
-    // Каждые 5 сек проверяем приток кадров; тишина >15 сек — пересоздаём WGC-сессию.
-    // Пока монитор выключен, попытки просто повторяются, при пробуждении — оживает.
+    // Каждые 5 сек проверяем приток кадров; тишина >15 сек запускает общую
+    // generation-safe пересборку и при необходимости смену backend.
     private System.Threading.Timer? _watchdog;
     private long _wdLastReceived = -1;
     private DateTime _wdLastActivity = DateTime.UtcNow;
     private bool _wdEpisodeLogged; // логируем только начало эпизода тишины, не каждые 15 сек
-    private int _wdFailures;       // сколько попыток пересоздать сессию не удалось подряд
 
     // ---------------- Посекундная диагностика провалов ----------------
     //
@@ -580,6 +887,8 @@ public sealed class ReplayEngine : IDisposable
 
     private System.Threading.Timer? _probeTimer;
     private long _probeRecv, _probeEnc, _probeReq, _probeDrop, _probeDup;
+    private long _probeLastTimestamp;
+    private int _probeRunning;
     private bool _probeEpisode;
     private int _probeQuiet;
 
@@ -591,6 +900,8 @@ public sealed class ReplayEngine : IDisposable
         _probeEpisode = false;
         _probeQuiet = 0;
         _probeRecv = _probeEnc = _probeReq = _probeDrop = _probeDup = 0;
+        _probeLastTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        Volatile.Write(ref _probeRunning, 0);
         _probeTimer?.Dispose();
         _probeTimer = new System.Threading.Timer(_ => Probe(), null,
             TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
@@ -598,8 +909,19 @@ public sealed class ReplayEngine : IDisposable
 
     private void Probe()
     {
+        // System.Threading.Timer допускает reentrancy: под нагрузкой следующий tick
+        // может прийти до завершения предыдущего и дважды сдвинуть общие счётчики.
+        if (Interlocked.CompareExchange(ref _probeRunning, 1, 0) != 0) return;
+        try { ProbeCore(); }
+        finally { Volatile.Write(ref _probeRunning, 0); }
+    }
+
+    private void ProbeCore()
+    {
         var cap = _capture;
         var enc = _encoder;
+        long generation = Interlocked.Read(ref _captureGeneration);
+        CaptureBackend backend = _captureBackend;
         if (cap is null || enc is null || !_pipelineOpen || _stopRequested) return;
 
         try
@@ -611,13 +933,48 @@ public sealed class ReplayEngine : IDisposable
             long dDrop = drop - _probeDrop, dDup = dup - _probeDup;
             _probeRecv = recv; _probeEnc = encoded; _probeReq = req; _probeDrop = drop; _probeDup = dup;
 
+            long sampleTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            double sampleSeconds = (sampleTimestamp - _probeLastTimestamp) /
+                                   (double)System.Diagnostics.Stopwatch.Frequency;
+            _probeLastTimestamp = sampleTimestamp;
+            if (sampleSeconds <= 0) return;
+            static long PerSecond(long delta, double seconds) =>
+                (long)Math.Round(Math.Max(0, delta) / seconds);
+            long fpsRecv = PerSecond(dRecv, sampleSeconds);
+            long fpsEnc = PerSecond(dEnc, sampleSeconds);
+            long fpsReq = PerSecond(dReq, sampleSeconds);
+            long fpsDrop = PerSecond(dDrop, sampleSeconds);
+            long fpsDup = PerSecond(dDup, sampleSeconds);
+
+            bool gameForeground = !string.Equals(
+                GameDetector.DetectForegroundGame(), "Desktop", StringComparison.OrdinalIgnoreCase);
+            var health = _captureHealth.Observe(new CaptureHealthSample(
+                    backend,
+                    _settings.Current.Fps,
+                    (int)Math.Clamp(fpsRecv, 0, int.MaxValue),
+                    (int)Math.Clamp(fpsEnc, 0, int.MaxValue),
+                    (int)Math.Clamp(fpsDup, 0, int.MaxValue),
+                    gameForeground,
+                    DateTimeOffset.UtcNow - _pipelineStartedAt),
+                DateTimeOffset.UtcNow);
+
+            if (health.SwitchBackend)
+            {
+                string metrics = $"{health.Reason}; получено {fpsRecv}, закодировано {fpsEnc}, дублей {fpsDup} кадр/с";
+                OnCaptureFailed(new CaptureFailure(
+                    CaptureFailureKind.BackendStalled,
+                    new InvalidOperationException("WGC capture starvation"), metrics,
+                    generation), generation);
+                return;
+            }
+
             // Смотрим ТОЛЬКО на кодирование: именно оно попадает в файл. Низкий
             // приток от WGC сам по себе нормален — на малоподвижной картинке система
             // отдаёт меньше кадров, а пейсер добивает сетку дубликатами, и запись
             // остаётся ровной. По прежнему порогу «или захват, или кодирование»
             // диагностика срабатывала 725 раз за день на совершенно здоровой работе
             // и топила в себе настоящие провалы.
-            bool bad = dEnc < ProbeFpsFloor;
+            bool bad = fpsEnc < ProbeFpsFloor;
 
             // Хвост после восстановления: по нему видно, что именно поднялось первым
             if (!bad && _probeEpisode && ++_probeQuiet > 3) { _probeEpisode = false; _probeQuiet = 0; return; }
@@ -628,15 +985,25 @@ public sealed class ReplayEngine : IDisposable
             {
                 _probeEpisode = true;
                 Log.Warn("Probe", "Провал записи — посекундная диагностика (кадры/с: получено, закодировано, " +
-                                  "запросов MFT, дублей, дропов | очередь | видеопамять)");
+                                  "запросов MFT, дублей, дропов | backend/broker/cursor | очередь | видеопамять)");
             }
 
             string vram = GpuInfo.Usage(cap.D3DDevice) is { } v
                 ? $"{v.UsedMb}/{v.BudgetMb} МБ"
                 : "нет данных";
+            var broker = _frameBroker?.GetDiagnostics(cap.InvalidCursorShapes)
+                ?? new Diagnostics.CaptureBrokerDiagnostics(
+                    generation, 0, 0, 0, 0, cap.InvalidCursorShapes);
+            long now100Nanoseconds = (long)(sampleTimestamp *
+                (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
+            long frameAgeMilliseconds = Diagnostics.CaptureBrokerDiagnostics.AgeMilliseconds(
+                now100Nanoseconds, broker.LatestTimestamp);
 
-            Log.Info("Probe", $"получено {dRecv}, закодировано {dEnc}, запросов {dReq}, " +
-                              $"дублей {dDup}, дропов {dDrop} | очередь {enc.QueueDepth}/{enc.MaxQueue} " +
+            Log.Info("Probe", $"получено {fpsRecv}, закодировано {fpsEnc}, запросов {fpsReq}, " +
+                              $"дублей {fpsDup}, дропов {fpsDrop} | {backend}/gen {broker.Generation} | " +
+                              $"broker {broker.FramesPublished}/drop {broker.FramesDroppedNoSlot}/" +
+                              $"age {frameAgeMilliseconds} мс | cursor rev {broker.CursorRevision}/" +
+                              $"invalid {broker.InvalidCursorShapes} | очередь {enc.QueueDepth}/{enc.MaxQueue} " +
                               $"(пул {enc.PoolSlots}) | VRAM {vram}");
         }
         catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
@@ -657,7 +1024,6 @@ public sealed class ReplayEngine : IDisposable
         }
 
         _wdLastReceived = -1;
-        _wdFailures = 0;
         _wdLastActivity = DateTime.UtcNow;
         _watchdog = new System.Threading.Timer(_ =>
         {
@@ -674,47 +1040,44 @@ public sealed class ReplayEngine : IDisposable
             }
             if ((DateTime.UtcNow - _wdLastActivity).TotalSeconds < 15) return;
 
-            _wdLastActivity = DateTime.UtcNow; // не чаще одной попытки в 15 сек
-            var s = _settings.Current;
-            try
+            _wdLastActivity = DateTime.UtcNow;
+            if (!_wdEpisodeLogged)
             {
-                if (!_wdEpisodeLogged)
-                {
-                    _wdEpisodeLogged = true;
-                    Log.Warn("Engine", "Захват молчит >15 сек (AFK/монитор выключен?) — пересоздаю WGC-сессию");
-                }
-                cap.Start(s.MonitorIndex, s.Fps, s.RecordCursor);
-                _wdFailures = 0;
+                _wdEpisodeLogged = true;
+                Log.Warn("Engine", "Захват молчит >15 сек — пересобираю видеоконвейер");
             }
-            catch (Exception ex)
-            {
-                // Пересоздание сессии не помогает, если умерло само устройство D3D:
-                // тогда лечит только полная пересборка конвейера.
-                if (DeviceLoss.IsDeviceLost(ex))
-                {
-                    RecoverFromDeviceLoss($"захват не создаётся: {ex.Message}");
-                    return;
-                }
-                if (++_wdFailures >= 3)
-                {
-                    _wdFailures = 0;
-                    RecoverFromDeviceLoss("захват не восстанавливается три попытки подряд");
-                    return;
-                }
-                if (_wdEpisodeLogged) return; // монитор выключен — молча ждём пробуждения
-                Log.Warn("Engine", $"Захват пока не восстановился: {ex.Message}");
-            }
+            long generation = Interlocked.Read(ref _captureGeneration);
+            var stalled = new InvalidOperationException(
+                "WGC не присылает кадры больше 15 секунд");
+            OnCaptureFailed(new CaptureFailure(
+                CaptureFailureKind.BackendStalled,
+                stalled,
+                "WGC: поток кадров остановился",
+                generation), generation);
         }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
 
     public void Stop()
     {
         _stopRequested = true;
-        lock (_lifecycle) StopLocked();
+        _recoveryCancellation?.Cancel();
+        lock (_lifecycle)
+        {
+            _continuousRecordingRequested = false;
+            StopLocked();
+        }
     }
 
-    private void StopLocked()
+    private void StopLocked(PipelineStopIntent intent = PipelineStopIntent.UserStop)
     {
+        if (intent == PipelineStopIntent.UserStop)
+        {
+            _continuousRecordingRequested = false;
+            _recoveryCancellation?.Cancel();
+        }
+        var restartActions = PipelineRestartPolicy.For(
+            intent, continuousRecordingActive: _recorder is not null, formatCompatible: true);
+        Interlocked.Increment(ref _captureGeneration); // все колбэки старого источника больше не действуют
         DumpStats("на выключении");
         // Дожидаемся уже начатых колбэков: обычный Dispose возвращается сразу, и
         // вотчдог продолжал работать параллельно сносу — вплоть до попытки поднять
@@ -730,22 +1093,31 @@ public sealed class ReplayEngine : IDisposable
 
         // Гасим ворота и отписываемся: с этого момента новые кадры в конвейер не идут
         _pipelineOpen = false;
+        _encodedStreamReady = false;
         if (_capture is not null)
         {
-            _capture.FrameArrived -= OnFrame;
-            _capture.Failed -= OnCaptureFailed;
+            if (_captureFrameHandler is not null)
+                _capture.FrameArrived -= _captureFrameHandler;
+            if (_captureFailureHandler is not null)
+                _capture.Failed -= _captureFailureHandler;
             // Останавливаем поток захвата, но УСТРОЙСТВО НЕ ТРОГАЕМ: им ещё
             // пользуется пейсер энкодера, см. порядок разрушения ниже
             _capture.Stop();
         }
+        _captureFrameHandler = null;
+        _captureFailureHandler = null;
+        StopFrameWorker();
         DrainFramesInFlight();
 
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
         // а записи нет».
         if (_recorder is not null) StopRecordingLocked(wait: true);
-        _audio.BlockReady -= _audioBuffer.Add;
-        _audio.Stop();
+        if (intent == PipelineStopIntent.UserStop)
+        {
+            _audio.BlockReady -= _audioBuffer.Add;
+            _audio.Stop();
+        }
 
         // ПОРЯДОК ВАЖЕН, и требований тут ДВА, встречных.
         //
@@ -766,14 +1138,19 @@ public sealed class ReplayEngine : IDisposable
         // оставалась живой, а нативный указатель внутри неё уже обнулён.
         _encoder?.Dispose(); _encoder = null;
         _processor?.Dispose(); _processor = null;
+        _frameBroker?.Dispose(); _frameBroker = null;
         _capture?.Dispose(); _capture = null;
 
-        _videoBuffer.Clear();
-        _audioBuffer.Release();   // конвейер стоит — арену звука возвращаем системе
+        if (!restartActions.KeepReplayBuffer) _videoBuffer.Clear();
+        if (!restartActions.KeepAudioBuffer) _audioBuffer.Release();
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive;
-        SetState(EngineState.Stopped);
-        Log.Info("Engine", "Instant Replay выключен");
-        ReleaseMemory();
+        SetState(intent == PipelineStopIntent.UserStop
+            ? EngineState.Stopped
+            : EngineState.Recovering);
+        Log.Info("Engine", intent == PipelineStopIntent.UserStop
+            ? "Instant Replay выключен"
+            : "Видеоконвейер остановлен для автовосстановления; replay остался в RAM");
+        if (intent == PipelineStopIntent.UserStop) ReleaseMemory();
     }
 
     /// <summary>
@@ -838,7 +1215,16 @@ public sealed class ReplayEngine : IDisposable
     {
         lock (_lifecycle)
         {
-            if (_state == EngineState.Stopped) StartLocked(); else StopLocked();
+            if (_state == EngineState.Stopped)
+            {
+                StartWithFallbackLocked(preserveBuffers: false);
+            }
+            else
+            {
+                _stopRequested = true;
+                _continuousRecordingRequested = false;
+                StopLocked();
+            }
         }
     }
 
@@ -854,7 +1240,8 @@ public sealed class ReplayEngine : IDisposable
 
     private void SaveReplayLocked(int? secondsOverride)
     {
-        if (_state != EngineState.Running || _encoder?.OutputMediaType is null) return;
+        if (_state != EngineState.Running || !_encodedStreamReady ||
+            _encoder?.OutputMediaType is null) return;
 
         DumpStats("к моменту сохранения"); // короткий сеанс тоже должен оставить следы в логе
 
@@ -944,7 +1331,7 @@ public sealed class ReplayEngine : IDisposable
                 // иначе память, занятая под клип, остаётся за процессом до выхода.
                 Diagnostics.MemoryMap.Log("после сохранения");
                 self.Priority = previousPriority;      // поток уходит обратно в пул потоков
-                SetState(_state == EngineState.Stopped ? EngineState.Stopped : EngineState.Running);
+                CompleteSavingState();
             }
         });
         lease = null; // владение ресурсами снимка перешло фоновой задаче
@@ -1013,13 +1400,29 @@ public sealed class ReplayEngine : IDisposable
     /// </summary>
     public void StartRecordingToFile()
     {
-        lock (_lifecycle) StartRecordingLocked();
+        lock (_lifecycle)
+        {
+            _continuousRecordingRequested = true;
+            // Recovery уже владеет обязанностью поднять конвейер. Здесь достаточно
+            // записать пользовательский intent; новый сегмент откроется после старта.
+            if (_state == EngineState.Recovering) return;
+            try
+            {
+                StartRecordingLocked();
+                _continuousRecordingRequested = _recorder is not null;
+            }
+            catch
+            {
+                _continuousRecordingRequested = false;
+                throw;
+            }
+        }
     }
 
     private void StartRecordingLocked()
     {
         if (_recorder is not null) return;
-        if (_state == EngineState.Stopped) StartLocked(); // может бросить — наружу, UI покажет
+        if (_state == EngineState.Stopped) StartWithFallbackLocked(preserveBuffers: false); // может бросить — наружу, UI покажет
         if (_encoder?.OutputMediaType is null) return;
 
         var s = _settings.Current;
@@ -1053,7 +1456,13 @@ public sealed class ReplayEngine : IDisposable
     /// </summary>
     public string? StopRecordingToFile(bool wait = false)
     {
-        lock (_lifecycle) return StopRecordingLocked(wait);
+        lock (_lifecycle)
+        {
+            // Важен даже вызов между двумя сегментами, когда _recorder уже null:
+            // recovery не должен после него снова открыть файл.
+            _continuousRecordingRequested = false;
+            return StopRecordingLocked(wait);
+        }
     }
 
     private string? StopRecordingLocked(bool wait)
@@ -1106,8 +1515,25 @@ public sealed class ReplayEngine : IDisposable
 
     private void SetState(EngineState st)
     {
-        _state = st;
+        lock (_stateSync) _state = st;
         StateChanged?.Invoke(st);
+    }
+
+    /// <summary>
+    /// Фоновое сохранение не имеет права затереть более новое состояние recovery.
+    /// Переход выполняется атомарно относительно SetState, но без lifecycle-lock:
+    /// StopLocked может ждать эту задачу, уже удерживая lifecycle.
+    /// </summary>
+    private void CompleteSavingState()
+    {
+        EngineState next;
+        lock (_stateSync)
+        {
+            if (_state != EngineState.Saving) return;
+            next = _pipelineOpen ? EngineState.Running : EngineState.Stopped;
+            _state = next;
+        }
+        StateChanged?.Invoke(next);
     }
 
     public void Dispose()

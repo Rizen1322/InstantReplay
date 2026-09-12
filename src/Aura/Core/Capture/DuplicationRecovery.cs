@@ -4,6 +4,7 @@ internal enum DuplicationRecoveryStatus
 {
     Restored,
     Stopped,
+    TimedOut,
     Failed
 }
 
@@ -35,14 +36,26 @@ internal static class DuplicationRecovery
         Action create,
         Action<int> delay,
         Func<Exception, bool> isTemporary,
+        int maxTemporaryMilliseconds = int.MaxValue,
+        Func<long>? elapsedMilliseconds = null,
         Action<Exception>? temporaryFailure = null)
     {
+        long started = elapsedMilliseconds?.Invoke() ?? 0;
+        Exception? lastTemporaryError = null;
+
         while (isRunning())
         {
+            if (lastTemporaryError is not null && elapsedMilliseconds is not null &&
+                elapsedMilliseconds() - started >= maxTemporaryMilliseconds)
+                return new(DuplicationRecoveryStatus.TimedOut, lastTemporaryError);
+
             resetCurrent();
             delay(ModeChangeDelayMilliseconds);
             if (!isRunning())
                 return new(DuplicationRecoveryStatus.Stopped);
+            if (lastTemporaryError is not null && elapsedMilliseconds is not null &&
+                elapsedMilliseconds() - started >= maxTemporaryMilliseconds)
+                return new(DuplicationRecoveryStatus.TimedOut, lastTemporaryError);
 
             try
             {
@@ -54,6 +67,7 @@ internal static class DuplicationRecovery
                 if (!isTemporary(ex))
                     return new(DuplicationRecoveryStatus.Failed, ex);
 
+                lastTemporaryError = ex;
                 temporaryFailure?.Invoke(ex);
                 delay(RetryDelayMilliseconds);
             }
