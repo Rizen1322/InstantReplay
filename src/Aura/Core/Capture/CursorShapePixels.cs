@@ -35,6 +35,20 @@ internal static class CursorShapePixels
         return pixels;
     }
 
+    /// <summary>Копирует строки цветной BGRA-формы без padding в плотный буфер.</summary>
+    public static byte[] CopyColor(byte[] buffer, int width, int height, int pitch)
+    {
+        var pixels = new byte[width * height * 4];
+        for (int y = 0; y < height; y++)
+        {
+            int source = y * pitch;
+            int target = y * width * 4;
+            int length = Math.Min(width * 4, Math.Max(0, buffer.Length - source));
+            if (length > 0) Buffer.BlockCopy(buffer, source, pixels, target, length);
+        }
+        return pixels;
+    }
+
     /// <summary>
     /// У монохромной формы идут две 1-bpp маски: AND, затем XOR. Для шейдеров
     /// раскладываем XOR во все каналы BGR, AND — в alpha.
