@@ -3,6 +3,7 @@ namespace Aura.Core.Capture;
 public enum CaptureBackend
 {
     Wgc,
+    WgcWindow,
     DesktopDuplication
 }
 
@@ -25,8 +26,12 @@ internal static class CaptureBackendPolicy
             Forced: false);
     }
 
-    public static CaptureBackend Alternative(CaptureBackend backend) =>
-        backend == CaptureBackend.Wgc
-            ? CaptureBackend.DesktopDuplication
-            : CaptureBackend.Wgc;
+    public static CaptureBackend Alternative(CaptureBackend backend) => backend switch
+    {
+        CaptureBackend.Wgc => CaptureBackend.DesktopDuplication,
+        CaptureBackend.DesktopDuplication => CaptureBackend.Wgc,
+        _ => throw new ArgumentException(
+            "Оконный WGC не участвует в попарном выборе мониторных источников",
+            nameof(backend))
+    };
 }

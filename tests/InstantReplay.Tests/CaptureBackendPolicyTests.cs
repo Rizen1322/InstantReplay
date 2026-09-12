@@ -44,6 +44,13 @@ public sealed class CaptureBackendPolicyTests
             CaptureBackendPolicy.SelectInitial(22621, "broken"));
     }
 
+    [Fact]
+    public void Window_capture_is_never_an_initial_default()
+    {
+        Assert.NotEqual(CaptureBackend.WgcWindow, CaptureBackendPolicy.SelectInitial(19045, null).Backend);
+        Assert.NotEqual(CaptureBackend.WgcWindow, CaptureBackendPolicy.SelectInitial(22621, null).Backend);
+    }
+
     [Theory]
     [InlineData(CaptureBackend.Wgc, CaptureBackend.DesktopDuplication)]
     [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.Wgc)]

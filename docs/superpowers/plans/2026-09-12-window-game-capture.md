@@ -183,7 +183,7 @@ git commit -m "Detect DDA transition storms"
 
 **Produces:** `Restart(provider, target?)` or `HoldForGameWindow(target, retryDelay)`.
 
-- [ ] Add failing tests for direct monitor-WGC-to-window-WGC recovery, DDA-storm-to-window-WGC recovery, holding after window WGC fails while monitor providers are quarantined, target revision reset, forced diagnostic behavior, and unchanged Windows 10/11 defaults.
+- [x] Add failing tests for direct monitor-WGC-to-window-WGC recovery, DDA-storm-to-window-WGC recovery, holding after window WGC fails while monitor providers are quarantined, target revision reset, forced diagnostic behavior, and unchanged Windows 10/11 defaults.
 
 ```csharp
 [Fact]
@@ -202,13 +202,13 @@ public void Monitor_wgc_stall_routes_directly_to_verified_window()
 }
 ```
 
-- [ ] Run the focused tests and confirm they fail before production changes.
+- [x] Run the focused tests and confirm they fail before production changes.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter "FullyQualifiedName~CaptureRecoveryPolicyTests|FullyQualifiedName~CaptureBackendPolicyTests"
 ```
 
-- [ ] Add `WgcWindow` to `CaptureBackend` without changing `SelectInitial`. Replace the pairwise `Alternative` assumption in recovery paths with the explicit policy below.
+- [x] Add `WgcWindow` to `CaptureBackend` without changing `SelectInitial`. Replace the pairwise `Alternative` assumption in recovery paths with the explicit policy below.
 
 ```csharp
 internal enum CaptureRecoveryAction { Restart, HoldForGameWindow }
@@ -221,16 +221,16 @@ internal readonly record struct CaptureRecoveryDecision(
     CaptureEpisode Episode);
 ```
 
-- [ ] Implement episode-scoped quarantines. A monitor WGC stall with a target and a DDA transition storm with a target route to `WgcWindow`. If window WGC fails while both monitor providers are unhealthy in the same target revision, hold the last frame and retry that same target with bounded backoff. A changed target identity starts a new episode and clears old quarantines.
+- [x] Implement episode-scoped quarantines. A monitor WGC stall with a target and a DDA transition storm with a target route to `WgcWindow`. If window WGC fails while both monitor providers are unhealthy in the same target revision, hold the last frame and retry that same target with bounded backoff. A changed target identity starts a new episode and clears old quarantines.
 
-- [ ] Run focused and full tests.
+- [x] Run focused and full tests.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter "FullyQualifiedName~CaptureRecoveryPolicyTests|FullyQualifiedName~CaptureBackendPolicyTests"
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Capture/CaptureRecoveryPolicy.cs src/Aura/Core/Capture/CaptureBackendPolicy.cs tests/InstantReplay.Tests/CaptureRecoveryPolicyTests.cs tests/InstantReplay.Tests/CaptureBackendPolicyTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj

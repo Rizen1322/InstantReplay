@@ -6,7 +6,8 @@ public enum CaptureFailureKind
     BackendUnavailable,
     BackendStalled,
     CaptureFormatChanged,
-    BackendTransitionStorm
+    BackendTransitionStorm,
+    CaptureTargetClosed
 }
 
 public readonly record struct CaptureFailure(
