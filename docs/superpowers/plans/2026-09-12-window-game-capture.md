@@ -125,7 +125,7 @@ git commit -m "Verify fullscreen game capture targets"
 
 **Produces:** `Stable`, `TransitionHold`, or `Storm` state plus a typed `BackendTransitionStorm` failure.
 
-- [ ] Add failing tests proving that one invalidation enters a two-second transition hold, three invalidations inside two seconds become a storm, old invalidations expire, and accepted frames resume only after two uninterrupted seconds.
+- [x] Add failing tests proving that one invalidation enters a two-second transition hold, three invalidations inside two seconds become a storm, old invalidations expire, and accepted frames resume only after two uninterrupted seconds.
 
 ```csharp
 [Fact]
@@ -143,24 +143,24 @@ public void Three_invalidations_within_two_seconds_form_a_storm()
 }
 ```
 
-- [ ] Run the focused test and confirm the missing-type failure.
+- [x] Run the focused test and confirm the missing-type failure.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~DdaLifecycleMonitorTests
 ```
 
-- [ ] Implement the bounded timestamp queue and explicit state transitions. Use a caller-supplied monotonic timestamp so the pure class has no clock dependency.
+- [x] Implement the bounded timestamp queue and explicit state transitions. Use a caller-supplied monotonic timestamp so the pure class has no clock dependency.
 
-- [ ] Add `BackendTransitionStorm` to `CaptureFailureKind`. In `DesktopDuplicationSource`, record each lifecycle invalidation, do not emit frames during `TransitionHold`, and raise one storm failure per storm entry. Rate-limit repeated recovery warnings while preserving total counters in diagnostics.
+- [x] Add `BackendTransitionStorm` to `CaptureFailureKind`. In `DesktopDuplicationSource`, record each lifecycle invalidation, do not emit frames during `TransitionHold`, and raise one storm failure per storm entry. Rate-limit repeated recovery warnings while preserving total counters in diagnostics.
 
-- [ ] Run focused and full tests.
+- [x] Run focused and full tests.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~DdaLifecycleMonitorTests
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Capture/DdaLifecycleMonitor.cs src/Aura/Core/Capture/DesktopDuplicationSource.cs src/Aura/Core/Capture/CaptureFailure.cs tests/InstantReplay.Tests/DdaLifecycleMonitorTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj

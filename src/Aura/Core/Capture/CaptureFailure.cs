@@ -5,7 +5,8 @@ public enum CaptureFailureKind
     DeviceLost,
     BackendUnavailable,
     BackendStalled,
-    CaptureFormatChanged
+    CaptureFormatChanged,
+    BackendTransitionStorm
 }
 
 public readonly record struct CaptureFailure(

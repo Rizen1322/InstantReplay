@@ -56,6 +56,7 @@
     <Compile Include="..\..\src\Aura\Core\Engine\CaptureRecoveryBackoff.cs" Link="App\CaptureRecoveryBackoff.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DuplicationRecovery.cs" Link="App\DuplicationRecovery.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DdaDuplicationPolicy.cs" Link="App\DdaDuplicationPolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\DdaLifecycleMonitor.cs" Link="App\DdaLifecycleMonitor.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncodedStreamCompatibility.cs" Link="App\EncodedStreamCompatibility.cs" />
   </ItemGroup>

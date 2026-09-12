@@ -56,9 +56,17 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     private long _minFrameIntervalTicks;
     private long _nextFrameDeadline;
     private bool _firstFrameSinceStart;
+    private readonly DdaLifecycleMonitor _lifecycle = new(
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(2),
+        stormThreshold: 3);
 
     private static long QpcToTicks(long qpc) =>
         (long)(qpc * (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
+
+    private static TimeSpan LifecycleNow() => TimeSpan.FromSeconds(
+        (double)System.Diagnostics.Stopwatch.GetTimestamp() /
+        System.Diagnostics.Stopwatch.Frequency);
 
     public void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation)
     {
@@ -74,6 +82,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _nextFrameDeadline = 0;
             _firstFrameSinceStart = true;
+            _lifecycle.Reset();
             _resetCursorOnNextFrame = 1;
             _cursorValidationWarnings.Clear();
             Interlocked.Exchange(ref _framesReceived, 0);
@@ -257,7 +266,14 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     string cause = result == Vortice.DXGI.ResultCode.InvalidCall
                         ? "нарушен жизненный цикл кадра"
                         : "смена режима";
-                    Log.Warn("Capture", $"Дупликация повреждена ({cause}) — пересоздаю");
+                    DdaLifecycleState lifecycle = _lifecycle.RecordInvalidation(LifecycleNow());
+                    if (lifecycle == DdaLifecycleState.Storm)
+                    {
+                        ReportTransitionStorm(token, cause);
+                        break;
+                    }
+                    if (_lifecycle.InvalidationsInWindow == 1)
+                        Log.Warn("Capture", $"Дупликация повреждена ({cause}) — пересоздаю");
                     RecreateDuplication(token);
                     continue;
                 }
@@ -265,6 +281,8 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 frameHeld = true;
 
                 if (resource is null) continue;
+                if (_lifecycle.ObserveUsefulFrame(LifecycleNow()) != DdaLifecycleState.Stable)
+                    continue;
                 // AccumulatedFrames == 0 — обновился только курсор, картинка та же.
                 // Но ПЕРВЫЙ кадр после старта отдаём всегда: на статичном экране
                 // (типичная ситуация при скриншоте) система иначе не присылает ни
@@ -339,9 +357,29 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             // После неуспешного ReleaseFrame следующий AcquireNextFrame возвращает
             // INVALID_CALL. Эталонный DDA sample Microsoft завершает текущую сессию;
             // здесь делаем то же, но сразу пересоздаём её без заморозки replay.
-            Log.Warn("Capture", $"DDA ReleaseFrame завершился ошибкой — пересоздаю дупликацию: {ex.Message}");
+            DdaLifecycleState lifecycle = _lifecycle.RecordInvalidation(LifecycleNow());
+            if (lifecycle == DdaLifecycleState.Storm)
+            {
+                ReportTransitionStorm(token, "ошибка ReleaseFrame");
+                return;
+            }
+            if (_lifecycle.InvalidationsInWindow == 1)
+                Log.Warn("Capture", $"DDA ReleaseFrame завершился ошибкой — пересоздаю дупликацию: {ex.Message}");
             RecreateDuplication(token);
         }
+    }
+
+    private void ReportTransitionStorm(RunToken token, string cause)
+    {
+        token.Running = false;
+        var error = new InvalidOperationException(
+            $"DDA потеряла {_lifecycle.InvalidationsInWindow} frame-сессии за 2 секунды ({cause})");
+        Log.Warn("Capture", $"{error.Message} — прекращаю пересоздания и прошу сменить источник");
+        Failed?.Invoke(new CaptureFailure(
+            CaptureFailureKind.BackendTransitionStorm,
+            error,
+            "DDA: цикл потери дупликации при смене fullscreen-режима",
+            _generation));
     }
 
     private CaptureCursorUpdate ReadCursorUpdate(
