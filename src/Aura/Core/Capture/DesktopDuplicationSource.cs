@@ -249,10 +249,15 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 SharpGen.Runtime.Result result = dup.AcquireNextFrame(100, out var frameInfo, out resource);
 
                 if (result == Vortice.DXGI.ResultCode.WaitTimeout) continue;
-                if (result == Vortice.DXGI.ResultCode.AccessLost)
+                if (DdaDuplicationPolicy.ShouldRecreateFrameSession(result.Code))
                 {
-                    // Смена режима/полноэкранное приложение/UAC — пересоздаём дупликацию
-                    Log.Warn("Capture", "Дупликация потеряна (смена режима?) — восстанавливаю");
+                    // ACCESS_LOST — штатная смена fullscreen/desktop mode.
+                    // INVALID_CALL означает, что предыдущий ReleaseFrame сорвался;
+                    // повтор на той же duplication-сессии будет вечным циклом ошибок.
+                    string cause = result == Vortice.DXGI.ResultCode.InvalidCall
+                        ? "нарушен жизненный цикл кадра"
+                        : "смена режима";
+                    Log.Warn("Capture", $"Дупликация повреждена ({cause}) — пересоздаю");
                     RecreateDuplication(token);
                     continue;
                 }
@@ -315,8 +320,27 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             finally
             {
                 resource?.Dispose();
-                if (frameHeld && dupHeld is not null) { try { dupHeld.ReleaseFrame(); } catch { } }
+                if (frameHeld && dupHeld is not null)
+                    ReleaseFrameOrRecover(token, dupHeld);
             }
+        }
+    }
+
+    private void ReleaseFrameOrRecover(RunToken token, IDXGIOutputDuplication duplication)
+    {
+        try
+        {
+            duplication.ReleaseFrame();
+        }
+        catch (Exception ex)
+        {
+            if (!token.Running) return;
+
+            // После неуспешного ReleaseFrame следующий AcquireNextFrame возвращает
+            // INVALID_CALL. Эталонный DDA sample Microsoft завершает текущую сессию;
+            // здесь делаем то же, но сразу пересоздаём её без заморозки replay.
+            Log.Warn("Capture", $"DDA ReleaseFrame завершился ошибкой — пересоздаю дупликацию: {ex.Message}");
+            RecreateDuplication(token);
         }
     }
 
