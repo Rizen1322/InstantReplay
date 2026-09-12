@@ -26,7 +26,8 @@ internal readonly record struct CaptureHealthDecision(bool SwitchBackend, string
 /// </summary>
 internal sealed class CaptureHealthPolicy
 {
-    private const int RequiredBadSamples = 10;
+    private const int RequiredBadWgcSamples = 10;
+    private const int RequiredFrozenDdaSamples = 5;
     private static readonly TimeSpan Warmup = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan FailureQuarantine = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan SwitchWindow = TimeSpan.FromMinutes(10);
@@ -37,6 +38,7 @@ internal sealed class CaptureHealthPolicy
     private readonly HashSet<CaptureBackend> _sessionQuarantine = [];
     private readonly Queue<DateTimeOffset> _switches = [];
     private int _badWgcSamples;
+    private int _frozenDdaSamples;
 
     public CaptureHealthDecision Observe(CaptureHealthSample sample, DateTimeOffset now)
     {
@@ -49,19 +51,39 @@ internal sealed class CaptureHealthPolicy
                               sample.FramesReceived < sample.TargetFps * 0.60 &&
                               sample.FramesEncoded >= sample.TargetFps * 0.75 &&
                               sample.FramesDuplicated >= sample.FramesEncoded * 0.35;
+            bool frozenDda = sample.Backend == CaptureBackend.DesktopDuplication &&
+                             sample.Uptime >= Warmup &&
+                             sample.GameForeground &&
+                             sample.TargetFps > 0 &&
+                             sample.FramesReceived <= 1 &&
+                             sample.FramesEncoded >= sample.TargetFps * 0.75 &&
+                             sample.FramesDuplicated >= sample.FramesEncoded * 0.80;
 
-            if (!starvedWgc)
+            if (starvedWgc)
             {
+                _frozenDdaSamples = 0;
+                _badWgcSamples++;
+                if (_badWgcSamples < RequiredBadWgcSamples)
+                    return CaptureHealthDecision.Healthy;
+
                 _badWgcSamples = 0;
-                return CaptureHealthDecision.Healthy;
+                return new(true, $"WGC голодает {RequiredBadWgcSamples} секунд подряд");
             }
 
-            _badWgcSamples++;
-            if (_badWgcSamples < RequiredBadSamples)
-                return CaptureHealthDecision.Healthy;
+            if (frozenDda)
+            {
+                _badWgcSamples = 0;
+                _frozenDdaSamples++;
+                if (_frozenDdaSamples < RequiredFrozenDdaSamples)
+                    return CaptureHealthDecision.Healthy;
+
+                _frozenDdaSamples = 0;
+                return new(true, $"DDA не обновляет игру {RequiredFrozenDdaSamples} секунд подряд");
+            }
 
             _badWgcSamples = 0;
-            return new(true, $"WGC голодает {RequiredBadSamples} секунд подряд");
+            _frozenDdaSamples = 0;
+            return CaptureHealthDecision.Healthy;
         }
     }
 
@@ -117,7 +139,9 @@ internal sealed class CaptureHealthPolicy
                 ? CaptureQuarantine.ProcessSession
                 : CaptureQuarantine.Transient);
         CaptureBackend alternative = CaptureBackendPolicy.Alternative(active);
-        return CanUse(alternative, now) && TryRecordSwitch(now)
+        bool mayTryAlternative = CanUse(alternative, now) ||
+                                 failureKind == CaptureFailureKind.BackendStalled;
+        return mayTryAlternative && TryRecordSwitch(now)
             ? alternative
             : active;
     }

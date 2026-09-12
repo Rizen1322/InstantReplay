@@ -74,6 +74,32 @@ public sealed class CaptureHealthPolicyTests
     }
 
     [Fact]
+    public void FiveFrozenDdaSecondsInGameTriggerSoftSwitch()
+    {
+        var policy = new CaptureHealthPolicy();
+        CaptureHealthDecision decision = default;
+
+        for (int i = 0; i < 5; i++)
+            decision = policy.Observe(FrozenDda(), Now.AddSeconds(i));
+
+        Assert.True(decision.SwitchBackend);
+        Assert.Contains("DDA", decision.Reason);
+    }
+
+    [Fact]
+    public void FrozenDdaOnStaticDesktopDoesNotSwitch()
+    {
+        var policy = new CaptureHealthPolicy();
+        CaptureHealthDecision decision = default;
+
+        for (int i = 0; i < 20; i++)
+            decision = policy.Observe(
+                FrozenDda() with { GameForeground = false }, Now.AddSeconds(i));
+
+        Assert.False(decision.SwitchBackend);
+    }
+
+    [Fact]
     public void BackendFailureQuarantinesForTenMinutes()
     {
         var policy = new CaptureHealthPolicy();
@@ -180,12 +206,41 @@ public sealed class CaptureHealthPolicyTests
         Assert.False(policy.CanUse(CaptureBackend.Wgc, Now.AddDays(30)));
     }
 
+    [Fact]
+    public void DdaStallCanUseQuarantinedWgcOnceWithoutPingPong()
+    {
+        var policy = new CaptureHealthPolicy();
+
+        CaptureBackend afterWgcStall = policy.SelectAfterFailure(
+            CaptureBackend.Wgc, CaptureFailureKind.BackendStalled,
+            backendForced: false, Now);
+        CaptureBackend afterDdaStall = policy.SelectAfterFailure(
+            afterWgcStall, CaptureFailureKind.BackendStalled,
+            backendForced: false, Now.AddMinutes(1));
+        CaptureBackend afterSecondWgcStall = policy.SelectAfterFailure(
+            afterDdaStall, CaptureFailureKind.BackendStalled,
+            backendForced: false, Now.AddMinutes(2));
+
+        Assert.Equal(CaptureBackend.DesktopDuplication, afterWgcStall);
+        Assert.Equal(CaptureBackend.Wgc, afterDdaStall);
+        Assert.Equal(CaptureBackend.Wgc, afterSecondWgcStall);
+    }
+
     private static CaptureHealthSample StarvedWgc() => new(
         Backend: CaptureBackend.Wgc,
         TargetFps: 60,
         FramesReceived: 30,
         FramesEncoded: 55,
         FramesDuplicated: 25,
+        GameForeground: true,
+        Uptime: TimeSpan.FromSeconds(20));
+
+    private static CaptureHealthSample FrozenDda() => new(
+        Backend: CaptureBackend.DesktopDuplication,
+        TargetFps: 60,
+        FramesReceived: 0,
+        FramesEncoded: 60,
+        FramesDuplicated: 59,
         GameForeground: true,
         Uptime: TimeSpan.FromSeconds(20));
 }
