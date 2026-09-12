@@ -29,6 +29,20 @@ public sealed class CaptureHealthPolicyTests
     }
 
     [Fact]
+    public void TenStarvedWindowWgcSecondsTriggerRecovery()
+    {
+        var policy = new CaptureHealthPolicy();
+        CaptureHealthDecision decision = default;
+        var sample = StarvedWgc() with { Backend = CaptureBackend.WgcWindow };
+
+        for (int i = 0; i < 10; i++)
+            decision = policy.Observe(sample, Now.AddSeconds(i));
+
+        Assert.True(decision.SwitchBackend);
+        Assert.Contains("WGC", decision.Reason);
+    }
+
+    [Fact]
     public void StaticDesktopResetsStarvationStreak()
     {
         var policy = new CaptureHealthPolicy();

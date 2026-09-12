@@ -6,6 +6,7 @@ internal readonly record struct CaptureBrokerDiagnostics(
     long Generation,
     long FramesPublished,
     long FramesDroppedNoSlot,
+    long FramesRejected,
     long LatestTimestamp,
     long CursorRevision,
     long InvalidCursorShapes)

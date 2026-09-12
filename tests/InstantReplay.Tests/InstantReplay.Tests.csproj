@@ -55,6 +55,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureSourceRequest.cs" Link="App\CaptureSourceRequest.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameCaptureTarget.cs" Link="App\GameCaptureTarget.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameWindowSelector.cs" Link="App\GameWindowSelector.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameCaptureRecoveryCoordinator.cs" Link="App\GameCaptureRecoveryCoordinator.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFailure.cs" Link="App\CaptureFailure.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\PipelineRestartPolicy.cs" Link="App\PipelineRestartPolicy.cs" />

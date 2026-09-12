@@ -66,6 +66,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             _broker.Generation,
             _broker.FramesPublished,
             _broker.FramesDroppedNoSlot,
+            FramesRejected,
             _broker.LatestTimestamp,
             cursor.Revision,
             invalidCursorShapes);

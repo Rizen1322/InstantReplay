@@ -453,7 +453,7 @@ git commit -m "Composite target-aware window cursor"
 
 **Produces:** automatic monitor→window switching, bounded same-target retry, stable-frame hold, cancellation on stop, and provider/episode diagnostics.
 
-- [ ] Add scenario tests around a pure orchestration model: healthy monitor WGC; fullscreen WGC starvation; direct window recovery; DDA storm recovery; window failure with hold/retry; alt-tab ending the episode; stale callback rejection; and stop cancellation.
+- [x] Add scenario tests around a pure orchestration model: healthy monitor WGC; fullscreen WGC starvation; direct window recovery; DDA storm recovery; window failure with hold/retry; alt-tab ending the episode; stale callback rejection; and stop cancellation.
 
 ```csharp
 [Fact]
@@ -468,25 +468,25 @@ public void Fullscreen_stall_never_admits_monitor_frame_after_window_episode_sta
 }
 ```
 
-- [ ] Run the focused scenario test and confirm it is red.
+- [x] Run the focused scenario test and confirm it is red.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~GameCaptureRecoveryScenarioTests
 ```
 
-- [ ] In `ReplayEngine`, track current target/episode and pass a `CaptureSourceRequest` into the factory. Execute recovery decisions instead of calling a pairwise alternative. Prefer direct monitor WGC→window WGC when a verified fullscreen target exists; route DDA storms to the same window provider. While holding, keep encoder pacing on the last admitted frame and retry only the same revalidated target with existing bounded backoff.
+- [x] In `ReplayEngine`, track current target/episode and pass a `CaptureSourceRequest` into the factory. Execute recovery decisions instead of calling a pairwise alternative. Prefer direct monitor WGC→window WGC when a verified fullscreen target exists; route DDA storms to the same window provider. While holding, keep encoder pacing on the last admitted frame and retry only the same revalidated target with existing bounded backoff.
 
-- [ ] Cancel target retry and dispose its provider on user stop. End the window episode after verified focus/target loss, then restore the platform-default monitor provider. Reject every callback whose generation or target revision is stale.
+- [x] Cancel target retry and dispose its provider on user stop. End the window episode after verified focus/target loss, then restore the platform-default monitor provider. Reject every callback whose generation or target revision is stale.
 
-- [ ] Extend diagnostics with active provider, target HWND/PID/revision, episode state, quarantine reasons, admitted/rejected frame counts, DDA storm count, window retry count, and last-frame hold duration. Log state transitions once; keep per-second counters in `PipelineProbe`.
+- [x] Extend diagnostics with active provider, target HWND/PID/revision, episode state, quarantine reasons, admitted/rejected frame counts, DDA storm count, window retry count, and last-frame hold duration. Log state transitions once; keep per-second counters in `PipelineProbe`.
 
-- [ ] Audit the recovery call graph with `rg`. Assert that recovery paths contain no clip writer, muxer finalization, save command, or storage write. Add a regression test if any pure save-trigger boundary is available.
+- [x] Audit the recovery call graph with `rg`. Assert that recovery paths contain no clip writer, muxer finalization, save command, or storage write. Add a regression test if any pure save-trigger boundary is available.
 
 ```powershell
 rg -n "Save|WriteClip|Finalize|Mux|Storage" src/Aura/Core/Engine/ReplayEngine.cs src/Aura/Core/Capture
 ```
 
-- [ ] Run focused/full tests and a Release build.
+- [x] Run focused/full tests and a Release build.
 
 ```powershell
 dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj --filter FullyQualifiedName~GameCaptureRecoveryScenarioTests
@@ -494,7 +494,7 @@ dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj
 dotnet build src/Aura/Aura.csproj -c Release
 ```
 
-- [ ] Commit the task.
+- [x] Commit the task.
 
 ```powershell
 git add src/Aura/Core/Engine/ReplayEngine.cs src/Aura/Core/Diagnostics/PipelineProbe.cs src/Aura/Core/Capture/CaptureHealthPolicy.cs src/Aura/Core/Engine/CaptureRecoveryBackoff.cs tests/InstantReplay.Tests/GameCaptureRecoveryScenarioTests.cs tests/InstantReplay.Tests/InstantReplay.Tests.csproj

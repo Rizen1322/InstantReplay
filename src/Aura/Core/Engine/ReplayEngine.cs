@@ -30,6 +30,7 @@ public sealed class ReplayEngine : IDisposable
     private GpuCaptureFrameBroker? _frameBroker;
     private readonly AudioMixerEngine _audio = new();
     private readonly CaptureHealthPolicy _captureHealth = new();
+    private readonly GameCaptureRecoveryCoordinator _gameCaptureRecovery;
     private CaptureBackend _captureBackend;
     private readonly CaptureBackend _preferredCaptureBackend;
     private readonly bool _captureBackendForced;
@@ -42,6 +43,12 @@ public sealed class ReplayEngine : IDisposable
     private int _bufferWidth, _bufferHeight, _bufferFps;
     private byte[]? _bufferSequenceHeader;
     private volatile bool _encodedStreamReady;
+    private readonly object _captureTargetSync = new();
+    private GameCaptureTarget? _lastVerifiedCaptureTarget;
+    private GameCaptureTarget? _activeCaptureTarget;
+    private long _ddaStormCount;
+    private long _windowRetryCount;
+    private long _windowHoldStartedTimestamp;
 
     private readonly ReplayVideoBuffer _videoBuffer = new();
     private readonly ReplayAudioBuffer _audioBuffer = new();
@@ -182,6 +189,9 @@ public sealed class ReplayEngine : IDisposable
         _captureBackend = selection.Backend;
         _preferredCaptureBackend = selection.Backend;
         _captureBackendForced = selection.Forced;
+        _gameCaptureRecovery = new GameCaptureRecoveryCoordinator(
+            _preferredCaptureBackend,
+            _captureBackendForced);
         // Проблемы со звуком должны доходить до человека сразу: немой клип
         // обнаруживается уже после того, как момент упущен
         _audio.Warning += msg => Warning?.Invoke(msg);
@@ -213,6 +223,13 @@ public sealed class ReplayEngine : IDisposable
     private void StartWithFallbackLocked(bool preserveBuffers)
     {
         if (_state != EngineState.Stopped) return;
+        if (!preserveBuffers)
+        {
+            _gameCaptureRecovery.Resume();
+            Interlocked.Exchange(ref _ddaStormCount, 0);
+            Interlocked.Exchange(ref _windowRetryCount, 0);
+            Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
+        }
         DateTimeOffset now = DateTimeOffset.UtcNow;
         CaptureBackend desired = preserveBuffers ? _captureBackend : _preferredCaptureBackend;
         CaptureBackend candidate = _captureHealth.CanUse(desired, now)
@@ -235,17 +252,38 @@ public sealed class ReplayEngine : IDisposable
         }
     }
 
-    private void StartLocked(bool preserveBuffers, CaptureBackend backend)
+    private void StartLocked(
+        bool preserveBuffers,
+        CaptureBackend backend,
+        GameCaptureTarget? requestedTarget = null)
     {
         if (_state != EngineState.Stopped && !(preserveBuffers && _state == EngineState.Recovering))
             throw new InvalidOperationException("Видеоконвейер ещё не остановлен");
         if (preserveBuffers && _stopRequested)
             throw new OperationCanceledException("Автовосстановление отменено человеком");
         if (!preserveBuffers) _stopRequested = false;
-        _captureBackend = backend;
         var s = _settings.Current;
         try
         {
+            GameCaptureTarget? sourceTarget = null;
+            if (backend == CaptureBackend.WgcWindow)
+            {
+                GameCaptureTarget target = requestedTarget ?? _gameCaptureRecovery.Target ??
+                    throw new InvalidOperationException("Для WGC window нет проверенного игрового окна");
+                GameCaptureTarget? verified = ForegroundGameWindowProbe.TrySelect(
+                    s.MonitorIndex,
+                    target);
+                if (verified is not GameCaptureTarget current ||
+                    !current.HasSameIdentity(target) ||
+                    current.Revision != target.Revision)
+                {
+                    throw new InvalidOperationException("Игровое окно изменилось перед запуском WGC window");
+                }
+                sourceTarget = current;
+                _gameCaptureRecovery.ObserveTarget(current);
+            }
+
+            _captureBackend = backend;
             int effectiveReplaySeconds = Math.Min(
                 s.ReplayLengthSeconds,
                 ReplayVideoBuffer.MaximumDurationSeconds(s.BitrateBps));
@@ -276,8 +314,13 @@ public sealed class ReplayEngine : IDisposable
             }
 
             long generation = Interlocked.Increment(ref _captureGeneration);
-            _capture = ScreenCaptureFactory.Create(_captureBackend, s.MonitorIndex);
+            _capture = ScreenCaptureFactory.Create(CaptureSourceRequest.Create(
+                _captureBackend,
+                s.MonitorIndex,
+                sourceTarget));
             _capture.Prepare(s.MonitorIndex, s.Fps, s.RecordCursor, generation);
+
+            lock (_captureTargetSync) _activeCaptureTarget = sourceTarget;
 
             var monitorCanvas = MonitorLayout.For(s.MonitorIndex);
             int canvasWidth = monitorCanvas?.Width ?? _capture.Width;
@@ -292,7 +335,9 @@ public sealed class ReplayEngine : IDisposable
                 canvasWidth,
                 canvasHeight,
                 separateCursor: _captureBackend is CaptureBackend.DesktopDuplication or CaptureBackend.WgcWindow,
-                generation);
+                generation,
+                targetRevision: sourceTarget?.Revision ?? 0,
+                windowEpisode: _captureBackend == CaptureBackend.WgcWindow);
 
             if (preserveBuffers)
             {
@@ -412,7 +457,7 @@ public sealed class ReplayEngine : IDisposable
             {
                 OnCaptureFailed(new CaptureFailure(
                     CaptureFailureKind.DeviceLost, ex, $"ошибка кадра: {ex.Message}",
-                    observedGeneration), observedGeneration);
+                    observedGeneration, surface.TargetRevision), observedGeneration);
                 return;
             }
             Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
@@ -480,7 +525,7 @@ public sealed class ReplayEngine : IDisposable
             {
                 OnCaptureFailed(new CaptureFailure(
                     CaptureFailureKind.DeviceLost, ex, $"ошибка кадра: {ex.Message}",
-                    generation), generation);
+                    generation, ActiveCaptureTarget()?.Revision ?? 0), generation);
             }
             else
             {
@@ -519,10 +564,19 @@ public sealed class ReplayEngine : IDisposable
         if (failure.Generation != observedGeneration ||
             observedGeneration != Interlocked.Read(ref _captureGeneration) ||
             _stopRequested) return;
+        if (failure.TargetRevision != 0)
+        {
+            GameCaptureTarget? active = ActiveCaptureTarget();
+            if (active is not GameCaptureTarget target ||
+                target.Revision != failure.TargetRevision)
+                return;
+        }
         // Источник, probe и watchdog могут одновременно увидеть один и тот же
         // обрыв. Забираем право на восстановление ДО изменения health-policy,
         // иначе дубль зря карантинил backend и съедал второй switch-slot.
         if (Interlocked.CompareExchange(ref _recovering, 1, 0) != 0) return;
+        if (failure.Kind == CaptureFailureKind.BackendTransitionStorm)
+            Interlocked.Increment(ref _ddaStormCount);
 
         try
         {
@@ -534,12 +588,21 @@ public sealed class ReplayEngine : IDisposable
                 return;
             }
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            CaptureBackend next = _captureHealth.SelectAfterFailure(
-                _captureBackend, failure.Kind, _captureBackendForced, now,
-                _preferredCaptureBackend);
-            RequestCaptureRestart(next,
-                $"{failure.Reason}: {failure.Error.Message}", failure.Kind, observedGeneration);
+            RefreshCaptureTarget();
+            if (!_gameCaptureRecovery.TryDecide(
+                    _captureBackend,
+                    failure.Kind,
+                    out CaptureRecoveryDecision decision))
+            {
+                Interlocked.Exchange(ref _recovering, 0);
+                return;
+            }
+
+            RequestCaptureRestart(
+                decision,
+                $"{failure.Reason}: {failure.Error.Message}",
+                failure.Kind,
+                observedGeneration);
         }
         catch
         {
@@ -553,12 +616,20 @@ public sealed class ReplayEngine : IDisposable
     private int _recovering;
 
     private void RequestCaptureRestart(
-        CaptureBackend next,
+        CaptureRecoveryDecision initialDecision,
         string reason,
         CaptureFailureKind failureKind,
         long observedGeneration)
     {
+        CaptureBackend next = initialDecision.Backend;
         CaptureBackend previous = _captureBackend;
+        if (initialDecision.Action == CaptureRecoveryAction.HoldForGameWindow)
+        {
+            Interlocked.CompareExchange(
+                ref _windowHoldStartedTimestamp,
+                System.Diagnostics.Stopwatch.GetTimestamp(),
+                0);
+        }
         var cancellation = new CancellationTokenSource();
         CancellationTokenSource? replaced = Interlocked.Exchange(
             ref _recoveryCancellation, cancellation);
@@ -568,10 +639,25 @@ public sealed class ReplayEngine : IDisposable
         {
             try
             {
-                Log.Warn("Engine", $"Захват generation {observedGeneration}: {previous} → {next}; {reason}");
+                string recoveryMode = initialDecision.Action == CaptureRecoveryAction.HoldForGameWindow
+                    ? "; держу последний игровой кадр"
+                    : "";
+                Log.Warn("Engine", $"Захват generation {observedGeneration}: {previous} → {next}; " +
+                                   $"target r{initialDecision.TargetRevision}; {reason}{recoveryMode}");
                 Warning?.Invoke(previous == next
                     ? "Перезапускаю захват экрана"
                     : $"Переключаю захват: {previous} → {next}");
+
+                // При деградации оконного WGC не рвём конвейер сразу: пейсер
+                // продолжает кодировать последний принятый игровой кадр на время
+                // короткой выдержки. Мониторный кадр в этот эпизод admission-gate
+                // всё равно не пропустит.
+                bool delayConsumedWhileHolding =
+                    initialDecision.Action == CaptureRecoveryAction.HoldForGameWindow &&
+                    initialDecision.RetryDelay > TimeSpan.Zero;
+                if (delayConsumedWhileHolding &&
+                    cancellation.Token.WaitHandle.WaitOne(initialDecision.RetryDelay))
+                    return;
 
                 try
                 {
@@ -592,10 +678,15 @@ public sealed class ReplayEngine : IDisposable
 
                 long restartGeneration = Interlocked.Read(ref _captureGeneration);
                 CaptureBackend candidate = next;
+                CaptureRecoveryDecision decision = initialDecision;
                 for (int attempt = 1; ; attempt = attempt == int.MaxValue ? attempt : attempt + 1)
                 {
-                    int delay = CaptureRecoveryBackoff.DelayMilliseconds(
-                        attempt, failureKind == CaptureFailureKind.DeviceLost);
+                    int delay = attempt == 1 && delayConsumedWhileHolding
+                        ? 0
+                        : attempt == 1 && decision.RetryDelay > TimeSpan.Zero
+                        ? Math.Max(1, (int)decision.RetryDelay.TotalMilliseconds)
+                        : CaptureRecoveryBackoff.DelayMilliseconds(
+                            attempt, failureKind == CaptureFailureKind.DeviceLost);
                     if (cancellation.Token.WaitHandle.WaitOne(delay)) return;
 
                     // Пока мы спали, человек мог выключить запись — тогда включать
@@ -609,11 +700,16 @@ public sealed class ReplayEngine : IDisposable
 
                     try
                     {
+                        GameCaptureTarget? candidateTarget = candidate == CaptureBackend.WgcWindow
+                            ? _gameCaptureRecovery.Target
+                            : null;
+                        if (candidate == CaptureBackend.WgcWindow)
+                            Interlocked.Increment(ref _windowRetryCount);
                         lock (_lifecycle)
                         {
                             if (_stopRequested ||
                                 restartGeneration != Interlocked.Read(ref _captureGeneration)) return;
-                            StartLocked(preserveBuffers: true, candidate);
+                            StartLocked(preserveBuffers: true, candidate, candidateTarget);
                             if (_stopRequested)
                             {
                                 StopLocked(PipelineStopIntent.UserStop);
@@ -628,7 +724,12 @@ public sealed class ReplayEngine : IDisposable
                                 return;
                             }
                         }
-                        Log.Info("Engine", $"Конвейер восстановлен на {candidate} (попытка {attempt})");
+                        long holdStarted = Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
+                        string held = holdStarted == 0
+                            ? ""
+                            : $", удержание {ElapsedMilliseconds(holdStarted)} мс";
+                        Log.Info("Engine", $"Конвейер восстановлен на {candidate} " +
+                                           $"(попытка {attempt}{held})");
                         Warning?.Invoke("Запись восстановлена");
                         return;
                     }
@@ -640,16 +741,13 @@ public sealed class ReplayEngine : IDisposable
                     {
                         Log.Warn("Engine", $"Восстановление {candidate}, попытка {attempt}: {ex.Message}");
                         restartGeneration = Interlocked.Read(ref _captureGeneration);
-                        CaptureBackend selected = _captureHealth.SelectAfterFailure(
-                            candidate, CaptureFailureKind.BackendUnavailable,
-                            _captureBackendForced, DateTimeOffset.UtcNow,
-                            _preferredCaptureBackend);
-                        // Если запасной backend тоже не стартует, карантин обоих
-                        // не должен запирать нас на заведомо нерабочем варианте.
-                        // Последний работавший backend остаётся bounded last resort.
-                        candidate = selected == candidate && candidate != previous && !_captureBackendForced
-                            ? previous
-                            : selected;
+                        RefreshCaptureTarget();
+                        if (!_gameCaptureRecovery.TryDecide(
+                                candidate,
+                                CaptureFailureKind.BackendUnavailable,
+                                out decision))
+                            return;
+                        candidate = decision.Backend;
                     }
                 }
             }
@@ -664,6 +762,14 @@ public sealed class ReplayEngine : IDisposable
                 Interlocked.Exchange(ref _recovering, 0);
             }
         });
+    }
+
+    private static long ElapsedMilliseconds(long startedTimestamp)
+    {
+        long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - startedTimestamp;
+        return elapsed <= 0
+            ? 0
+            : (long)(elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
     }
 
     // Раз в минуту — здоровье конвейера в лог: по этим цифрам видно, ГДЕ теряются
@@ -820,6 +926,25 @@ public sealed class ReplayEngine : IDisposable
     private readonly object _gameSync = new();
     private System.Threading.Timer? _gameTimer;
 
+    private GameCaptureTarget? RefreshCaptureTarget()
+    {
+        lock (_captureTargetSync)
+        {
+            GameCaptureTarget? selected = ForegroundGameWindowProbe.TrySelect(
+                _settings.Current.MonitorIndex,
+                _lastVerifiedCaptureTarget);
+            if (selected is GameCaptureTarget target)
+                _lastVerifiedCaptureTarget = target;
+            _gameCaptureRecovery.ObserveTarget(selected);
+            return selected;
+        }
+    }
+
+    private GameCaptureTarget? ActiveCaptureTarget()
+    {
+        lock (_captureTargetSync) return _activeCaptureTarget;
+    }
+
     private void StartGameTracker(bool preserveHistory = false)
     {
         if (!preserveHistory)
@@ -830,6 +955,22 @@ public sealed class ReplayEngine : IDisposable
             if (!_pipelineOpen || _stopRequested) return;
             try
             {
+                GameCaptureTarget? foregroundTarget = RefreshCaptureTarget();
+                if (_captureBackend == CaptureBackend.WgcWindow &&
+                    ActiveCaptureTarget() is GameCaptureTarget activeTarget &&
+                    (foregroundTarget is not GameCaptureTarget currentTarget ||
+                     !currentTarget.HasSameIdentity(activeTarget) ||
+                     currentTarget.Revision != activeTarget.Revision))
+                {
+                    long generation = Interlocked.Read(ref _captureGeneration);
+                    OnCaptureFailed(new CaptureFailure(
+                        CaptureFailureKind.CaptureTargetClosed,
+                        new InvalidOperationException("Foreground game target changed"),
+                        "WGC window: игра вышла из fullscreen или сменила окно",
+                        generation,
+                        activeTarget.Revision), generation);
+                }
+
                 string game = GameDetector.DetectForegroundGame();
                 long now = DateTime.UtcNow.Ticks;
                 lock (_gameSync)
@@ -950,8 +1091,7 @@ public sealed class ReplayEngine : IDisposable
             long fpsDrop = PerSecond(dDrop, sampleSeconds);
             long fpsDup = PerSecond(dDup, sampleSeconds);
 
-            bool gameForeground = !string.Equals(
-                GameDetector.DetectForegroundGame(), "Desktop", StringComparison.OrdinalIgnoreCase);
+            bool gameForeground = _gameCaptureRecovery.Target is not null;
             var health = _captureHealth.Observe(new CaptureHealthSample(
                     backend,
                     _settings.Current.Fps,
@@ -968,7 +1108,7 @@ public sealed class ReplayEngine : IDisposable
                 OnCaptureFailed(new CaptureFailure(
                     CaptureFailureKind.BackendStalled,
                     new InvalidOperationException("WGC capture starvation"), metrics,
-                    generation), generation);
+                    generation, ActiveCaptureTarget()?.Revision ?? 0), generation);
                 return;
             }
 
@@ -997,17 +1137,37 @@ public sealed class ReplayEngine : IDisposable
                 : "нет данных";
             var broker = _frameBroker?.GetDiagnostics(cap.InvalidCursorShapes)
                 ?? new Diagnostics.CaptureBrokerDiagnostics(
-                    generation, 0, 0, 0, 0, cap.InvalidCursorShapes);
+                    generation, 0, 0, 0, 0, 0, cap.InvalidCursorShapes);
             long now100Nanoseconds = (long)(sampleTimestamp *
                 (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
             long frameAgeMilliseconds = Diagnostics.CaptureBrokerDiagnostics.AgeMilliseconds(
                 now100Nanoseconds, broker.LatestTimestamp);
 
+            string captureLabel = backend switch
+            {
+                CaptureBackend.Wgc => "WGC-monitor",
+                CaptureBackend.WgcWindow => "WGC-window",
+                CaptureBackend.DesktopDuplication => "DDA",
+                _ => backend.ToString()
+            };
+            GameCaptureTarget? target = ActiveCaptureTarget() ?? _gameCaptureRecovery.Target;
+            string targetLabel = target is GameCaptureTarget current
+                ? $"{current.ExecutableName}/hwnd 0x{current.Hwnd.ToInt64():X}/" +
+                  $"pid {current.ProcessId}/r{current.Revision}"
+                : "нет";
+            CaptureEpisode episode = _gameCaptureRecovery.Episode;
+            long holdStarted = Interlocked.Read(ref _windowHoldStartedTimestamp);
+            long holdMilliseconds = holdStarted == 0 ? 0 : ElapsedMilliseconds(holdStarted);
+
             Log.Info("Probe", $"получено {fpsRecv}, закодировано {fpsEnc}, запросов {fpsReq}, " +
-                              $"дублей {fpsDup}, дропов {fpsDrop} | {backend}/gen {broker.Generation} | " +
+                              $"дублей {fpsDup}, дропов {fpsDrop} | {captureLabel}/gen {broker.Generation} " +
+                              $"target {targetLabel}/quarantine {episode.Quarantines} | " +
                               $"broker {broker.FramesPublished}/drop {broker.FramesDroppedNoSlot}/" +
+                              $"reject {broker.FramesRejected}/" +
                               $"age {frameAgeMilliseconds} мс | cursor rev {broker.CursorRevision}/" +
-                              $"invalid {broker.InvalidCursorShapes} | очередь {enc.QueueDepth}/{enc.MaxQueue} " +
+                              $"invalid {broker.InvalidCursorShapes} | DDA storms {_ddaStormCount}/" +
+                              $"window retries {_windowRetryCount}/hold {holdMilliseconds} мс | " +
+                              $"очередь {enc.QueueDepth}/{enc.MaxQueue} " +
                               $"(пул {enc.PoolSlots}) | VRAM {vram}");
         }
         catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
@@ -1057,7 +1217,8 @@ public sealed class ReplayEngine : IDisposable
                 CaptureFailureKind.BackendStalled,
                 stalled,
                 "WGC: поток кадров остановился",
-                generation), generation);
+                generation,
+                ActiveCaptureTarget()?.Revision ?? 0), generation);
         }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
 
@@ -1078,6 +1239,8 @@ public sealed class ReplayEngine : IDisposable
         {
             _continuousRecordingRequested = false;
             _recoveryCancellation?.Cancel();
+            _gameCaptureRecovery.Stop();
+            Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
         }
         var restartActions = PipelineRestartPolicy.For(
             intent, continuousRecordingActive: _recorder is not null, formatCompatible: true);
@@ -1144,6 +1307,7 @@ public sealed class ReplayEngine : IDisposable
         _processor?.Dispose(); _processor = null;
         _frameBroker?.Dispose(); _frameBroker = null;
         _capture?.Dispose(); _capture = null;
+        lock (_captureTargetSync) _activeCaptureTarget = null;
 
         if (!restartActions.KeepReplayBuffer) _videoBuffer.Clear();
         if (!restartActions.KeepAudioBuffer) _audioBuffer.Release();
