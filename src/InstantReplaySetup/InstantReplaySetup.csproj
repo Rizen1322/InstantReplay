@@ -24,10 +24,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Fully managed MP3 decode + WinMM output: no Windows Media Player dependency. -->
+    <PackageReference Include="NAudio.Core" Version="2.3.0" />
+    <PackageReference Include="NAudio.WinMM" Version="2.3.0" />
+    <PackageReference Include="NLayer.NAudioSupport" Version="2.0.1" />
+
     <!-- Полезная нагрузка (bin приложения) кладётся скриптом build_setup.ps1 в dist\payload.zip -->
     <EmbeddedResource Include="..\..\dist\payload.zip" Link="payload.zip" Condition="Exists('..\..\dist\payload.zip')" />
-    <!-- Музыка установщика: setup_music.wav из корня репозитория -->
-    <EmbeddedResource Include="..\..\setup_music.wav" Link="setup_music.wav" Condition="Exists('..\..\setup_music.wav')" />
+    <!-- Компактная музыка всегда входит в установщик и воспроизводится тихо. -->
+    <EmbeddedResource Include="Assets\setup_music.mp3" Link="setup_music.mp3" />
   </ItemGroup>
 </Project>
-

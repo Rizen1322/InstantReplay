@@ -41,5 +41,36 @@ if ($payloadMb -gt 300) { throw ('application payload is {0:0.0} MB; expected at
 $setupMb = (Get-Item -LiteralPath $setup).Length / 1MB
 if ($setupMb -gt 200) { throw ('installer is {0:0.0} MB; expected at most 200 MB' -f $setupMb) }
 
+$setupAssembly = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src\InstantReplaySetup\bin\Release') `
+    -Filter 'InstantReplaySetup.dll' -Recurse -File |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1
+if ($null -eq $setupAssembly) { throw 'compiled installer assembly is missing' }
+$assembly = [Reflection.Assembly]::LoadFrom($setupAssembly.FullName)
+$audioDependencies = $assembly.GetReferencedAssemblies().Name
+foreach ($requiredAudioDependency in @('NAudio.Core', 'NAudio.WinMM', 'NLayer.NAudioSupport')) {
+    if ($audioDependencies -notcontains $requiredAudioDependency) {
+        throw "installer is missing standalone audio dependency: $requiredAudioDependency"
+    }
+}
+$musicResourceName = $assembly.GetManifestResourceNames() |
+    Where-Object { $_.EndsWith('setup_music.mp3', [StringComparison]::OrdinalIgnoreCase) } |
+    Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($musicResourceName)) {
+    throw 'installer does not contain embedded setup_music.mp3'
+}
+$musicStream = $assembly.GetManifestResourceStream($musicResourceName)
+try {
+    if ($null -eq $musicStream -or $musicStream.Length -lt 100KB) {
+        throw 'embedded setup music is unexpectedly empty'
+    }
+    if ($musicStream.Length -gt 5MB) {
+        throw ('embedded setup music is too large: {0:0.0} MB' -f ($musicStream.Length / 1MB))
+    }
+}
+finally {
+    if ($null -ne $musicStream) { $musicStream.Dispose() }
+}
+
 Write-Host ('Distribution size passed: app {0:0.0} MB, uninstall {1:0.0} MB, setup {2:0.0} MB' -f `
     $payloadMb, $uninstallerMb, $setupMb)

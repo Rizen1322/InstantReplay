@@ -1,11 +1,12 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
-using System.Media;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Input;
 using Microsoft.Win32;
+using NAudio.Wave;
+using NLayer.NAudioSupport;
 
 namespace InstantReplaySetup;
 
@@ -35,8 +36,10 @@ public partial class MainWindow : Window
     private const string IdentityPackageName = "Rizen1322.Aura";
     private const string IdentityPackageFile = "Aura.Identity.msix";
 
-    private SoundPlayer? _music;
-    private bool _muted;
+    private readonly InstallerAudioState _audioState = new();
+    private Stream? _musicStream;
+    private Mp3FileReaderBase? _musicReader;
+    private WaveOutEvent? _music;
 
     // Снимаются с UI ДО фоновой работы: PathBox трогать из другого потока нельзя
     private string _root = "", _appDir = "", _mainExe = "";
@@ -51,6 +54,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Closed += (_, _) => StopMusic();
         PathBox.Text = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Programs", "Aura");
@@ -126,32 +130,57 @@ public partial class MainWindow : Window
     {
         try
         {
-            // Приоритет — файл рядом с установщиком (можно подменить без пересборки),
-            // иначе — встроенный setup_music.wav из корня репозитория.
-            string beside = Path.Combine(AppContext.BaseDirectory, "setup_music.wav");
-            if (File.Exists(beside))
-                _music = new SoundPlayer(beside);
-            else
+            _musicStream = OpenResource("setup_music.mp3");
+            if (_musicStream is null) return;
+
+            var builder = new Mp3FileReaderBase.FrameDecompressorBuilder(
+                waveFormat => new Mp3FrameDecompressor(waveFormat));
+            _musicReader = new Mp3FileReaderBase(_musicStream, builder);
+            var output = new WaveOutEvent { Volume = (float)_audioState.Volume };
+            output.PlaybackStopped += (_, e) => Dispatcher.BeginInvoke(() =>
             {
-                var stream = OpenResource("setup_music.wav");
-                if (stream is null) return;
-                _music = new SoundPlayer(stream);
-            }
-            _music.PlayLooping();
+                if (_music is null || _musicReader is null) return;
+                if (e.Exception is not null)
+                {
+                    Log($"Музыка установщика: {e.Exception.Message}");
+                    return;
+                }
+
+                try
+                {
+                    _musicReader.Position = 0;
+                    _music.Play();
+                }
+                catch (Exception ex) { Log($"Повтор музыки установщика: {ex.Message}"); }
+            });
+            _music = output;
+            output.Init(_musicReader);
+            output.Play();
         }
-        catch { /* музыка — не повод падать */ }
+        catch (Exception ex)
+        {
+            Log($"Музыка установщика: {ex.Message}");
+            StopMusic();
+        }
     }
 
     private void Mute_Click(object sender, RoutedEventArgs e)
     {
-        _muted = !_muted;
-        MuteBtn.Content = _muted ? "🔇" : "🔊";
-        try
-        {
-            if (_muted) _music?.Stop();
-            else _music?.PlayLooping();
-        }
-        catch { }
+        _audioState.ToggleMute();
+        MuteBtn.Content = _audioState.IsMuted ? "🔇" : "♪";
+        if (_music is not null) _music.Volume = (float)_audioState.Volume;
+    }
+
+    private void StopMusic()
+    {
+        WaveOutEvent? output = _music;
+        _music = null;
+        try { output?.Stop(); } catch { }
+        try { output?.Dispose(); } catch { }
+        try { _musicReader?.Dispose(); } catch { }
+        _musicReader = null;
+        try { _musicStream?.Dispose(); } catch { }
+        _musicStream = null;
     }
 
     // ---------------- Ресурсы ----------------

@@ -80,6 +80,7 @@
     <Compile Include="..\..\src\Aura\Core\Encoding\EncodedStreamCompatibility.cs" Link="App\EncodedStreamCompatibility.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\RecordingQualityPolicy.cs" Link="App\RecordingQualityPolicy.cs" />
     <Compile Include="..\..\src\AuraUninstall\UninstallLayout.cs" Link="App\UninstallLayout.cs" />
+    <Compile Include="..\..\src\InstantReplaySetup\InstallerAudioState.cs" Link="App\InstallerAudioState.cs" />
   </ItemGroup>
 
 </Project>
