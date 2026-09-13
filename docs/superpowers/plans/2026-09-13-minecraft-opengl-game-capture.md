@@ -59,11 +59,11 @@
 - Create: `tests/InstantReplay.Tests/MinecraftHookEligibilityTests.cs`
 - Modify: `tests/InstantReplay.Tests/InstantReplay.Tests.csproj`
 
-- [ ] Write table-driven failing tests for accepted 64-bit Minecraft and rejection of CS2, arbitrary `javaw.exe`, non-Minecraft classification, stale PID/start time/HWND, wrong monitor, non-foreground target, architecture mismatch, different user, higher integrity, missing `opengl32.dll`, protected process, and known anti-cheat modules.
-- [ ] Run the focused filter and observe failure.
-- [ ] Implement `MinecraftHookEligibilitySnapshot`, `MinecraftHookEligibilityReason`, and a pure `Evaluate(GameCaptureTarget, snapshot)` method. Check exact case-insensitive executable basename `javaw.exe`, exact Minecraft classification, and permanent `cs2.exe`/non-Minecraft denial before any permissive check.
-- [ ] Make accepted output carry the complete immutable target identity needed by IPC; never let window size/fullscreen shape alone grant eligibility.
-- [ ] Run focused tests plus `GameWindowSelectorTests`; commit with `git commit -m "Restrict game hook to verified Minecraft"`.
+- [x] Write table-driven failing tests for accepted 64-bit Minecraft and rejection of CS2, arbitrary `javaw.exe`, non-Minecraft classification, stale PID/start time/HWND, wrong monitor, non-foreground target, architecture mismatch, different user, higher integrity, missing `opengl32.dll`, protected process, and known anti-cheat modules.
+- [x] Run the focused filter and observe failure.
+- [x] Implement `MinecraftHookEligibilitySnapshot`, `MinecraftHookEligibilityReason`, and a pure `Evaluate(GameCaptureTarget, snapshot)` method. Check exact case-insensitive executable basename `javaw.exe`, exact Minecraft classification, and permanent `cs2.exe`/non-Minecraft denial before any permissive check.
+- [x] Make accepted output carry the complete immutable target identity needed by IPC; never let window size/fullscreen shape alone grant eligibility.
+- [x] Run focused tests plus `GameWindowSelectorTests`; commit with `git commit -m "Restrict game hook to verified Minecraft"`.
 
 ## Task 4: Add reproducible native toolchain and MinHook
 
