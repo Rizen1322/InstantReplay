@@ -45,11 +45,11 @@
 - Create: `tests/InstantReplay.Tests/GameCaptureRoutePolicyTests.cs`
 - Modify: `tests/InstantReplay.Tests/InstantReplay.Tests.csproj`
 
-- [ ] Write failing tests for `Monitor -> GamePending -> GameLive`, immediate `GameLive -> Monitor`, re-entry with a new epoch, target-revision changes, old game-frame rejection after Alt-Tab, and old monitor-frame rejection after return.
-- [ ] Run the focused test filter and confirm the missing policy failure.
-- [ ] Implement immutable `GameCaptureRouteState(Route, Epoch, TargetRevision)` plus pure transition/admission methods. Every focus or target-identity boundary increments the positive route epoch; only a current-epoch game frame promotes `GamePending` to `GameLive`.
-- [ ] Ensure `GamePending` admits neither monitor nor stale game frames. `Monitor` admits only current-epoch monitor frames; `GameLive` admits only current-epoch/current-target game frames.
-- [ ] Run focused tests and the existing `CaptureFrameAdmissionGateTests`; commit with `git commit -m "Add epoch gated game capture routing"`.
+- [x] Write failing tests for `Monitor -> GamePending -> GameLive`, immediate `GameLive -> Monitor`, re-entry with a new epoch, target-revision changes, old game-frame rejection after Alt-Tab, and old monitor-frame rejection after return.
+- [x] Run the focused test filter and confirm the missing policy failure.
+- [x] Implement immutable `GameCaptureRouteState(Route, Epoch, TargetRevision)` plus pure transition/admission methods. Every focus or target-identity boundary increments the positive route epoch; only a current-epoch game frame promotes `GamePending` to `GameLive`.
+- [x] Ensure `GamePending` admits neither monitor nor stale game frames. `Monitor` admits only current-epoch monitor frames; `GameLive` admits only current-epoch/current-target game frames.
+- [x] Run focused tests and the existing `CaptureFrameAdmissionGateTests`; commit with `git commit -m "Add epoch gated game capture routing"`.
 
 ## Task 3: Lock injection eligibility to verified Minecraft
 
