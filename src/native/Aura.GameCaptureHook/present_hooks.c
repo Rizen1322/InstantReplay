@@ -3,6 +3,8 @@
 #include <GL/gl.h>
 #include <MinHook.h>
 
+#include "gl_capture.h"
+
 typedef BOOL(WINAPI *swap_buffers_fn)(HDC);
 typedef BOOL(WINAPI *swap_layer_buffers_fn)(HDC, UINT);
 
@@ -34,7 +36,18 @@ static void observe_present(HDC hdc)
     if ((uint64_t)(uintptr_t)root != ipc->header->target_hwnd) return;
     if (wglGetCurrentContext() == NULL || wglGetCurrentDC() != hdc) return;
 
-    InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_issued);
+    aura_gl_capture_result capture = aura_gl_capture_present(ipc, hdc);
+    if (capture == AURA_GL_CAPTURE_UNSUPPORTED) {
+        aura_hook_ipc_set_state(
+            ipc,
+            AURA_GAME_HOOK_STATE_FAILED,
+            AURA_GAME_HOOK_ERROR_UNSUPPORTED_OPENGL_READBACK);
+    } else if (capture == AURA_GL_CAPTURE_FAILED) {
+        aura_hook_ipc_set_state(
+            ipc,
+            AURA_GAME_HOOK_STATE_FAILED,
+            AURA_GAME_HOOK_ERROR_CAPTURE_FAILED);
+    }
 }
 
 static void enter_present(HDC hdc)
@@ -136,6 +149,7 @@ void aura_present_hooks_remove(void)
 {
     g_ipc = NULL;
     (void)MH_DisableHook(MH_ALL_HOOKS);
+    aura_gl_capture_abandon();
     (void)MH_RemoveHook(MH_ALL_HOOKS);
     (void)MH_Uninitialize();
     g_gdi_target = NULL;

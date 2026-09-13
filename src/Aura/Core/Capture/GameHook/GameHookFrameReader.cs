@@ -202,9 +202,11 @@ internal sealed class GameHookFrameReader
             return false;
         }
 
-        long expectedStride = GameHookProtocol.CalculateSlotStride(header.Width, header.Height);
-        long expectedSize = GameHookProtocol.CalculateMappingSize(header.Width, header.Height);
-        return header.SlotStride == expectedStride &&
+        long minimumStride = GameHookProtocol.CalculateSlotStride(header.Width, header.Height);
+        long expectedSize = checked(
+            GameHookProtocol.HeaderSize + GameHookProtocol.SlotCount * header.SlotStride);
+        return header.SlotStride >= minimumStride &&
+               (header.SlotStride & 63) == 0 &&
                header.MappingSize == expectedSize &&
                header.MappingSize <= capacity;
     }

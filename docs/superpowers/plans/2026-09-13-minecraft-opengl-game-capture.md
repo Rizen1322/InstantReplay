@@ -150,12 +150,12 @@
 - Modify: `tests/native/OpenGlCaptureFixture/**`
 - Create: `tests/native/run_gl_frame_test.ps1`
 
-- [ ] Extend the fixture to present numbered color/checker frames and add a failing integration assertion that shared-memory frame sequences and sampled pixels change monotonically.
-- [ ] Add resize, command enable/disable, target-FPS, row-orientation, and torn-slot test cases; run and confirm failure before readback exists.
-- [ ] Load PBO functions from the active context and allocate three `GL_PIXEL_PACK_BUFFER` objects. Throttle before issuing `glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE)`; map only an older PBO and never wait on the just-issued readback.
-- [ ] Preserve/read back framebuffer binding, pixel-pack buffer binding, pack alignment, and read buffer. Do not consume a game-owned GL error. Reverse rows into an odd/even seqlock slot, then publish newest sequence with release ordering.
-- [ ] Report `UnsupportedOpenGlReadback` when required PBO functions are unavailable; add no synchronous fallback.
-- [ ] Run the frame test at 30 and 60 FPS, resize repeatedly, and verify throttling bounds issued reads; commit with `git commit -m "Capture Minecraft OpenGL frames through PBOs"`.
+- [x] Extend the fixture to present numbered color/checker frames and add a failing integration assertion that shared-memory frame sequences and sampled pixels change monotonically.
+- [x] Add resize, command enable/disable, target-FPS, row-orientation, and torn-slot test cases; run and confirm failure before readback exists.
+- [x] Load PBO functions from the active context and allocate three `GL_PIXEL_PACK_BUFFER` objects. Throttle before issuing `glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE)`; map only an older PBO and never wait on the just-issued readback.
+- [x] Preserve/read back framebuffer binding, pixel-pack buffer binding, pack alignment, and read buffer. Do not consume a game-owned GL error. Reverse rows into an odd/even seqlock slot, then publish newest sequence with release ordering.
+- [x] Report `UnsupportedOpenGlReadback` when required PBO functions are unavailable; add no synchronous fallback.
+- [x] Run the frame test at 30 and 60 FPS, resize repeatedly, and verify throttling bounds issued reads; commit with `git commit -m "Capture Minecraft OpenGL frames through PBOs"`.
 
 ## Task 9: Upload hook frames and build the hybrid source
 

@@ -165,6 +165,36 @@ public sealed class GameHookFrameReaderTests
     }
 
     [Fact]
+    public void Preallocated_slots_accept_a_smaller_resized_frame()
+    {
+        TestMapping mapping = TestMapping.Valid(sequence: 3, width: 64, height: 64);
+        GameHookHeader header = mapping.ReadHeader();
+        mapping.WriteHeader(header with
+        {
+            Width = 32,
+            Height = 32,
+            Stride = 128
+        });
+        mapping.WriteSlotHeader(mapping.ReadSlotHeader() with
+        {
+            Width = 32,
+            Height = 32,
+            Stride = 128,
+            ByteCount = 32 * 32 * 4
+        });
+
+        Assert.True(new GameHookFrameReader().TryRead(
+            new ArrayMemoryView(mapping.Bytes),
+            mapping.Expected,
+            new byte[32 * 32 * 4],
+            out GameHookFrameSnapshot frame,
+            out GameHookFrameReadResult result));
+        Assert.Equal(GameHookFrameReadResult.Success, result);
+        Assert.Equal(32, frame.Width);
+        Assert.Equal(32 * 32 * 4, frame.ByteCount);
+    }
+
+    [Fact]
     public void Session_names_are_random_pid_scoped_and_never_global()
     {
         GameHookSessionNames first = GameHookSessionNames.Create(targetPid: 123, controllerPid: 456);

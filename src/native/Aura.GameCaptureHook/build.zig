@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
             "ipc.c",
             "present_hooks.c",
             "hook_lifetime.c",
+            "gl_capture.c",
             "../../../third_party/minhook/src/buffer.c",
             "../../../third_party/minhook/src/hook.c",
             "../../../third_party/minhook/src/trampoline.c",

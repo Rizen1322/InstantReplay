@@ -25,12 +25,54 @@ static void close_handle(HANDLE *handle)
     *handle = NULL;
 }
 
+static void render_pattern(int width, int height)
+{
+    glViewport(0, 0, width, height);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, width, height / 2);
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glScissor(0, height / 2, width, height - height / 2);
+    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+}
+
+static bool validate_latest_frame(aura_game_hook_header *header)
+{
+    LONG64 sequence = InterlockedCompareExchange64(
+        (volatile LONG64 *)&header->newest_sequence, 0, 0);
+    if (sequence <= 0) return false;
+    LONG64 index = (sequence - 1) % AURA_GAME_HOOK_SLOT_COUNT;
+    uint8_t *base = (uint8_t *)header + AURA_GAME_HOOK_HEADER_SIZE +
+                    (uint64_t)index * (uint64_t)header->slot_stride;
+    aura_game_hook_frame_slot_header *slot = (aura_game_hook_frame_slot_header *)base;
+    LONG64 first_lock = InterlockedCompareExchange64(
+        (volatile LONG64 *)&slot->sequence_lock, 0, 0);
+    if (first_lock <= 0 || (first_lock & 1) != 0 ||
+        slot->frame_sequence != sequence || slot->width != header->width ||
+        slot->height != header->height || slot->stride != header->stride ||
+        slot->byte_count != header->stride * header->height) return false;
+
+    uint8_t *pixels = base + AURA_GAME_HOOK_SLOT_HEADER_SIZE;
+    uint8_t *top = pixels;
+    uint8_t *bottom = pixels + (size_t)(slot->height - 1) * (size_t)slot->stride;
+    bool colors_ok = top[0] < 32 && top[1] > 220 && top[2] < 32 &&
+                     bottom[0] < 32 && bottom[1] < 32 && bottom[2] > 220;
+    MemoryBarrier();
+    LONG64 second_lock = InterlockedCompareExchange64(
+        (volatile LONG64 *)&slot->sequence_lock, 0, 0);
+    return colors_ok && first_lock == second_lock;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
-    if (argc != 2) {
-        fwprintf(stderr, L"usage: OpenGlCaptureFixture.exe <hook-dll>\n");
+    if (argc < 2 || argc > 3) {
+        fwprintf(stderr, L"usage: OpenGlCaptureFixture.exe <hook-dll> [fps]\n");
         return 2;
     }
+    int target_fps = argc == 3 ? _wtoi(argv[2]) : 60;
+    if (target_fps <= 0 || target_fps > 240) return 2;
 
     int result = 1;
     HINSTANCE instance = GetModuleHandleW(NULL);
@@ -189,7 +231,7 @@ int wmain(int argc, wchar_t **argv)
     header->capture_generation = 1;
     header->route_epoch = 1;
     header->command = AURA_GAME_HOOK_COMMAND_CAPTURE;
-    header->target_fps = 60;
+    header->target_fps = target_fps;
     header->width = width;
     header->height = height;
     header->stride = width * 4;
@@ -204,17 +246,18 @@ int wmain(int argc, wchar_t **argv)
         goto cleanup;
     }
 
-    ULONGLONG deadline = GetTickCount64() + 5000;
+    ULONGLONG capture_started = GetTickCount64();
+    ULONGLONG deadline = capture_started + 5000;
     bool observed = false;
+    LONG64 last_sequence = 0;
+    int sequence_changes = 0;
     while (GetTickCount64() < deadline) {
         MSG message;
         while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        glViewport(0, 0, width, height);
-        glClearColor(0.1f, 0.2f, 0.3f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        render_pattern(header->width, header->height);
         SwapBuffers(dc);
         InterlockedExchange64(
             (volatile LONG64 *)&header->controller_heartbeat_100ns,
@@ -228,7 +271,14 @@ int wmain(int argc, wchar_t **argv)
             (volatile LONG64 *)&header->hook_heartbeat_100ns,
             0,
             0);
-        if (state == AURA_GAME_HOOK_STATE_CAPTURING && issued >= 3 && heartbeat > 0) {
+        LONG64 sequence = InterlockedCompareExchange64(
+            (volatile LONG64 *)&header->newest_sequence, 0, 0);
+        if (sequence > last_sequence) {
+            last_sequence = sequence;
+            ++sequence_changes;
+        }
+        if (state == AURA_GAME_HOOK_STATE_CAPTURING && issued >= 3 &&
+            heartbeat > 0 && sequence_changes >= 2 && validate_latest_frame(header)) {
             observed = true;
             break;
         }
@@ -243,6 +293,52 @@ int wmain(int argc, wchar_t **argv)
             header->error,
             header->frames_issued,
             header->hook_heartbeat_100ns);
+        goto cleanup;
+    }
+
+    ULONGLONG elapsed = GetTickCount64() - capture_started;
+    LONG64 issued_before_pause = InterlockedCompareExchange64(
+        (volatile LONG64 *)&header->frames_issued, 0, 0);
+    LONG64 maximum_issued = (LONG64)((elapsed * (ULONGLONG)target_fps) / 1000) + 4;
+    if (issued_before_pause > maximum_issued) {
+        fwprintf(stderr, L"capture throttle exceeded: issued=%lld max=%lld\n",
+                 issued_before_pause, maximum_issued);
+        goto cleanup;
+    }
+
+    InterlockedExchange((volatile LONG *)&header->command, AURA_GAME_HOOK_COMMAND_IDLE);
+    for (int frame = 0; frame < 12; ++frame) {
+        render_pattern(header->width, header->height);
+        SwapBuffers(dc);
+        Sleep(10);
+    }
+    if (InterlockedCompareExchange64(
+            (volatile LONG64 *)&header->frames_issued, 0, 0) != issued_before_pause) {
+        fwprintf(stderr, L"capture work continued while command was idle\n");
+        goto cleanup;
+    }
+
+    LONG64 published_before_resize = InterlockedCompareExchange64(
+        (volatile LONG64 *)&header->frames_published, 0, 0);
+    header->width = 32;
+    header->height = 32;
+    header->stride = 32 * 4;
+    InterlockedExchange((volatile LONG *)&header->command, AURA_GAME_HOOK_COMMAND_CAPTURE);
+    deadline = GetTickCount64() + 3000;
+    bool resized = false;
+    while (GetTickCount64() < deadline) {
+        render_pattern(header->width, header->height);
+        SwapBuffers(dc);
+        LONG64 published = InterlockedCompareExchange64(
+            (volatile LONG64 *)&header->frames_published, 0, 0);
+        if (published > published_before_resize && validate_latest_frame(header)) {
+            resized = true;
+            break;
+        }
+        Sleep(10);
+    }
+    if (!resized) {
+        fwprintf(stderr, L"capture did not resume after idle/resize\n");
         goto cleanup;
     }
 

@@ -36,12 +36,18 @@ DWORD WINAPI aura_hook_control_thread(void *module_pointer)
             (volatile LONG *)&ipc.header->command,
             0,
             0);
-        aura_hook_ipc_set_state(
-            &ipc,
-            command == AURA_GAME_HOOK_COMMAND_CAPTURE
-                ? AURA_GAME_HOOK_STATE_CAPTURING
-                : AURA_GAME_HOOK_STATE_READY,
-            AURA_GAME_HOOK_ERROR_NONE);
+        LONG error = InterlockedCompareExchange(
+            (volatile LONG *)&ipc.header->error,
+            0,
+            0);
+        if (error == AURA_GAME_HOOK_ERROR_NONE) {
+            aura_hook_ipc_set_state(
+                &ipc,
+                command == AURA_GAME_HOOK_COMMAND_CAPTURE
+                    ? AURA_GAME_HOOK_STATE_CAPTURING
+                    : AURA_GAME_HOOK_STATE_READY,
+                AURA_GAME_HOOK_ERROR_NONE);
+        }
         Sleep(25);
     }
 
