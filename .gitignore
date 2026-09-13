@@ -45,5 +45,11 @@ package-lock.json
 # Изолированные рабочие деревья Codex/Claude
 .worktrees/
 
+# Закреплённый локальный native toolchain и результаты сборки hook DLL.
+.tools/
+artifacts/native/
+.zig-cache/
+zig-out/
+
 # npm-зависимости (headroom-ai и т.п.) — ставятся локально через npm install
 node_modules/

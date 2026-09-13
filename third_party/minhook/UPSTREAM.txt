@@ -1,0 +1,7 @@
+Project: MinHook - The Minimalistic API Hooking Library for x64/x86
+Upstream: https://github.com/TsudaKageyu/minhook
+Version: v1.3.4
+Commit: c3fcafdc10146beb5919319d0683e44e3c30d537
+
+Vendored files are the public header, x64 implementation sources, AUTHORS.txt,
+and LICENSE.txt required to build Aura.GameCaptureHook64.dll.

@@ -78,12 +78,12 @@
 - Vendor: `third_party/minhook/**` from v1.3.4 commit `c3fcafd`
 - Modify: `.gitignore`
 
-- [ ] Add a build smoke test mode that compiles and runs `protocol_layout_test.exe`; run it first and confirm it fails because the scripts/project are absent.
-- [ ] Implement `get_zig.ps1` to cache Zig 0.16.0 under ignored `.tools/`, download only from the pinned official URL, and verify SHA-256 `68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e` before extraction.
-- [ ] Vendor only the MinHook sources/headers required for x64 plus upstream `LICENSE.txt`; record tag and full commit in `third_party/minhook/UPSTREAM.txt`.
-- [ ] Create a DLL skeleton exporting protocol/version information and a Zig build that produces only x64 Release artifacts with no C runtime dependency surprises.
-- [ ] Run `powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build_game_capture_hook.ps1 -RunProtocolTests`; inspect PE architecture and exported symbols.
-- [ ] Commit with `git commit -m "Add reproducible native hook build"`.
+- [x] Add a build smoke test mode that compiles and runs `protocol_layout_test.exe`; run it first and confirm it fails because the scripts/project are absent.
+- [x] Implement `get_zig.ps1` to cache Zig 0.16.0 under ignored `.tools/`, download only from the pinned official URL, and verify SHA-256 `68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e` before extraction.
+- [x] Vendor only the MinHook sources/headers required for x64 plus upstream `LICENSE.txt`; record tag and full commit in `third_party/minhook/UPSTREAM.txt`.
+- [x] Create a DLL skeleton exporting protocol/version information and a Zig build that produces only x64 Release artifacts with no C runtime dependency surprises.
+- [x] Run `powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build_game_capture_hook.ps1 -RunProtocolTests`; inspect PE architecture and exported symbols.
+- [x] Commit with `git commit -m "Add reproducible native hook build"`.
 
 ## Task 5: Implement safe shared-memory reading
 
