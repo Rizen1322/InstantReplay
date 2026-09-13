@@ -157,6 +157,18 @@ Step "3/6 Сборка установщика"
 if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { Fail "Сборка не удалась" }
 if (-not (Test-Path $setupExe)) { Fail "Установщик не собрался: $setupExe" }
 
+$hook = Join-Path $root 'dist\app_publish\Aura.GameCaptureHook64.dll'
+$hookManifest = Join-Path $root 'dist\app_publish\Aura.GameCaptureHook64.sha256'
+if (-not (Test-Path -LiteralPath $hook -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $hookManifest -PathType Leaf)) {
+    Fail 'В release payload отсутствует Minecraft capture hook или его manifest'
+}
+$expectedHookHash = (([IO.File]::ReadAllText($hookManifest, $utf8) -split '\s+')[0]).ToLowerInvariant()
+$actualHookHash = (Get-FileHash -LiteralPath $hook -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($expectedHookHash -ne $actualHookHash) {
+    Fail "В release payload устаревший Minecraft capture hook: $actualHookHash != $expectedHookHash"
+}
+
 $built = (Get-Item $appExe).VersionInfo.FileVersion
 if ($built -ne $assembly) { Fail "В собранном exe версия $built, ожидалась $assembly" }
 Write-Host "   Проверено: в Aura.exe версия $built"

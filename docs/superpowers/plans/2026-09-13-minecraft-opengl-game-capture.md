@@ -213,12 +213,12 @@
 - Modify: `release.ps1`
 - Create: `tests/packaging/game_capture_hook_package_test.ps1`
 
-- [ ] Add a failing packaging test that requires `Aura.GameCaptureHook64.dll`, its SHA-256 manifest, matching embedded digest, x64 PE architecture, and inclusion in `payload.zip`.
-- [ ] Run the packaging test and confirm the missing payload failure.
-- [ ] Add a pre-publish native build step, copy DLL/manifest to the Aura output, embed the expected digest as an assembly resource, and make publish fail on absence/hash mismatch.
-- [ ] Update `build_setup.ps1` step numbering and build the hook before `dotnet publish`; preserve the current recoverable, explicit PowerShell paths and the fixed `packaging/build_identity_package.ps1` call.
-- [ ] Ensure `release.ps1` signs/hashes the final payload consistently and cannot package a stale hook binary.
-- [ ] Run the packaging test and one complete `./build_setup.ps1`; commit with `git commit -m "Package verified Minecraft capture hook"`.
+- [x] Add a failing packaging test that requires `Aura.GameCaptureHook64.dll`, its SHA-256 manifest, matching embedded digest, x64 PE architecture, and inclusion in `payload.zip`.
+- [x] Run the packaging test and confirm the missing payload failure.
+- [x] Add a pre-publish native build step, copy DLL/manifest to the Aura output, embed the expected digest as an assembly resource, and make publish fail on absence/hash mismatch.
+- [x] Update `build_setup.ps1` step numbering and build the hook before `dotnet publish`; preserve the current recoverable, explicit PowerShell paths and the fixed `packaging/build_identity_package.ps1` call.
+- [x] Ensure `release.ps1` signs/hashes the final payload consistently and cannot package a stale hook binary.
+- [x] Run the packaging test and one complete `./build_setup.ps1`; commit with `git commit -m "Package verified Minecraft capture hook"`.
 
 ## Task 12: End-to-end verification and CS2 handoff
 

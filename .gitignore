@@ -49,6 +49,7 @@ package-lock.json
 .tools/
 artifacts/native/
 artifacts/native-tests/
+artifacts/tests/
 .zig-cache/
 zig-out/
 

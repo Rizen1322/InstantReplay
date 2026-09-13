@@ -9,13 +9,19 @@ $root = $PSScriptRoot
 $dist = Join-Path $root "dist"
 $publish = Join-Path $dist "app_publish"
 
-Write-Host "== 1/6 Публикация приложения =="
+Write-Host "== 1/7 Нативный захват Minecraft =="
+& (Join-Path $root "packaging\build_game_capture_hook.ps1") `
+    -OutputDir (Join-Path $root "artifacts\native\win-x64\Release") `
+    -RunProtocolTests
+if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "native hook не собрался" }
+
+Write-Host "== 2/7 Публикация приложения =="
 if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
 dotnet publish (Join-Path $root "src\Aura\Aura.csproj") `
     -c Release -r win-x64 --self-contained true -o $publish
 if ($LASTEXITCODE -ne 0) { throw "publish приложения не удался" }
 
-Write-Host "== 2/6 Чистка поставки =="
+Write-Host "== 3/7 Чистка поставки =="
 # Языковые папки сторонних пакетов — оставляем только английские.
 $keep = @("en-US", "en", "Assets")
 $removed = 0
@@ -30,8 +36,15 @@ $sizeMb = ((Get-ChildItem $publish -Recurse -File | Measure-Object Length -Sum).
 Write-Host ("   удалено языковых папок: {0}; итог: {1} файлов, {2:0} МБ" -f $removed, $files, $sizeMb)
 
 if (-not (Test-Path (Join-Path $publish "Aura.exe"))) { throw "в поставке нет Aura.exe" }
+$hook = Join-Path $publish "Aura.GameCaptureHook64.dll"
+$hookManifest = Join-Path $publish "Aura.GameCaptureHook64.sha256"
+if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) { throw "в поставке нет native hook" }
+if (-not (Test-Path -LiteralPath $hookManifest -PathType Leaf)) { throw "в поставке нет hash native hook" }
+$expectedHookHash = (([IO.File]::ReadAllText($hookManifest) -split '\s+')[0]).ToLowerInvariant()
+$actualHookHash = (Get-FileHash -LiteralPath $hook -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($expectedHookHash -ne $actualHookHash) { throw "native hook и manifest не совпадают" }
 
-Write-Host "== 3/6 Пакет identity =="
+Write-Host "== 4/7 Пакет identity =="
 # Sparse-пакет кладём в поставку: установщик зарегистрирует его с внешним
 # расположением = папка app\. Без него приложение не получит право
 # graphicsCaptureWithoutBorder и запись пойдёт с жёлтой рамкой.
@@ -41,7 +54,7 @@ $identity = Join-Path $dist "Aura.Identity.msix"
 if (-not (Test-Path $identity)) { throw "нет $identity" }
 Copy-Item $identity (Join-Path $publish "Aura.Identity.msix") -Force
 
-Write-Host "== 4/6 Упаковка payload.zip =="
+Write-Host "== 5/7 Упаковка payload.zip =="
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = Join-Path $dist "payload.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -51,12 +64,12 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
     $publish, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
 Write-Host ("   payload.zip: {0:0} МБ" -f ((Get-Item $zip).Length / 1MB))
 
-Write-Host "== 5/6 Публикация установщика =="
+Write-Host "== 6/7 Публикация установщика =="
 dotnet publish (Join-Path $root "src\InstantReplaySetup\InstantReplaySetup.csproj") `
     -c Release -o (Join-Path $dist "setup_publish")
 if ($LASTEXITCODE -ne 0) { throw "publish установщика не удался" }
 
-Write-Host "== 6/6 Финал =="
+Write-Host "== 7/7 Финал =="
 Copy-Item (Join-Path $dist "setup_publish\InstantReplaySetup.exe") (Join-Path $dist "InstantReplaySetup.exe") -Force
 $size = (Get-Item (Join-Path $dist "InstantReplaySetup.exe")).Length / 1MB
 Write-Host ("Готово: dist\InstantReplaySetup.exe ({0:0} МБ)" -f $size)
