@@ -228,13 +228,13 @@
 - Create: `docs/diagnostics/2026-09-13-cs2-encoder-contention.md`
 - Modify only if evidence requires: relevant test or implementation files from prior tasks
 
-- [ ] Run `dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release` and both native test scripts from a clean tree; record exact commands/results.
-- [ ] Build the installer and verify DLL/manifest hashes from both `app_publish` and extracted payload.
+- [x] Run `dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release` and both native test scripts from a clean tree; record exact commands/results.
+- [x] Build the installer and verify DLL/manifest hashes from both `app_publish` and extracted payload.
 - [ ] On real Minecraft Java, run ten minutes in true F11, verify live useful FPS, no freeze longer than 250 ms, stationary/moving cursor correctness, three Alt-Tabs each way, F11 exit/re-entry, world reload, resize, process restart, and clean Aura/Minecraft shutdown.
 - [ ] Verify a run without Save creates no new video file; then explicitly Save once and verify the clip is playable. Check explicit continuous recording remains unchanged.
 - [ ] Measure Minecraft frame-time impact with capture disabled/enabled and record P99 plus hook counters. If acceptance fails, add a reproducing test before changing code.
-- [ ] Capture a fresh CS2 log without injection, document WGC arrival rate, converter/encoder timings, queue depth, pacer blocking, GPU engine load, and recommended external-only pacing changes. Do not mix the CS2 fix into the Minecraft hook commits.
-- [ ] Perform a final diff review, run `git status --short`, and commit verification evidence with `git commit -m "Verify Minecraft OpenGL game capture"`.
+- [x] Capture a fresh CS2 log without injection, document WGC arrival rate, converter/encoder timings, queue depth, pacer blocking, GPU engine load, and recommended external-only pacing changes. Do not mix the CS2 fix into the Minecraft hook commits.
+- [x] Perform a final diff review, run `git status --short`, and commit verification evidence with `git commit -m "Verify Minecraft OpenGL game capture"`.
 
 ## Completion Gate
 
