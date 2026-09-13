@@ -70,7 +70,7 @@
 
   <Target Name="BuildVerifiedGameCaptureHook"
           BeforeTargets="CoreCompile"
-          Condition="'$(DesignTimeBuild)' != 'true'"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Aura'"
           Inputs="@(GameCaptureHookSource)"
           Outputs="$(GameCaptureHookOutput)\Aura.GameCaptureHook64.dll;$(GameCaptureHookOutput)\Aura.GameCaptureHook64.sha256">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\packaging\build_game_capture_hook.ps1&quot; -OutputDir &quot;$(GameCaptureHookOutput)&quot;" />

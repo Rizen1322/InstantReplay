@@ -7,7 +7,7 @@ Executed from the clean `codex/minecraft-opengl-game-capture` worktree at commit
 
 | Check | Command | Result |
 |---|---|---|
-| Managed suite | `dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release` | 420 passed, 0 failed, 0 skipped |
+| Managed suite | `dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release` | 426 passed, 0 failed, 0 skipped (combined Minecraft + external pacing tree) |
 | Hook lifetime | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/native/run_hook_lifecycle_test.ps1` | 20/20 passed |
 | OpenGL PBO frames | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/native/run_gl_frame_test.ps1` | lifecycle 1/1; numbered/oriented frames passed at 30 and 60 FPS |
 | Package integrity | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/packaging/game_capture_hook_package_test.ps1` | x64 DLL, manifest, embedded digest, publish and ZIP checks passed |
@@ -22,7 +22,7 @@ Installer:
 
 - Path: `dist/InstantReplaySetup.exe`
 - Size: approximately 252 MiB
-- SHA-256: `34a60843d8caeccd2378b62f74e8a23eb96bf592700619c073505b05b2a9a9a3`
+- SHA-256: `88334f9296a26975f34d99725effb4233948d95736b3caf664bb123050e9731f`
 
 ## Proved invariants
 

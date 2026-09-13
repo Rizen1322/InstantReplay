@@ -64,7 +64,15 @@ if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) { throw "Hook
 $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
 if ($machine -ne 0x8664) { throw ("Hook DLL не x64: machine=0x{0:X4}" -f $machine) }
 
-$sha256 = (Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$shaAlgorithm = [Security.Cryptography.SHA256]::Create()
+try {
+    $dllStream = [IO.File]::OpenRead($dllPath)
+    try { $shaBytes = $shaAlgorithm.ComputeHash($dllStream) }
+    finally { $dllStream.Dispose() }
+} finally {
+    $shaAlgorithm.Dispose()
+}
+$sha256 = [BitConverter]::ToString($shaBytes).Replace('-', '').ToLowerInvariant()
 $manifestPath = Join-Path $OutputDir "Aura.GameCaptureHook64.sha256"
 [IO.File]::WriteAllText($manifestPath, "$sha256  Aura.GameCaptureHook64.dll`r`n")
 
