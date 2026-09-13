@@ -21,6 +21,8 @@ public enum EngineState { Stopped, Running, Saving, Recovering }
 /// </summary>
 public sealed class ReplayEngine : IDisposable
 {
+    private static readonly TimeSpan ScreenshotFreshFrameWait = TimeSpan.FromMilliseconds(200);
+
     private readonly SettingsManager _settings;
     private readonly StorageManager _storage;
 
@@ -159,8 +161,9 @@ public sealed class ReplayEngine : IDisposable
             var broker = _frameBroker;
             long generation = Interlocked.Read(ref _captureGeneration);
             if (cap is null || broker is null || !_pipelineOpen) return false;
-            return broker.TryUseLatest(
+            return broker.TryUseFreshestMonitor(
                 generation,
+                ScreenshotFreshFrameWait,
                 texture => use(cap.D3DDevice, cap.D3DContext, texture));
         }
         finally { _frameGate.ExitReadLock(); }

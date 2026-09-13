@@ -34,17 +34,17 @@ public partial class CapturePage : PageBase
     ///
     /// Кодек набор НЕ трогает. Это отдельный осознанный выбор — от него зависит,
     /// откроется ли файл на чужом компьютере, — и молча переключать его из-за
-    /// нажатия на «Высокий» неправильно. Числа битрейта рассчитаны на HEVC,
-    /// который здесь и стоит по умолчанию.
+    /// нажатия на «Высокий» неправильно. Битрейт при этом считается для уже
+    /// выбранного кодека, чтобы H.264 не получал HEVC-значение и не терял детали.
     /// </summary>
-    private sealed record Preset(string Name, string Detail, int Height, int Fps, int Bitrate);
+    private sealed record Preset(string Name, string Detail, int Height, int Fps);
 
     private static readonly Preset[] AllPresets =
     [
-        new("Экономный", "720p · 30 · меньше всего места", 720, 30, 5),
-        new("Обычный", "1080p · 60 · для стримов и клипов", 1080, 60, 12),
-        new("Высокий", "1440p · 60 · чёткая картинка", 1440, 60, 25),
-        new("Максимум", "4K · 60 · для монтажа", 2160, 60, 48)
+        new("Экономный", "720p · 30 · меньше всего места", 720, 30),
+        new("Обычный", "1080p · 60 · для стримов и клипов", 1080, 60),
+        new("Высокий", "1440p · 60 · чёткая картинка", 1440, 60),
+        new("Максимум", "4K · 60 · для монтажа", 2160, 60)
     ];
 
     public CapturePage()
@@ -94,7 +94,7 @@ public partial class CapturePage : PageBase
                         new TextBlock { Text = preset.Name, FontSize = 13.5, FontWeight = FontWeights.SemiBold },
                         new TextBlock
                         {
-                            Text = $"{preset.Detail} · {preset.Bitrate} Мбит/с",
+                            Text = PresetDetail(preset),
                             Style = (Style)FindResource("RowSub"),
                             Margin = new Thickness(0, 4, 0, 0)
                         }
@@ -104,6 +104,18 @@ public partial class CapturePage : PageBase
             button.Click += Preset_Click;
             Presets.Children.Add(button);
         }
+    }
+
+    private string PresetDetail(Preset preset) =>
+        $"{preset.Detail} · {BitrateFor(RecordingQualityTier.Normal, preset.Height, preset.Fps, CurrentCodec())} Мбит/с";
+
+    private void UpdatePresetDetails()
+    {
+        foreach (Button button in Presets.Children)
+            if (button.Tag is Preset preset &&
+                button.Content is StackPanel panel &&
+                panel.Children[1] is TextBlock detail)
+                detail.Text = PresetDetail(preset);
     }
 
     private void BuildLengths()
@@ -188,6 +200,7 @@ public partial class CapturePage : PageBase
             button.Click += Codec_Click;
             Codecs.Children.Add(button);
         }
+        UpdatePresetDetails();
     }
 
     // ---------------- Загрузка и сохранение ----------------
@@ -310,7 +323,7 @@ public partial class CapturePage : PageBase
         if (_loading) return;
         // Разрешение или частота изменились — держимся того же УРОВНЯ качества,
         // а не числа: 30 Мбит/с это «высокое» для 1080p и «лёгкое» для 4K.
-        if (QualityForCurrent() is string quality)
+        if (QualityForCurrent() is RecordingQualityTier quality)
             Bitrate.Value = BitrateFor(quality, SelectedHeight(), SelectedFps(), CurrentCodec());
         HighlightPreset();
         ShowRam();
@@ -362,7 +375,11 @@ public partial class CapturePage : PageBase
         _loading = true;
         Select(ResolutionSeg, preset.Height.ToString());
         Select(FpsSeg, preset.Fps.ToString());
-        Bitrate.Value = preset.Bitrate;
+        Bitrate.Value = BitrateFor(
+            RecordingQualityTier.Normal,
+            preset.Height,
+            preset.Fps,
+            CurrentCodec());
         // Кодек остаётся тем, который выбрали: от него зависит совместимость файла,
         // и менять его за человека из-за нажатия на набор — недопустимо.
         ShowBitrate();
@@ -454,7 +471,12 @@ public partial class CapturePage : PageBase
         foreach (Button button in Presets.Children)
         {
             var preset = (Preset)button.Tag;
-            bool active = preset.Height == height && preset.Fps == fps && preset.Bitrate == bitrate;
+            int presetBitrate = BitrateFor(
+                RecordingQualityTier.Normal,
+                preset.Height,
+                preset.Fps,
+                CurrentCodec());
+            bool active = preset.Height == height && preset.Fps == fps && presetBitrate == bitrate;
             button.BorderBrush = active ? (Brush)FindResource("AccentBrush") : null;
             if (button.Content is StackPanel panel && panel.Children[0] is TextBlock title)
                 title.Foreground = (Brush)FindResource(active ? "AccentTxBrush" : "TxBrush");
@@ -469,40 +491,17 @@ public partial class CapturePage : PageBase
     /// более тяжёлые файлы без видимой разницы. Числа здесь — те, на которых
     /// картинка перестаёт улучшаться на глаз для соответствующего разрешения.
     /// </summary>
-    private static int BitrateFor(string quality, int height, int fps, VideoCodec codec)
-    {
-        // Таблица задана для 60 кадров и HEVC — того кодека, под который посчитаны
-        // готовые наборы. Уровень «normal» на 60 кадрах совпадает с их числами
-        // ровно, чтобы набор оставался подсвеченным после смены разрешения.
-        int baseAt60 = height switch
-        {
-            <= 720  => quality switch { "light" => 4,  "normal" => 7,  "high" => 11, _ => 16 },
-            <= 1080 => quality switch { "light" => 8,  "normal" => 12, "high" => 18, _ => 26 },
-            <= 1440 => quality switch { "light" => 16, "normal" => 25, "high" => 36, _ => 50 },
-            _       => quality switch { "light" => 30, "normal" => 48, "high" => 65, _ => 80 }
-        };
-
-        // Частота кадров меняет объём почти линейно, но не совсем: на 30 кадрах
-        // хватает меньшего битрейта, на 120+ нужен не вдвое больший.
-        double byFps = fps switch { <= 30 => 0.7, <= 60 => 1.0, <= 120 => 1.35, _ => 1.5 };
-
-        // H.264 на том же битрейте заметно хуже — ему нужно примерно в полтора раза
-        // больше, чтобы картинка не отличалась. AV1, наоборот, экономнее HEVC.
-        double byCodec = codec switch { VideoCodec.H264 => 1.4, VideoCodec.AV1 => 0.8, _ => 1.0 };
-
-        return Math.Clamp((int)Math.Round(baseAt60 * byFps * byCodec), MinBitrate, MaxBitrate);
-    }
+    private static int BitrateFor(RecordingQualityTier quality, int height, int fps, VideoCodec codec) =>
+        RecordingQualityPolicy.BitrateMbps(quality, height, fps, codec);
 
     /// <summary>Границы ползунка. Совпадают с Minimum/Maximum в разметке.</summary>
-    private const int MinBitrate = 4, MaxBitrate = 80;
-
     private VideoCodec CurrentCodec() => _selectedCodec;
 
     /// <summary>Какому уровню соответствует текущий битрейт; null — ни одному.</summary>
-    private string? QualityForCurrent()
+    private RecordingQualityTier? QualityForCurrent()
     {
         int height = SelectedHeight(), fps = SelectedFps(), value = (int)Bitrate.Value;
-        foreach (string quality in new[] { "light", "normal", "high", "max" })
+        foreach (RecordingQualityTier quality in Enum.GetValues<RecordingQualityTier>())
             if (BitrateFor(quality, height, fps, CurrentCodec()) == value) return quality;
         return null;
     }

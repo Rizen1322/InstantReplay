@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Aura.Core.Capture;
 
 internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : class
@@ -69,6 +71,8 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
                 if (slot.State == SlotState.Ready)
                     slot.State = SlotState.Free;
             }
+
+            Monitor.PulseAll(_gate);
         }
     }
 
@@ -128,6 +132,7 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
                     _framesPublished++;
                     _latestTimestamp = timestamp;
                     published = true;
+                    Monitor.PulseAll(_gate);
                 }
                 else
                 {
@@ -146,9 +151,67 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (generation != _generation)
+            {
+                lease = null;
+                return false;
+            }
+
+            return TryLeaseLocked(generation, long.MinValue, out lease);
+        }
+    }
+
+    /// <summary>
+    /// Ждёт кадр, опубликованный уже после начала запроса. Если экран статичен и
+    /// новый кадр за отведённое время не пришёл, безопасно возвращает последний
+    /// готовый кадр вместо ошибки скриншота.
+    /// </summary>
+    public bool TryLeaseFreshest(
+        long generation,
+        TimeSpan waitForNewFrame,
+        out CaptureFrameLease<TSlot>? lease,
+        out bool receivedNewFrame)
+    {
+        if (waitForNewFrame < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(waitForNewFrame));
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             lease = null;
+            receivedNewFrame = false;
             if (generation != _generation)
                 return false;
+
+            long baselineSequence = _nextReadySequence;
+            long started = Stopwatch.GetTimestamp();
+
+            while (true)
+            {
+                if (_disposed || generation != _generation)
+                    return false;
+
+                if (TryLeaseLocked(generation, baselineSequence, out lease))
+                {
+                    receivedNewFrame = true;
+                    return true;
+                }
+
+                TimeSpan remaining = waitForNewFrame - Stopwatch.GetElapsedTime(started);
+                if (remaining <= TimeSpan.Zero)
+                    return TryLeaseLocked(generation, long.MinValue, out lease);
+
+                Monitor.Wait(_gate, remaining);
+            }
+        }
+    }
+
+    private bool TryLeaseLocked(
+        long generation,
+        long minimumExclusiveReadySequence,
+        out CaptureFrameLease<TSlot>? lease)
+    {
+        lease = null;
 
             int index = -1;
             long newestSequence = long.MinValue;
@@ -157,6 +220,7 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
                 SlotEntry candidate = _slots[i];
                 if (candidate.State == SlotState.Ready &&
                     candidate.Generation == generation &&
+                    candidate.ReadySequence > minimumExclusiveReadySequence &&
                     candidate.ReadySequence > newestSequence)
                 {
                     index = i;
@@ -174,7 +238,6 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
             lease = new CaptureFrameLease<TSlot>(
                 this, index, generation, leaseToken, slot.Slot, slot.Timestamp);
             return true;
-        }
     }
 
     public void Dispose()
@@ -184,6 +247,7 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
         {
             if (_disposed) return;
             _disposed = true;
+            Monitor.PulseAll(_gate);
 
             foreach (SlotEntry slot in _slots)
             {

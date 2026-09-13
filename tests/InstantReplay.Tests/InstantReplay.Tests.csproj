@@ -47,6 +47,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\DdaCursorState.cs" Link="App\DdaCursorState.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFrameBroker.cs" Link="App\CaptureFrameBroker.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureFrameAdmissionGate.cs" Link="App\CaptureFrameAdmissionGate.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\ScreenshotFramePolicy.cs" Link="App\ScreenshotFramePolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\VideoOutputGeometry.cs" Link="App\VideoOutputGeometry.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\WindowCursorPolicy.cs" Link="App\WindowCursorPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DesktopFramePolicy.cs" Link="App\DesktopFramePolicy.cs" />
@@ -77,6 +78,8 @@
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderQueueAdmissionPolicy.cs" Link="App\EncoderQueueAdmissionPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncodedStreamCompatibility.cs" Link="App\EncodedStreamCompatibility.cs" />
+    <Compile Include="..\..\src\Aura\Core\Encoding\RecordingQualityPolicy.cs" Link="App\RecordingQualityPolicy.cs" />
+    <Compile Include="..\..\src\AuraUninstall\UninstallLayout.cs" Link="App\UninstallLayout.cs" />
   </ItemGroup>
 
 </Project>

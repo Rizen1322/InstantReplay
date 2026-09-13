@@ -100,7 +100,10 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             {
                 if (captured.Cursor.Mode == CaptureCursorMode.SystemComposed)
                     return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
-                        CopyFrame(captured, slot.Output));
+                    {
+                        slot.Scope = captured.Scope;
+                        CopyFrame(captured, slot.Output);
+                    });
 
                 _cursorState.Apply(captured.Generation, captured.Cursor);
                 cursor = _cursorState.Current;
@@ -108,6 +111,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
 
             return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
             {
+                slot.Scope = captured.Scope;
                 if (!_separateCursor)
                 {
                     CopyFrame(captured, slot.Output);
@@ -208,6 +212,29 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         }
     }
 
+    public bool TryUseFreshestMonitor(
+        long generation,
+        TimeSpan waitForNewFrame,
+        Action<ID3D11Texture2D> use)
+    {
+        ArgumentNullException.ThrowIfNull(use);
+        if (!_broker.TryLeaseFreshest(
+                generation,
+                waitForNewFrame,
+                out CaptureFrameLease<GpuCaptureFrameSlot>? inner,
+                out _))
+        {
+            return false;
+        }
+
+        using var lease = new GpuCaptureFrameLease(inner!);
+        if (!ScreenshotFramePolicy.CanUseLiveFrame(lease.Scope))
+            return false;
+
+        use(lease.Texture);
+        return true;
+    }
+
     public void Dispose()
     {
         lock (_publishSync)
@@ -252,6 +279,7 @@ internal sealed class GpuCaptureFrameSlot : IDisposable
 
     public ID3D11Texture2D Output { get; }
     public ID3D11Texture2D? Clean { get; }
+    public CaptureSurfaceScope Scope { get; set; }
 
     public void Dispose()
     {
@@ -273,6 +301,8 @@ internal sealed class GpuCaptureFrameLease : IDisposable
         _inner?.Timestamp ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
     public long Generation =>
         _inner?.Generation ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
+    public CaptureSurfaceScope Scope =>
+        _inner?.Slot.Scope ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
 
     public void Dispose() => Interlocked.Exchange(ref _inner, null)?.Dispose();
 }

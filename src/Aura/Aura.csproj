@@ -79,4 +79,13 @@
     <Error Condition="!Exists('$(GameCaptureHookOutput)\Aura.GameCaptureHook64.sha256')"
            Text="Native Minecraft capture hook hash manifest was not produced." />
   </Target>
+
+  <!-- VideoLAN.LibVLC.Windows carries three complete native runtimes. Aura is an
+       x64-only application, so publishing x86 and ARM64 adds about 178 MB that can
+       never be loaded. Keep every x64 codec/plugin; remove architectures only. -->
+  <Target Name="PruneForeignLibVlcRuntimes"
+          AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <RemoveDir Directories="$(PublishDir)libvlc\win-x86;$(PublishDir)libvlc\win-arm64" />
+  </Target>
 </Project>

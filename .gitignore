@@ -18,9 +18,8 @@ xaml[oe]*.txt
 # Правило явное, чтобы `git add -A` в release.ps1 не втащил папку обратно.
 src/InstantReplay/
 
-# Проект установщика и его музыка (WAV на 37 МБ) — только локально.
-# В релиз уходит готовый InstantReplaySetup.exe, собранный build_setup.ps1.
-src/InstantReplaySetup/
+# Музыка установщика локальна и необязательна. Исходники установщика обязаны
+# быть в Git: иначе build_setup.ps1 не работает из чистого checkout/worktree.
 setup_music.wav
 
 # КЛЮЧИ ПОДПИСИ — никогда и ни при каких обстоятельствах.

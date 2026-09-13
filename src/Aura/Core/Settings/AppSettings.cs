@@ -33,7 +33,8 @@ public sealed class AppSettings
     public int VerticalResolution { get; set; } = 1080;
     public int Fps { get; set; } = 60;
     /// <summary>Битрейт в Mbps (ползунок 10..80).</summary>
-    public int BitrateMbps { get; set; } = 35;
+    /// <summary>18 Mbps is the high-quality HEVC tier for the default 1080p60 mode.</summary>
+    public int BitrateMbps { get; set; } = 18;
     /// <summary>
     /// HEVC по умолчанию: файлы вдвое легче при той же картинке, и битрейты готовых
     /// наборов рассчитаны именно под него. Если видеокарта его не умеет, запуск

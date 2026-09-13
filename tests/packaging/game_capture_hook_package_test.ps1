@@ -27,6 +27,16 @@ $manifest = Join-Path $publish $manifestName
 if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) { throw "publish missing $hookName" }
 if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw "publish missing $manifestName" }
 
+$libVlc = Join-Path $publish 'libvlc'
+if (-not (Test-Path -LiteralPath (Join-Path $libVlc 'win-x64') -PathType Container)) {
+    throw 'publish missing the required x64 LibVLC runtime'
+}
+foreach ($foreignArchitecture in @('win-x86', 'win-arm64')) {
+    if (Test-Path -LiteralPath (Join-Path $libVlc $foreignArchitecture)) {
+        throw "publish contains unreachable LibVLC runtime: $foreignArchitecture"
+    }
+}
+
 $bytes = [IO.File]::ReadAllBytes($hook)
 if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
     throw 'hook is not a PE image'

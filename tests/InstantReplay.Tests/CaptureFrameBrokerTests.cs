@@ -74,6 +74,59 @@ public sealed class CaptureFrameBrokerTests
     }
 
     [Fact]
+    public async Task FreshestLeaseWaitsForFramePublishedAfterRequest()
+    {
+        using var broker = CreateBroker();
+        broker.Reset(11);
+        broker.Publish(11, 100, slot => slot.Value = 10);
+        using var waiting = new ManualResetEventSlim();
+
+        Task<(bool Leased, bool Fresh, int Value, long Timestamp)> reader = Task.Run(() =>
+        {
+            waiting.Set();
+            bool leased = broker.TryLeaseFreshest(
+                11,
+                TimeSpan.FromSeconds(2),
+                out CaptureFrameLease<FakeSlot>? lease,
+                out bool fresh);
+            using (lease)
+                return (leased, fresh, lease?.Slot.Value ?? -1, lease?.Timestamp ?? -1);
+        });
+
+        Assert.True(waiting.Wait(TimeSpan.FromSeconds(1)));
+        await Task.Delay(75);
+        Assert.True(broker.Publish(11, 200, slot => slot.Value = 20));
+
+        var result = await reader.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(result.Leased);
+        Assert.True(result.Fresh);
+        Assert.Equal(20, result.Value);
+        Assert.Equal(200, result.Timestamp);
+    }
+
+    [Fact]
+    public void FreshestLeaseFallsBackToCachedFrameAfterTimeout()
+    {
+        using var broker = CreateBroker();
+        broker.Reset(12);
+        broker.Publish(12, 300, slot => slot.Value = 30);
+
+        Assert.True(broker.TryLeaseFreshest(
+            12,
+            TimeSpan.FromMilliseconds(30),
+            out CaptureFrameLease<FakeSlot>? lease,
+            out bool fresh));
+
+        using (CaptureFrameLease<FakeSlot> current =
+               Assert.IsType<CaptureFrameLease<FakeSlot>>(lease))
+        {
+            Assert.False(fresh);
+            Assert.Equal(30, current.Slot.Value);
+            Assert.Equal(300, current.Timestamp);
+        }
+    }
+
+    [Fact]
     public void ResetClearsReadyFramesAndKeepsLifetimeCounters()
     {
         using var broker = CreateBroker();
