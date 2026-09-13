@@ -1,4 +1,5 @@
 using Aura.Core.Buffering;
+using System.Reflection;
 using Xunit;
 
 namespace InstantReplay.Tests;
@@ -227,6 +228,44 @@ public class AuraArenaBufferTests
         Assert.Equal(capacity, buffer.CapacityBytes);
         buffer.ReleaseSnapshot(token);
         Assert.True(buffer.TotalBytes <= capacity);
+    }
+
+    [Fact]
+    public void Completed_save_keeps_allocated_chunks_for_the_next_replay()
+    {
+        // Сохранение логически начинает новый replay, но физическую арену отпускать
+        // нельзя: крупные byte[] попадают в LOH, а следующий replay тут же выделяет
+        // такой же набор заново. На реальной трёхминутной записи это оставляло в
+        // процессе старую арену и поднимало память после каждого сохранения.
+        var buffer = Make(seconds: 3, bitrateBps: 20 * Megabit);
+
+        for (int i = 0; i < 108; i++)
+            buffer.Add(Frame(i * (Second / 60), keyframe: i % 60 == 0,
+                             length: 1024 * 1024, seed: (byte)i));
+
+        int chunksBeforeSave = ResidentChunkCount(buffer);
+        Assert.True(chunksBeforeSave >= 7, $"тест не заполнил арену: {chunksBeforeSave} блоков");
+
+        var snapshot = buffer.TakeSnapshot(3 * Second, out long token);
+        Assert.NotEmpty(snapshot);
+
+        // Новый replay уже начался, пока старый снимок ещё пишет файл.
+        buffer.Add(Frame(2 * Second, keyframe: true, length: 1024 * 1024, seed: 0xA5));
+        buffer.ReleaseSnapshot(token);
+
+        Assert.True(ResidentChunkCount(buffer) >= chunksBeforeSave,
+            "завершение сохранения выбросило блоки арены вместо их повторного использования");
+    }
+
+    private static int ResidentChunkCount(ReplayVideoBuffer buffer)
+    {
+        var chunksField = typeof(ReplayVideoBuffer).GetField("_chunks",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var spareField = typeof(ReplayVideoBuffer).GetField("_spare",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        int active = ((byte[]?[])chunksField.GetValue(buffer)!).Count(chunk => chunk is not null);
+        int reusable = ((Stack<byte[]>)spareField.GetValue(buffer)!).Count;
+        return active + reusable;
     }
 
     [Fact]
