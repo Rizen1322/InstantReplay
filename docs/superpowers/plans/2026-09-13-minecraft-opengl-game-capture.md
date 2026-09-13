@@ -112,12 +112,12 @@
 - Create: `tests/InstantReplay.Tests/MinecraftHookInjectorPolicyTests.cs`
 - Modify: `tests/InstantReplay.Tests/InstantReplay.Tests.csproj`
 
-- [ ] Write failing PE tests for x64 DLL acceptance, x86/non-PE rejection, and SHA-256 mismatch. Write policy tests proving only `PROCESS_CREATE_THREAD | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ` are requested and every timeout/failure enters a process-start-scoped quarantine.
-- [ ] Run focused tests and observe the expected failure.
-- [ ] Implement current-user SID, token integrity, architecture, module, protected-process, anti-cheat, PID/start/HWND/foreground inspection and feed only the immutable snapshot into `MinecraftHookEligibility`.
-- [ ] Implement absolute-path/hash/PE verification before `OpenProcess`, UTF-16 remote allocation/write, `LoadLibraryW` remote thread, bounded wait, nonzero module result validation, and unconditional handle/allocation cleanup.
-- [ ] Load the expected digest from an embedded managed resource created by the native build, not from the adjacent manifest alone.
-- [ ] Run focused tests and commit with `git commit -m "Add bounded Minecraft hook injection"`.
+- [x] Write failing PE tests for x64 DLL acceptance, x86/non-PE rejection, and SHA-256 mismatch. Write policy tests proving only `PROCESS_CREATE_THREAD | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ` are requested and every timeout/failure enters a process-start-scoped quarantine.
+- [x] Run focused tests and observe the expected failure.
+- [x] Implement current-user SID, token integrity, architecture, module, protected-process, anti-cheat, PID/start/HWND/foreground inspection and feed only the immutable snapshot into `MinecraftHookEligibility`.
+- [x] Implement absolute-path/hash/PE verification before `OpenProcess`, UTF-16 remote allocation/write, `LoadLibraryW` remote thread, bounded wait, nonzero module result validation, and unconditional handle/allocation cleanup.
+- [x] Load the expected digest from an embedded managed resource created by the native build, not from the adjacent manifest alone.
+- [x] Run focused tests and commit with `git commit -m "Add bounded Minecraft hook injection"`.
 
 ## Task 7: Attach presentation hooks and lifecycle control
 

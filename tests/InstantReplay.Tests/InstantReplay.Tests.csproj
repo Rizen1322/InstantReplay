@@ -62,6 +62,10 @@
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\MinecraftHookEligibility.cs" Link="App\MinecraftHookEligibility.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookFrameReader.cs" Link="App\GameHookFrameReader.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookSessionNames.cs" Link="App\GameHookSessionNames.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameHook\PortableExecutableInspector.cs" Link="App\PortableExecutableInspector.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameHook\MinecraftHookInjector.cs" Link="App\MinecraftHookInjector.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookNativeMethods.cs" Link="App\GameHookNativeMethods.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameHook\MinecraftProcessInspector.cs" Link="App\MinecraftProcessInspector.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\PipelineRestartPolicy.cs" Link="App\PipelineRestartPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\CaptureRecoveryBackoff.cs" Link="App\CaptureRecoveryBackoff.cs" />
