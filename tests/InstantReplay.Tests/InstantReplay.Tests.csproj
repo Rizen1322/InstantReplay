@@ -60,6 +60,8 @@
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookProtocol.cs" Link="App\GameHookProtocol.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameCaptureRoutePolicy.cs" Link="App\GameCaptureRoutePolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\MinecraftHookEligibility.cs" Link="App\MinecraftHookEligibility.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookFrameReader.cs" Link="App\GameHookFrameReader.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookSessionNames.cs" Link="App\GameHookSessionNames.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\PipelineRestartPolicy.cs" Link="App\PipelineRestartPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\CaptureRecoveryBackoff.cs" Link="App\CaptureRecoveryBackoff.cs" />

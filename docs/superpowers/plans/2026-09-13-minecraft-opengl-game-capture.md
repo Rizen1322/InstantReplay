@@ -94,11 +94,11 @@
 - Create: `tests/InstantReplay.Tests/GameHookFrameReaderTests.cs`
 - Modify: `tests/InstantReplay.Tests/InstantReplay.Tests.csproj`
 
-- [ ] Write failing tests using unmanaged test mappings for valid newest-slot reads, odd seqlock, changed seqlock, wrong magic/version/size, stale identity/generation/epoch, invalid dimensions/stride/byte count/format/timestamp, sequence rollback, and random nonce names.
-- [ ] Run the focused tests and confirm failure.
-- [ ] Implement a bounds-checked zero-allocation reader API that copies directly from an acquired mapped view into a caller-provided `Span<byte>` or row-copy callback. Read the seqlock before and after the copy with acquire semantics and preserve the previous accepted sequence on rejection.
-- [ ] Generate mapping/event names from PID plus 128-bit cryptographic nonce. Put the nonce in a PID-scoped bootstrap mapping whose ACL remains current-session/current-user by default.
-- [ ] Rerun focused tests and commit with `git commit -m "Read versioned game hook frames safely"`.
+- [x] Write failing tests using unmanaged test mappings for valid newest-slot reads, odd seqlock, changed seqlock, wrong magic/version/size, stale identity/generation/epoch, invalid dimensions/stride/byte count/format/timestamp, sequence rollback, and random nonce names.
+- [x] Run the focused tests and confirm failure.
+- [x] Implement a bounds-checked zero-allocation reader API that copies directly from an acquired mapped view into a caller-provided `Span<byte>` or row-copy callback. Read the seqlock before and after the copy with acquire semantics and preserve the previous accepted sequence on rejection.
+- [x] Generate mapping/event names from PID plus 128-bit cryptographic nonce. Put the nonce in a PID-scoped bootstrap mapping whose ACL remains current-session/current-user by default.
+- [x] Rerun focused tests and commit with `git commit -m "Read versioned game hook frames safely"`.
 
 ## Task 6: Inspect the target and inject with bounded rights
 
