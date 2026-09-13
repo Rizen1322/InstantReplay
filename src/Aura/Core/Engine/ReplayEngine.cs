@@ -1516,10 +1516,9 @@ public sealed class ReplayEngine : IDisposable
         string? reservedFile = null;
         try
         {
-        // Звук тоже НЕ обнуляем: он должен остаться для следующего повтора ровно
-        // так же, как остаётся видео (см. TakeSnapshot). Кольцо само вытеснит
-        // лишнее по времени.
+        // Аудио берём до очистки, затем его шкала начинается заново вместе с видео.
         var audio = _audioBuffer.Snapshot(video[0].PtsTicks, video[^1].PtsTicks);
+        _audioBuffer.Clear();
 
         // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip)
         string game = GameForClip();

@@ -6,7 +6,7 @@ namespace InstantReplay.Tests;
 public sealed class EncoderQueueAdmissionPolicyTests
 {
     [Fact]
-    public void Duplicate_appends_only_while_queue_has_low_pressure()
+    public void Duplicate_appends_while_queue_has_capacity()
     {
         Assert.Equal(
             EncoderQueueAdmission.Append,
@@ -17,7 +17,7 @@ public sealed class EncoderQueueAdmissionPolicyTests
                 encoderBehind: false,
                 firstDuplicateIndex: -1));
         Assert.Equal(
-            EncoderQueueAdmission.RejectDuplicate,
+            EncoderQueueAdmission.Append,
             EncoderQueueAdmissionPolicy.Decide(true, 8, 33, false, -1));
     }
 
@@ -30,10 +30,10 @@ public sealed class EncoderQueueAdmissionPolicyTests
     }
 
     [Fact]
-    public void Encoder_behind_suppresses_duplicate_even_when_queue_is_empty()
+    public void Encoder_behind_does_not_break_constant_frame_rate_when_queue_has_capacity()
     {
         Assert.Equal(
-            EncoderQueueAdmission.RejectDuplicate,
+            EncoderQueueAdmission.Append,
             EncoderQueueAdmissionPolicy.Decide(true, 0, 33, true, -1));
     }
 

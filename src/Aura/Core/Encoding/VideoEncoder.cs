@@ -643,11 +643,10 @@ public sealed class VideoEncoder : IDisposable
                 long silence = NowQpcTicks() - _lastRealArrivalWall;
                 long fillTarget = _lastRealPts + silence - _frameDurationTicks * 5;
                 int catchUp = 0;
-                while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 1)
+                while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 4)
                 {
-                    // Дубликат имеет смысл, только пока энкодер справляется. Когда он
-                    // отстаёт, дубликат только забирает пропускную способность у кадра
-                    // с новой картинкой. Поэтому policy подавляет его задолго до 33/33.
+                    // Дубликаты держат CFR. Настоящий кадр всё равно имеет приоритет:
+                    // при полной очереди он вытеснит первый накопленный дубликат.
                     bool encoderBehind = EncoderIsBehind();
                     if (!CanEnqueueDuplicate(encoderBehind))
                     {

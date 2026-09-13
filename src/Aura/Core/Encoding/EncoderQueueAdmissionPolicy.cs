@@ -9,8 +9,9 @@ internal enum EncoderQueueAdmission
 }
 
 /// <summary>
-/// Дубликаты поддерживают CFR, но не несут новой картинки. Поэтому они используют
-/// только малую часть очереди и никогда не вытесняют реальный кадр.
+/// Дубликаты поддерживают CFR и никогда не вытесняют реальный кадр. Пока в очереди
+/// есть место, их нельзя подавлять: иначе 60-fps поток сам превращается в 49-53 fps.
+/// Если очередь заполнится, пришедший реальный кадр сначала вытеснит дубликат.
 /// </summary>
 internal static class EncoderQueueAdmissionPolicy
 {
@@ -26,12 +27,9 @@ internal static class EncoderQueueAdmissionPolicy
         if (queueDepth > maximumDepth) throw new ArgumentOutOfRangeException(nameof(queueDepth));
 
         if (incomingDuplicate)
-        {
-            int duplicatePressureLimit = Math.Max(1, maximumDepth / 4);
-            return encoderBehind || queueDepth >= duplicatePressureLimit
-                ? EncoderQueueAdmission.RejectDuplicate
-                : EncoderQueueAdmission.Append;
-        }
+            return queueDepth < maximumDepth
+                ? EncoderQueueAdmission.Append
+                : EncoderQueueAdmission.RejectDuplicate;
 
         if (queueDepth < maximumDepth) return EncoderQueueAdmission.Append;
         return firstDuplicateIndex >= 0

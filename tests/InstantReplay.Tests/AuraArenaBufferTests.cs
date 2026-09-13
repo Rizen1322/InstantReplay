@@ -147,24 +147,23 @@ public class AuraArenaBufferTests
     }
 
     [Fact]
-    public void Second_replay_right_after_first_still_has_content()
+    public void Saving_replay_resets_live_timeline_but_keeps_snapshot_readable()
     {
-        // Живой сценарий: «момент был чуть раньше — сохраню ещё раз». Раньше снимок
-        // очищал список кадров целиком, и второй повтор подряд содержал только то,
-        // что успело накопиться за секунды между нажатиями.
         var buffer = Make(seconds: 10, bitrateBps: 20 * Megabit);
         for (int i = 0; i < 60 * 20; i++)
             buffer.Add(Frame(i * (Second / 60), keyframe: i % 120 == 0, length: 40_000, seed: (byte)i));
 
         var first = buffer.TakeSnapshot(10 * Second, out long token);
         Assert.NotEmpty(first);
+        Assert.Equal(0, buffer.BufferedDurationTicks);
+
+        // Снимок обязан пережить логический сброс: писатель читает эти байты в фоне.
+        int firstSeed = 60 * 20 - first.Count;
+        for (int i = 0; i < first.Count; i++)
+            AssertPattern(first[i], (byte)(firstSeed + i));
+
         buffer.ReleaseSnapshot(token);
-
-        var second = buffer.TakeSnapshot(10 * Second, out long token2);
-        buffer.ReleaseSnapshot(token2);
-
-        Assert.True(second.Count > first.Count / 2,
-            $"второй повтор почти пуст: {second.Count} кадров против {first.Count} у первого");
+        Assert.Equal(0, buffer.TotalBytes);
     }
 
     [Fact]
@@ -189,9 +188,8 @@ public class AuraArenaBufferTests
         for (int i = 0; i < snapshot.Count; i++)
             AssertPattern(snapshot[i], (byte)(first + i));
 
-        // Снимок отпущен — вытеснение снова работает. Но байты освобождаются НЕ
-        // мгновенно: кадры снимка остаются в кольце, чтобы второй повтор подряд не
-        // оказался пустым, и списывает их обычное вытеснение, когда дойдёт до них.
+        // Снимок отпущен — его байты сразу уходят из учёта, остаются только кадры,
+        // накопленные уже после сохранения.
         buffer.ReleaseSnapshot(token);
 
         for (int i = 0; i < 600; i++)
