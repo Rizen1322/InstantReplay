@@ -232,25 +232,50 @@ public sealed class ReplayEngine : IDisposable
         }
         DateTimeOffset now = DateTimeOffset.UtcNow;
         CaptureBackend desired = preserveBuffers ? _captureBackend : _preferredCaptureBackend;
+        GameCaptureTarget? desiredTarget = preserveBuffers ? ActiveCaptureTarget() : RefreshCaptureTarget();
+        if (!preserveBuffers)
+        {
+            CaptureBackendTargetSelection proactive = CaptureBackendPolicy.SelectForForeground(
+                desired,
+                activeTarget: null,
+                desiredTarget,
+                _captureBackendForced);
+            desired = proactive.Backend;
+            desiredTarget = proactive.Target;
+        }
         CaptureBackend candidate = _captureHealth.CanUse(desired, now)
             ? desired
-            : CaptureBackendPolicy.Alternative(desired);
+            : MonitorFallbackFor(desired);
 
         try
         {
-            StartLocked(preserveBuffers, candidate);
+            StartLocked(
+                preserveBuffers,
+                candidate,
+                candidate is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
+                    ? desiredTarget
+                    : null);
         }
         catch when (!_captureBackendForced)
         {
             _captureHealth.Quarantine(candidate, now, CaptureQuarantine.Transient);
-            CaptureBackend alternative = CaptureBackendPolicy.Alternative(candidate);
+            CaptureBackend alternative = MonitorFallbackFor(candidate);
             if (!_captureHealth.CanUse(alternative, now) ||
                 !_captureHealth.TryRecordSwitch(now)) throw;
 
             Log.Warn("Engine", $"Захват {candidate} не запустился — пробую {alternative}");
+            // Неудачный Start очистил частично собранный pipeline как UserStop и
+            // остановил coordinator. Это внутренний fallback, а не команда человека.
+            _stopRequested = false;
+            _gameCaptureRecovery.Resume();
             StartLocked(preserveBuffers, alternative);
         }
     }
+
+    private CaptureBackend MonitorFallbackFor(CaptureBackend backend) =>
+        backend == CaptureBackend.MinecraftOpenGl
+            ? _preferredCaptureBackend
+            : CaptureBackendPolicy.Alternative(backend);
 
     private void StartLocked(
         bool preserveBuffers,
@@ -266,10 +291,10 @@ public sealed class ReplayEngine : IDisposable
         try
         {
             GameCaptureTarget? sourceTarget = null;
-            if (backend == CaptureBackend.WgcWindow)
+            if (backend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
             {
                 GameCaptureTarget target = requestedTarget ?? _gameCaptureRecovery.Target ??
-                    throw new InvalidOperationException("Для WGC window нет проверенного игрового окна");
+                    throw new InvalidOperationException("Для игрового capture нет проверенного окна");
                 GameCaptureTarget? verified = ForegroundGameWindowProbe.TrySelect(
                     s.MonitorIndex,
                     target);
@@ -277,8 +302,11 @@ public sealed class ReplayEngine : IDisposable
                     !current.HasSameIdentity(target) ||
                     current.Revision != target.Revision)
                 {
-                    throw new InvalidOperationException("Игровое окно изменилось перед запуском WGC window");
+                    throw new InvalidOperationException("Игровое окно изменилось перед запуском capture");
                 }
+                if (backend == CaptureBackend.MinecraftOpenGl &&
+                    !CaptureBackendPolicy.IsMinecraftOpenGlTarget(current))
+                    throw new InvalidOperationException("OpenGL capture разрешён только для Minecraft javaw");
                 sourceTarget = current;
                 _gameCaptureRecovery.ObserveTarget(current);
             }
@@ -334,10 +362,14 @@ public sealed class ReplayEngine : IDisposable
                 _capture.D3DContext,
                 canvasWidth,
                 canvasHeight,
-                separateCursor: _captureBackend is CaptureBackend.DesktopDuplication or CaptureBackend.WgcWindow,
+                separateCursor: _captureBackend is
+                    CaptureBackend.DesktopDuplication or
+                    CaptureBackend.WgcWindow or
+                    CaptureBackend.MinecraftOpenGl,
                 generation,
                 targetRevision: sourceTarget?.Revision ?? 0,
-                windowEpisode: _captureBackend == CaptureBackend.WgcWindow);
+                windowEpisode: _captureBackend == CaptureBackend.WgcWindow,
+                hybridEpisode: _captureBackend == CaptureBackend.MinecraftOpenGl);
 
             if (preserveBuffers)
             {
@@ -700,7 +732,8 @@ public sealed class ReplayEngine : IDisposable
 
                     try
                     {
-                        GameCaptureTarget? candidateTarget = candidate == CaptureBackend.WgcWindow
+                        GameCaptureTarget? candidateTarget = candidate is
+                            CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
                             ? _gameCaptureRecovery.Target
                             : null;
                         if (candidate == CaptureBackend.WgcWindow)
@@ -956,6 +989,15 @@ public sealed class ReplayEngine : IDisposable
             try
             {
                 GameCaptureTarget? foregroundTarget = RefreshCaptureTarget();
+                CaptureBackendTargetSelection targetSelection =
+                    CaptureBackendPolicy.SelectForForeground(
+                        _captureBackend,
+                        ActiveCaptureTarget(),
+                        foregroundTarget,
+                        _captureBackendForced);
+                if (targetSelection.RestartRequired)
+                    RequestProactiveCaptureTransition(targetSelection);
+
                 if (_captureBackend == CaptureBackend.WgcWindow &&
                     ActiveCaptureTarget() is GameCaptureTarget activeTarget &&
                     (foregroundTarget is not GameCaptureTarget currentTarget ||
@@ -989,6 +1031,30 @@ public sealed class ReplayEngine : IDisposable
                 Log.Warn("Engine", $"Не удалось определить игру на экране: {ex.Message}");
             }
         }, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+    }
+
+    private void RequestProactiveCaptureTransition(
+        in CaptureBackendTargetSelection selection)
+    {
+        if (selection.Target is not GameCaptureTarget target ||
+            !_pipelineOpen || _stopRequested ||
+            Interlocked.CompareExchange(ref _recovering, 1, 0) != 0)
+        {
+            return;
+        }
+
+        long generation = Interlocked.Read(ref _captureGeneration);
+        var decision = new CaptureRecoveryDecision(
+            CaptureRecoveryAction.Restart,
+            selection.Backend,
+            target.Revision,
+            TimeSpan.Zero,
+            _gameCaptureRecovery.Episode.Align(target));
+        RequestCaptureRestart(
+            decision,
+            $"обнаружен Minecraft fullscreen: PID {target.ProcessId}, revision {target.Revision}",
+            CaptureFailureKind.BackendUnavailable,
+            generation);
     }
 
     /// <summary>Игра, под которую сохранять клип: самая частая за время буфера.</summary>
@@ -1148,8 +1214,20 @@ public sealed class ReplayEngine : IDisposable
                 CaptureBackend.Wgc => "WGC-monitor",
                 CaptureBackend.WgcWindow => "WGC-window",
                 CaptureBackend.DesktopDuplication => "DDA",
+                CaptureBackend.MinecraftOpenGl => "OpenGL-game",
                 _ => backend.ToString()
             };
+            string routeDetails = "";
+            if (cap is MinecraftGameCaptureSource minecraft)
+            {
+                Diagnostics.CaptureRouteProbeDiagnostics route = minecraft.GetRouteDiagnostics();
+                captureLabel = route.Label;
+                routeDetails = $"/epoch {route.RouteEpoch}/hook {route.HookState}:{route.HookError}/" +
+                               $"heartbeat {route.HookHeartbeatAgeMilliseconds} мс/" +
+                               $"issued {route.FramesIssued}/mapped {route.FramesMapped}/" +
+                               $"published {route.FramesPublished}/rejected {route.FramesRejected}/" +
+                               $"uploaded {route.FramesUploaded}";
+            }
             GameCaptureTarget? target = ActiveCaptureTarget() ?? _gameCaptureRecovery.Target;
             string targetLabel = target is GameCaptureTarget current
                 ? $"{current.ExecutableName}/hwnd 0x{current.Hwnd.ToInt64():X}/" +
@@ -1160,7 +1238,7 @@ public sealed class ReplayEngine : IDisposable
             long holdMilliseconds = holdStarted == 0 ? 0 : ElapsedMilliseconds(holdStarted);
 
             Log.Info("Probe", $"получено {fpsRecv}, закодировано {fpsEnc}, запросов {fpsReq}, " +
-                              $"дублей {fpsDup}, дропов {fpsDrop} | {captureLabel}/gen {broker.Generation} " +
+                              $"дублей {fpsDup}, дропов {fpsDrop} | {captureLabel}/gen {broker.Generation}{routeDetails} " +
                               $"target {targetLabel}/quarantine {episode.Quarantines} | " +
                               $"broker {broker.FramesPublished}/drop {broker.FramesDroppedNoSlot}/" +
                               $"reject {broker.FramesRejected}/" +

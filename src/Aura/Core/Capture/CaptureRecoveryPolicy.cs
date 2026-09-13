@@ -12,7 +12,8 @@ internal enum CaptureProviderQuarantine
     None = 0,
     WgcMonitor = 1,
     DesktopDuplication = 2,
-    WgcWindow = 4
+    WgcWindow = 4,
+    MinecraftOpenGl = 8
 }
 
 /// <summary>Карантин источников, ограниченный тождеством одного игрового окна.</summary>
@@ -52,6 +53,7 @@ internal readonly record struct CaptureEpisode(
         CaptureBackend.Wgc => CaptureProviderQuarantine.WgcMonitor,
         CaptureBackend.DesktopDuplication => CaptureProviderQuarantine.DesktopDuplication,
         CaptureBackend.WgcWindow => CaptureProviderQuarantine.WgcWindow,
+        CaptureBackend.MinecraftOpenGl => CaptureProviderQuarantine.MinecraftOpenGl,
         _ => throw new ArgumentOutOfRangeException(nameof(backend))
     };
 }
@@ -78,7 +80,8 @@ internal static class CaptureRecoveryPolicy
 
     public static CaptureRecoveryDecision Decide(in CaptureRecoveryContext context)
     {
-        CaptureBackend preferred = context.PreferredMonitorBackend == CaptureBackend.WgcWindow
+        CaptureBackend preferred = context.PreferredMonitorBackend is
+            CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
             ? CaptureBackend.Wgc
             : context.PreferredMonitorBackend;
 
@@ -90,6 +93,7 @@ internal static class CaptureRecoveryPolicy
             CaptureBackend backend = context.ActiveBackend switch
             {
                 CaptureBackend.WgcWindow => preferred,
+                CaptureBackend.MinecraftOpenGl => preferred,
                 CaptureBackend.Wgc => CaptureBackend.DesktopDuplication,
                 CaptureBackend.DesktopDuplication => CaptureBackend.Wgc,
                 _ => preferred
@@ -98,7 +102,8 @@ internal static class CaptureRecoveryPolicy
             if (context.FailureKind is CaptureFailureKind.DeviceLost or
                 CaptureFailureKind.CaptureFormatChanged)
             {
-                backend = context.ActiveBackend == CaptureBackend.WgcWindow
+                backend = context.ActiveBackend is
+                    CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
                     ? preferred
                     : context.ActiveBackend;
             }
@@ -113,22 +118,27 @@ internal static class CaptureRecoveryPolicy
         {
             return Restart(
                 context.ActiveBackend,
-                context.ActiveBackend == CaptureBackend.WgcWindow ? target.Revision : 0,
+                context.ActiveBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
+                    ? target.Revision
+                    : 0,
                 episode);
         }
 
         episode = episode.Quarantine(context.ActiveBackend);
-        if (context.ActiveBackend == CaptureBackend.WgcWindow)
+        if (context.ActiveBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
         {
             return new CaptureRecoveryDecision(
                 CaptureRecoveryAction.HoldForGameWindow,
-                CaptureBackend.WgcWindow,
+                context.ActiveBackend,
                 target.Revision,
                 WindowRetryDelay,
                 episode);
         }
 
-        return Restart(CaptureBackend.WgcWindow, target.Revision, episode);
+        CaptureBackend targetBackend = CaptureBackendPolicy.IsMinecraftOpenGlTarget(target)
+            ? CaptureBackend.MinecraftOpenGl
+            : CaptureBackend.WgcWindow;
+        return Restart(targetBackend, target.Revision, episode);
     }
 
     private static CaptureRecoveryDecision Restart(

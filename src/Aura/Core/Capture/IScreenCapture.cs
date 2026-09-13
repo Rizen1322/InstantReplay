@@ -86,6 +86,17 @@ public static class ScreenCaptureFactory
             return new WindowGraphicsCaptureSource(target);
         }
 
+        if (request.Backend == CaptureBackend.MinecraftOpenGl)
+        {
+            GameCaptureTarget target = request.Target ??
+                throw new ArgumentException("Minecraft OpenGL требуется target", nameof(request));
+            Logging.Log.Info(
+                "Capture",
+                $"Гибридный захват Minecraft: WGC-monitor + OpenGL, PID {target.ProcessId}, " +
+                $"revision {target.Revision}");
+            return new MinecraftGameCaptureSource(target);
+        }
+
         if (request.Backend == CaptureBackend.DesktopDuplication)
         {
             Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");

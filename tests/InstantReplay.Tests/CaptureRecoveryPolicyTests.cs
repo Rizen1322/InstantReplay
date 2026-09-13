@@ -6,7 +6,7 @@ namespace InstantReplay.Tests;
 public sealed class CaptureRecoveryPolicyTests
 {
     [Fact]
-    public void Monitor_wgc_stall_routes_directly_to_verified_window()
+    public void Monitor_wgc_stall_routes_directly_to_verified_minecraft_opengl()
     {
         var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
             ActiveBackend: CaptureBackend.Wgc,
@@ -17,13 +17,13 @@ public sealed class CaptureRecoveryPolicyTests
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
         Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
         Assert.Equal(7, decision.TargetRevision);
         Assert.True(decision.Episode.IsQuarantined(CaptureBackend.Wgc));
     }
 
     [Fact]
-    public void Dda_transition_storm_routes_directly_to_verified_window()
+    public void Dda_transition_storm_routes_directly_to_verified_minecraft_opengl()
     {
         var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
             CaptureBackend.DesktopDuplication,
@@ -34,7 +34,7 @@ public sealed class CaptureRecoveryPolicyTests
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
         Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
         Assert.True(decision.Episode.IsQuarantined(CaptureBackend.DesktopDuplication));
     }
 
@@ -58,6 +58,41 @@ public sealed class CaptureRecoveryPolicyTests
         Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
         Assert.Equal(9, decision.TargetRevision);
         Assert.True(decision.RetryDelay > TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void Minecraft_hook_failure_holds_same_target_instead_of_exposing_monitor()
+    {
+        GameCaptureTarget target = Minecraft(revision: 11);
+
+        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+            CaptureBackend.MinecraftOpenGl,
+            CaptureFailureKind.BackendUnavailable,
+            ForcedBackend: false,
+            Target: target,
+            Episode: CaptureEpisode.ForTarget(target),
+            PreferredMonitorBackend: CaptureBackend.Wgc));
+
+        Assert.Equal(CaptureRecoveryAction.HoldForGameWindow, decision.Action);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
+        Assert.Equal(11, decision.TargetRevision);
+        Assert.True(decision.RetryDelay > TimeSpan.Zero);
+    }
+
+    [Fact]
+    public void Closed_minecraft_process_returns_to_preferred_monitor_provider()
+    {
+        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+            CaptureBackend.MinecraftOpenGl,
+            CaptureFailureKind.CaptureTargetClosed,
+            ForcedBackend: false,
+            Target: null,
+            Episode: CaptureEpisode.Empty,
+            PreferredMonitorBackend: CaptureBackend.Wgc));
+
+        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
+        Assert.Equal(CaptureBackend.Wgc, decision.Backend);
+        Assert.Equal(0, decision.TargetRevision);
     }
 
     [Fact]

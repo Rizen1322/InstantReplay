@@ -196,13 +196,13 @@
 - Modify: `tests/InstantReplay.Tests/GameCaptureRecoveryScenarioTests.cs`
 - Modify: `tests/InstantReplay.Tests/ReplayBufferContinuityTests.cs`
 
-- [ ] Write failing policy/scenario tests: verified Minecraft true fullscreen requests `MinecraftOpenGl` immediately rather than after ten seconds; non-Minecraft/CS2 never does; Alt-Tab does not rebuild capture/encoder; target process restart creates a new episode; fallback never exposes monitor content while old Minecraft is foreground.
-- [ ] Add a persistence spy assertion proving provider selection, injection failure, focus switching, and recovery make zero Save/mux/file-name/storage calls.
-- [ ] Run the focused tests and observe failure.
-- [ ] Add `CaptureBackend.MinecraftOpenGl`, require a matching verified target in `CaptureSourceRequest`, and construct `MinecraftGameCaptureSource` in the factory. Keep `CaptureBackendPolicy.Alternative` limited to monitor providers.
-- [ ] Trigger the backend proactively when the existing selector proves Minecraft fullscreen. Keep the hybrid provider alive across focus loss; rebuild only for target process/identity change or device loss.
-- [ ] Add probe labels `WGC-monitor`, `OpenGL-game-pending`, and `OpenGL-game-live`, with target/generation/epoch, heartbeat age, issued/mapped/published/rejected/upload counters, and one-shot route transitions.
-- [ ] Run focused tests and the full managed suite; commit with `git commit -m "Integrate automatic Minecraft OpenGL capture"`.
+- [x] Write failing policy/scenario tests: verified Minecraft true fullscreen requests `MinecraftOpenGl` immediately rather than after ten seconds; non-Minecraft/CS2 never does; Alt-Tab does not rebuild capture/encoder; target process restart creates a new episode; fallback never exposes monitor content while old Minecraft is foreground.
+- [x] Add a persistence spy assertion proving provider selection, injection failure, focus switching, and recovery make zero Save/mux/file-name/storage calls.
+- [x] Run the focused tests and observe failure.
+- [x] Add `CaptureBackend.MinecraftOpenGl`, require a matching verified target in `CaptureSourceRequest`, and construct `MinecraftGameCaptureSource` in the factory. Keep `CaptureBackendPolicy.Alternative` limited to monitor providers.
+- [x] Trigger the backend proactively when the existing selector proves Minecraft fullscreen. Keep the hybrid provider alive across focus loss; rebuild only for target process/identity change or device loss.
+- [x] Add probe labels `WGC-monitor`, `OpenGL-game-pending`, and `OpenGL-game-live`, with target/generation/epoch, heartbeat age, issued/mapped/published/rejected/upload counters, and one-shot route transitions.
+- [x] Run focused tests and the full managed suite; commit with `git commit -m "Integrate automatic Minecraft OpenGL capture"`.
 
 ## Task 11: Package and verify the native payload
 

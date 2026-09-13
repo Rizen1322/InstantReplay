@@ -6,7 +6,7 @@ namespace InstantReplay.Tests;
 public sealed class GameCaptureRecoveryScenarioTests
 {
     [Fact]
-    public void Fullscreen_wgc_stall_selects_window_and_blocks_monitor_frames()
+    public void Fullscreen_wgc_stall_selects_hybrid_and_epoch_gate_blocks_stale_frames()
     {
         var coordinator = CreateCoordinator();
         GameCaptureTarget target = Minecraft(revision: 9);
@@ -19,13 +19,14 @@ public sealed class GameCaptureRecoveryScenarioTests
         var gate = new CaptureFrameAdmissionGate(
             generation: 12,
             targetRevision: decision.TargetRevision,
-            windowEpisode: true);
+            mode: CaptureFrameAdmissionMode.Hybrid);
 
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
-        Assert.False(gate.Accept(12, 0, CaptureSurfaceScope.Monitor));
-        Assert.False(gate.Accept(12, 8, CaptureSurfaceScope.GameWindow));
-        Assert.False(gate.Accept(11, 9, CaptureSurfaceScope.GameWindow));
-        Assert.True(gate.Accept(12, 9, CaptureSurfaceScope.GameWindow));
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
+        Assert.True(gate.Accept(12, 0, CaptureSurfaceScope.Monitor, routeEpoch: 1));
+        Assert.False(gate.Accept(12, 8, CaptureSurfaceScope.GameWindow, routeEpoch: 2));
+        Assert.False(gate.Accept(11, 9, CaptureSurfaceScope.GameWindow, routeEpoch: 2));
+        Assert.True(gate.Accept(12, 9, CaptureSurfaceScope.GameWindow, routeEpoch: 2));
+        Assert.False(gate.Accept(12, 0, CaptureSurfaceScope.Monitor, routeEpoch: 1));
     }
 
     [Fact]
@@ -39,7 +40,7 @@ public sealed class GameCaptureRecoveryScenarioTests
             CaptureFailureKind.BackendTransitionStorm,
             out CaptureRecoveryDecision decision));
 
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
         Assert.Equal(4, decision.TargetRevision);
     }
 

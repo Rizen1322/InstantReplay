@@ -45,6 +45,39 @@ public sealed class CaptureSourceRequestTests
     }
 
     [Fact]
+    public void Minecraft_opengl_request_requires_verified_target()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            CaptureSourceRequest.Create(
+                CaptureBackend.MinecraftOpenGl,
+                monitorIndex: 0,
+                target: null));
+    }
+
+    [Fact]
+    public void Minecraft_opengl_rejects_non_minecraft_target()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            CaptureSourceRequest.Create(
+                CaptureBackend.MinecraftOpenGl,
+                monitorIndex: 0,
+                target: Target() with { ExecutableName = "cs2", GameName = "Counter-Strike 2" }));
+    }
+
+    [Fact]
+    public void Valid_minecraft_opengl_request_preserves_identity()
+    {
+        CaptureSourceRequest request = CaptureSourceRequest.Create(
+            CaptureBackend.MinecraftOpenGl,
+            monitorIndex: 0,
+            target: Target());
+
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, request.Backend);
+        Assert.Equal(Target(), request.Target);
+        Assert.Equal(12, request.TargetRevision);
+    }
+
+    [Fact]
     public void Monitor_request_has_no_target_revision()
     {
         CaptureSourceRequest request = CaptureSourceRequest.Create(

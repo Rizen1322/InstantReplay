@@ -26,12 +26,19 @@ internal readonly record struct CaptureSourceRequest
         if (monitorIndex < 0)
             throw new ArgumentOutOfRangeException(nameof(monitorIndex));
 
-        if (backend == CaptureBackend.WgcWindow)
+        if (backend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
         {
             if (target is not GameCaptureTarget windowTarget)
-                throw new ArgumentException("Оконному WGC требуется проверенное игровое окно", nameof(target));
+                throw new ArgumentException("Игровому источнику требуется проверенное окно", nameof(target));
             if (windowTarget.MonitorIndex != monitorIndex)
                 throw new ArgumentException("Игровое окно находится не на выбранном мониторе", nameof(target));
+            if (backend == CaptureBackend.MinecraftOpenGl &&
+                !CaptureBackendPolicy.IsMinecraftOpenGlTarget(windowTarget))
+            {
+                throw new ArgumentException(
+                    "OpenGL hook разрешён только для проверенного Minecraft javaw",
+                    nameof(target));
+            }
         }
         else if (target is not null)
         {

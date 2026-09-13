@@ -1,5 +1,6 @@
 using Aura.Core.Capture.GameHook;
 using Aura.Core.Logging;
+using Aura.Core.Diagnostics;
 using Vortice.Direct3D11;
 
 namespace Aura.Core.Capture;
@@ -37,6 +38,25 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
     public long FramesReceived => _monitor.FramesReceived + (_bridge?.FramesUploaded ?? 0);
     public long FramesAccepted => Interlocked.Read(ref _framesAccepted);
     public long InvalidCursorShapes => _monitor.InvalidCursorShapes + (_bridge?.InvalidCursorShapes ?? 0);
+
+    internal CaptureRouteProbeDiagnostics GetRouteDiagnostics()
+    {
+        GameCaptureRouteState route = _router?.Current ?? GameCaptureRoutePolicy.CreateInitial();
+        OpenGlGameBridgeDiagnostics bridge = _bridge?.GetDiagnostics() ?? default;
+        return new CaptureRouteProbeDiagnostics(
+            route.Route,
+            _generation,
+            _target.Revision,
+            route.Epoch,
+            bridge.HookHeartbeatAgeMilliseconds,
+            bridge.FramesIssued,
+            bridge.FramesMapped,
+            FramesAccepted,
+            bridge.FramesRejected,
+            bridge.FramesUploaded,
+            bridge.State,
+            bridge.Error);
+    }
 
     public event Action<CapturedSurface>? FrameArrived;
     public event Action<CaptureFailure>? Failed;
@@ -121,6 +141,7 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
     {
         MinecraftCaptureRouter? router = _router;
         if (!_started || router is null) return;
+        GameCaptureRouteState before = router.Current;
         if (!router.TryAdmitGame(
                 frame.RouteEpoch,
                 frame.TargetRevision,
@@ -131,6 +152,9 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
         }
 
         Interlocked.Increment(ref _framesAccepted);
+        GameCaptureRouteState after = router.Current;
+        if (after != before)
+            Log.Info("Capture", $"Minecraft route -> {after.Route}, epoch {after.Epoch}");
         FrameArrived?.Invoke(new CapturedSurface(
             frame.Texture,
             frame.Timestamp100ns,
@@ -147,13 +171,17 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
         OpenGlGameFrameBridge? bridge = _bridge;
         if (!_started || router is null || bridge is null) return;
 
+        GameCaptureRouteState before = router.Current;
         GameCaptureRouteState route = router.ObserveForeground(
             foreground,
             foreground ? _target.Revision : 0);
-        bridge.SetRoute(route.Epoch, foreground);
-        Log.Info(
-            "Capture",
-            $"Minecraft route -> {route.Route}, epoch {route.Epoch}, foreground={foreground}");
+        if (route != before)
+        {
+            bridge.SetRoute(route.Epoch, foreground);
+            Log.Info(
+                "Capture",
+                $"Minecraft route -> {route.Route}, epoch {route.Epoch}, foreground={foreground}");
+        }
     }
 
     private void OnBridgeFailure(Exception error)

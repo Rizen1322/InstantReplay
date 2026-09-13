@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Aura.Core.Capture.GameHook;
 
 namespace Aura.Core.Diagnostics;
 
@@ -16,6 +17,29 @@ internal readonly record struct CaptureBrokerDiagnostics(
         if (latestTimestamp <= 0 || nowTimestamp <= latestTimestamp) return 0;
         return (nowTimestamp - latestTimestamp) / 10_000;
     }
+}
+
+internal readonly record struct CaptureRouteProbeDiagnostics(
+    GameCaptureRoute Route,
+    long Generation,
+    long TargetRevision,
+    long RouteEpoch,
+    long HookHeartbeatAgeMilliseconds,
+    long FramesIssued,
+    long FramesMapped,
+    long FramesPublished,
+    long FramesRejected,
+    long FramesUploaded,
+    GameHookState HookState,
+    GameHookError HookError)
+{
+    public string Label => Route switch
+    {
+        GameCaptureRoute.Monitor => "WGC-monitor",
+        GameCaptureRoute.GamePending => "OpenGL-game-pending",
+        GameCaptureRoute.GameLive => "OpenGL-game-live",
+        _ => "OpenGL-game"
+    };
 }
 
 /// <summary>

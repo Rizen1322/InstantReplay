@@ -14,7 +14,7 @@ internal sealed class GameCaptureRecoveryCoordinator
         CaptureBackend preferredMonitorBackend,
         bool forcedBackend)
     {
-        if (preferredMonitorBackend == CaptureBackend.WgcWindow)
+        if (preferredMonitorBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
             throw new ArgumentException("Предпочтительный backend должен захватывать монитор", nameof(preferredMonitorBackend));
         _preferredMonitorBackend = preferredMonitorBackend;
         _forcedBackend = forcedBackend;

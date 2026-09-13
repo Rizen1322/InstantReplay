@@ -14,6 +14,16 @@ internal readonly record struct OpenGlGameFrame(
     long Sequence,
     CaptureCursorUpdate Cursor);
 
+internal readonly record struct OpenGlGameBridgeDiagnostics(
+    long HookHeartbeatAgeMilliseconds,
+    long FramesIssued,
+    long FramesMapped,
+    long FramesDropped,
+    long FramesUploaded,
+    long FramesRejected,
+    GameHookState State,
+    GameHookError Error);
+
 /// <summary>Владеет IPC, инъекцией, reader thread и переиспользуемой upload texture.</summary>
 internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
 {
@@ -52,6 +62,12 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
     private bool _disposed;
     private long _framesUploaded;
     private long _framesRejected;
+    private long _healthGraceUntilTick;
+    private long _lastNativePublished;
+    private long _lastFrameProgressTick;
+    private int _captureEnabled;
+    private int _injectionComplete;
+    private int _failureReported;
 
     public OpenGlGameFrameBridge(
         ID3D11Device device,
@@ -104,6 +120,30 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
     public long FramesRejected => Interlocked.Read(ref _framesRejected);
     public long InvalidCursorShapes => _cursorSampler.InvalidShapes;
 
+    public OpenGlGameBridgeDiagnostics GetDiagnostics()
+    {
+        if (_framePointer is null)
+            return new OpenGlGameBridgeDiagnostics(
+                long.MaxValue, 0, 0, 0,
+                FramesUploaded, FramesRejected,
+                GameHookState.Empty, GameHookError.None);
+
+        GameHookHeader header = Unsafe.ReadUnaligned<GameHookHeader>(ref *_framePointer);
+        long now = Environment.TickCount64 * 10_000;
+        long heartbeatAge = header.HookHeartbeat100ns <= 0 || now <= header.HookHeartbeat100ns
+            ? 0
+            : (now - header.HookHeartbeat100ns) / 10_000;
+        return new OpenGlGameBridgeDiagnostics(
+            heartbeatAge,
+            header.FramesIssued,
+            header.FramesPublished,
+            header.FramesDropped,
+            FramesUploaded,
+            FramesRejected,
+            header.State,
+            header.Error);
+    }
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -111,7 +151,7 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         _started = true;
         _readerThread.Start();
         _heartbeatTimer = new Timer(
-            _ => WriteControllerHeartbeat(),
+            _ => HeartbeatAndCheckHealth(),
             null,
             TimeSpan.Zero,
             TimeSpan.FromMilliseconds(250));
@@ -130,10 +170,17 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
                 throw new InvalidOperationException(
                     $"Minecraft hook не запущен: {attempt.Result}, eligibility={attempt.EligibilityReason}, " +
                     $"Win32={attempt.Win32Error}");
+            long now = Environment.TickCount64;
+            Volatile.Write(ref _healthGraceUntilTick, now + 5_000);
+            Volatile.Write(ref _lastFrameProgressTick, now);
+            Volatile.Write(ref _injectionComplete, 1);
         }
         catch (Exception ex)
         {
-            Failed?.Invoke(ex);
+            // Ошибка до завершения Start должна сорвать запуск provider. Иначе
+            // recovery уже держит свой single-flight флаг, проигнорирует Failed,
+            // а GamePending навсегда останется на последнем кадре.
+            throw new InvalidOperationException("Не удалось запустить Minecraft OpenGL bridge", ex);
         }
     }
 
@@ -152,6 +199,13 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
                 captureEnabled
                     ? (int)GameHookCommand.Capture
                     : (int)GameHookCommand.Idle);
+        }
+        Volatile.Write(ref _captureEnabled, captureEnabled ? 1 : 0);
+        if (captureEnabled)
+        {
+            long now = Environment.TickCount64;
+            Volatile.Write(ref _healthGraceUntilTick, now + 3_000);
+            Volatile.Write(ref _lastFrameProgressTick, now);
         }
         _controlEvent?.Set();
     }
@@ -318,7 +372,7 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             }
             catch (Exception ex)
             {
-                Failed?.Invoke(ex);
+                ReportFailure(ex);
             }
         }
     }
@@ -353,11 +407,49 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         });
     }
 
-    private void WriteControllerHeartbeat()
+    private void HeartbeatAndCheckHealth()
     {
         if (_framePointer is null || _disposed) return;
         GameHookHeader* header = (GameHookHeader*)_framePointer;
-        Volatile.Write(ref header->ControllerHeartbeat100ns, Environment.TickCount64 * 10_000);
+        long nowTick = Environment.TickCount64;
+        Volatile.Write(ref header->ControllerHeartbeat100ns, nowTick * 10_000);
+        if (Volatile.Read(ref _injectionComplete) == 0) return;
+
+        GameHookHeader snapshot = Unsafe.ReadUnaligned<GameHookHeader>(ref *_framePointer);
+        long published = snapshot.FramesPublished;
+        if (published != Volatile.Read(ref _lastNativePublished))
+        {
+            Volatile.Write(ref _lastNativePublished, published);
+            Volatile.Write(ref _lastFrameProgressTick, nowTick);
+        }
+
+        long heartbeatAge100ns = snapshot.HookHeartbeat100ns <= 0
+            ? long.MaxValue
+            : Math.Max(0, nowTick * 10_000 - snapshot.HookHeartbeat100ns);
+        long frameProgressAge = Math.Max(0, nowTick - Volatile.Read(ref _lastFrameProgressTick));
+        GameHookHealthFailure failure = GameHookHealthPolicy.Evaluate(new GameHookHealthSample(
+            CaptureEnabled: Volatile.Read(ref _captureEnabled) != 0,
+            GraceElapsed: nowTick >= Volatile.Read(ref _healthGraceUntilTick),
+            HeartbeatPresent: snapshot.HookHeartbeat100ns > 0,
+            HeartbeatAge: heartbeatAge100ns == long.MaxValue
+                ? TimeSpan.MaxValue
+                : TimeSpan.FromTicks(heartbeatAge100ns),
+            FrameProgressAge: TimeSpan.FromMilliseconds(frameProgressAge),
+            State: snapshot.State,
+            Error: snapshot.Error));
+        if (failure != GameHookHealthFailure.None)
+        {
+            ReportFailure(new InvalidOperationException(
+                $"Minecraft hook unhealthy: {failure}, state={snapshot.State}, " +
+                $"error={snapshot.Error}, heartbeat={heartbeatAge100ns / 10_000} ms, " +
+                $"frames={published}"));
+        }
+    }
+
+    private void ReportFailure(Exception error)
+    {
+        if (Interlocked.Exchange(ref _failureReported, 1) == 0)
+            Failed?.Invoke(error);
     }
 
     public void Dispose()
