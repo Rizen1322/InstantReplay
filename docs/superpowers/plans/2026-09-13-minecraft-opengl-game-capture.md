@@ -30,12 +30,12 @@
 - Create: `tests/InstantReplay.Tests/GameHookProtocolTests.cs`
 - Modify: `tests/InstantReplay.Tests/InstantReplay.Tests.csproj`
 
-- [ ] Write failing managed layout tests for magic `0x48475541`, protocol version `1`, the 256-byte header, the 64-byte slot header, all atomic 64-bit offsets, three slots, and checked mapping-size calculation.
-- [ ] Run `dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release --filter FullyQualifiedName~GameHookProtocolTests` and confirm compilation/test failure because the protocol does not exist.
-- [ ] Implement explicit-layout managed structs and matching C structs. Use these fixed header offsets: mapping size 8, controller PID 16, target PID 20, process-start ticks 24, HWND 32, target revision 40, generation 48, route epoch 56, command 64, state 68, error 72, target FPS 76, width 80, height 84, stride 88, pixel format 92, slot count 96, slot-header size 100, slot stride 104, newest sequence 112, controller heartbeat 120, hook heartbeat 128, issued/published/dropped counters 136/144/152. Reserve the rest through byte 255.
-- [ ] Define slot offsets: seqlock 0, frame sequence 8, timestamp 16, route epoch 24, width/height/stride/byte count 32/36/40/44, followed by 16 reserved bytes.
-- [ ] Add C `_Static_assert` checks for size, alignment, and every shared field offset; cap dimensions at 7680×4320 BGRA and reject integer overflow.
-- [ ] Rerun the focused tests, then commit with `git commit -m "Define Minecraft game hook protocol"`.
+- [x] Write failing managed layout tests for magic `0x48475541`, protocol version `1`, the 256-byte header, the 64-byte slot header, all atomic 64-bit offsets, three slots, and checked mapping-size calculation.
+- [x] Run `dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release --filter FullyQualifiedName~GameHookProtocolTests` and confirm compilation/test failure because the protocol does not exist.
+- [x] Implement explicit-layout managed structs and matching C structs. Use these fixed header offsets: mapping size 8, controller PID 16, target PID 20, process-start ticks 24, HWND 32, target revision 40, generation 48, route epoch 56, command 64, state 68, error 72, target FPS 76, width 80, height 84, stride 88, pixel format 92, slot count 96, slot-header size 100, slot stride 104, newest sequence 112, controller heartbeat 120, hook heartbeat 128, issued/published/dropped counters 136/144/152. Reserve the rest through byte 255.
+- [x] Define slot offsets: seqlock 0, frame sequence 8, timestamp 16, route epoch 24, width/height/stride/byte count 32/36/40/44, followed by 16 reserved bytes.
+- [x] Add C `_Static_assert` checks for size, alignment, and every shared field offset; cap dimensions at 7680×4320 BGRA and reject integer overflow.
+- [x] Rerun the focused tests, then commit with `git commit -m "Define Minecraft game hook protocol"`.
 
 ## Task 2: Implement deterministic focus routing
 
