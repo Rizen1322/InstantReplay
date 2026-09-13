@@ -10,19 +10,19 @@ existing bounded texture pool.
 
 ## Task 1: Specify pressure behavior
 
-- Add focused tests for duplicate headroom, encoder-behind rejection, and real-frame eviction.
-- Run them red before implementation.
+- [x] Add focused tests for duplicate headroom, encoder-behind rejection, and real-frame eviction.
+- [x] Run them red before implementation.
 
 ## Task 2: Integrate information-aware admission
 
-- Add `EncoderQueueAdmissionPolicy`.
-- Tag encoder queue entries.
-- Make duplicate enqueue non-destructive and make real enqueue prefer evicting a duplicate.
-- Limit pacer catch-up to one duplicate per pass and skip backfill when pressure rejects it.
-- Expose separate dropped-real and suppressed-duplicate counters in diagnostics.
+- [x] Add `EncoderQueueAdmissionPolicy`.
+- [x] Tag encoder queue entries.
+- [x] Make duplicate enqueue non-destructive and make real enqueue prefer evicting a duplicate.
+- [x] Limit pacer catch-up to one duplicate per pass and skip backfill when pressure rejects it.
+- [x] Expose separate dropped-real and suppressed-duplicate counters in diagnostics.
 
 ## Task 3: Verify
 
-- Run focused tests, the full managed suite, and an x64 Release application build.
-- Record that CS2 remains outside all hook eligibility and backend selection paths.
-- Keep the change in this separate branch/commit.
+- [x] Run focused tests, the full managed suite, and an x64 Release application build.
+- [x] Record that CS2 remains outside all hook eligibility and backend selection paths.
+- [x] Keep the change in this separate branch/commit.

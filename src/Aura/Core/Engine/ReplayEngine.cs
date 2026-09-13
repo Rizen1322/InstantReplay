@@ -131,7 +131,7 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>Счётчики конвейера для панели «Обзор»: сколько кадров прошло каждую стадию.</summary>
     public (long Received, long Accepted, long Encoded, long Dropped, long Duplicated) FrameCounters =>
         (_capture?.FramesReceived ?? 0, _capture?.FramesAccepted ?? 0,
-         _encoder?.FramesEncoded ?? 0, _encoder?.FramesDroppedQueue ?? 0, _encoder?.FramesDuplicated ?? 0);
+         _encoder?.FramesEncoded ?? 0, _encoder?.FramesDroppedRealQueue ?? 0, _encoder?.FramesDuplicated ?? 0);
 
     /// <summary>Размер кадра, который реально уходит в энкодер (после масштабирования).</summary>
     public (int Width, int Height) OutputSize => (_processor?.OutWidth ?? 0, _processor?.OutHeight ?? 0);
@@ -775,12 +775,14 @@ public sealed class ReplayEngine : IDisposable
     // Раз в минуту — здоровье конвейера в лог: по этим цифрам видно, ГДЕ теряются
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
     private System.Threading.Timer? _statsTimer;
-    private long _lastSubmitted, _lastEncoded, _lastDropped, _lastDuplicated, _lastReceived, _lastAccepted;
+    private long _lastSubmitted, _lastEncoded, _lastDropped, _lastDiscardedDuplicates,
+                 _lastSuppressedDuplicates, _lastDuplicated, _lastReceived, _lastAccepted;
     private long _lastRequests, _lastPacerBlocked;
 
     private void StartStatsTimer()
     {
-        _lastSubmitted = _lastEncoded = _lastDropped = _lastDuplicated = _lastReceived = _lastAccepted = 0;
+        _lastSubmitted = _lastEncoded = _lastDropped = _lastDiscardedDuplicates =
+            _lastSuppressedDuplicates = _lastDuplicated = _lastReceived = _lastAccepted = 0;
         _lastRequests = _lastPacerBlocked = 0;
         _statsWindowStart = DateTime.UtcNow;
         _statsTimer?.Dispose();
@@ -803,7 +805,10 @@ public sealed class ReplayEngine : IDisposable
         if (enc is null || State == EngineState.Stopped) return;
 
         long s = enc.FramesSubmitted, e = enc.FramesEncoded,
-             d = enc.FramesDroppedQueue, dup = enc.FramesDuplicated;
+             d = enc.FramesDroppedRealQueue,
+             discardedDuplicates = enc.FramesDiscardedDuplicates,
+             suppressedDuplicates = enc.FramesSuppressedDuplicates,
+             dup = enc.FramesDuplicated;
         long req = enc.InputRequests, blocked = enc.PacerBlocked;
         long rcv = cap?.FramesReceived ?? 0, acc = cap?.FramesAccepted ?? 0;
         double seconds = Math.Max((DateTime.UtcNow - _statsWindowStart).TotalSeconds, 0.001);
@@ -814,11 +819,14 @@ public sealed class ReplayEngine : IDisposable
         Log.Info("Engine", $"Конвейер {label} ({seconds:F0} с): {captureName} {rcv - _lastReceived}/{acc - _lastAccepted} " +
             $"(получено/принято), захвачено {s - _lastSubmitted}, " +
             $"дубликатов {dup - _lastDuplicated}, закодировано {e - _lastEncoded}, " +
-            $"дропнуто {d - _lastDropped} (буфер {(int)BufferedDuration.TotalSeconds} сек) | " +
+            $"дропнуто реальных {d - _lastDropped}, убрано старых дублей " +
+            $"{discardedDuplicates - _lastDiscardedDuplicates}, подавлено дублей " +
+            $"{suppressedDuplicates - _lastSuppressedDuplicates} " +
+            $"(буфер {(int)BufferedDuration.TotalSeconds} сек) | " +
             $"fps: {captureName} {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
             $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
             $", пресет {enc.QualityPreset}, кадров внутри MFT до {Interlocked.Exchange(ref enc.MaxInFlight, 0)}" +
-            (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (очередь полна)" : ""));
+            (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (давление очереди/MFT)" : ""));
 
         // Видеопамять: превышение бюджета означает вытеснение текстур в оперативную
         // память через шину, и тогда застревает всё, что трогает GPU — и захват, и
@@ -836,7 +844,10 @@ public sealed class ReplayEngine : IDisposable
 
         LogMemory();
 
-        _lastSubmitted = s; _lastEncoded = e; _lastDropped = d; _lastDuplicated = dup;
+        _lastSubmitted = s; _lastEncoded = e; _lastDropped = d;
+        _lastDiscardedDuplicates = discardedDuplicates;
+        _lastSuppressedDuplicates = suppressedDuplicates;
+        _lastDuplicated = dup;
         _lastReceived = rcv; _lastAccepted = acc;
         _lastRequests = req; _lastPacerBlocked = blocked;
         _statsWindowStart = DateTime.UtcNow;
@@ -1072,7 +1083,7 @@ public sealed class ReplayEngine : IDisposable
         try
         {
             long recv = cap.FramesReceived, encoded = enc.FramesEncoded;
-            long req = enc.InputRequests, drop = enc.FramesDroppedQueue, dup = enc.FramesDuplicated;
+            long req = enc.InputRequests, drop = enc.FramesDroppedRealQueue, dup = enc.FramesDuplicated;
 
             long dRecv = recv - _probeRecv, dEnc = encoded - _probeEnc, dReq = req - _probeReq;
             long dDrop = drop - _probeDrop, dDup = dup - _probeDup;
