@@ -20,6 +20,10 @@ pub fn build(b: *std.Build) void {
     hook_module.addCSourceFiles(.{
         .files = &.{
             "hook_exports.c",
+            "dllmain.c",
+            "ipc.c",
+            "present_hooks.c",
+            "hook_lifetime.c",
             "../../../third_party/minhook/src/buffer.c",
             "../../../third_party/minhook/src/hook.c",
             "../../../third_party/minhook/src/trampoline.c",
@@ -34,6 +38,8 @@ pub fn build(b: *std.Build) void {
     });
     hook_module.linkSystemLibrary("kernel32", .{});
     hook_module.linkSystemLibrary("user32", .{});
+    hook_module.linkSystemLibrary("gdi32", .{});
+    hook_module.linkSystemLibrary("opengl32", .{});
 
     const hook = b.addLibrary(.{
         .name = "Aura.GameCaptureHook64",

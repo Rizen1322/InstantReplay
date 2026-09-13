@@ -48,6 +48,7 @@ package-lock.json
 # Закреплённый локальный native toolchain и результаты сборки hook DLL.
 .tools/
 artifacts/native/
+artifacts/native-tests/
 .zig-cache/
 zig-out/
 

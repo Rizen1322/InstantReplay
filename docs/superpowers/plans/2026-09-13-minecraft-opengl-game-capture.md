@@ -133,12 +133,12 @@
 - Create: `tests/native/OpenGlCaptureFixture/**`
 - Create: `tests/native/run_hook_lifecycle_test.ps1`
 
-- [ ] Build a failing native lifecycle test: launch a simple x64 OpenGL fixture, create bootstrap/control mappings, inject the hook, and require heartbeat plus clean stop/unload.
-- [ ] Run `tests/native/run_hook_lifecycle_test.ps1` and confirm the missing-heartbeat failure.
-- [ ] Implement a loader-safe `DllMain` that starts one control thread and does no mapping/hook work under loader lock. On the control thread open/validate IPC, initialize MinHook, and hook `gdi32!SwapBuffers`, `opengl32!wglSwapBuffers`, and `wglSwapLayerBuffers` when available.
-- [ ] Add a per-thread recursion guard, verify intercepted HDC/root HWND/current context, and call the original presentation exactly once on every path.
-- [ ] On stop/controller death/protocol mismatch, disable capture, remove hooks, wait boundedly for active callbacks, close IPC, and call `FreeLibraryAndExitThread`.
-- [ ] Run the lifecycle test repeatedly (at least 20 attach/detach cycles) and commit with `git commit -m "Hook OpenGL presentation with safe lifetime"`.
+- [x] Build a failing native lifecycle test: launch a simple x64 OpenGL fixture, create bootstrap/control mappings, inject the hook, and require heartbeat plus clean stop/unload.
+- [x] Run `tests/native/run_hook_lifecycle_test.ps1` and confirm the missing-heartbeat failure.
+- [x] Implement a loader-safe `DllMain` that starts one control thread and does no mapping/hook work under loader lock. On the control thread open/validate IPC, initialize MinHook, and hook `gdi32!SwapBuffers`, `opengl32!wglSwapBuffers`, and `wglSwapLayerBuffers` when available.
+- [x] Add a per-thread recursion guard, verify intercepted HDC/root HWND/current context, and call the original presentation exactly once on every path.
+- [x] On stop/controller death/protocol mismatch, disable capture, remove hooks, wait boundedly for active callbacks, close IPC, and call `FreeLibraryAndExitThread`.
+- [x] Run the lifecycle test repeatedly (at least 20 attach/detach cycles) and commit with `git commit -m "Hook OpenGL presentation with safe lifetime"`.
 
 ## Task 8: Capture asynchronously through a three-PBO ring
 

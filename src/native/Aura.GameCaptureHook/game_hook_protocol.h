@@ -5,7 +5,9 @@
 #include <stdint.h>
 
 #define AURA_GAME_HOOK_MAGIC UINT32_C(0x48475541)
+#define AURA_GAME_HOOK_BOOTSTRAP_MAGIC UINT32_C(0x42475541)
 #define AURA_GAME_HOOK_VERSION UINT16_C(1)
+#define AURA_GAME_HOOK_BOOTSTRAP_HEADER_SIZE 256
 #define AURA_GAME_HOOK_HEADER_SIZE 256
 #define AURA_GAME_HOOK_SLOT_HEADER_SIZE 64
 #define AURA_GAME_HOOK_SLOT_COUNT 3
@@ -38,6 +40,20 @@ typedef enum aura_game_hook_error {
     AURA_GAME_HOOK_ERROR_HOOK_INSTALLATION_FAILED = 5,
     AURA_GAME_HOOK_ERROR_CAPTURE_FAILED = 6
 } aura_game_hook_error;
+
+typedef struct aura_game_hook_bootstrap_header {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t header_size;
+    int32_t controller_pid;
+    int32_t target_pid;
+    int64_t target_process_start_ticks;
+    uint64_t target_hwnd;
+    int32_t nonce_byte_count;
+    int32_t reserved;
+    uint8_t nonce[32];
+    uint8_t reserved_tail[184];
+} aura_game_hook_bootstrap_header;
 
 typedef struct aura_game_hook_header {
     uint32_t magic;
@@ -87,8 +103,26 @@ _Static_assert(sizeof(aura_game_hook_header) == AURA_GAME_HOOK_HEADER_SIZE,
                "game hook header size changed");
 _Static_assert(sizeof(aura_game_hook_frame_slot_header) == AURA_GAME_HOOK_SLOT_HEADER_SIZE,
                "game hook slot header size changed");
+_Static_assert(sizeof(aura_game_hook_bootstrap_header) == AURA_GAME_HOOK_BOOTSTRAP_HEADER_SIZE,
+               "game hook bootstrap header size changed");
 _Static_assert(_Alignof(aura_game_hook_header) >= 8, "header atomics must be aligned");
 _Static_assert(_Alignof(aura_game_hook_frame_slot_header) >= 8, "slot atomics must be aligned");
+_Static_assert(_Alignof(aura_game_hook_bootstrap_header) >= 8, "bootstrap atomics must be aligned");
+
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, magic) == 0,
+               "bootstrap magic offset changed");
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, controller_pid) == 8,
+               "bootstrap controller PID offset changed");
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, target_pid) == 12,
+               "bootstrap target PID offset changed");
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, target_process_start_ticks) == 16,
+               "bootstrap process identity offset changed");
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, target_hwnd) == 24,
+               "bootstrap HWND offset changed");
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, nonce_byte_count) == 32,
+               "bootstrap nonce length offset changed");
+_Static_assert(offsetof(aura_game_hook_bootstrap_header, nonce) == 40,
+               "bootstrap nonce offset changed");
 
 #define AURA_ASSERT_HEADER_OFFSET(field, expected) \
     _Static_assert(offsetof(aura_game_hook_header, field) == (expected), \

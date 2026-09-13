@@ -18,7 +18,7 @@ internal readonly record struct GameHookSessionNames(
         string prefix = $"Local\\Aura.GameCapture.{controllerPid}.{targetPid}";
         return new GameHookSessionNames(
             nonce,
-            $"{prefix}.Bootstrap",
+            $"Local\\Aura.GameCapture.{targetPid}.Bootstrap",
             $"{prefix}.{nonce}.Frames",
             $"{prefix}.{nonce}.FrameReady",
             $"{prefix}.{nonce}.Control");

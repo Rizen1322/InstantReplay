@@ -171,8 +171,8 @@ public sealed class GameHookFrameReaderTests
         GameHookSessionNames second = GameHookSessionNames.Create(targetPid: 123, controllerPid: 456);
 
         Assert.NotEqual(first.Nonce, second.Nonce);
-        Assert.Contains("123", first.BootstrapMapping, StringComparison.Ordinal);
-        Assert.Contains("456", first.BootstrapMapping, StringComparison.Ordinal);
+        Assert.Equal("Local\\Aura.GameCapture.123.Bootstrap", first.BootstrapMapping);
+        Assert.Contains("456", first.FrameMapping, StringComparison.Ordinal);
         Assert.Contains(first.Nonce, first.FrameMapping, StringComparison.Ordinal);
         Assert.Contains(first.Nonce, first.FrameReadyEvent, StringComparison.Ordinal);
         Assert.Contains(first.Nonce, first.ControlEvent, StringComparison.Ordinal);

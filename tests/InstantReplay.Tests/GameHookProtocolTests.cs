@@ -58,6 +58,21 @@ public sealed class GameHookProtocolTests
         AssertOffset<GameHookFrameSlotHeader>(nameof(GameHookFrameSlotHeader.ByteCount), 44);
     }
 
+    [Fact]
+    public void Bootstrap_layout_can_be_found_by_the_target_before_nonce_is_known()
+    {
+        Assert.Equal(256, Marshal.SizeOf<GameHookBootstrapHeader>());
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.Magic), 0);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.Version), 4);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.HeaderSize), 6);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.ControllerPid), 8);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.TargetPid), 12);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.TargetProcessStartTicks), 16);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.TargetHwnd), 24);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.NonceByteCount), 32);
+        AssertOffset<GameHookBootstrapHeader>(nameof(GameHookBootstrapHeader.Nonce), 40);
+    }
+
     [Theory]
     [InlineData(1, 1, 4, 128, 640)]
     [InlineData(16, 1, 64, 128, 640)]

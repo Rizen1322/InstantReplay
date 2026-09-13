@@ -37,6 +37,21 @@ internal enum GameHookPixelFormat
     Bgra8 = 1
 }
 
+[StructLayout(LayoutKind.Explicit, Pack = 8, Size = GameHookProtocol.BootstrapHeaderSize)]
+internal unsafe struct GameHookBootstrapHeader
+{
+    [FieldOffset(0)] public uint Magic;
+    [FieldOffset(4)] public ushort Version;
+    [FieldOffset(6)] public ushort HeaderSize;
+    [FieldOffset(8)] public int ControllerPid;
+    [FieldOffset(12)] public int TargetPid;
+    [FieldOffset(16)] public long TargetProcessStartTicks;
+    [FieldOffset(24)] public ulong TargetHwnd;
+    [FieldOffset(32)] public int NonceByteCount;
+    [FieldOffset(36)] public int Reserved;
+    [FieldOffset(40)] public fixed byte Nonce[32];
+}
+
 [StructLayout(LayoutKind.Explicit, Pack = 8, Size = GameHookProtocol.HeaderSize)]
 internal struct GameHookHeader
 {
@@ -86,7 +101,9 @@ internal struct GameHookFrameSlotHeader
 internal static class GameHookProtocol
 {
     public const uint Magic = 0x48475541; // "AUGH" in little-endian memory.
+    public const uint BootstrapMagic = 0x42475541; // "AUGB" in little-endian memory.
     public const ushort Version = 1;
+    public const int BootstrapHeaderSize = 256;
     public const int HeaderSize = 256;
     public const int SlotHeaderSize = 64;
     public const int SlotCount = 3;
