@@ -108,7 +108,12 @@ public sealed class VideoEncoder : IDisposable
     // схлопывается сюда). Очередь в 16 кадров = 0.27 с, всплеск её переполнял:
     // из 3558 захваченных кадров в минуту кодировалось 2306, 1281 уходил в мусор.
     private int _maxInputQueue;
-    private readonly Queue<(ID3D11Texture2D tex, long ticks)> _inputQueue = new();
+    private readonly record struct EncoderInputFrame(
+        ID3D11Texture2D Texture,
+        long Ticks,
+        bool IsDuplicate);
+
+    private readonly Queue<EncoderInputFrame> _inputQueue = new();
     private readonly object _queueLock = new();
     private readonly SemaphoreSlim _inputAvailable = new(0);
     private long _frameDurationTicks;
@@ -140,6 +145,9 @@ public sealed class VideoEncoder : IDisposable
     public long FramesSubmitted;
     public long FramesDuplicated;
     public long FramesDroppedQueue;
+    public long FramesDroppedRealQueue;
+    public long FramesDiscardedDuplicates;
+    public long FramesSuppressedDuplicates;
     public long FramesEncoded;
     /// <summary>
     /// Сколько раз MFT попросил кадр (METransformNeedInput). Это ПОТОЛОК скорости
@@ -158,7 +166,7 @@ public sealed class VideoEncoder : IDisposable
     public long MaxInFlight;
     private int _inFlight;
     /// <summary>
-    /// Сколько раз пейсер отказался ставить дубликат из-за переполненной очереди.
+    /// Сколько раз пейсер отказался ставить дубликат из-за давления очереди/MFT.
     /// Пока счётчик растёт, жёсткого CFR нет: в файле окажется меньше 60 кадров в
     /// секунду, и запись будет «дёргаться» независимо от того, что показывает игра.
     /// </summary>
@@ -445,11 +453,27 @@ public sealed class VideoEncoder : IDisposable
                 {
                     while (_lastCfrPts + _frameDurationTicks < pts)
                     {
-                        _lastCfrPts += _frameDurationTicks;
+                        long duplicatePts = _lastCfrPts + _frameDurationTicks;
+                        bool encoderBehind = EncoderIsBehind();
+                        if (!CanEnqueueDuplicate(encoderBehind))
+                        {
+                            Interlocked.Increment(ref FramesSuppressedDuplicates);
+                            Interlocked.Increment(ref PacerBlocked);
+                            break;
+                        }
                         var dup = CopyIntoPool(_lastSubmittedTex);
+                        if (!Enqueue(
+                                dup,
+                                duplicatePts,
+                                isDuplicate: true,
+                                encoderBehind))
+                        {
+                            Interlocked.Increment(ref PacerBlocked);
+                            break;
+                        }
+                        _lastCfrPts = duplicatePts;
                         _lastSubmittedTex = dup;
                         Interlocked.Increment(ref FramesDuplicated);
-                        Enqueue(dup, _lastCfrPts);
                     }
                 }
                 _lastCfrPts = pts;
@@ -458,25 +482,93 @@ public sealed class VideoEncoder : IDisposable
             _lastRealPts = pts;
             _lastRealArrivalWall = NowQpcTicks();
             Interlocked.Increment(ref FramesSubmitted);
-            Enqueue(copy, pts);
+            _ = Enqueue(copy, pts, isDuplicate: false, encoderBehind: false);
         }
     }
 
-    private void Enqueue(ID3D11Texture2D tex, long pts)
+    private bool Enqueue(
+        ID3D11Texture2D tex,
+        long pts,
+        bool isDuplicate,
+        bool encoderBehind)
     {
         lock (_queueLock)
         {
-            // Не даём очереди расти: лучше дропнуть кадр, чем накапливать латентность
-            while (_inputQueue.Count >= _maxInputQueue)
+            int firstDuplicate = -1;
+            if (!isDuplicate && _inputQueue.Count >= _maxInputQueue)
             {
-                _inputQueue.Dequeue(); // текстура принадлежит пулу — не Dispose
-                if (_inputAvailable.CurrentCount > 0) _inputAvailable.Wait(0);
+                int index = 0;
+                foreach (EncoderInputFrame frame in _inputQueue)
+                {
+                    if (frame.IsDuplicate)
+                    {
+                        firstDuplicate = index;
+                        break;
+                    }
+                    index++;
+                }
+            }
+
+            EncoderQueueAdmission admission = EncoderQueueAdmissionPolicy.Decide(
+                isDuplicate,
+                _inputQueue.Count,
+                _maxInputQueue,
+                encoderBehind,
+                firstDuplicate);
+            if (admission == EncoderQueueAdmission.RejectDuplicate)
+            {
+                Interlocked.Increment(ref FramesSuppressedDuplicates);
+                return false;
+            }
+
+            if (admission == EncoderQueueAdmission.EvictDuplicate)
+            {
+                RemoveQueuedFrameAt(firstDuplicate);
+                Interlocked.Increment(ref FramesDiscardedDuplicates);
                 Interlocked.Increment(ref FramesDroppedQueue);
             }
-            _inputQueue.Enqueue((tex, pts));
+            else if (admission == EncoderQueueAdmission.EvictOldestReal)
+            {
+                _inputQueue.Dequeue();
+                RemoveOneAvailableSignal();
+                Interlocked.Increment(ref FramesDroppedRealQueue);
+                Interlocked.Increment(ref FramesDroppedQueue);
+            }
+
+            _inputQueue.Enqueue(new EncoderInputFrame(tex, pts, isDuplicate));
             Diagnostics.PipelineProbe.ReportQueueDepth(_inputQueue.Count);
         }
         _inputAvailable.Release();
+        return true;
+    }
+
+    private bool CanEnqueueDuplicate(bool encoderBehind)
+    {
+        lock (_queueLock)
+        {
+            return EncoderQueueAdmissionPolicy.Decide(
+                incomingDuplicate: true,
+                queueDepth: _inputQueue.Count,
+                maximumDepth: _maxInputQueue,
+                encoderBehind: encoderBehind,
+                firstDuplicateIndex: -1) == EncoderQueueAdmission.Append;
+        }
+    }
+
+    private void RemoveQueuedFrameAt(int removalIndex)
+    {
+        int count = _inputQueue.Count;
+        for (int index = 0; index < count; ++index)
+        {
+            EncoderInputFrame frame = _inputQueue.Dequeue();
+            if (index != removalIndex) _inputQueue.Enqueue(frame);
+        }
+        RemoveOneAvailableSignal();
+    }
+
+    private void RemoveOneAvailableSignal()
+    {
+        if (_inputAvailable.CurrentCount > 0) _inputAvailable.Wait(0);
     }
 
     /// <summary>
@@ -540,7 +632,7 @@ public sealed class VideoEncoder : IDisposable
             // Вне _cfrLock: смена пресета не должна держать подачу кадров
             _quality?.Tick(Interlocked.Read(ref FramesEncoded),
                            Interlocked.Read(ref PacerBlocked),
-                           Interlocked.Read(ref FramesDroppedQueue));
+                           Interlocked.Read(ref FramesDroppedRealQueue));
             lock (_cfrLock)
             {
                 if (_lastSubmittedTex is null || _cfrBase < 0 || _context is null) continue;
@@ -551,37 +643,29 @@ public sealed class VideoEncoder : IDisposable
                 long silence = NowQpcTicks() - _lastRealArrivalWall;
                 long fillTarget = _lastRealPts + silence - _frameDurationTicks * 5;
                 int catchUp = 0;
-                while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 4)
+                while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 1)
                 {
                     // Дубликат имеет смысл, только пока энкодер справляется. Когда он
-                    // отстаёт, Enqueue при переполнении выбрасывает САМЫЙ СТАРЫЙ кадр
-                    // очереди — то есть свежесозданный дубликат вытесняет настоящий
-                    // кадр. В замерах на просевшем GPU это давало «пейсер молчал 10282
-                    // раз» одновременно с дропами: мы тратили пропускную способность
-                    // энкодера на кадры без информации и теряли те, что несут картинку.
-                    if (EncoderIsBehind())
+                    // отстаёт, дубликат только забирает пропускную способность у кадра
+                    // с новой картинкой. Поэтому policy подавляет его задолго до 33/33.
+                    bool encoderBehind = EncoderIsBehind();
+                    if (!CanEnqueueDuplicate(encoderBehind))
                     {
-                        Interlocked.Increment(ref PacerBlocked);
-                        break;
-                    }
-
-                    bool queueFull;
-                    lock (_queueLock) queueFull = _inputQueue.Count >= _maxInputQueue - 1;
-                    if (queueFull)
-                    {
-                        // Очередь и так полна — дубликаты в неё не пихаем. Но это значит,
-                        // что сетка CFR рвётся: считаем такие случаи, иначе провал fps
-                        // в файле выглядит как «непонятно почему».
+                        Interlocked.Increment(ref FramesSuppressedDuplicates);
                         Interlocked.Increment(ref PacerBlocked);
                         break;
                     }
 
                     long pts = _lastCfrPts + _frameDurationTicks;
-                    _lastCfrPts = pts;
                     var dup = CopyIntoPool(_lastSubmittedTex);
+                    if (!Enqueue(dup, pts, isDuplicate: true, encoderBehind))
+                    {
+                        Interlocked.Increment(ref PacerBlocked);
+                        break;
+                    }
+                    _lastCfrPts = pts;
                     _lastSubmittedTex = dup;
                     Interlocked.Increment(ref FramesDuplicated);
-                    Enqueue(dup, pts);
                 }
             }
         }
@@ -645,7 +729,7 @@ public sealed class VideoEncoder : IDisposable
                 }
                 if (!gotFrame) break;
 
-                (ID3D11Texture2D tex, long ticks) item;
+                EncoderInputFrame item;
                 lock (_queueLock)
                 {
                     if (_inputQueue.Count == 0)
@@ -664,16 +748,16 @@ public sealed class VideoEncoder : IDisposable
                     if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
 
                 // Просим keyframe ДО подачи кадра: ключ действует на следующий вход.
-                MaybeForceKeyframe(item.ticks);
+                MaybeForceKeyframe(item.Ticks);
 
                 try
                 {
                     long piStart = Diagnostics.PipelineProbe.Now();
                     using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(
-                        typeof(ID3D11Texture2D).GUID, item.tex, 0, false);
+                        typeof(ID3D11Texture2D).GUID, item.Texture, 0, false);
                     using var sample = MediaFactory.MFCreateSample();
                     sample.AddBuffer(buffer);
-                    sample.SampleTime = item.ticks;
+                    sample.SampleTime = item.Ticks;
                     sample.SampleDuration = _frameDurationTicks;
                     _transform!.ProcessInput(0, sample, 0);
                     Diagnostics.PipelineProbe.ProcessInput.Add(piStart, Diagnostics.PipelineProbe.Now());
