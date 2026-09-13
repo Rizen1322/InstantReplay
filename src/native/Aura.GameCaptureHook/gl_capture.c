@@ -183,14 +183,23 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
 
     aura_gl_capture_result result = AURA_GL_CAPTURE_SKIPPED;
     aura_gl_capture_state *state = &g_capture;
-    int width = ipc->header->width;
-    int height = ipc->header->height;
+    GLint viewport[4] = {0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    int width = viewport[2];
+    int height = viewport[3];
+    uint64_t byte_count = width > 0 && height > 0
+        ? (uint64_t)width * (uint64_t)height * UINT64_C(4)
+        : 0;
     if (width <= 0 || width > AURA_GAME_HOOK_MAX_WIDTH ||
         height <= 0 || height > AURA_GAME_HOOK_MAX_HEIGHT ||
-        ipc->header->stride != width * 4) {
+        ipc->header->slot_stride < AURA_GAME_HOOK_SLOT_HEADER_SIZE ||
+        byte_count > (uint64_t)ipc->header->slot_stride - AURA_GAME_HOOK_SLOT_HEADER_SIZE) {
         result = AURA_GL_CAPTURE_FAILED;
         goto done;
     }
+    InterlockedExchange((volatile LONG *)&ipc->header->width, width);
+    InterlockedExchange((volatile LONG *)&ipc->header->height, height);
+    InterlockedExchange((volatile LONG *)&ipc->header->stride, width * 4);
     if (!initialize_ring(state, width, height)) {
         result = state->unsupported ? AURA_GL_CAPTURE_UNSUPPORTED : AURA_GL_CAPTURE_FAILED;
         goto done;

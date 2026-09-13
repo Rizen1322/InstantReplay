@@ -13,6 +13,9 @@ internal static class GameHookNativeMethods
     public const uint Infinite = 0xFFFFFFFF;
     public const uint TokenQuery = 0x0008;
     public const uint GaRoot = 2;
+    public const uint EventSystemForeground = 0x0003;
+    public const uint WineventOutOfContext = 0x0000;
+    public const uint WineventSkipOwnProcess = 0x0002;
     public const uint ProtectionLevelNone = 0xFFFFFFFE;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -106,6 +109,33 @@ internal static class GameHookNativeMethods
 
     [DllImport("user32.dll")]
     public static extern nint GetAncestor(nint hwnd, uint flags);
+
+    public delegate void WinEventProc(
+        nint hook,
+        uint eventType,
+        nint hwnd,
+        int objectId,
+        int childId,
+        uint eventThread,
+        uint eventTime);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern nint SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        nint eventHookModule,
+        WinEventProc callback,
+        uint processId,
+        uint threadId,
+        uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWinEvent(nint hook);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(nint hwnd);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct ProcessProtectionLevelInformation

@@ -66,6 +66,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\MinecraftHookInjector.cs" Link="App\MinecraftHookInjector.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\GameHookNativeMethods.cs" Link="App\GameHookNativeMethods.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\GameHook\MinecraftProcessInspector.cs" Link="App\MinecraftProcessInspector.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\HybridCaptureInput.cs" Link="App\HybridCaptureInput.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\PipelineRestartPolicy.cs" Link="App\PipelineRestartPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\CaptureRecoveryBackoff.cs" Link="App\CaptureRecoveryBackoff.cs" />

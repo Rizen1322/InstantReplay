@@ -51,4 +51,26 @@ public sealed class CaptureFrameAdmissionGateTests
             gate.Evaluate(12, 4, CaptureSurfaceScope.GameWindow));
         Assert.True(gate.Accept(12, 0, CaptureSurfaceScope.Monitor));
     }
+
+    [Fact]
+    public void Hybrid_episode_accepts_both_scopes_but_rejects_old_route_epoch()
+    {
+        var gate = new CaptureFrameAdmissionGate(
+            generation: 12,
+            targetRevision: 4,
+            CaptureFrameAdmissionMode.Hybrid);
+
+        Assert.Equal(
+            CaptureFrameAdmission.Admit,
+            gate.Evaluate(12, 0, CaptureSurfaceScope.Monitor, routeEpoch: 3));
+        Assert.Equal(
+            CaptureFrameAdmission.Admit,
+            gate.Evaluate(12, 4, CaptureSurfaceScope.GameWindow, routeEpoch: 4));
+        Assert.Equal(
+            CaptureFrameAdmission.StaleRoute,
+            gate.Evaluate(12, 0, CaptureSurfaceScope.Monitor, routeEpoch: 3));
+        Assert.Equal(
+            CaptureFrameAdmission.StaleTarget,
+            gate.Evaluate(12, 3, CaptureSurfaceScope.GameWindow, routeEpoch: 4));
+    }
 }

@@ -158,7 +158,6 @@ bool aura_hook_ipc_should_stop(const aura_hook_ipc *ipc)
             0) == AURA_GAME_HOOK_COMMAND_STOP) {
         return true;
     }
-    if (WaitForSingleObject(ipc->control_event, 0) == WAIT_OBJECT_0) return true;
     return WaitForSingleObject(ipc->controller_process, 0) != WAIT_TIMEOUT;
 }
 

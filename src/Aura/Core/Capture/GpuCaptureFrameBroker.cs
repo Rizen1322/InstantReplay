@@ -28,7 +28,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         bool separateCursor,
         long generation,
         long targetRevision = 0,
-        bool windowEpisode = false)
+        bool windowEpisode = false,
+        bool hybridEpisode = false)
     {
         ArgumentNullException.ThrowIfNull(device);
         ArgumentNullException.ThrowIfNull(context);
@@ -39,13 +40,19 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         _context = context;
         _separateCursor = separateCursor;
         _cursorOverlay = separateCursor ? new CursorOverlay(device, context) : null;
-        _windowNormalizer = windowEpisode
+        if (windowEpisode && hybridEpisode)
+            throw new ArgumentException("Episode не может быть одновременно window и hybrid");
+        _windowNormalizer = windowEpisode || hybridEpisode
             ? new WindowFrameNormalizer(device, context, width, height)
             : null;
         _admissionGate = new CaptureFrameAdmissionGate(
             generation,
             targetRevision,
-            windowEpisode);
+            hybridEpisode
+                ? CaptureFrameAdmissionMode.Hybrid
+                : windowEpisode
+                    ? CaptureFrameAdmissionMode.Window
+                    : CaptureFrameAdmissionMode.Monitor);
         _broker = new CaptureFrameBroker<GpuCaptureFrameSlot>(
             () => new GpuCaptureFrameSlot(device, width, height, separateCursor),
             slot => slot.Dispose());
@@ -81,7 +88,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             if (!_admissionGate.Accept(
                     captured.Generation,
                     captured.TargetRevision,
-                    captured.Scope))
+                    captured.Scope,
+                    captured.RouteEpoch))
             {
                 Interlocked.Increment(ref _framesRejected);
                 return false;
@@ -90,6 +98,10 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             DdaCursorSnapshot cursor = default;
             if (_separateCursor)
             {
+                if (captured.Cursor.Mode == CaptureCursorMode.SystemComposed)
+                    return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
+                        CopyFrame(captured, slot.Output));
+
                 _cursorState.Apply(captured.Generation, captured.Cursor);
                 cursor = _cursorState.Current;
             }

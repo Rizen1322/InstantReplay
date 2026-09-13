@@ -8,4 +8,5 @@ internal readonly record struct CapturedSurface(
     long Generation,
     CaptureCursorUpdate Cursor,
     CaptureSurfaceScope Scope,
-    long TargetRevision);
+    long TargetRevision,
+    long RouteEpoch = 0);

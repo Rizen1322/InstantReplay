@@ -171,13 +171,13 @@
 - Modify: `tests/InstantReplay.Tests/CaptureFrameAdmissionGateTests.cs`
 - Modify: `tests/InstantReplay.Tests/InstantReplay.Tests.csproj`
 
-- [ ] Write failing tests with fake monitor/hook inputs for immediate monitor admission on Alt-Tab, immediate monitor closure on return, first-fresh-game promotion, route-epoch races, target replacement, hook failure while foreground, and exactly-once synchronous publication.
-- [ ] Run focused route/source/admission tests and confirm failure.
-- [ ] Add `RouteEpoch` to `CapturedSurface` and extend broker admission to reject lower epochs and wrong scope/revision without weakening generation checks.
-- [ ] Implement `ForegroundWindowWatcher` with WinEvent delivery plus 100 ms identity polling. Its callback only updates the route/commands and never performs D3D work.
-- [ ] Implement `OpenGlGameFrameBridge` with one reusable dynamic BGRA upload texture on the monitor source's D3D11 device, direct mapped-view row copies, existing `WindowCursorSampler`, synchronous callback, heartbeat/rejection/upload diagnostics, and bounded disposal.
-- [ ] Implement `MinecraftGameCaptureSource` around a long-lived `ScreenCaptureSource` and bridge, using one lock for route transitions and publication. Keep the fixed monitor canvas; use existing normalization for game-frame sizing. While foreground/pending, never admit a desktop frame.
-- [ ] Run focused tests and the full managed suite; commit with `git commit -m "Add hybrid Minecraft game capture source"`.
+- [x] Write failing tests with fake monitor/hook inputs for immediate monitor admission on Alt-Tab, immediate monitor closure on return, first-fresh-game promotion, route-epoch races, target replacement, hook failure while foreground, and exactly-once synchronous publication.
+- [x] Run focused route/source/admission tests and confirm failure.
+- [x] Add `RouteEpoch` to `CapturedSurface` and extend broker admission to reject lower epochs and wrong scope/revision without weakening generation checks.
+- [x] Implement `ForegroundWindowWatcher` with WinEvent delivery plus 100 ms identity polling. Its callback only updates the route/commands and never performs D3D work.
+- [x] Implement `OpenGlGameFrameBridge` with one reusable dynamic BGRA upload texture on the monitor source's D3D11 device, direct mapped-view row copies, existing `WindowCursorSampler`, synchronous callback, heartbeat/rejection/upload diagnostics, and bounded disposal.
+- [x] Implement `MinecraftGameCaptureSource` around a long-lived `ScreenCaptureSource` and bridge, using one lock for route transitions and publication. Keep the fixed monitor canvas; use existing normalization for game-frame sizing. While foreground/pending, never admit a desktop frame.
+- [x] Run focused tests and the full managed suite; commit with `git commit -m "Add hybrid Minecraft game capture source"`.
 
 ## Task 10: Select Minecraft game capture proactively
 
