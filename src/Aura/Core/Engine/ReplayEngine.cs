@@ -31,6 +31,14 @@ public sealed class ReplayEngine : IDisposable
 
     /// <summary>Время стадий по часам видеокарты. Диагностика, на запись не влияет.</summary>
     private Diagnostics.GpuStageTimer? _gpuTimer;
+
+    /// <summary>
+    /// Монитор и его размер, под которые собран текущий конвейер. По ним смена
+    /// набора дисплеев отличает «наш экран пропал или сменился» от «что-то поменялось
+    /// где-то ещё».
+    /// </summary>
+    private int _pipelineMonitorIndex;
+    private (int Width, int Height)? _pipelineCanvas;
     private VideoEncoder? _encoder;
     private GpuCaptureFrameBroker? _frameBroker;
     private readonly AudioMixerEngine _audio = new();
@@ -372,6 +380,8 @@ public sealed class ReplayEngine : IDisposable
 
             var monitorCanvas = MonitorLayout.For(s.MonitorIndex);
             int canvasWidth = monitorCanvas?.Width ?? _capture.Width;
+            _pipelineMonitorIndex = s.MonitorIndex;
+            _pipelineCanvas = monitorCanvas is { } mc ? (mc.Width, mc.Height) : null;
             int canvasHeight = monitorCanvas?.Height ?? _capture.Height;
 
             // Десять бит просим только у HEVC: см. AppSettings.BitDepth.
@@ -1533,6 +1543,22 @@ public sealed class ReplayEngine : IDisposable
     public void RebuildAfterDisplayChange(string reason)
     {
         if (!_pipelineOpen || _stopRequested || _state != EngineState.Running) return;
+
+        // Desktop Duplication чинит себя сам: смена режима экрана приходит к нему
+        // как ACCESS_LOST, и дупликация пересоздаётся на лету без остановки записи.
+        // Пересобирать поверх этого весь конвейер значило чистить буфер повтора на
+        // каждой смене режима. В логе у пользователя с игрой в растянутом 4:3 это
+        // выглядело как generation 43: игра переключала рабочий стол между 1280x1024
+        // и 1920x1080, каждое переключение давало событие, каждое событие — пересборку
+        // и сброс буфера, и сама пересборка успевала попасть под следующее событие.
+        if (_captureBackend == CaptureBackend.DesktopDuplication) return;
+
+        // WGC ломается, только если монитор, который мы снимаем, пропал или сменил
+        // размер. Любая другая перестройка дисплеев — второй монитор, масштаб на
+        // соседнем экране — захвату не мешает, и трогать работающий конвейер незачем.
+        var now = MonitorLayout.For(_pipelineMonitorIndex);
+        if (now is { } m && _pipelineCanvas is { } was && m.Width == was.Width && m.Height == was.Height)
+            return;
 
         long generation = Interlocked.Read(ref _captureGeneration);
         Log.Info("Engine", $"{reason} — пересобираю захват");
