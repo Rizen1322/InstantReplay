@@ -35,6 +35,16 @@
                         </StackPanel>
                         <c:Switch x:Name="AutoBuffer" Click="System_Changed"/>
                     </c:AdaptiveRow>
+                    <Border Style="{StaticResource RowSeparator}"/>
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <c:IconTile Data="{DynamicResource Ico.Replay}" Background="{DynamicResource GrayBrush}"/>
+                        <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                            <TextBlock Text="Приостанавливать, когда вас нет" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Через 15 минут без клавиатуры и мыши. Ввод вернётся — запись поднимется сама"
+                                       Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <c:Switch x:Name="PauseWhenIdle" Click="System_Changed"/>
+                    </c:AdaptiveRow>
                 </StackPanel>
             </Border>
 

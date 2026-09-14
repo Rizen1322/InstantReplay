@@ -34,6 +34,10 @@ public sealed class SystemActivityWatcher : IDisposable
     private const string ReasonLocked = "Сеанс заперт";
     private const string ReasonDisplayOff = "Экран погашен";
     private const string ReasonSleep = "Машина уходит в сон";
+    private const string ReasonIdle = "Человека нет за компьютером";
+
+    /// <summary>Как часто спрашивать систему о времени последнего ввода.</summary>
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(30);
 
     private readonly Action<string> _suspend;
     private readonly Action<string> _resume;
@@ -47,18 +51,24 @@ public sealed class SystemActivityWatcher : IDisposable
     private static readonly TimeSpan DisplaySettle = TimeSpan.FromMilliseconds(700);
     private int _displayEpoch;
 
+    private readonly Func<TimeSpan> _idleThreshold;
+
     private HwndSource? _window;
     private IntPtr _displayNotification;
+    private System.Threading.Timer? _idleTimer;
+    private bool _idleSuspended;
     private bool _disposed;
 
     public SystemActivityWatcher(
         Action<string> suspend,
         Action<string> resume,
-        Action<string> displayChanged)
+        Action<string> displayChanged,
+        Func<TimeSpan> idleThreshold)
     {
         _suspend = suspend;
         _resume = resume;
         _displayChanged = displayChanged;
+        _idleThreshold = idleThreshold;
     }
 
     /// <summary>
@@ -97,7 +107,8 @@ public sealed class SystemActivityWatcher : IDisposable
         SystemEvents.SessionSwitch += OnSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
-        Log.Info("System", "Слежение за блокировкой, экраном, сном и дисплеями включено");
+        _idleTimer = new System.Threading.Timer(_ => CheckIdle(), null, IdlePollInterval, IdlePollInterval);
+        Log.Info("System", "Слежение за блокировкой, экраном, сном, дисплеями и бездействием включено");
     }
 
     private IntPtr WndProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -203,6 +214,49 @@ public sealed class SystemActivityWatcher : IDisposable
         catch (Exception ex) { Log.Warn("System", $"Возобновление после сна: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// Сколько система не видела ввода. TimeSpan.Zero — спросить не удалось.
+    ///
+    /// GetLastInputInfo отдаёт отметку по GetTickCount, то есть по тем же часам,
+    /// что и Environment.TickCount64. Оба поля 32-разрядные и переполняются раз в
+    /// 49 суток, поэтому разность считаем в 32 разрядах и только потом расширяем:
+    /// так переход через ноль даёт верный ответ, а не полтора месяца простоя.
+    /// </summary>
+    private static TimeSpan IdleTime()
+    {
+        var info = new NativeMethods.LastInputInfo
+        {
+            cbSize = (uint)Marshal.SizeOf<NativeMethods.LastInputInfo>()
+        };
+        if (!NativeMethods.GetLastInputInfo(ref info)) return TimeSpan.Zero;
+
+        uint elapsed = unchecked((uint)Environment.TickCount - info.dwTime);
+        return TimeSpan.FromMilliseconds(elapsed);
+    }
+
+    private void CheckIdle()
+    {
+        if (_disposed) return;
+        try
+        {
+            TimeSpan threshold = _idleThreshold();
+            if (threshold <= TimeSpan.Zero)
+            {
+                // Настройку выключили, пока пауза держалась — снимаем её.
+                if (_idleSuspended) { _idleSuspended = false; Resume(ReasonIdle); }
+                return;
+            }
+
+            bool idle = IdleTime() >= threshold;
+            if (idle == _idleSuspended) return;
+
+            _idleSuspended = idle;
+            if (idle) Suspend(ReasonIdle);
+            else Resume(ReasonIdle);
+        }
+        catch (Exception ex) { Log.Warn("System", $"Проверка бездействия: {ex.Message}"); }
+    }
+
     private void Suspend(string reason)
     {
         if (_disposed) return;
@@ -221,6 +275,9 @@ public sealed class SystemActivityWatcher : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        _idleTimer?.Dispose();
+        _idleTimer = null;
 
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;

@@ -43,7 +43,8 @@ public static class Services
         Activity = new SystemActivityWatcher(
             Engine.SuspendForSystem,
             Engine.ResumeAfterSystem,
-            Engine.RebuildAfterDisplayChange);
+            Engine.RebuildAfterDisplayChange,
+            () => TimeSpan.FromMinutes(Math.Max(0, Settings.Current.PauseAfterIdleMinutes)));
     }
 }
 
@@ -831,6 +832,7 @@ public partial class App : Application
     public void ExitApp()
     {
         Step("события системы", () => Services.Activity.Dispose());
+        Step("слежение за папкой", () => Services.Storage.Dispose());
         Step("движок", () => Services.Engine.Dispose());
         Step("хоткеи", () => Services.Hotkeys.Dispose());
         Step("значок в трее", () => _tray?.Dispose());

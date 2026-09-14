@@ -1,4 +1,4 @@
-using Aura.Core.Logging;
+﻿using Aura.Core.Logging;
 using Aura.Core.Settings;
 
 namespace Aura.Core.Storage;
@@ -20,13 +20,23 @@ public sealed record StorageStats(long FolderBytes, long FreeDiskBytes, int Clip
 /// <see cref="Forget"/> и <see cref="Rename"/> — при операциях из панорамы. Изменения
 /// извне (проводник) подхватывает перестройка по устареванию.
 /// </summary>
-public sealed class StorageManager
+public sealed class StorageManager : IDisposable
 {
-    /// <summary>Через сколько индекс считается устаревшим (файлы могли поменяться извне).</summary>
+    /// <summary>
+    /// Через сколько индекс считается устаревшим без слежения за папкой.
+    ///
+    /// Обход всех подпапок нужен ровно для одного: заметить чужие правки, свои
+    /// файлы попадают в индекс сразу (см. <see cref="RegisterSaved"/>). Пока за
+    /// папкой следит система, обход держим редким — он остаётся страховкой.
+    /// </summary>
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(2);
+
+    /// <summary>То же, но когда слежение работает и о чужих правках сообщают сразу.</summary>
+    private static readonly TimeSpan StaleAfterWatched = TimeSpan.FromMinutes(30);
 
     private readonly SettingsManager _settings;
     private readonly ClipIndex _index = new();
+    private readonly ClipFolderWatcher _watcher;
     private int _rebuilding;
 
     public event Action<StorageStats>? StatsChanged;
@@ -34,14 +44,17 @@ public sealed class StorageManager
     public StorageManager(SettingsManager settings)
     {
         _settings = settings;
+        _watcher = new ClipFolderWatcher(() => RequestRebuild(force: true));
         _settings.Changed += group =>
         {
             if (group is "" or "storage")
             {
                 Directory.CreateDirectory(_settings.Current.SaveRootPath);
                 RequestRebuild(force: true); // папка могла смениться — считаем по новой
+                _watcher.Watch(_settings.Current.SaveRootPath);
             }
         };
+        _watcher.Watch(Root);
     }
 
     private string Root => _settings.Current.SaveRootPath;
@@ -53,8 +66,9 @@ public sealed class StorageManager
     public void RequestRebuild(bool force = false)
     {
         string root = Root;
+        TimeSpan staleAfter = _watcher.Active ? StaleAfterWatched : StaleAfter;
         bool stale = force || !_index.IsBuilt || !_index.MatchesRoot(root)
-                     || DateTime.UtcNow - _index.BuiltUtc > StaleAfter;
+                     || DateTime.UtcNow - _index.BuiltUtc > staleAfter;
         if (!stale) return;
         if (Interlocked.Exchange(ref _rebuilding, 1) == 1) return; // уже строится
 
@@ -108,4 +122,6 @@ public sealed class StorageManager
         try { return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace; }
         catch { return 0; }
     }
+
+    public void Dispose() => _watcher.Dispose();
 }

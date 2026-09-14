@@ -342,7 +342,8 @@ public sealed class ReplayEngine : IDisposable
                     _audioBuffer.Allocate(
                         Audio.AudioMixerEngine.BlockSamples,
                         effectiveReplaySeconds,
-                        s.CaptureMicrophone);
+                        s.CaptureMicrophone,
+                        s.CaptureGameAudio);
                 else
                     _audioBuffer.Release();
             }
