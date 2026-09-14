@@ -297,6 +297,13 @@ internal static partial class NativeMethods
 
     // ---------------- display (текущий режим экрана: разрешение + герцовка) ----------------
     internal const int ENUM_CURRENT_SETTINGS = -1;
+    /// <summary>
+    /// Режим, сохранённый в реестре, то есть выбранный пользователем для рабочего
+    /// стола. Игра, переключающая экран на время полноэкранного режима, делает это
+    /// через ChangeDisplaySettings без записи в реестр, поэтому здесь её режим не
+    /// виден — ровно то, что нужно.
+    /// </summary>
+    internal const int ENUM_REGISTRY_SETTINGS = -2;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     internal struct DEVMODEW

@@ -1,4 +1,4 @@
-using Vortice.DXGI;
+﻿using Vortice.DXGI;
 using Aura.Core.Interop;
 
 namespace Aura.Core.Capture;
@@ -23,7 +23,7 @@ public static class MonitorLayout
 {
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(2);
     private static readonly object Sync = new();
-    private static List<(IntPtr Handle, NativeMethods.RECT Bounds)>? _cache;
+    private static List<(IntPtr Handle, NativeMethods.RECT Bounds, string DeviceName)>? _cache;
     private static DateTime _cachedAt;
 
     /// <summary>Границы в физических пикселях и масштаб (1.0 = 96 DPI). Пусто — монитор не найден.</summary>
@@ -32,7 +32,7 @@ public static class MonitorLayout
         var monitors = Monitors();
         if (monitors.Count == 0) return null;
 
-        var (handle, bounds) = monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)];
+        var (handle, bounds, _) = monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)];
 
         double scale = 1.0;
         // MDT_EFFECTIVE_DPI: сбой не критичен — просто останемся на 100%
@@ -40,6 +40,39 @@ public static class MonitorLayout
             scale = dpiX / 96.0;
 
         return (bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top, scale);
+    }
+
+    /// <summary>
+    /// Разрешение рабочего стола, выбранное пользователем, а не текущий режим экрана.
+    ///
+    /// ЗАЧЕМ. Размер записи раньше брался из текущего режима. Игра в растянутом 4:3
+    /// переключает экран между своим разрешением и разрешением рабочего стола при
+    /// каждом сворачивании, а вместе с режимом менялся формат видео, и буфер повтора
+    /// приходилось очищать: кадры разного размера в одном файле не склеить. Режим
+    /// из реестра игра не трогает, поэтому размер записи от него стабилен весь сеанс.
+    ///
+    /// null — режим прочитать не удалось, вызывающий возьмёт текущие границы.
+    /// </summary>
+    public static (int Width, int Height)? DesktopModeFor(int monitorIndex)
+    {
+        var monitors = Monitors();
+        if (monitors.Count == 0) return null;
+        string device = monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)].DeviceName;
+        if (string.IsNullOrEmpty(device)) return null;
+
+        var mode = new NativeMethods.DEVMODEW
+        {
+            dmSize = (ushort)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.DEVMODEW>()
+        };
+        if (!NativeMethods.EnumDisplaySettingsW(device, NativeMethods.ENUM_REGISTRY_SETTINGS, ref mode) ||
+            mode.dmPelsWidth == 0 || mode.dmPelsHeight == 0)
+            return null;
+
+        // Портретный монитор хранит в реестре размеры как для горизонтали.
+        bool portrait = mode.dmDisplayOrientation is 1 or 3;
+        return portrait
+            ? ((int)mode.dmPelsHeight, (int)mode.dmPelsWidth)
+            : ((int)mode.dmPelsWidth, (int)mode.dmPelsHeight);
     }
 
     /// <summary>
@@ -69,13 +102,13 @@ public static class MonitorLayout
         return null;
     }
 
-    private static List<(IntPtr Handle, NativeMethods.RECT Bounds)> Monitors()
+    private static List<(IntPtr Handle, NativeMethods.RECT Bounds, string DeviceName)> Monitors()
     {
         lock (Sync)
         {
             if (_cache is not null && DateTime.UtcNow - _cachedAt < CacheLifetime) return _cache;
 
-            var list = new List<(IntPtr, NativeMethods.RECT)>();
+            var list = new List<(IntPtr, NativeMethods.RECT, string)>();
             try
             {
                 using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
@@ -90,7 +123,7 @@ public static class MonitorLayout
                                 list.Add((description.Monitor, new NativeMethods.RECT
                                 {
                                     Left = c.Left, Top = c.Top, Right = c.Right, Bottom = c.Bottom
-                                }));
+                                }, description.DeviceName ?? ""));
                             }
                 }
             }

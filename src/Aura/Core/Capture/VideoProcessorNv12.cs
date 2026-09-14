@@ -55,16 +55,28 @@ public sealed class VideoProcessorNv12 : IDisposable
     /// (Пере)инициализация под размер источника и целевую вертикаль (720/1080/1440/2160).
     /// Ширина считается по аспекту источника и выравнивается до чётной (требование NV12).
     /// </summary>
+    /// <param name="outputBase">
+    /// Размер, от которого считается выход. Обычно это разрешение рабочего стола из
+    /// реестра, а не текущий режим экрана: так размер записи не меняется, когда игра
+    /// переключает экран на своё разрешение. Кадр другой пропорции видеопроцессор
+    /// растягивает на весь выход — без целевого прямоугольника он так и работает.
+    /// null — считать от размера источника, как раньше.
+    /// </param>
     public void Configure(int srcWidth, int srcHeight, int targetVertical, int fps,
-                          bool preferTenBit = false)
+                          bool preferTenBit = false, (int Width, int Height)? outputBase = null)
     {
         lock (_sync)
         {
             ReleaseCore();
 
             _srcW = srcWidth; _srcH = srcHeight;
-            OutHeight = Math.Min(targetVertical, srcHeight) & ~1;
-            OutWidth = (int)Math.Round((double)srcWidth / srcHeight * OutHeight) & ~1;
+            var (baseWidth, baseHeight) = outputBase ?? (srcWidth, srcHeight);
+            OutHeight = Math.Min(targetVertical, baseHeight) & ~1;
+            OutWidth = (int)Math.Round((double)baseWidth / baseHeight * OutHeight) & ~1;
+
+            if (outputBase is not null && (long)srcWidth * baseHeight != (long)srcHeight * baseWidth)
+                Logging.Log.Info("Capture", $"Экран {srcWidth}x{srcHeight} растягивается в запись " +
+                                            $"{OutWidth}x{OutHeight} — размер записи держится по рабочему столу");
 
             var desc = new VideoProcessorContentDescription
             {

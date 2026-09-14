@@ -384,6 +384,12 @@ public sealed class ReplayEngine : IDisposable
             _pipelineCanvas = monitorCanvas is { } mc ? (mc.Width, mc.Height) : null;
             int canvasHeight = monitorCanvas?.Height ?? _capture.Height;
 
+            // Размер записи фиксируется по разрешению рабочего стола, а не по текущему
+            // режиму экрана. Иначе игра, переключающая экран на своё разрешение, меняла
+            // формат видео при каждом сворачивании, и буфер повтора очищался. Кадр
+            // другой пропорции растягивается на весь выход.
+            var outputBase = MonitorLayout.DesktopModeFor(s.MonitorIndex);
+
             // Десять бит просим только у HEVC: см. AppSettings.BitDepth.
             bool wantTenBit = s.Codec == VideoCodec.HEVC &&
                               s.BitDepth is VideoBitDepth.Auto or VideoBitDepth.Ten;
@@ -394,7 +400,8 @@ public sealed class ReplayEngine : IDisposable
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
             try
             {
-                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, wantTenBit);
+                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, wantTenBit,
+                                     outputBase);
             }
             catch (Exception ex) when (wantTenBit)
             {
@@ -404,7 +411,7 @@ public sealed class ReplayEngine : IDisposable
                 // вместо того, чтобы не включиться вовсе.
                 Log.Warn("Capture", $"Десять бит не настроились ({ex.Message}) — беру восемь");
                 _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
-                                     preferTenBit: false);
+                                     preferTenBit: false, outputBase);
             }
 
             _frameBroker = new GpuCaptureFrameBroker(
@@ -450,7 +457,7 @@ public sealed class ReplayEngine : IDisposable
             {
                 Log.Info("Capture", "Возвращаю видеопроцессор на восемь бит вслед за энкодером");
                 _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
-                                     preferTenBit: false);
+                                     preferTenBit: false, outputBase);
             }
             bool awaitingRestartKeyframe = validateSequenceHeader;
             _encodedStreamReady = !awaitingRestartKeyframe;
