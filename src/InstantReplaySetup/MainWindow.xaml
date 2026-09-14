@@ -14,81 +14,59 @@
 
         <Grid ClipToBounds="True">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="294"/>
+                <ColumnDefinition Width="296"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#D90F1216" CornerRadius="17,0,0,17"
                     BorderBrush="#242A31" BorderThickness="0,0,1,0">
-                <Grid>
-                    <Ellipse Width="300" Height="300" HorizontalAlignment="Left"
-                             VerticalAlignment="Top" Margin="-168,-158,0,0" Fill="#248DD928">
-                        <Ellipse.Effect><BlurEffect Radius="64"/></Ellipse.Effect>
-                    </Ellipse>
-
-                    <StackPanel Margin="34,42,30,30">
-                        <StackPanel Orientation="Horizontal">
-                            <Border Width="48" Height="48" CornerRadius="13" Background="{StaticResource Accent}">
-                                <Path Fill="{StaticResource AccentInk}" Data="M 18,13 L 35,24 L 18,35 Z"
-                                      Stretch="None" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Border>
-                            <StackPanel Margin="13,3,0,0">
-                                <TextBlock Text="AURA" Foreground="{StaticResource Fg}"
-                                           FontSize="21" FontWeight="Bold"/>
-                                <TextBlock Text="INSTANT REPLAY" Foreground="{StaticResource Accent}"
-                                           FontSize="9" FontWeight="SemiBold" Margin="1,2,0,0"/>
-                            </StackPanel>
-                        </StackPanel>
-
-                        <TextBlock Text="Не упускай&#x0a;лучшие моменты."
-                                   Foreground="{StaticResource Fg}" FontSize="28"
-                                   FontWeight="SemiBold" LineHeight="35" Margin="0,44,0,9"/>
-                        <TextBlock Text="Лёгкая фоновая запись с аппаратным ускорением — без лишних действий."
-                                   Foreground="{StaticResource FgDim}" FontSize="13"
-                                   TextWrapping="Wrap" LineHeight="20"/>
-
-                        <StackPanel Margin="0,35,0,0">
-                            <Grid Margin="0,0,0,15">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <Border Width="22" Height="22" CornerRadius="7" Background="#238DD928">
-                                    <TextBlock Text="✓" Foreground="{StaticResource Accent}" FontWeight="Bold"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12"/>
-                                </Border>
-                                <StackPanel Grid.Column="1">
-                                    <TextBlock Text="Запись без остановки" Foreground="{StaticResource Fg}" FontSize="12.5" FontWeight="SemiBold"/>
-                                    <TextBlock Text="Сохраняется только по команде" Foreground="{StaticResource FgQuiet}" FontSize="10.5" Margin="0,2,0,0"/>
-                                </StackPanel>
-                            </Grid>
-                            <Grid Margin="0,0,0,15">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <Border Width="22" Height="22" CornerRadius="7" Background="#238DD928">
-                                    <TextBlock Text="⚡" Foreground="{StaticResource Accent}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="11"/>
-                                </Border>
-                                <StackPanel Grid.Column="1">
-                                    <TextBlock Text="Аппаратное ускорение" Foreground="{StaticResource Fg}" FontSize="12.5" FontWeight="SemiBold"/>
-                                    <TextBlock Text="NVIDIA · AMD · Intel" Foreground="{StaticResource FgQuiet}" FontSize="10.5" Margin="0,2,0,0"/>
-                                </StackPanel>
-                            </Grid>
-                            <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <Border Width="22" Height="22" CornerRadius="7" Background="#238DD928">
-                                    <TextBlock Text="●" Foreground="{StaticResource Accent}"
-                                               HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="8"/>
-                                </Border>
-                                <StackPanel Grid.Column="1">
-                                    <TextBlock Text="Windows 10 и 11" Foreground="{StaticResource Fg}" FontSize="12.5" FontWeight="SemiBold"/>
-                                    <TextBlock Text="Оптимизировано для x64" Foreground="{StaticResource FgQuiet}" FontSize="10.5" Margin="0,2,0,0"/>
-                                </StackPanel>
-                            </Grid>
+                <StackPanel Margin="32,40,32,32">
+                    <StackPanel Orientation="Horizontal">
+                        <!-- Настоящий значок приложения. Раньше здесь стоял
+                             треугольник, нарисованный вручную поверх зелёного
+                             квадрата: он не совпадал с иконкой на панели задач
+                             и в меню «Пуск». -->
+                        <Image Source="Assets/logo.png" Width="48" Height="48"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <StackPanel Margin="12,4,0,0">
+                            <TextBlock Text="Aura" Foreground="{StaticResource Fg}"
+                                       FontSize="20" FontWeight="SemiBold"/>
+                            <TextBlock Text="Instant Replay" Foreground="{StaticResource FgQuiet}"
+                                       FontSize="12" Margin="0,2,0,0"/>
                         </StackPanel>
                     </StackPanel>
-                </Grid>
+
+                    <TextBlock Text="Не упускай&#x0a;лучшие моменты."
+                               Foreground="{StaticResource Fg}" FontSize="28"
+                               FontWeight="SemiBold" LineHeight="36" Margin="0,40,0,12"/>
+                    <TextBlock Text="Фоновая запись с аппаратным ускорением. Клип сохраняется тогда, когда вы нажали, а не заранее."
+                               Foreground="{StaticResource FgDim}" FontSize="13"
+                               TextWrapping="Wrap" LineHeight="20"/>
+
+                    <Border Height="1" Background="#242A31" Margin="0,28,0,24"/>
+
+                    <!-- Характеристики набраны текстом. Значки у всех трёх строк
+                         были одинаковыми плашками и несли ноль информации. -->
+                    <TextBlock Text="Запись без остановки" Foreground="{StaticResource Fg}"
+                               FontSize="13" FontWeight="SemiBold"/>
+                    <TextBlock Text="Сохраняется только по команде" Foreground="{StaticResource FgQuiet}"
+                               FontSize="11" Margin="0,2,0,16"/>
+
+                    <TextBlock Text="Аппаратное ускорение" Foreground="{StaticResource Fg}"
+                               FontSize="13" FontWeight="SemiBold"/>
+                    <TextBlock Text="NVIDIA, AMD, Intel" Foreground="{StaticResource FgQuiet}"
+                               FontSize="11" Margin="0,2,0,16"/>
+
+                    <TextBlock Text="Windows 10 и 11" Foreground="{StaticResource Fg}"
+                               FontSize="13" FontWeight="SemiBold"/>
+                    <TextBlock Text="Сборка x64" Foreground="{StaticResource FgQuiet}"
+                               FontSize="11" Margin="0,2,0,0"/>
+                </StackPanel>
             </Border>
 
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="62"/>
+                    <RowDefinition Height="64"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
@@ -99,16 +77,16 @@
                                    FontSize="13" Margin="6,0,0,0"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                                VerticalAlignment="Center" Margin="0,0,14,0">
-                        <Button x:Name="MuteBtn" Style="{StaticResource GhostButton}" Width="38" Height="34"
-                                Padding="0" Click="Mute_Click" Content="♪" FontSize="15"
-                                ToolTip="Выключить музыку" Margin="0,0,7,0"/>
-                        <Button Style="{StaticResource GhostButton}" Width="38" Height="34"
-                                Padding="0" Content="×" FontSize="20" Click="Close_Click" ToolTip="Закрыть"/>
+                                VerticalAlignment="Center" Margin="0,0,16,0">
+                        <Button x:Name="MuteBtn" Style="{StaticResource IconButton}"
+                                Click="Mute_Click" Content="&#xE767;"
+                                ToolTip="Выключить музыку" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource IconButton}" Content="&#xE8BB;"
+                                FontSize="11" Click="Close_Click" ToolTip="Закрыть"/>
                     </StackPanel>
                 </Grid>
 
-                <Grid x:Name="PageOptions" Grid.Row="1" Margin="36,14,36,32">
+                <Grid x:Name="PageOptions" Grid.Row="1" Margin="36,12,36,32">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
@@ -116,27 +94,27 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Text="Установить Aura" Foreground="{StaticResource Fg}"
-                               FontSize="27" FontWeight="SemiBold"/>
+                               FontSize="26" FontWeight="SemiBold"/>
                     <TextBlock Grid.Row="1" x:Name="SubTitle"
                                Text="Всё готово. Выберите папку и параметры запуска."
-                               Foreground="{StaticResource FgDim}" FontSize="12.5" Margin="0,7,0,22"/>
+                               Foreground="{StaticResource FgDim}" FontSize="13" Margin="0,8,0,24"/>
 
                     <Border Grid.Row="2" Background="{StaticResource Card}" CornerRadius="12"
-                            BorderBrush="{StaticResource Stroke}" BorderThickness="1" Padding="18,17">
+                            BorderBrush="{StaticResource Stroke}" BorderThickness="1" Padding="20,16">
                         <StackPanel>
-                            <TextBlock Text="ПАПКА УСТАНОВКИ" Foreground="{StaticResource FgQuiet}"
-                                       FontSize="10" FontWeight="SemiBold"/>
-                            <Grid Margin="0,10,0,0">
+                            <TextBlock Text="Папка установки" Foreground="{StaticResource FgDim}"
+                                       FontSize="12"/>
+                            <Grid Margin="0,8,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <Border Background="#101318" CornerRadius="8" Padding="12,9"
+                                <Border Background="#101318" CornerRadius="8" Padding="12,8"
                                         BorderBrush="{StaticResource Stroke}" BorderThickness="1">
                                     <TextBox x:Name="PathBox"/>
                                 </Border>
                                 <Button Grid.Column="1" Content="Обзор" Style="{StaticResource GhostButton}"
-                                        Margin="9,0,0,0" Padding="15,9" Click="Browse_Click"/>
+                                        Margin="8,0,0,0" Padding="16,8" Click="Browse_Click"/>
                             </Grid>
 
-                            <Border Height="1" Background="{StaticResource Stroke}" Margin="0,17,0,10"/>
+                            <Border Height="1" Background="{StaticResource Stroke}" Margin="0,16,0,8"/>
                             <CheckBox x:Name="DesktopShortcut" Content="Создать ярлык на рабочем столе"/>
                             <CheckBox x:Name="Autostart" Content="Запускать Aura вместе с Windows" IsChecked="True"/>
                             <CheckBox x:Name="LaunchAfter" Content="Запустить после установки" IsChecked="True"/>
@@ -145,50 +123,51 @@
 
                     <Grid Grid.Row="4" Margin="0,24,0,0">
                         <StackPanel VerticalAlignment="Center">
-                            <TextBlock x:Name="SizeText" Foreground="{StaticResource FgDim}" FontSize="11.5"/>
+                            <TextBlock x:Name="SizeText" Foreground="{StaticResource FgDim}" FontSize="12"/>
                             <TextBlock Text="Записи и настройки не затрагиваются" Foreground="{StaticResource FgQuiet}"
-                                       FontSize="10.5" Margin="0,4,0,0"/>
+                                       FontSize="11" Margin="0,4,0,0"/>
                         </StackPanel>
                         <Button Content="Установить Aura" Style="{StaticResource AccentButton}"
-                                MinWidth="166" HorizontalAlignment="Right" Click="Install_Click"/>
+                                MinWidth="168" HorizontalAlignment="Right" Click="Install_Click"/>
                     </Grid>
                 </Grid>
 
                 <Grid x:Name="PageProgress" Grid.Row="1" Margin="48" Visibility="Collapsed">
                     <StackPanel VerticalAlignment="Center">
-                        <Border Width="58" Height="58" CornerRadius="18" Background="#238DD928"
-                                HorizontalAlignment="Center" Margin="0,0,0,22">
-                            <Path Fill="{StaticResource Accent}" Data="M 20,14 L 39,26 L 20,38 Z"
-                                  Stretch="None" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
+                        <Image Source="Assets/logo.png" Width="56" Height="56"
+                               RenderOptions.BitmapScalingMode="HighQuality"
+                               HorizontalAlignment="Center" Margin="0,0,0,24"/>
                         <TextBlock x:Name="ProgressTitle" Text="Устанавливаем Aura"
-                                   Foreground="{StaticResource Fg}" FontSize="23" FontWeight="SemiBold"
+                                   Foreground="{StaticResource Fg}" FontSize="22" FontWeight="SemiBold"
                                    HorizontalAlignment="Center"/>
                         <TextBlock x:Name="ProgressStatus" Text="Подготовка…"
-                                   Foreground="{StaticResource FgDim}" FontSize="12.5"
-                                   HorizontalAlignment="Center" Margin="0,8,0,25"/>
+                                   Foreground="{StaticResource FgDim}" FontSize="13"
+                                   HorizontalAlignment="Center" Margin="0,8,0,24"/>
                         <ProgressBar x:Name="Progress" Maximum="100" Width="360"/>
                         <TextBlock Text="Не закрывайте установщик" Foreground="{StaticResource FgQuiet}"
-                                   FontSize="10.5" HorizontalAlignment="Center" Margin="0,13,0,0"/>
+                                   FontSize="11" HorizontalAlignment="Center" Margin="0,12,0,0"/>
                     </StackPanel>
                 </Grid>
 
-                <Grid x:Name="PageDone" Grid.Row="1" Margin="46" Visibility="Collapsed">
+                <Grid x:Name="PageDone" Grid.Row="1" Margin="48" Visibility="Collapsed">
                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                        <Border Width="68" Height="68" CornerRadius="22" Background="#238DD928"
-                                BorderBrush="#508DD928" BorderThickness="1" HorizontalAlignment="Center">
-                            <TextBlock Text="✓" FontSize="32" FontWeight="SemiBold"
-                                       Foreground="{StaticResource Accent}"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <!-- Тот же экран показывается и как вопрос перед удалением,
+                             поэтому глиф и его цвет задаёт код (см. SwitchToUninstall). -->
+                        <Border x:Name="DoneBadge" Width="64" Height="64" CornerRadius="20"
+                                Background="#238DD928" BorderBrush="#508DD928" BorderThickness="1"
+                                HorizontalAlignment="Center">
+                            <TextBlock x:Name="DoneGlyph" Style="{StaticResource Glyph}"
+                                       Text="&#xE73E;" FontSize="26"
+                                       Foreground="{StaticResource Accent}"/>
                         </Border>
                         <TextBlock x:Name="DoneTitle" Text="Aura установлена"
-                                   Foreground="{StaticResource Fg}" FontSize="25" FontWeight="SemiBold"
-                                   HorizontalAlignment="Center" Margin="0,20,0,7"/>
+                                   Foreground="{StaticResource Fg}" FontSize="24" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" Margin="0,20,0,8"/>
                         <TextBlock x:Name="DoneText" Text="Можно сохранять лучшие моменты."
-                                   Foreground="{StaticResource FgDim}" FontSize="12.5"
-                                   TextAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,27"/>
+                                   Foreground="{StaticResource FgDim}" FontSize="13"
+                                   TextAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,28"/>
                         <Button x:Name="DoneBtn" Content="Запустить Aura"
-                                Style="{StaticResource AccentButton}" MinWidth="178" Click="Done_Click"/>
+                                Style="{StaticResource AccentButton}" MinWidth="176" Click="Done_Click"/>
                     </StackPanel>
                 </Grid>
             </Grid>

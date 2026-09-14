@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
@@ -22,6 +22,12 @@
     <AssemblyName>InstantReplaySetup</AssemblyName>
     <Version>1.0.0</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Значок приложения показывается и в установщике: один файл на оба,
+         чтобы установщик не расходился с иконкой в меню «Пуск». -->
+    <Resource Include="..\Aura\Assets\logo.png" Link="Assets\logo.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Fully managed MP3 decode + WinMM output: no Windows Media Player dependency. -->

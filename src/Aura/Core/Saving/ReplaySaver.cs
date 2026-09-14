@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
 using Aura.Core.Encoding;
@@ -112,6 +112,13 @@ public static class ReplaySaver
         // не носит имени клипа и удаляется сам.
         string partPath = filePath + ".part";
 
+        // Поэтапный замер частной памяти. Прирост за сохранение складывается из
+        // разных источников, и по одной цифре «до/после» их не разделить:
+        // построение конвейера писателя, подача сэмплов, финализация контейнера и
+        // освобождение писателя тратят память по-своему.
+        long memStart = Diagnostics.MemoryMap.PrivateCommittedBytes();
+        long memOpen = memStart, memWritten = memStart, memFinal = memStart;
+
         IMFSinkWriter writer = MfMp4Writer.Create(partPath);
         var handles = new List<System.Runtime.InteropServices.GCHandle>();
         // Своя партия буферов на это сохранение — по ней и ждём разгрузки писателя
@@ -126,6 +133,7 @@ public static class ReplaySaver
 
         writer.BeginWriting();
         tOpen = sw.ElapsedMilliseconds;
+        memOpen = Diagnostics.MemoryMap.PrivateCommittedBytes();
 
         // Ноль времени клипа = pts первого видеокадра (keyframe)
         long baseTicks = video[0].PtsTicks;
@@ -259,11 +267,13 @@ public static class ReplaySaver
             FlushAudio(s); // остаток дорожки
         }
         tAudio = sw.ElapsedMilliseconds;
+        memWritten = Diagnostics.MemoryMap.PrivateCommittedBytes();
 
         try
         {
             writer.Finalize();
             finalized = true;
+            memFinal = Diagnostics.MemoryMap.PrivateCommittedBytes();
         }
         catch (SharpGen.Runtime.SharpGenException ex) when (ex.ResultCode.Code == MfESinkHeadersNotFound)
         {
@@ -298,6 +308,12 @@ public static class ReplaySaver
         finally
         {
             writer.Dispose();  // отпускает удержанные сэмплы
+            long memClosed = Diagnostics.MemoryMap.PrivateCommittedBytes();
+            static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";
+            Log.Info("Saver", $"Частная память по этапам: открытие {Mb(memOpen - memStart)}, " +
+                              $"подача {Mb(memWritten - memOpen)}, финализация {Mb(memFinal - memWritten)}, " +
+                              $"закрытие писателя {Mb(memClosed - memFinal)}; " +
+                              $"итого {Mb(memClosed - memStart)}");
             UnpinWhenWriterDone(batch, handles);
             // Только теперь файл закрыт и его можно переименовать
             publishedPath = PublishOrDiscard(partPath, filePath, finalized);

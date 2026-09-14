@@ -1,4 +1,4 @@
-using Aura.Core.Interop;
+﻿using Aura.Core.Interop;
 using Aura.Core.Logging;
 
 namespace Aura.Core.Diagnostics;
@@ -23,11 +23,47 @@ namespace Aura.Core.Diagnostics;
 /// </summary>
 public static class MemoryMap
 {
+    /// <summary>
+    /// Сумма закоммиченных ЧАСТНЫХ областей — то же число, что в «Карте памяти»,
+    /// но без разбора и без записи в лог.
+    ///
+    /// Нужна для поэтапного замера внутри сохранения: PrivateMemorySize64 сюда не
+    /// годится, он включает управляемую кучу, а её коммит меняется сам по себе.
+    /// Обход занимает единицы миллисекунд, а зовут его считаные разы за сохранение.
+    /// </summary>
+    public static long PrivateCommittedBytes()
+    {
+        try
+        {
+            long priv = 0;
+            IntPtr address = IntPtr.Zero;
+            int guard = 0;
+            while (guard++ < 200_000)
+            {
+                nuint written = NativeMethods.VirtualQuery(
+                    address, out var info, (nuint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MemoryBasicInformation>());
+                if (written == 0) break;
+
+                long size = (long)info.RegionSize;
+                if (size <= 0) break;
+                if (info.State == NativeMethods.MemCommit && info.Type == NativeMethods.MemPrivate) priv += size;
+
+                long next = (long)address + size;
+                if (next <= (long)address) break;
+                address = (IntPtr)next;
+            }
+            return priv;
+        }
+        catch { return 0; }
+    }
+
     public static void Log(string when)
     {
         try
         {
             long image = 0, mapped = 0, priv = 0;
+            long privSmall = 0, privMedium = 0, privLarge = 0;
+            int privCount = 0;
             var regions = new List<(long Size, IntPtr Base, uint Type)>();
 
             IntPtr address = IntPtr.Zero;
@@ -49,6 +85,13 @@ public static class MemoryMap
                         case NativeMethods.MemMapped: mapped += size; break;
                         case NativeMethods.MemPrivate:
                             priv += size;
+                            privCount++;
+                            // Раскладка по размеру: по ней видно, ЧТО именно растёт —
+                            // одна большая область (собственный аллокатор, драйвер)
+                            // или россыпь мелких (обычная куча, то есть живые выделения).
+                            if (size < 1L << 20) privSmall += size;
+                            else if (size < 16L << 20) privMedium += size;
+                            else privLarge += size;
                             if (size >= 16L * 1024 * 1024) regions.Add((size, info.AllocationBase, info.Type));
                             break;
                     }
@@ -74,6 +117,13 @@ public static class MemoryMap
             Log2($"Карта памяти ({when}): образы {Mb(image)}, отображения {Mb(mapped)}, " +
                  $"частные {Mb(priv)} (из них сборщик {Mb(gc)}, нативные ~{Mb(Math.Max(0, priv - gc))}); " +
                  $"крупные частные области: {(top.Length > 0 ? top : "нет")}");
+
+            // Число областей и их раскладка по размеру. Если между двумя замерами
+            // растёт ЧИСЛО областей — это живые выделения, то есть настоящая утечка.
+            // Если число стоит, а объём растёт — куча просто удерживает достигнутый
+            // пик и новой памяти у системы не просит.
+            Log2($"Частные области ({when}): всего {privCount} шт; " +
+                 $"до 1 МБ — {Mb(privSmall)}, 1–16 МБ — {Mb(privMedium)}, от 16 МБ — {Mb(privLarge)}");
         }
         catch (Exception ex)
         {

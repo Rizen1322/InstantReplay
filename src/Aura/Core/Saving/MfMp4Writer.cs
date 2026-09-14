@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
 using Aura.Core.Settings;
@@ -51,14 +51,21 @@ internal static class MfMp4Writer
             FileFlags.FlagsNone,
             filePath);
 
+        // Байтовый поток отпускаем СРАЗУ после создания писателя. Медиасинк берёт
+        // на него свою ссылку, поэтому поток живёт ровно столько, сколько нужен
+        // писателю. Раньше Dispose стоял только в catch: на успешном пути наша
+        // ссылка оставалась висеть, и объект Media Foundation вместе с его
+        // внутренним буфером записи освобождался лишь финализатором. Во время
+        // записи включён SustainedLowLatency, блокирующих сборок второго поколения
+        // нет — то есть финализаторы не бегут, и после каждого сохранения процесс
+        // прибавлял сотню-другую мегабайт до самой остановки конвейера.
         try
         {
             return MediaFactory.MFCreateSinkWriterFromURL(null, stream, attrs);
         }
-        catch
+        finally
         {
             stream.Dispose();
-            throw;
         }
     }
 
@@ -204,7 +211,15 @@ internal static class MfMp4Writer
         // 78 КБ округлялся до 128 КБ, и прирост нативной памяти вырос с 1.3 до 1.7
         // размера клипа. Нативная куча удерживает сумму выделений, а не пик живых,
         // поэтому выделять надо ровно столько, сколько нужно.
-        var buffer = MediaFactory.MFCreateMemoryBuffer(length);
+        // Буфер отпускаем СРАЗУ после AddBuffer: MFCreateMemoryBuffer отдаёт ссылку
+        // нам, AddBuffer добавляет свою, и дальше буфером владеет сэмпл. Раньше наша
+        // ссылка оставалась висеть и снималась только финализатором. Во время записи
+        // включён SustainedLowLatency, блокирующих сборок второго поколения нет —
+        // то есть финализаторы не бегут, и нативная куча копила эти буферы до самой
+        // остановки конвейера. На трёхминутном клипе это 360 кусков звука по 192 КБ,
+        // около 70 МБ за каждое сохранение; ManualRecorder зовёт этот метод на
+        // каждый кадр, и там счёт шёл на сотни мегабайт.
+        using var buffer = MediaFactory.MFCreateMemoryBuffer(length);
         buffer.Lock(out IntPtr ptr, out _, out _);
         Marshal.Copy(data, offset, ptr, length);
         buffer.Unlock();

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
@@ -167,7 +167,8 @@ public partial class MainWindow : Window
     private void Mute_Click(object sender, RoutedEventArgs e)
     {
         _audioState.ToggleMute();
-        MuteBtn.Content = _audioState.IsMuted ? "🔇" : "♪";
+        // Глифы Segoe Fluent Icons: E74F динамик перечёркнут, E767 динамик со звуком.
+        MuteBtn.Content = _audioState.IsMuted ? "" : "";
         if (_music is not null) _music.Volume = (float)_audioState.Volume;
     }
 
@@ -540,6 +541,14 @@ public partial class MainWindow : Window
         DoneTitle.Text = "Удалить Aura?";
         DoneText.Text = "Записи и настройки не удаляются.";
         DoneBtn.Content = "Удалить";
+        // Зелёная галочка на вопросе «удалить?» читалась как «уже готово».
+        // E74D — корзина; плашку перекрашиваем в нейтральный серый.
+        DoneGlyph.Text = "";
+        DoneGlyph.Foreground = (System.Windows.Media.Brush)FindResource("FgDim");
+        DoneBadge.Background = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromArgb(0x23, 0x98, 0xA1, 0xAE));
+        DoneBadge.BorderBrush = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromArgb(0x50, 0x98, 0xA1, 0xAE));
         DoneBtn.Click -= Done_Click;
         DoneBtn.Click += Uninstall_Click;
     }
