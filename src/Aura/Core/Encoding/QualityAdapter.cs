@@ -42,7 +42,7 @@ internal sealed class QualityAdapter
 
     private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
     private long _nextCheckMs = WindowMs;
-    private long _lastEncoded, _lastBlocked, _lastDropped;
+    private long _lastEncoded, _lastSubmitted, _lastBlocked, _lastDropped;
     private int _calmWindows;
     private int _recoveryNeeded = RecoveryWindows;
     private bool _recoveryAttempted;
@@ -119,18 +119,31 @@ internal sealed class QualityAdapter
     /// Слабая видеокарта попадает сюда сама собой: у неё окно «не справляется»
     /// наступает в первые же секунды записи.
     /// </summary>
-    public void Tick(long encoded, long pacerBlocked, long dropped)
+    public void Tick(long encoded, long submitted, long pacerBlocked, long dropped)
     {
         if (_clock.ElapsedMilliseconds < _nextCheckMs) return;
         _nextCheckMs = _clock.ElapsedMilliseconds + WindowMs;
 
         long dEncoded = encoded - _lastEncoded;
+        long dSubmitted = submitted - _lastSubmitted;
         long dBlocked = pacerBlocked - _lastBlocked;
         long dDropped = dropped - _lastDropped;
-        _lastEncoded = encoded; _lastBlocked = pacerBlocked; _lastDropped = dropped;
+        _lastEncoded = encoded; _lastSubmitted = submitted;
+        _lastBlocked = pacerBlocked; _lastDropped = dropped;
 
         double target = _fps * (WindowMs / 1000.0);
-        bool encoderBound = dEncoded < target * 0.9 && (dBlocked > 0 || dDropped > 0);
+
+        // Условие «упирается ЭНКОДЕР» требует, чтобы кадры до энкодера вообще ДОШЛИ.
+        //
+        // ЗАЧЕМ. В логе 14 сентября окно с отставанием было засчитано энкодеру, хотя
+        // виноват был захват: WGC перестала присылать кадры («поток кадров
+        // остановился»), подача упала до 35.8 из 60 кадров в секунду, и счётчик
+        // молчания пейсера вырос вместе с ней. Итогом стали два неверных решения
+        // разом — пресет упал до аварийного и попытка отдать режим низкой задержки
+        // была потрачена впустую. Если пейсер не подал целевое число кадров, энкодер
+        // этой работы и не получал, и спрашивать с него нечего.
+        bool fedEnough = dSubmitted >= target * 0.9;
+        bool encoderBound = fedEnough && dEncoded < target * 0.9 && (dBlocked > 0 || dDropped > 0);
 
         TickLowLatency(encoderBound, dEncoded);
         if (_unavailable) return;

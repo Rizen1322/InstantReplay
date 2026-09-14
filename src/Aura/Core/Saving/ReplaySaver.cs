@@ -479,6 +479,18 @@ public static class ReplaySaver
         /// </summary>
         private const long BackgroundIoBudgetMs = 1500;
 
+        /// <summary>
+        /// Сколько можно простоять в ожидании очереди писателя, прежде чем считать
+        /// диск узким местом.
+        ///
+        /// Ожидание очереди при сквозной перезаписи упирается именно в диск: писатель
+        /// не разбирает очередь, потому что не успевает её сливать. В замере 14 сентября
+        /// клип в 482 МБ писался 1707 мс, из них 1140 мс ушло в ожидание, — и общий
+        /// бюджет в 1500 мс не сработал, потому что сам цикл записи до него не дотянул.
+        /// Прямой признак срабатывает там раньше и точнее.
+        /// </summary>
+        private const long BackgroundIoWaitBudgetMs = 600;
+
         private long _submitted, _lastCheck, _lastProgressMs, _maxQueued;
         private bool _statsAvailable = true;
         private bool _backgroundIoChecked;
@@ -515,12 +527,15 @@ public static class ReplaySaver
             if (_submitted - _lastCheck < CheckEveryBytes) return;
             _lastCheck = _submitted;
 
-            if (!_backgroundIoChecked && _clock.ElapsedMilliseconds > BackgroundIoBudgetMs)
+            if (!_backgroundIoChecked &&
+                (_clock.ElapsedMilliseconds > BackgroundIoBudgetMs ||
+                 WaitedMs > BackgroundIoWaitBudgetMs))
             {
                 _backgroundIoChecked = true;
                 if (BackgroundIoScope.ReleaseForCurrentThread())
-                    Log.Info("Saver", $"Сохранение идёт дольше {BackgroundIoBudgetMs} мс — " +
-                                      "фоновый режим ввода-вывода снят, дописываем в полную силу");
+                    Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс, " +
+                                      $"из них ждали писателя {WaitedMs} мс) — фоновый режим " +
+                                      "ввода-вывода снят, дописываем в полную силу");
             }
 
             if (!_statsAvailable) return; // очередь писателя не видна — не тормозим

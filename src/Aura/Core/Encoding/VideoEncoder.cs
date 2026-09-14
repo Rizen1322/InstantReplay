@@ -703,6 +703,7 @@ public sealed class VideoEncoder : IDisposable
             Thread.Sleep(4);
             // Вне _cfrLock: смена пресета не должна держать подачу кадров
             _quality?.Tick(Interlocked.Read(ref FramesEncoded),
+                           Interlocked.Read(ref FramesSubmitted),
                            Interlocked.Read(ref PacerBlocked),
                            Interlocked.Read(ref FramesDroppedRealQueue));
             lock (_cfrLock)
