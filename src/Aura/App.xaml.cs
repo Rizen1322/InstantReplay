@@ -27,6 +27,9 @@ public static class Services
     public static UpdateService Updates { get; } = new();
     public static NvidiaDriverService Nvidia { get; } = new();
     public static DriverWatch DriverWatch { get; private set; } = null!;
+
+    /// <summary>Блокировка сеанса, погасший экран и сон: на это время повтор молчит.</summary>
+    public static SystemActivityWatcher Activity { get; private set; } = null!;
     public static UiDispatcher Ui { get; private set; } = null!;
 
     public static void Init()
@@ -37,6 +40,10 @@ public static class Services
         Hotkeys = new HotkeyService(Settings);
         Notifications = new NotificationService(Settings, Ui);
         DriverWatch = new DriverWatch(Settings, Nvidia);
+        Activity = new SystemActivityWatcher(
+            Engine.SuspendForSystem,
+            Engine.ResumeAfterSystem,
+            Engine.RebuildAfterDisplayChange);
     }
 }
 
@@ -154,6 +161,7 @@ public partial class App : Application
         Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
             NotificationKind.Warning, Loc.T("driver_found", version));
         Services.DriverWatch.Start();
+        Services.Activity.Start();
 
         CleanLeftovers();
     }
@@ -822,6 +830,7 @@ public partial class App : Application
     /// </summary>
     public void ExitApp()
     {
+        Step("события системы", () => Services.Activity.Dispose());
         Step("движок", () => Services.Engine.Dispose());
         Step("хоткеи", () => Services.Hotkeys.Dispose());
         Step("значок в трее", () => _tray?.Dispose());

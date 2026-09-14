@@ -1,4 +1,4 @@
-using Vortice.Direct3D11;
+﻿using Vortice.Direct3D11;
 
 namespace Aura.Core.Encoding;
 
@@ -40,10 +40,15 @@ internal sealed class EncoderTexturePool : IDisposable
     /// <summary>Сколько слотов в кольце — по этому числу считается глубина очереди.</summary>
     public int Slots => _slots.Length;
 
-    public EncoderTexturePool(ID3D11Device device, int width, int height)
+    public EncoderTexturePool(ID3D11Device device, int width, int height, bool tenBit = false)
     {
         _device = device;
-        long frameBytes = Math.Max((long)width * height * 3 / 2, 1); // NV12
+        // NV12 это полтора байта на пиксель, P010 — три: та же раскладка, но каждый
+        // отсчёт занимает два байта вместо одного. На десяти битах в тот же бюджет
+        // видеопамяти помещается вдвое меньше кадров, и считать это надо честно,
+        // иначе пул выйдет за отведённую долю бюджета.
+        long pixels = (long)width * height;
+        long frameBytes = Math.Max(tenBit ? pixels * 3 : pixels * 3 / 2, 1);
         _slots = new ID3D11Texture2D?[Math.Clamp(BudgetBytes(device) / frameBytes, 24, 96)];
     }
 

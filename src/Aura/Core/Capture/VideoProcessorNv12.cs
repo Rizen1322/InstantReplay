@@ -1,4 +1,4 @@
-using Vortice.Direct3D11;
+﻿using Vortice.Direct3D11;
 using Vortice.DXGI;
 
 namespace Aura.Core.Capture;
@@ -28,6 +28,18 @@ public sealed class VideoProcessorNv12 : IDisposable
     public int OutWidth { get; private set; }
     public int OutHeight { get; private set; }
 
+    /// <summary>
+    /// Формат кадра на выходе: NV12 (восемь бит) или P010 (десять).
+    ///
+    /// Решается здесь, а не в настройках, потому что последнее слово за драйвером:
+    /// видеопроцессор обязан уметь писать в этот формат, и спросить его об этом
+    /// можно только у готового перечислителя.
+    /// </summary>
+    public Format OutputFormat { get; private set; } = Format.NV12;
+
+    /// <summary>Пишем ли мы сейчас десять бит.</summary>
+    public bool TenBit => OutputFormat == Format.P010;
+
     private const int PoolSize = 8;
     private readonly object _sync = new();
 
@@ -43,7 +55,8 @@ public sealed class VideoProcessorNv12 : IDisposable
     /// (Пере)инициализация под размер источника и целевую вертикаль (720/1080/1440/2160).
     /// Ширина считается по аспекту источника и выравнивается до чётной (требование NV12).
     /// </summary>
-    public void Configure(int srcWidth, int srcHeight, int targetVertical, int fps)
+    public void Configure(int srcWidth, int srcHeight, int targetVertical, int fps,
+                          bool preferTenBit = false)
     {
         lock (_sync)
         {
@@ -72,6 +85,15 @@ public sealed class VideoProcessorNv12 : IDisposable
             _enumerator = _videoDevice.CreateVideoProcessorEnumerator(desc);
             _processor = _videoDevice.CreateVideoProcessor(_enumerator, 0);
 
+            OutputFormat = preferTenBit &&
+                           SupportsOutput(_enumerator, Format.P010) &&
+                           SupportsRenderTarget(_device, Format.P010)
+                ? Format.P010
+                : Format.NV12;
+            if (preferTenBit && OutputFormat != Format.P010)
+                Logging.Log.Info("Capture", "Видеопроцессор драйвера не пишет в P010 — остаёмся на восьми битах");
+
+
             // Вход: рабочий стол = full-range RGB (0-255). Выход: BT.709 limited (16-235) —
             // ровно то, что плееры ожидают от H.264/HEVC. Раньше выход был помечен как
             // full-range (Nominal_Range=2), а плееры декодировали как limited —
@@ -99,31 +121,130 @@ public sealed class VideoProcessorNv12 : IDisposable
                                             "выполняет видеопроцессор драйвера (алгоритм выбирает он сам). " +
                                             "Запись в родном разрешении монитора этот шаг убирает.");
 
-            _pool = new ID3D11Texture2D?[PoolSize];
-            _outputViews = new ID3D11VideoProcessorOutputView?[PoolSize];
-            for (int i = 0; i < PoolSize; i++)
+            // Пул выходных кадров. Ответ CheckVideoProcessorFormat — это ещё не
+            // обещание: у драйвера бывает заявлена поддержка формата на выходе, а
+            // текстура с нужными флагами привязки в нём всё равно не создаётся.
+            // В замере это выглядело как E_INVALIDARG при запуске записи, то есть
+            // повтор не включался вовсе. Поэтому пробуем и, если не вышло,
+            // возвращаемся на NV12 — восемь бит работают всегда.
+            if (!TryBuildPool(OutputFormat) )
             {
-                _pool[i] = _device.CreateTexture2D(new Texture2DDescription
-                {
-                    Width = (uint)OutWidth,
-                    Height = (uint)OutHeight,
-                    MipLevels = 1,
-                    ArraySize = 1,
-                    Format = Format.NV12,
-                    SampleDescription = new SampleDescription(1, 0),
-                    Usage = ResourceUsage.Default,
-                    BindFlags = BindFlags.RenderTarget | BindFlags.VideoEncoder,
-                    CPUAccessFlags = CpuAccessFlags.None
-                });
-                _outputViews[i] = _videoDevice.CreateVideoProcessorOutputView(
-                    _pool[i]!, _enumerator,
-                    new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
+                if (OutputFormat == Format.NV12)
+                    throw new InvalidOperationException("Видеопроцессор не отдал пул кадров в NV12");
+
+                Logging.Log.Warn("Capture",
+                    "Видеопроцессор заявил P010, но кадр в нём не создался — возвращаюсь на восемь бит");
+                OutputFormat = Format.NV12;
+                if (!TryBuildPool(OutputFormat))
+                    throw new InvalidOperationException("Видеопроцессор не отдал пул кадров в NV12");
             }
             _poolIndex = 0;
         }
     }
 
-    /// <summary>Конвертирует BGRA-кадр в NV12 из пула. Возвращает текстуру пула (не Dispose-ить!).</summary>
+    /// <summary>
+    /// Можно ли создать в этом формате текстуру, пригодную для вывода видеопроцессора.
+    ///
+    /// Представление вывода требует привязки RenderTarget, и это отдельный вопрос
+    /// от того, умеет ли видеопроцессор писать в такой формат. У NV12 обе проверки
+    /// проходят везде, у P010 — не у всех драйверов.
+    /// </summary>
+    private static bool SupportsRenderTarget(ID3D11Device device, Format format)
+    {
+        try
+        {
+            FormatSupport support = device.CheckFormatSupport(format);
+            return (support & FormatSupport.RenderTarget) != 0;
+        }
+        catch (Exception ex)
+        {
+            Logging.Log.Info("Capture", $"Привязка RenderTarget для {format} не читается: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Создать кольцо выходных кадров в заданном формате. false — не получилось.
+    /// Всё уже созданное при неудаче освобождается, чтобы можно было повторить
+    /// попытку с другим форматом.
+    /// </summary>
+    private bool TryBuildPool(Format format)
+    {
+        // Флаги привязки пробуем по убыванию. VideoEncoder здесь не обязателен:
+        // энкодер получает не эту текстуру, а её копию из своего пула, и та
+        // создаётся вообще без привязок (см. EncoderTexturePool.Copy). Но на NV12
+        // флаг годами стоял и ничего не ломал, поэтому оставляем его первой
+        // попыткой, а второй идёт только RenderTarget.
+        //
+        // Ради этого всё и затевалось: в замере CheckFormatSupport подтверждал для
+        // P010 привязку RenderTarget, а CreateTexture2D всё равно отвечал
+        // E_INVALIDARG. Значит, драйверу мешает именно сочетание с VideoEncoder.
+        return TryBuildPoolWith(format, BindFlags.RenderTarget | BindFlags.VideoEncoder) ||
+               TryBuildPoolWith(format, BindFlags.RenderTarget);
+    }
+
+    private bool TryBuildPoolWith(Format format, BindFlags bindFlags)
+    {
+        var pool = new ID3D11Texture2D?[PoolSize];
+        var views = new ID3D11VideoProcessorOutputView?[PoolSize];
+        try
+        {
+            for (int i = 0; i < PoolSize; i++)
+            {
+                pool[i] = _device.CreateTexture2D(new Texture2DDescription
+                {
+                    Width = (uint)OutWidth,
+                    Height = (uint)OutHeight,
+                    MipLevels = 1,
+                    ArraySize = 1,
+                    Format = format,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default,
+                    BindFlags = bindFlags,
+                    CPUAccessFlags = CpuAccessFlags.None
+                });
+                views[i] = _videoDevice.CreateVideoProcessorOutputView(
+                    pool[i]!, _enumerator!,
+                    new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });
+            }
+
+            _pool = pool;
+            _outputViews = views;
+            if (bindFlags != (BindFlags.RenderTarget | BindFlags.VideoEncoder))
+                Logging.Log.Info("Capture", $"Кадр {format} создан с привязкой {bindFlags}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logging.Log.Info("Capture",
+                $"Кадр {format} с привязкой {bindFlags} не создался: {ex.Message}");
+            foreach (var v in views) v?.Dispose();
+            foreach (var t in pool) t?.Dispose();
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Умеет ли видеопроцессор писать кадр в этот формат.
+    ///
+    /// CheckVideoProcessorFormat отдаёт флаги поддержки отдельно для входа и для
+    /// выхода. Нам нужен именно выход: в этот формат мы пишем результат.
+    /// </summary>
+    private static bool SupportsOutput(ID3D11VideoProcessorEnumerator enumerator, Format format)
+    {
+        try
+        {
+            VideoProcessorFormatSupport support = enumerator.CheckVideoProcessorFormat(format);
+            return (support & VideoProcessorFormatSupport.Output) != 0;
+        }
+        catch (Exception ex)
+        {
+            Logging.Log.Info("Capture", $"Поддержка формата {format} не читается: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Конвертирует BGRA-кадр в NV12 или P010 из пула. Возвращает текстуру пула (не Dispose-ить!).</summary>
     public ID3D11Texture2D Convert(ID3D11Texture2D bgraFrame)
     {
         lock (_sync)

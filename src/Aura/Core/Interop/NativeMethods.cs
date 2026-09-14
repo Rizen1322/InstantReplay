@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace Aura.Core.Interop;
 
@@ -363,4 +363,38 @@ internal static partial class NativeMethods
 
     [LibraryImport("kernel32.dll")]
     internal static partial nuint VirtualQuery(IntPtr address, out MemoryBasicInformation buffer, nuint length);
+
+    // ---------------- Питание и состояние экрана ----------------
+    //
+    // Состояние экрана берём по GUID_CONSOLE_DISPLAY_STATE, а не по устаревшему
+    // GUID_MONITOR_POWER_ON: Microsoft прямо просит новые приложения использовать
+    // первый, он есть начиная с Windows 8 и различает три состояния вместо двух.
+
+    internal static readonly Guid GuidConsoleDisplayState =
+        new("6fe69556-704a-47a0-8f24-c28d936fda47");
+
+    internal const int WM_POWERBROADCAST = 0x0218;
+    internal const int PBT_POWERSETTINGCHANGE = 0x8013;
+    internal const int DEVICE_NOTIFY_WINDOW_HANDLE = 0x00000000;
+
+    /// <summary>Значения Data для GUID_CONSOLE_DISPLAY_STATE.</summary>
+    internal const byte DisplayStateOff = 0;
+    internal const byte DisplayStateOn = 1;
+    internal const byte DisplayStateDimmed = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PowerBroadcastSetting
+    {
+        public Guid PowerSetting;
+        public uint DataLength;
+        public byte Data;   // читаем только первый байт: у состояния экрана он один
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    internal static partial IntPtr RegisterPowerSettingNotification(
+        IntPtr recipient, in Guid powerSettingGuid, int flags);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool UnregisterPowerSettingNotification(IntPtr handle);
 }

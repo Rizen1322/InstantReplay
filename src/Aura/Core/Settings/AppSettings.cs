@@ -1,8 +1,19 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace Aura.Core.Settings;
 
 public enum VideoCodec { H264, HEVC, AV1 }
+
+/// <summary>Глубина цвета записи.</summary>
+public enum VideoBitDepth
+{
+    /// <summary>Десять бит, если их умеют и видеокарта, и энкодер; иначе восемь.</summary>
+    Auto,
+    /// <summary>Всегда восемь бит.</summary>
+    Eight,
+    /// <summary>Просить десять бит. Там, где их нет, всё равно будет восемь.</summary>
+    Ten
+}
 public enum AudioTrackMode
 {
     /// <summary>Одна дорожка: игра + микрофон смикшированы.</summary>
@@ -41,6 +52,21 @@ public sealed class AppSettings
     /// сам уведёт настройку на H.264 (см. App.GuardCodec).
     /// </summary>
     public VideoCodec Codec { get; set; } = VideoCodec.HEVC;
+
+    /// <summary>
+    /// Глубина цвета. Десять бит заметно лучше держат плавные переходы: небо, дым
+    /// и тёмные сцены перестают расслаиваться на полосы. Размер файла при этом не
+    /// растёт — битрейт задаётся отдельно.
+    ///
+    /// По умолчанию Auto: десять бит берутся, только если их подтвердили и
+    /// видеопроцессор драйвера, и энкодер. Иначе запись идёт в восемь бит, и
+    /// пользователю ничего делать не нужно.
+    ///
+    /// Работает только с HEVC. У H.264 десятибитный профиль почти не
+    /// поддерживается плеерами, а NVENC его не умеет вовсе; AV1 в Media Foundation
+    /// пока слишком неровный, чтобы рисковать записью.
+    /// </summary>
+    public VideoBitDepth BitDepth { get; set; } = VideoBitDepth.Auto;
     /// <summary>Индекс монитора для захвата (0 = основной).</summary>
     public int MonitorIndex { get; set; } = 0;
     /// <summary>Записывать курсор мыши.</summary>

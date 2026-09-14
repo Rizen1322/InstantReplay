@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -138,6 +138,20 @@ public partial class CapturePage : PageBase
     private static string LengthText(int seconds) =>
         seconds < 60 ? $"{seconds} сек" : $"{seconds / 60} мин";
 
+    /// <summary>
+    /// Подпись под переключателем десяти бит. Он полезен только с HEVC: у H.264
+    /// десятибитный профиль почти не поддерживается плеерами, а NVENC его не умеет
+    /// вовсе, и обещать пользователю то, чего не будет, нельзя.
+    /// </summary>
+    private void UpdateTenBitRow()
+    {
+        bool hevc = CurrentCodec() == VideoCodec.HEVC;
+        TenBitSwitch.IsEnabled = hevc;
+        TenBitSub.Text = hevc
+            ? "Меньше полос на небе и в тёмных сценах. Размер файла не меняется"
+            : "Доступно только с кодеком HEVC";
+    }
+
     private void BuildCodecs()
     {
         Codecs.Children.Clear();
@@ -237,6 +251,8 @@ public partial class CapturePage : PageBase
         FillAudioDevices(s);
         FillMonitors(s);
         CursorSwitch.IsChecked = s.RecordCursor;
+        TenBitSwitch.IsChecked = s.BitDepth != VideoBitDepth.Eight;
+        UpdateTenBitRow();
 
         HighlightPreset();
         _loading = false;
@@ -300,6 +316,9 @@ public partial class CapturePage : PageBase
             s.MicNoiseSuppression = NoiseGate.IsChecked == true;
             s.MicNoiseGateDb = (float)Gate.Value;
             s.RecordCursor = CursorSwitch.IsChecked == true;
+            // Auto, а не Ten: там, где десять бит не поддержаны, запись обязана
+            // молча остаться восьмибитной, а не падать в ошибку.
+            s.BitDepth = TenBitSwitch.IsChecked == true ? VideoBitDepth.Auto : VideoBitDepth.Eight;
             s.TrackMode = Enum.Parse<AudioTrackMode>((string)((ComboBoxItem)TrackMode.SelectedItem).Tag);
             s.RenderDeviceId = (string?)((ComboBoxItem)RenderDevice.SelectedItem)?.Tag;
             s.CaptureDeviceId = (string?)((ComboBoxItem)CaptureDevice.SelectedItem)?.Tag;
@@ -394,6 +413,7 @@ public partial class CapturePage : PageBase
         if (((Button)sender).Tag is not VideoCodec codec) return;
         _selectedCodec = codec;
         BuildCodecs();
+        UpdateTenBitRow();
         // Битрейт не трогаем: человек выбрал число сам или взял его из набора,
         // и подмена под другой кодек ломала бы подсветку набора без спроса.
         HighlightPreset();

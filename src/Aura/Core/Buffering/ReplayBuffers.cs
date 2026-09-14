@@ -1,4 +1,4 @@
-using Aura.Core.Logging;
+﻿using Aura.Core.Logging;
 
 namespace Aura.Core.Buffering;
 
@@ -81,10 +81,23 @@ public sealed class AudioSnapshot(short[] game, short[] mic, long[] pts, int blo
 
     public long PtsAt(int index) => pts[index];
 
+    /// <summary>Есть ли в снимке дорожка микрофона.</summary>
+    public bool HasMic => mic.Length > 0;
+
     /// <summary>Записать блок нужной дорожкой в готовый буфер, ничего не выделяя.</summary>
-    public void CopyTo(int index, AudioTrackKind kind, Span<short> dest) =>
-        AudioBlock.Mix(game.AsSpan(index * BlockSamples, BlockSamples),
-                       mic.AsSpan(index * BlockSamples, BlockSamples), kind, dest);
+    public void CopyTo(int index, AudioTrackKind kind, Span<short> dest)
+    {
+        // Микрофон могли не записывать вовсе — тогда его массива нет, и любая
+        // дорожка, где он участвует, вырождается в игровой звук. Проверка здесь,
+        // а не у вызывающих: режим дорожек выбирается в настройках сохранения и
+        // о наличии микрофона в буфере ничего не знает.
+        var micBlock = HasMic
+            ? mic.AsSpan(index * BlockSamples, BlockSamples)
+            : ReadOnlySpan<short>.Empty;
+        if (!HasMic) kind = AudioTrackKind.Game;
+
+        AudioBlock.Mix(game.AsSpan(index * BlockSamples, BlockSamples), micBlock, kind, dest);
+    }
 }
 
 /// <summary>
@@ -640,7 +653,11 @@ public sealed class ReplayAudioBuffer
     /// <summary>Сколько байт занимают накопленные блоки — для диагностики памяти.</summary>
     public long TotalBytes
     {
-        get { lock (_sync) return (long)_count * _blockSamples * 2 * sizeof(short); }
+        get
+        {
+            lock (_sync)
+                return (long)_count * _blockSamples * (_mic.Length > 0 ? 2 : 1) * sizeof(short);
+        }
     }
 
     /// <summary>
@@ -650,7 +667,7 @@ public sealed class ReplayAudioBuffer
     /// параметром — намеренно: файл не должен тянуть за собой аудиоподсистему с
     /// NAudio, иначе его не подключить к тестам.
     /// </summary>
-    public void Allocate(int blockSamples, int seconds)
+    public void Allocate(int blockSamples, int seconds, bool captureMicrophone = true)
     {
         // Арена обязана вмещать заказанное ПЛЮС тот же запас, что держит вытеснение
         // по времени, иначе кольцо выбросит начало клипа раньше, чем его попросят
@@ -663,12 +680,17 @@ public sealed class ReplayAudioBuffer
             _head = 0;
             _count = 0;
             _game = new short[(long)capacity * blockSamples];
-            _mic = new short[(long)capacity * blockSamples];
+            // Дорожка микрофона занимает столько же, сколько игровая: на трёх минутах
+            // это около 37 МБ. Пока микрофон выключен, она целиком состоит из нулей,
+            // поэтому её просто нет.
+            _mic = captureMicrophone ? new short[(long)capacity * blockSamples] : [];
             _pts = new long[capacity];
         }
 
-        long bytes = 2L * capacity * blockSamples * sizeof(short);
-        Log.Info("Buffer", $"Арена звука: {capacity} блоков × 2 дорожки = " +
+        int tracks = captureMicrophone ? 2 : 1;
+        long bytes = (long)tracks * capacity * blockSamples * sizeof(short);
+        string trackText = captureMicrophone ? "звук игры и микрофон" : "только звук игры";
+        Log.Info("Buffer", $"Арена звука: {capacity} блоков, {trackText} = " +
                            $"{bytes / (1024 * 1024)} МБ на {seconds} сек");
     }
 
@@ -685,7 +707,8 @@ public sealed class ReplayAudioBuffer
 
             int offset = slot * _blockSamples;
             block.Game.AsSpan(0, _blockSamples).CopyTo(_game.AsSpan(offset, _blockSamples));
-            block.Mic.AsSpan(0, _blockSamples).CopyTo(_mic.AsSpan(offset, _blockSamples));
+            if (_mic.Length > 0)
+                block.Mic.AsSpan(0, _blockSamples).CopyTo(_mic.AsSpan(offset, _blockSamples));
             _pts[slot] = block.PtsTicks;
 
             // Вытеснение по времени: держим заказанную длительность плюс запас
@@ -720,8 +743,11 @@ public sealed class ReplayAudioBuffer
 
         // Большие массивы zero-fill'ятся при создании. Раньше это происходило под
         // _sync и на десятки/сотни миллисекунд останавливало realtime audio mixer.
+        bool hasMic;
+        lock (_sync) hasMic = _mic.Length > 0;
+
         var game = new short[plannedCount * blockSamples];
-        var mic = new short[plannedCount * blockSamples];
+        var mic = hasMic ? new short[plannedCount * blockSamples] : [];
         var pts = new long[plannedCount];
 
         int actualCount;
@@ -736,7 +762,8 @@ public sealed class ReplayAudioBuffer
             {
                 int slot = (_head + first + i) % _capacity;
                 _game.AsSpan(slot * blockSamples, blockSamples).CopyTo(game.AsSpan(i * blockSamples));
-                _mic.AsSpan(slot * blockSamples, blockSamples).CopyTo(mic.AsSpan(i * blockSamples));
+                if (hasMic)
+                    _mic.AsSpan(slot * blockSamples, blockSamples).CopyTo(mic.AsSpan(i * blockSamples));
                 pts[i] = _pts[slot];
             }
         }
@@ -745,7 +772,7 @@ public sealed class ReplayAudioBuffer
         if (actualCount != plannedCount)
         {
             Array.Resize(ref game, actualCount * blockSamples);
-            Array.Resize(ref mic, actualCount * blockSamples);
+            if (hasMic) Array.Resize(ref mic, actualCount * blockSamples);
             Array.Resize(ref pts, actualCount);
         }
         return new AudioSnapshot(game, mic, pts, blockSamples);

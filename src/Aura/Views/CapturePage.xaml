@@ -1,4 +1,4 @@
-<views:PageBase x:Class="Aura.Views.CapturePage"
+﻿<views:PageBase x:Class="Aura.Views.CapturePage"
                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                 xmlns:c="clr-namespace:Aura.Controls"
@@ -182,6 +182,14 @@
                                 <TextBlock x:Name="CursorSub" Text="В шутерах обычно не нужен" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <c:Switch x:Name="CursorSwitch" Click="Video_Changed"/>
+                        </c:AdaptiveRow>
+                        <Border Style="{StaticResource RowSeparator}"/>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Десять бит цвета" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="TenBitSub" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Switch x:Name="TenBitSwitch" Click="Video_Changed"/>
                         </c:AdaptiveRow>
                         <!-- Предупреждения «на Windows 10 курсор не попадёт в запись»
                              здесь больше нет: приложение дорисовывает курсор само

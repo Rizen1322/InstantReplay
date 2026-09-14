@@ -175,6 +175,24 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Сколько кадров сейчас ждёт в очереди — для посекундной диагностики.</summary>
     public int QueueDepth { get { lock (_queueLock) return _inputQueue.Count; } }
 
+    /// <summary>
+    /// Очередь забита: новый реальный кадр войдёт в неё только вместо другого.
+    ///
+    /// Нужна ДО преобразования кадра в NV12. Раньше порядок был обратный: кадр
+    /// сначала прогонялся через видеопроцессор и копировался в пул, и лишь потом
+    /// выяснялось, что в очереди нет места и кто-то будет вытеснен. Пока энкодер
+    /// работает, это стоит недорого. Но когда он встаёт — а встаёт он ровно тогда,
+    /// когда видеокарта занята игрой, — получается худшее из возможного: на
+    /// перегруженной видеокарте мы делаем по сорок преобразований в секунду, все
+    /// результаты выбрасываем и этим же продлеваем затор. В логе такой эпизод
+    /// выглядел как «запросов MFT 0, очередь 33/33, дропов 46» подряд секунд по
+    /// двадцать.
+    /// </summary>
+    public bool InputQueueSaturated { get { lock (_queueLock) return _inputQueue.Count >= _maxInputQueue; } }
+
+    /// <summary>Кадры, не дошедшие даже до преобразования: очередь была забита.</summary>
+    public long FramesSkippedBeforeConvert;
+
     /// <summary>Размер кольца текстур и потолок очереди — их считает бюджет видеопамяти.</summary>
     public int PoolSlots => _copyPool?.Slots ?? 0;
     public int MaxQueue => _maxInputQueue;
@@ -183,13 +201,22 @@ public sealed class VideoEncoder : IDisposable
         (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
                (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
 
-    public void Initialize(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
+    /// <summary>Пишем ли мы сейчас десять бит. Решается при инициализации.</summary>
+    public bool TenBit { get; private set; }
+
+    public void Initialize(ID3D11Device device, int width, int height, int fps, long bitrateBps,
+                           VideoCodec codec, bool preferTenBit = false)
     {
         _device = device;
         Width = width; Height = height; Fps = fps;
         _frameDurationTicks = 10_000_000L / fps;
 
-        _copyPool = new EncoderTexturePool(device, width, height);
+        // Десять бит просим только у HEVC. У H.264 десятибитный профиль почти не
+        // поддерживается плеерами, а NVENC его не умеет вовсе; у AV1 в Media
+        // Foundation слишком неровная поддержка, чтобы рисковать записью.
+        TenBit = preferTenBit && codec == VideoCodec.HEVC;
+
+        _copyPool = new EncoderTexturePool(device, width, height, TenBit);
         _maxInputQueue = Math.Max(8, _copyPool.Slots - 8); // запас на кадры в работе у MFT
 
         // DXGI device manager — чтобы MFT работал на нашем D3D-устройстве
@@ -230,19 +257,39 @@ public sealed class VideoEncoder : IDisposable
         outType.Set(MediaTypeAttributeKeys.MaxKeyframeSpacing, (uint)(fps * 2));
         if (codec == VideoCodec.H264)
             outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, 100u /* eAVEncH264VProfile_High */);
+        else if (codec == VideoCodec.HEVC)
+            outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, TenBit ? Main10Profile : Main8Profile);
         SetColorInfo(outType);
         _transform.SetOutputType(0, outType, 0);
         OutputMediaType = outType;
 
-        // --- Входной тип: NV12 того же размера ---
-        using var inType = MediaFactory.MFCreateMediaType();
-        inType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
-        inType.Set(MediaTypeAttributeKeys.Subtype, VideoFormatGuids.NV12);
-        inType.Set(MediaTypeAttributeKeys.FrameSize, PackLong(width, height));
-        inType.Set(MediaTypeAttributeKeys.FrameRate, PackLong(fps, 1));
-        inType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive);
-        SetColorInfo(inType);
-        _transform.SetInputType(0, inType, 0);
+        LogInputFormats();
+
+        // --- Входной тип: NV12 или P010 того же размера ---
+        //
+        // Порядок здесь обратный привычному: выходной тип у энкодеров задаётся
+        // первым, а профиль живёт именно в нём. Поэтому десятибитный профиль
+        // приходится объявлять ДО того, как выяснится, примет ли энкодер P010 на
+        // вход. Если не примет, ниже мы переобъявим оба типа восьмибитными: пока
+        // поток не пошёл, менять типы можно сколько угодно.
+        if (!TrySetInputFormat(width, height, fps, TenBit) && TenBit)
+        {
+            Log.Info("Encoder", "Энкодер не принял P010 — возвращаюсь к восьми битам");
+            TenBit = false;
+
+            // Профиль живёт в выходном типе, поэтому его надо переобъявить целиком.
+            var eightBitOut = MediaFactory.MFCreateMediaType();
+            outType.CopyAllItems(eightBitOut);
+            eightBitOut.Set(MediaTypeAttributeKeys.Mpeg2Profile, Main8Profile);
+            _transform.SetOutputType(0, eightBitOut, 0);
+            OutputMediaType = eightBitOut;
+            outType.Dispose();
+
+            if (!TrySetInputFormat(width, height, fps, tenBit: false))
+                throw new InvalidOperationException("Энкодер не принял ни P010, ни NV12");
+        }
+
+        if (TenBit) Log.Info("Encoder", "Глубина цвета: десять бит (P010, профиль Main 4:2:0 10)");
 
         ConfigureCodecApi(fps, bitrateBps);
 
@@ -334,6 +381,85 @@ public sealed class VideoEncoder : IDisposable
 
     /// <summary>eAVEncCommonRateControlMode: постоянный битрейт.</summary>
     private const uint ConstantBitRate = 0;
+
+    /// <summary>eAVEncH265VProfile_Main_420_8.</summary>
+    private const uint Main8Profile = 1;
+
+    /// <summary>eAVEncH265VProfile_Main_420_10.</summary>
+    private const uint Main10Profile = 2;
+
+    /// <summary>Объявить входной тип кадра. false — энкодер его не принял.</summary>
+    private bool TrySetInputFormat(int width, int height, int fps, bool tenBit)
+    {
+        try
+        {
+            using var inType = MediaFactory.MFCreateMediaType();
+            inType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Video);
+            inType.Set(MediaTypeAttributeKeys.Subtype,
+                       tenBit ? VideoFormatGuids.P010 : VideoFormatGuids.NV12);
+            inType.Set(MediaTypeAttributeKeys.FrameSize, PackLong(width, height));
+            inType.Set(MediaTypeAttributeKeys.FrameRate, PackLong(fps, 1));
+            inType.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive);
+            SetColorInfo(inType);
+            _transform!.SetInputType(0, inType, 0);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Encoder", $"Входной тип {(tenBit ? "P010" : "NV12")} не принят: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Какие форматы кадра энкодер согласен принимать. Только запись в лог.
+    ///
+    /// ЗАЧЕМ. Сейчас мы подаём NV12, то есть восемь бит на канал. Десятибитный P010
+    /// заметно лучше держит плавные переходы: небо, дым, тёмные сцены перестают
+    /// расслаиваться на полосы. Но поддержка зависит от конкретного MFT, а не от
+    /// кодека: программный энкодер HEVC от Microsoft умеет только восемь бит, тогда
+    /// как энкодеры NVIDIA и Intel десять бит обычно умеют.
+    ///
+    /// Гадать по названию драйвера бессмысленно, поэтому спрашиваем сам энкодер.
+    /// Список типов он отдаёт после того, как задан выходной тип, и чтение его
+    /// ничего не меняет. По этой строке в логе и станет ясно, стоит ли переводить
+    /// конвейер на десять бит.
+    /// </summary>
+    private void LogInputFormats()
+    {
+        if (_transform is null) return;
+
+        var names = new List<string>();
+        bool tenBit = false;
+        try
+        {
+            for (int index = 0; index < 32; index++)
+            {
+                IMFMediaType? available = null;
+                try { available = _transform.GetInputAvailableType(0, index); }
+                catch { break; }   // MF_E_NO_MORE_TYPES — список кончился
+                if (available is null) break;
+
+                using (available)
+                {
+                    Guid sub = available.GetGUID(MediaTypeAttributeKeys.Subtype);
+                    if (sub == VideoFormatGuids.NV12) names.Add("NV12");
+                    else if (sub == VideoFormatGuids.P010) { names.Add("P010 (10 бит)"); tenBit = true; }
+                    else if (sub == VideoFormatGuids.Argb32) names.Add("ARGB32");
+                    else names.Add(sub.ToString());
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Encoder", $"Список входных форматов не читается: {ex.Message}");
+            return;
+        }
+
+        if (names.Count == 0) return;
+        Log.Info("Encoder", $"Энкодер принимает: {string.Join(", ", names)}" +
+                            (tenBit ? " — десять бит доступны" : " — только восемь бит"));
+    }
 
     /// <summary>
     /// Битрейт: VBR с потолком, с откатом на CBR там, где энкодер его не принял.

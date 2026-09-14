@@ -339,7 +339,10 @@ public sealed class ReplayEngine : IDisposable
                 _videoBuffer.Allocate(s.BitrateBps, effectiveReplaySeconds);
                 _bufferSequenceHeader = null;
                 if (captureAudio)
-                    _audioBuffer.Allocate(Audio.AudioMixerEngine.BlockSamples, effectiveReplaySeconds);
+                    _audioBuffer.Allocate(
+                        Audio.AudioMixerEngine.BlockSamples,
+                        effectiveReplaySeconds,
+                        s.CaptureMicrophone);
                 else
                     _audioBuffer.Release();
             }
@@ -357,8 +360,25 @@ public sealed class ReplayEngine : IDisposable
             int canvasWidth = monitorCanvas?.Width ?? _capture.Width;
             int canvasHeight = monitorCanvas?.Height ?? _capture.Height;
 
+            // Десять бит просим только у HEVC: см. AppSettings.BitDepth.
+            bool wantTenBit = s.Codec == VideoCodec.HEVC &&
+                              s.BitDepth is VideoBitDepth.Auto or VideoBitDepth.Ten;
+
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
-            _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps);
+            try
+            {
+                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, wantTenBit);
+            }
+            catch (Exception ex) when (wantTenBit)
+            {
+                // Последняя страховка десяти бит. Всё, что можно было спросить у
+                // драйвера, мы спросили, но отказать он вправе и на любом другом
+                // шаге. Запись важнее глубины цвета, поэтому молча берём восемь бит
+                // вместо того, чтобы не включиться вовсе.
+                Log.Warn("Capture", $"Десять бит не настроились ({ex.Message}) — беру восемь");
+                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
+                                     preferTenBit: false);
+            }
 
             _frameBroker = new GpuCaptureFrameBroker(
                 _capture.D3DDevice,
@@ -394,7 +414,17 @@ public sealed class ReplayEngine : IDisposable
 
             var encoder = _encoder = new VideoEncoder();
             encoder.Initialize(_capture.D3DDevice, _processor.OutWidth, _processor.OutHeight,
-                               s.Fps, s.BitrateBps, s.Codec);
+                               s.Fps, s.BitrateBps, s.Codec, _processor.TenBit);
+
+            // Видеопроцессор согласился писать десять бит, а энкодер их не принял.
+            // Форматы обязаны совпадать, поэтому переводим процессор обратно на NV12.
+            // Случай редкий, но молча отдавать P010 в восьмибитный вход нельзя.
+            if (_processor.TenBit && !encoder.TenBit)
+            {
+                Log.Info("Capture", "Возвращаю видеопроцессор на восемь бит вслед за энкодером");
+                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
+                                     preferTenBit: false);
+            }
             bool awaitingRestartKeyframe = validateSequenceHeader;
             _encodedStreamReady = !awaitingRestartKeyframe;
             encoder.FrameEncoded += frame =>
@@ -546,6 +576,15 @@ public sealed class ReplayEngine : IDisposable
             GpuCaptureFrameLease current = lease!;
             using (current)
             {
+                // Очередь энкодера забита — кадр всё равно вытеснит другой такой же.
+                // Тратить на него видеокарту, которая и так не справляется, незачем:
+                // см. VideoEncoder.InputQueueSaturated.
+                if (_encoder is { } saturatedCheck && saturatedCheck.InputQueueSaturated)
+                {
+                    Interlocked.Increment(ref saturatedCheck.FramesSkippedBeforeConvert);
+                    return;
+                }
+
                 long t0 = Diagnostics.PipelineProbe.Now();
                 var nv12 = _processor!.Convert(current.Texture);
                 long t1 = Diagnostics.PipelineProbe.Now();
@@ -811,6 +850,7 @@ public sealed class ReplayEngine : IDisposable
     // Раз в минуту — здоровье конвейера в лог: по этим цифрам видно, ГДЕ теряются
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
     private System.Threading.Timer? _statsTimer;
+    private long _lastSkippedBeforeConvert;
     private long _lastSubmitted, _lastEncoded, _lastDropped, _lastDiscardedDuplicates,
                  _lastSuppressedDuplicates, _lastDuplicated, _lastReceived, _lastAccepted;
     private long _lastRequests, _lastPacerBlocked;
@@ -819,7 +859,7 @@ public sealed class ReplayEngine : IDisposable
     {
         _lastSubmitted = _lastEncoded = _lastDropped = _lastDiscardedDuplicates =
             _lastSuppressedDuplicates = _lastDuplicated = _lastReceived = _lastAccepted = 0;
-        _lastRequests = _lastPacerBlocked = 0;
+        _lastRequests = _lastPacerBlocked = _lastSkippedBeforeConvert = 0;
         _statsWindowStart = DateTime.UtcNow;
         _statsTimer?.Dispose();
         _statsTimer = new System.Threading.Timer(_ => DumpStats("за минуту"),
@@ -840,6 +880,7 @@ public sealed class ReplayEngine : IDisposable
         var cap = _capture;
         if (enc is null || State == EngineState.Stopped) return;
 
+        long skipped = Interlocked.Read(ref enc.FramesSkippedBeforeConvert);
         long s = enc.FramesSubmitted, e = enc.FramesEncoded,
              d = enc.FramesDroppedRealQueue,
              discardedDuplicates = enc.FramesDiscardedDuplicates,
@@ -862,7 +903,10 @@ public sealed class ReplayEngine : IDisposable
             $"fps: {captureName} {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
             $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
             $", пресет {enc.QualityPreset}, кадров внутри MFT до {Interlocked.Exchange(ref enc.MaxInFlight, 0)}" +
-            (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (давление очереди/MFT)" : ""));
+            (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (давление очереди/MFT)" : "") +
+            (skipped > _lastSkippedBeforeConvert
+                ? $"; не преобразовано на забитой очереди {skipped - _lastSkippedBeforeConvert}"
+                : ""));
 
         // Видеопамять: превышение бюджета означает вытеснение текстур в оперативную
         // память через шину, и тогда застревает всё, что трогает GPU — и захват, и
@@ -881,6 +925,7 @@ public sealed class ReplayEngine : IDisposable
         LogMemory();
 
         _lastSubmitted = s; _lastEncoded = e; _lastDropped = d;
+        _lastSkippedBeforeConvert = skipped;
         _lastDiscardedDuplicates = discardedDuplicates;
         _lastSuppressedDuplicates = suppressedDuplicates;
         _lastDuplicated = dup;
@@ -1106,6 +1151,8 @@ public sealed class ReplayEngine : IDisposable
     private long _wdLastReceived = -1;
     private DateTime _wdLastActivity = DateTime.UtcNow;
     private bool _wdEpisodeLogged; // логируем только начало эпизода тишины, не каждые 15 сек
+    private bool _wdSilenceLogged; // ранняя запись с обстановкой — один раз на эпизод
+    private double _wdLastRate;    // кадров в секунду в последнем живом окне
 
     // ---------------- Посекундная диагностика провалов ----------------
     //
@@ -1286,6 +1333,7 @@ public sealed class ReplayEngine : IDisposable
         }
 
         _wdLastReceived = -1;
+        _wdLastRate = 0;
         _wdLastActivity = DateTime.UtcNow;
         _watchdog = new System.Threading.Timer(_ =>
         {
@@ -1295,28 +1343,81 @@ public sealed class ReplayEngine : IDisposable
             long received = cap.FramesReceived;
             if (received != _wdLastReceived)
             {
+                // Запоминаем темп последнего живого окна: по нему и судим, тишина
+                // это поломка или законное затишье (см. ниже).
+                var now = DateTime.UtcNow;
+                double window = (now - _wdLastActivity).TotalSeconds;
+                if (_wdLastReceived >= 0 && window > 0.5)
+                    _wdLastRate = (received - _wdLastReceived) / window;
+
                 _wdLastReceived = received;
-                _wdLastActivity = DateTime.UtcNow;
+                _wdLastActivity = now;
                 _wdEpisodeLogged = false;
+                _wdSilenceLogged = false;
                 return;
             }
-            if ((DateTime.UtcNow - _wdLastActivity).TotalSeconds < 15) return;
+            double silent = (DateTime.UtcNow - _wdLastActivity).TotalSeconds;
+
+            // Порог пересборки зависит от того, ЧТО мы снимаем.
+            //
+            // Игра показывает кадры непрерывно, поэтому её молчание дольше пяти
+            // секунд — это уже сломанный захват, и ждать пятнадцать значит подарить
+            // буферу десять секунд пустоты. На рабочем столе всё наоборот: WGC
+            // отдаёт кадры по композиции, а если на экране ничего не меняется,
+            // композиции может не быть вовсе. Там короткий порог давал бы ложные
+            // пересборки на ровном месте.
+            var target = ActiveCaptureTarget();
+
+            // Судим по ТЕМПУ последнего живого окна, а не по тому, что снимаем.
+            //
+            // WGC отдаёт кадры по композиции рабочего стола. Если на экране ничего
+            // не меняется, композиции может не быть вовсе, и молчание там законно —
+            // короткий порог давал бы пересборки на ровном месте. Но если секунду
+            // назад шло шестьдесят кадров в секунду, а теперь ноль, это поломка,
+            // и ждать пятнадцать секунд значит подарить буферу столько же пустоты.
+            //
+            // Отдельный случай — физически выключенный монитор. Событие питания при
+            // этом не приходит вовсе: для Windows это отключение дисплея от шины,
+            // а не погашенный экран. В логе такой эпизод выглядел как ровные 60 fps
+            // и сразу за ними тишина.
+            bool wasLive = _wdLastRate >= 20 || target is not null;
+            double rebuildAfter = wasLive ? 3 : 15;
+
+            // Ранняя запись в лог: она не чинит захват, но без неё причина эпизода
+            // терялась. Пересборка стирает и очередь, и состояние источника, то есть
+            // всё, по чему потом можно было бы понять, что именно встало.
+            if (silent >= 3 && !_wdSilenceLogged)
+            {
+                _wdSilenceLogged = true;
+                string vram = GpuInfo.Usage(cap.D3DDevice) is { } usage
+                    ? $"{usage.UsedMb}/{usage.BudgetMb} МБ"
+                    : "не читается";
+                string captureName = _captureBackend == CaptureBackend.Wgc ? "WGC" : "DDA";
+                Log.Warn("Engine", $"Захват молчит {silent:F1} с: backend {captureName}, " +
+                                   $"цель {(target is null ? "рабочий стол" : $"окно 0x{target.Value.Hwnd:X}/r{target.Value.Revision}")}, " +
+                                   $"получено всего {received}, темп до тишины {_wdLastRate:F0} кадр/с, " +
+                                   $"очередь энкодера {_encoder?.QueueDepth ?? -1}, " +
+                                   $"видеопамять {vram}; пересборка через {rebuildAfter - silent:F1} с");
+            }
+
+            if (silent < rebuildAfter) return;
 
             _wdLastActivity = DateTime.UtcNow;
+            _wdSilenceLogged = false;
             if (!_wdEpisodeLogged)
             {
                 _wdEpisodeLogged = true;
-                Log.Warn("Engine", "Захват молчит >15 сек — пересобираю видеоконвейер");
+                Log.Warn("Engine", $"Захват молчит >{rebuildAfter:F0} сек — пересобираю видеоконвейер");
             }
             long generation = Interlocked.Read(ref _captureGeneration);
             var stalled = new InvalidOperationException(
-                "WGC не присылает кадры больше 15 секунд");
+                $"WGC не присылает кадры больше {rebuildAfter:F0} секунд");
             OnCaptureFailed(new CaptureFailure(
                 CaptureFailureKind.BackendStalled,
                 stalled,
                 "WGC: поток кадров остановился",
                 generation,
-                ActiveCaptureTarget()?.Revision ?? 0), generation);
+                target?.Revision ?? 0), generation);
         }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
     }
 
@@ -1328,6 +1429,138 @@ public sealed class ReplayEngine : IDisposable
         {
             _continuousRecordingRequested = false;
             StopLocked();
+        }
+    }
+
+    /// <summary>
+    /// Контейнер MP4 не принял десятибитный поток — переводим настройку на восемь
+    /// бит навсегда.
+    ///
+    /// ЗАЧЕМ. Готовность энкодера принять P010 мы проверяем при запуске, а вот
+    /// согласие MP4-мультиплексора Windows собрать из этого файл выясняется только
+    /// на финализации, то есть уже после того, как клип записан. Проверить это
+    /// заранее можно было бы только пробной записью на каждом запуске, и цена такой
+    /// проверки выше выигрыша.
+    ///
+    /// Поэтому ловим отказ один раз и запоминаем его. Пользователь теряет один клип
+    /// вместо каждого следующего, и делать ему ничего не нужно.
+    /// </summary>
+    private void FallBackToEightBitIfContainerRefused(Exception error)
+    {
+        if (error is not NotSupportedException) return;
+        if (_encoder is not { TenBit: true }) return;
+        if (_settings.Current.BitDepth == VideoBitDepth.Eight) return;
+
+        // ГРУППА ОБЯЗАНА БЫТЬ "stats". Обработчик Changed на группу video берёт
+        // _lifecycle и перезапускает конвейер, а мы находимся в потоке сохранения,
+        // завершения которого этот же перезапуск дожидается под тем же замком.
+        // Получился бы дедлок. Новая глубина цвета применится при следующем старте
+        // конвейера, и этого достаточно.
+        _settings.Update(x => x.BitDepth = VideoBitDepth.Eight, "stats");
+        Log.Warn("Engine", "MP4 не принял десятибитный поток — запись переведена на восемь бит");
+        Warning?.Invoke("Windows не собрала MP4 из десятибитной записи. " +
+                        "Глубина цвета переключена на восемь бит, следующие клипы сохранятся.");
+    }
+
+    /// <summary>
+    /// Набор дисплеев изменился — пересобрать захват, не дожидаясь сторожа тишины.
+    ///
+    /// ЗАЧЕМ. Монитор, выключенный собственной кнопкой, исчезает с шины, и события
+    /// питания при этом нет. Захват просто перестаёт отдавать кадры. Сторож тишины
+    /// это заметит, но только по истечении своего порога, и всё это время буфер
+    /// копит пустоту. Здесь мы знаем причину сразу и пересобираем конвейер по тому
+    /// же пути, что и при зависании источника.
+    ///
+    /// Ничего не делаем, если конвейер и так стоит: событие приходит и при обычной
+    /// смене разрешения, когда повтор выключен.
+    /// </summary>
+    public void RebuildAfterDisplayChange(string reason)
+    {
+        if (!_pipelineOpen || _stopRequested || _state != EngineState.Running) return;
+
+        long generation = Interlocked.Read(ref _captureGeneration);
+        Log.Info("Engine", $"{reason} — пересобираю захват");
+        OnCaptureFailed(new CaptureFailure(
+            CaptureFailureKind.CaptureFormatChanged,
+            new InvalidOperationException(reason),
+            "пересборка захвата",
+            generation,
+            ActiveCaptureTarget()?.Revision ?? 0), generation);
+    }
+
+    // ---------------- Пауза на время, когда экран смотреть некому ----------------
+
+    /// <summary>
+    /// Причины, по которым конвейер сейчас на паузе. Их может быть несколько сразу:
+    /// система гасит экран и запирает сеанс почти одновременно, а событий прихода и
+    /// ухода одинаковое число не гарантирует никто. Поэтому держим множество, а не
+    /// счётчик: повторное «экран погас» не удвоит вес причины, а лишнее «экран
+    /// включился» не снимет паузу, которую держит блокировка.
+    /// </summary>
+    private readonly HashSet<string> _systemSuspendReasons = new(StringComparer.Ordinal);
+
+    /// <summary>Мы ли остановили конвейер. Чужую остановку возобновлять не наше дело.</summary>
+    private bool _suspendedBySystem;
+
+    /// <summary>Идёт ли сейчас системная пауза — для интерфейса и диагностики.</summary>
+    public bool SuspendedBySystem { get { lock (_lifecycle) return _suspendedBySystem; } }
+
+    /// <summary>
+    /// Остановить конвейер, пока длится системное событие.
+    ///
+    /// ЗАЧЕМ. Пока экран погашен или сеанс заперт, записывать нечего: содержимое
+    /// буфера всё равно никому не пригодится, а конвейер продолжает занимать
+    /// видеопамять, кодировать кадры и держать около гигабайта оперативной памяти.
+    /// На ноутбуке это ещё и разряд батареи в закрытой крышке.
+    ///
+    /// Останавливаем с намерением UserStop: оно освобождает буферы и запускает
+    /// сжатие кучи. Возобновление всё равно начинает буфер заново, поэтому держать
+    /// арену на время паузы незачем.
+    ///
+    /// Ручную запись в файл пауза НЕ трогает. Пользователь мог запустить запись
+    /// намеренно перед тем, как отойти, и оборвать её тише было бы хуже всего.
+    /// </summary>
+    public void SuspendForSystem(string reason)
+    {
+        lock (_lifecycle)
+        {
+            bool added = _systemSuspendReasons.Add(reason);
+            if (_continuousRecordingRequested || _recorder is not null)
+            {
+                if (added) Log.Info("Engine", $"{reason}: идёт запись в файл, конвейер не трогаем");
+                return;
+            }
+            if (_suspendedBySystem || _state == EngineState.Stopped) return;
+
+            _suspendedBySystem = true;
+            Log.Info("Engine", $"{reason}: конвейер приостановлен");
+            StopLocked();
+        }
+    }
+
+    /// <summary>
+    /// Снять одну причину паузы и, если других не осталось, поднять конвейер.
+    ///
+    /// Поднимаем только то, что сами и остановили: если пользователь выключил повтор
+    /// до блокировки экрана, разблокировка не должна включать его обратно.
+    /// </summary>
+    public void ResumeAfterSystem(string reason)
+    {
+        lock (_lifecycle)
+        {
+            _systemSuspendReasons.Remove(reason);
+            if (_systemSuspendReasons.Count > 0 || !_suspendedBySystem) return;
+
+            _suspendedBySystem = false;
+            if (_stopRequested) return;   // приложение закрывается — поднимать нечего
+
+            Log.Info("Engine", $"{reason}: конвейер возобновлён");
+            try { StartWithFallbackLocked(preserveBuffers: false); }
+            catch (Exception ex)
+            {
+                Log.Error("Engine", ex);
+                Warning?.Invoke($"Не удалось возобновить запись после события «{reason}»: {ex.Message}");
+            }
         }
     }
 
@@ -1583,6 +1816,7 @@ public sealed class ReplayEngine : IDisposable
             catch (Exception ex)
             {
                 Log.Error("Engine", ex);
+                FallBackToEightBitIfContainerRefused(ex);
                 SaveFailed?.Invoke(ex.Message);
             }
             finally
