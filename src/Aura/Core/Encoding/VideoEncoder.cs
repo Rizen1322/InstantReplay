@@ -315,7 +315,25 @@ public sealed class VideoEncoder : IDisposable
         // читалось 3 Мбит при заданных 40 (и с режимом низкой задержки, и без него).
         // Пробуем до типов — по той же причине, по которой сюда попали B-кадры.
         _codecApi.Set(CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
+
+        // Режим управления битрейтом — из той же семьи структурных параметров.
+        // Поставленный ПОСЛЕ медиатипов, VBR с потолком у NVENC не удерживался:
+        // в логе стояло «VBR с потолком не принят энкодером», и чтение обратно
+        // возвращало CBR. Пробуем до типов; удержалось или нет, проверит
+        // ConfigureRateControl, который зовут уже после.
+        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, PeakConstrainedVbr, optional: true);
+        _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, (uint)bitrateBps, optional: true);
+        _codecApi.Set(
+            CodecApiGuids.AVEncCommonMaxBitRate,
+            (uint)Math.Min(bitrateBps + bitrateBps / 2, uint.MaxValue),
+            optional: true);
     }
+
+    /// <summary>eAVEncCommonRateControlMode: VBR со средним битрейтом и потолком.</summary>
+    private const uint PeakConstrainedVbr = 1;
+
+    /// <summary>eAVEncCommonRateControlMode: постоянный битрейт.</summary>
+    private const uint ConstantBitRate = 0;
 
     /// <summary>
     /// Битрейт: VBR с потолком, с откатом на CBR там, где энкодер его не принял.
@@ -341,11 +359,13 @@ public sealed class VideoEncoder : IDisposable
     {
         if (_codecApi is null) return;
 
-        const uint PeakConstrainedVbr = 1;
-        const uint ConstantBitRate = 0;
         uint mean = (uint)bitrateBps;
         uint peak = (uint)Math.Min(bitrateBps + bitrateBps / 2, uint.MaxValue);
 
+        // Режим уже пробовали поставить до медиатипов (ConfigureCodecApiEarly).
+        // Повторяем на случай энкодеров, которые принимают его только здесь, и
+        // проверяем чтением обратно: SetValue у NVIDIA возвращает успех и на
+        // ключах, которые ничего не меняют.
         _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, PeakConstrainedVbr, optional: true);
         bool vbrAccepted =
             _codecApi.TryReadUInt(CodecApiGuids.AVEncCommonRateControlMode, out uint actual) &&

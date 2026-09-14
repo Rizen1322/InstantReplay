@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 
 namespace Aura.Core.Capture.GameHook;
 
@@ -30,7 +30,8 @@ internal readonly record struct GameHookFrameSnapshot(
     int Width,
     int Height,
     int Stride,
-    int ByteCount);
+    int ByteCount,
+    bool CursorVisible);
 
 internal interface IGameHookMemoryView
 {
@@ -183,7 +184,8 @@ internal sealed class GameHookFrameReader
             slot.Width,
             slot.Height,
             slot.Stride,
-            slot.ByteCount);
+            slot.ByteCount,
+            slot.CursorVisible != 0);
         result = GameHookFrameReadResult.Success;
         return true;
     }

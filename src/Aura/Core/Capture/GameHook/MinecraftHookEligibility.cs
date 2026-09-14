@@ -1,4 +1,4 @@
-namespace Aura.Core.Capture.GameHook;
+﻿namespace Aura.Core.Capture.GameHook;
 
 internal enum MinecraftHookEligibilityReason
 {
@@ -65,15 +65,60 @@ internal static class MinecraftHookEligibility
         ["cs2.exe"],
         StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Модули защит от читов. Если хоть один загружен в целевой процесс, внедрение
+    /// запрещено НАВСЕГДА, без исключений и без настройки.
+    ///
+    /// Причина не в том, что запись нарушает правила. Причина в том, что внедрение
+    /// библиотеки внешне неотличимо от того, что делает чит, и решение принимает не
+    /// пользователь и не мы. Цена ошибки — блокировка аккаунта, а выигрыш — лишь
+    /// способ захвата, у которого есть рабочая замена (WGC и Desktop Duplication).
+    /// Поэтому список расширяем щедро: ложный отказ ничего не стоит.
+    /// </summary>
     private static readonly HashSet<string> KnownAntiCheatModules = new(
         [
+            // Easy Anti-Cheat: Fortnite, Apex Legends, Rust, Dead by Daylight
             "easyanticheat.dll",
             "easyanticheat_x64.dll",
             "easyanticheat_eos.dll",
+            "easyanticheat_launcher.exe",
+            // BattlEye: PUBG, Escape from Tarkov, DayZ, Rainbow Six Siege
             "beclient.dll",
             "beclient_x64.dll",
+            "bedaisy.sys",
+            "beservice.exe",
+            // Riot Vanguard: Valorant, League of Legends
             "vgk.dll",
-            "faceitclient.dll"
+            "vgc.dll",
+            "vgtray.exe",
+            // FACEIT и ESEA
+            "faceitclient.dll",
+            "faceit.dll",
+            "esea.dll",
+            // Tencent ACE: Delta Force, Naraka Bladepoint
+            "ace-base.dll",
+            "ace-guard.dll",
+            "anticheatexpert.dll",
+            "sguard64.exe",
+            // nProtect GameGuard
+            "gamemon64.des",
+            "npggnt.des",
+            "nppt9x.vxd",
+            // XIGNCODE3
+            "xhunter1.sys",
+            "xigncode3.dll",
+            "x3.xem",
+            // miHoYo: Genshin Impact, Honkai Star Rail
+            "mhyprot2.sys",
+            "mhyprot3.sys",
+            // Roblox Hyperion (Byfron)
+            "rbxhyperion.dll",
+            // PunkBuster
+            "pnkbstra.exe",
+            "pnkbstrb.exe",
+            // Denuvo Anti-Cheat
+            "denuvo64.dll",
+            "anticheat.dll"
         ],
         StringComparer.OrdinalIgnoreCase);
 

@@ -188,6 +188,11 @@ static int publish_frame(
     slot->height = state->height;
     slot->stride = state->stride;
     slot->byte_count = state->byte_count;
+    // Читаем из потока отрисовки игры: счётчик показа курсора привязан к очереди
+    // ввода потока, и только здесь виден настоящий ответ.
+    CURSORINFO cursor = {0};
+    cursor.cbSize = sizeof(cursor);
+    slot->cursor_visible = GetCursorInfo(&cursor) && (cursor.flags & CURSOR_SHOWING) != 0 ? 1 : 0;
     uint8_t *destination = mapping + payload_offset;
     for (int row = 0; row < state->height; ++row) {
         const uint8_t *source_row = pixels +

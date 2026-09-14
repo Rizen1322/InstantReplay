@@ -6,7 +6,7 @@
 
 #define AURA_GAME_HOOK_MAGIC UINT32_C(0x48475541)
 #define AURA_GAME_HOOK_BOOTSTRAP_MAGIC UINT32_C(0x42475541)
-#define AURA_GAME_HOOK_VERSION UINT16_C(1)
+#define AURA_GAME_HOOK_VERSION UINT16_C(2)
 #define AURA_GAME_HOOK_BOOTSTRAP_HEADER_SIZE 256
 #define AURA_GAME_HOOK_HEADER_SIZE 256
 #define AURA_GAME_HOOK_SLOT_HEADER_SIZE 64
@@ -96,7 +96,17 @@ typedef struct aura_game_hook_frame_slot_header {
     int32_t height;
     int32_t stride;
     int32_t byte_count;
-    uint8_t reserved[16];
+    /*
+     * Виден ли курсор ГЛАЗАМИ САМОЙ ИГРЫ на момент кадра.
+     *
+     * Снаружи это не выясняется. Счётчик показа курсора у ShowCursor ведётся на
+     * очередь ввода потока, поэтому GetCursorInfo из чужого процесса сообщает
+     * состояние для СВОЕЙ очереди. Minecraft в полноэкранном режиме прячет курсор
+     * у себя, а контроллер видел «показан» и рисовал стрелку посреди записи.
+     * Хук живёт внутри игры и на её же потоке, поэтому читает верное значение.
+     */
+    int32_t cursor_visible;
+    uint8_t reserved[12];
 } aura_game_hook_frame_slot_header;
 
 _Static_assert(sizeof(aura_game_hook_header) == AURA_GAME_HOOK_HEADER_SIZE,
@@ -169,6 +179,7 @@ AURA_ASSERT_SLOT_OFFSET(width, 32);
 AURA_ASSERT_SLOT_OFFSET(height, 36);
 AURA_ASSERT_SLOT_OFFSET(stride, 40);
 AURA_ASSERT_SLOT_OFFSET(byte_count, 44);
+AURA_ASSERT_SLOT_OFFSET(cursor_visible, 48);
 
 #undef AURA_ASSERT_HEADER_OFFSET
 #undef AURA_ASSERT_SLOT_OFFSET

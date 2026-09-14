@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Aura.Core.Capture.GameHook;
 using Xunit;
 
@@ -10,7 +10,7 @@ public sealed class GameHookProtocolTests
     public void Header_layout_is_a_fixed_cross_process_contract()
     {
         Assert.Equal(0x48475541u, GameHookProtocol.Magic);
-        Assert.Equal(1, GameHookProtocol.Version);
+        Assert.Equal(2, GameHookProtocol.Version);
         Assert.Equal(3, GameHookProtocol.SlotCount);
         Assert.Equal(256, Marshal.SizeOf<GameHookHeader>());
 
@@ -56,6 +56,7 @@ public sealed class GameHookProtocolTests
         AssertOffset<GameHookFrameSlotHeader>(nameof(GameHookFrameSlotHeader.Height), 36);
         AssertOffset<GameHookFrameSlotHeader>(nameof(GameHookFrameSlotHeader.Stride), 40);
         AssertOffset<GameHookFrameSlotHeader>(nameof(GameHookFrameSlotHeader.ByteCount), 44);
+        AssertOffset<GameHookFrameSlotHeader>(nameof(GameHookFrameSlotHeader.CursorVisible), 48);
     }
 
     [Fact]

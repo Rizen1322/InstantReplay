@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace Aura.Core.Capture.GameHook;
 
@@ -96,13 +96,21 @@ internal struct GameHookFrameSlotHeader
     [FieldOffset(36)] public int Height;
     [FieldOffset(40)] public int Stride;
     [FieldOffset(44)] public int ByteCount;
+
+    /// <summary>
+    /// Виден ли курсор глазами самой игры. Снаружи процесса это не выясняется:
+    /// счётчик показа курсора ведётся на очередь ввода потока, поэтому
+    /// GetCursorInfo из нашего процесса отвечает про нашу очередь. Хук читает
+    /// значение внутри игры и на её же потоке.
+    /// </summary>
+    [FieldOffset(48)] public int CursorVisible;
 }
 
 internal static class GameHookProtocol
 {
     public const uint Magic = 0x48475541; // "AUGH" in little-endian memory.
     public const uint BootstrapMagic = 0x42475541; // "AUGB" in little-endian memory.
-    public const ushort Version = 1;
+    public const ushort Version = 2;
     public const int BootstrapHeaderSize = 256;
     public const int HeaderSize = 256;
     public const int SlotHeaderSize = 64;

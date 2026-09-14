@@ -1,4 +1,4 @@
-using System.IO.MemoryMappedFiles;
+﻿using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Vortice.Direct3D11;
@@ -368,7 +368,12 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
                     frame.RouteEpoch,
                     _target.Revision,
                     frame.Sequence,
-                    _cursorSampler.Sample(_captureCursor)));
+                    // Курсор рисуем, только если игра и правда его показывает.
+                    // Minecraft в полноэкранном режиме прячет курсор у себя, а
+                    // GetCursorInfo из НАШЕГО процесса об этом не знает: счётчик
+                    // показа ведётся на очередь ввода потока. Ответ берём у хука,
+                    // он читает состояние внутри игры.
+                    _cursorSampler.Sample(_captureCursor && frame.CursorVisible)));
             }
             catch (Exception ex)
             {
