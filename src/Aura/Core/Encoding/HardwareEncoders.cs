@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 using Aura.Core.Logging;
 using Aura.Core.Settings;
@@ -109,7 +109,13 @@ public static class HardwareEncoders
                 }
                 catch (Exception ex)
                 {
-                    Log.Warn("Encoder", $"MFT '{name}' не активировался: {ex.Message}");
+                    // Информация, а не предупреждение. Здесь перебираются ВСЕ
+                    // кодировщики, о которых знает система, и чужие на этой машине
+                    // не активируются по определению: на видеокарте NVIDIA каждый
+                    // запуск честно отвечал E_OUTOFMEMORY на MFT от AMD. Настоящий
+                    // отказ виден по отсутствию строки «Выбран MFT» следом.
+                    Log.Info("Encoder",
+                             $"MFT '{name}' не подошёл: {ex.Message.ReplaceLineEndings(" ").Trim()}");
                 }
             }
             return null;
