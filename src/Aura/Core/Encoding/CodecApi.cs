@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 using Aura.Core.Logging;
 
@@ -121,6 +121,41 @@ internal sealed class CodecApi
             new Span<byte>(variant, 24).Clear();
             *(ushort*)variant = 19;              // VT_UI4
             *(uint*)(variant + 8) = value;
+
+            var vtable = *(void***)ptr;
+            var setValue = (delegate* unmanaged[Stdcall]<IntPtr, Guid*, void*, int>)vtable[9];
+            int hr = setValue(ptr, &api, variant);
+            if (hr >= 0) return true;
+
+            error = $"HRESULT 0x{hr:X8}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// То же, что <see cref="SetDirect"/>, но значение кладётся как VT_BOOL.
+    ///
+    /// Часть ключей объявлена булевыми, и NVENC принимает AVLowLatencyMode именно
+    /// так. VT_UI4 в такой ключ уходит с ошибкой, поэтому тип здесь отдельный, а не
+    /// приведённый.
+    /// </summary>
+    public unsafe bool SetDirectBool(Guid api, bool value, out string error)
+    {
+        error = "";
+        IntPtr ptr = Volatile.Read(ref _ptr);
+        if (ptr == IntPtr.Zero) { error = "интерфейс недоступен"; return false; }
+
+        try
+        {
+            byte* variant = stackalloc byte[24];
+            new Span<byte>(variant, 24).Clear();
+            *(ushort*)variant = 11;                       // VT_BOOL
+            *(short*)(variant + 8) = value ? (short)-1 : (short)0;  // VARIANT_TRUE / VARIANT_FALSE
 
             var vtable = *(void***)ptr;
             var setValue = (delegate* unmanaged[Stdcall]<IntPtr, Guid*, void*, int>)vtable[9];

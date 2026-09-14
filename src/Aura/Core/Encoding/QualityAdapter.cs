@@ -1,4 +1,4 @@
-using Aura.Core.Logging;
+﻿using Aura.Core.Logging;
 
 namespace Aura.Core.Encoding;
 
@@ -48,13 +48,39 @@ internal sealed class QualityAdapter
     private bool _recoveryAttempted;
     private bool _unavailable;
 
+    // ---------------- Режим низкой задержки ----------------
+    //
+    // AVLowLatencyMode включается при старте, потому что без него NVENC под игровой
+    // нагрузкой просил лишь 39–44 кадра/с вместо 60. Но у NVENC этот режим стоит
+    // качества: он запрещает просмотр вперёд и B-кадры и сажает буфер VBV, то есть
+    // при том же битрейте картинка грубее. Именно здесь проходит часть разрыва
+    // с ShadowPlay, который пишет через NVENC напрямую и ничего этого не теряет.
+    //
+    // Поэтому после длительного спокойствия пробуем выключить его ОДИН раз за сеанс.
+    // Если энкодер после этого перестаёт успевать — возвращаем и больше не трогаем.
+    // Одна попытка вместо повторов выбрана намеренно: цена неудачи это одно окно
+    // в пять секунд с возможными потерями кадров, и платить её многократно незачем.
+
+    /// <summary>Сколько спокойных окон подряд нужно, чтобы попробовать без низкой задержки.</summary>
+    private const int LowLatencyTrialWindows = 12;   // около минуты
+
+    private readonly bool _lowLatencyStartsOn;
+    private bool _lowLatencyOn;
+    private bool _lowLatencyTrialDone;
+    private int _lowLatencyCalmWindows;
+
+    /// <summary>Включён ли сейчас режим низкой задержки — показывается в статистике.</summary>
+    public bool LowLatency => _lowLatencyOn;
+
     /// <summary>Текущий пресет — показывается в статистике конвейера.</summary>
     public uint Preset { get; private set; }
 
-    public QualityAdapter(CodecApi? codecApi, int fps)
+    public QualityAdapter(CodecApi? codecApi, int fps, bool lowLatencyOn)
     {
         _codecApi = codecApi;
         _fps = fps;
+        _lowLatencyStartsOn = lowLatencyOn;
+        _lowLatencyOn = lowLatencyOn;
 
         if (codecApi is null || !codecApi.IsSupported(CodecApiGuids.AVEncCommonQualityVsSpeed))
         {
@@ -95,7 +121,7 @@ internal sealed class QualityAdapter
     /// </summary>
     public void Tick(long encoded, long pacerBlocked, long dropped)
     {
-        if (_unavailable || _clock.ElapsedMilliseconds < _nextCheckMs) return;
+        if (_clock.ElapsedMilliseconds < _nextCheckMs) return;
         _nextCheckMs = _clock.ElapsedMilliseconds + WindowMs;
 
         long dEncoded = encoded - _lastEncoded;
@@ -105,6 +131,9 @@ internal sealed class QualityAdapter
 
         double target = _fps * (WindowMs / 1000.0);
         bool encoderBound = dEncoded < target * 0.9 && (dBlocked > 0 || dDropped > 0);
+
+        TickLowLatency(encoderBound, dEncoded);
+        if (_unavailable) return;
 
         if (encoderBound)
         {
@@ -138,6 +167,54 @@ internal sealed class QualityAdapter
             _calmWindows = 0;
             _recoveryNeeded = RecoveryWindows;
         }
+    }
+
+    /// <summary>
+    /// Одна попытка за сеанс отдать качество вместо низкой задержки, и немедленный
+    /// возврат, если энкодер после этого не справляется.
+    /// </summary>
+    private void TickLowLatency(bool encoderBound, long encodedInWindow)
+    {
+        if (_codecApi is null || !_lowLatencyStartsOn) return;
+
+        if (encoderBound)
+        {
+            _lowLatencyCalmWindows = 0;
+            if (_lowLatencyOn) return;
+
+            // Выключили и не потянули — возвращаем и больше не пробуем.
+            _lowLatencyTrialDone = true;
+            if (SetLowLatency(true))
+                Log.Info("Encoder", "Без режима низкой задержки энкодер не успевает " +
+                                    $"({encodedInWindow / (WindowMs / 1000.0):F0} из {_fps} fps) — " +
+                                    "режим возвращён, качество определяется битрейтом");
+            return;
+        }
+
+        if (_lowLatencyTrialDone || !_lowLatencyOn) return;
+        if (++_lowLatencyCalmWindows < LowLatencyTrialWindows) return;
+
+        _lowLatencyTrialDone = true;
+        if (SetLowLatency(false))
+            Log.Info("Encoder", "Нагрузка спокойная — режим низкой задержки выключен, " +
+                                "энкодеру доступны просмотр вперёд и B-кадры");
+    }
+
+    private bool SetLowLatency(bool value)
+    {
+        // Только прямым вызовом и только как VT_BOOL: Tick приходит из потока пейсера,
+        // а ключ объявлен булевым (см. CodecApi.SetDirectBool).
+        string error = "интерфейс недоступен";
+        if (_codecApi is not null && _codecApi.SetDirectBool(CodecApiGuids.AVLowLatencyMode, value, out error))
+        {
+            _lowLatencyOn = value;
+            return true;
+        }
+
+        _lowLatencyTrialDone = true;
+        Log.Info("Encoder", $"Режим низкой задержки на лету не меняется ({error}) — " +
+                            $"остаётся {(_lowLatencyOn ? "включённым" : "выключенным")}");
+        return false;
     }
 
     private void Apply(uint value, string reason)

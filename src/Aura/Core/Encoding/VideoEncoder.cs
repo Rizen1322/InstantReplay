@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Vortice.Direct3D11;
 using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
@@ -317,7 +317,58 @@ public sealed class VideoEncoder : IDisposable
         _codecApi.Set(CodecApiGuids.AVEncCommonBufferSize, (uint)bitrateBps, optional: true);
     }
 
-    /// <summary>Тюнинг через ICodecAPI: CBR, GOP = 2 сек, качество записи. Ошибки не фатальны.</summary>
+    /// <summary>
+    /// Битрейт: VBR с потолком, с откатом на CBR там, где энкодер его не принял.
+    ///
+    /// eAVEncCommonRateControlMode: 0 = CBR, 1 = PeakConstrainedVBR,
+    /// 2 = UnconstrainedVBR, 3 = Quality.
+    ///
+    /// Здесь по очереди стояли два неверных значения. Сначала 3 под комментарием
+    /// «CBR»: это режим ПО КАЧЕСТВУ, заданный битрейт он игнорирует, и в замерах
+    /// по сохранённым клипам фактический битрейт гулял от 15.0 до 58.1 Мбит/с при
+    /// настройке 50. Потом 0, настоящий CBR, «как у NVIDIA App». Но NVIDIA App
+    /// пишет как раз переменным битрейтом, и это видно на глаз: при CBR энкодер
+    /// обязан выдать одни и те же 30 Мбит/с и на статичном меню, и на взрыве в
+    /// пол-экрана. На простой сцене биты уходят впустую, на сложной их не хватает,
+    /// и картинка разваливается на блоки ровно там, где это заметно.
+    ///
+    /// Режим 1 берёт лучшее от обоих: СРЕДНИЙ битрейт равен заданному, поэтому
+    /// расчёт длины буфера повтора остаётся верным, а на сложных сценах энкодер
+    /// может занять до потолка. Потолок в полтора раза — запас, которого хватает
+    /// на резкое усложнение картинки и который не растягивает буфер.
+    /// </summary>
+    private void ConfigureRateControl(long bitrateBps)
+    {
+        if (_codecApi is null) return;
+
+        const uint PeakConstrainedVbr = 1;
+        const uint ConstantBitRate = 0;
+        uint mean = (uint)bitrateBps;
+        uint peak = (uint)Math.Min(bitrateBps + bitrateBps / 2, uint.MaxValue);
+
+        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, PeakConstrainedVbr, optional: true);
+        bool vbrAccepted =
+            _codecApi.TryReadUInt(CodecApiGuids.AVEncCommonRateControlMode, out uint actual) &&
+            actual == PeakConstrainedVbr;
+
+        if (vbrAccepted)
+        {
+            _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, mean);
+            _codecApi.Set(CodecApiGuids.AVEncCommonMaxBitRate, peak, optional: true);
+            Log.Info("Encoder", $"Битрейт: VBR с потолком, средний {mean / 1_000_000} Мбит/с, " +
+                                $"пик {peak / 1_000_000} Мбит/с");
+            return;
+        }
+
+        // Энкодер не принял режим с потолком. CBR хуже по качеству, но предсказуем,
+        // и заданный битрейт он соблюдает — в отличие от режима по качеству.
+        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, ConstantBitRate);
+        _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, mean);
+        Log.Info("Encoder", $"Битрейт: VBR с потолком не принят энкодером, " +
+                            $"остаётся CBR {mean / 1_000_000} Мбит/с");
+    }
+
+    /// <summary>Тюнинг через ICodecAPI: битрейт, GOP = 2 сек, качество записи. Ошибки не фатальны.</summary>
     private void ConfigureCodecApi(int fps, long bitrateBps)
     {
         if (_codecApi is null) return;
@@ -331,8 +382,7 @@ public sealed class VideoEncoder : IDisposable
         // фактический битрейт гулял от 15.0 до 58.1 Мбит/с при настройке 50 —
         // на простой сцене энкодер опускался втрое, и запись заметно проигрывала
         // NVIDIA App на тех же настройках (она пишет CBR).
-        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, 0u /* CBR */);
-        _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, (uint)bitrateBps);
+        ConfigureRateControl(bitrateBps);
         _codecApi.Set(CodecApiGuids.AVEncMPVGOPSize, (uint)(fps * 2));
         // AVEncCommonLowLatency энкодер NVIDIA отвергает с E_INVALIDARG в ЛЮБОМ
         // виде (пробовали и VT_BOOL, и VT_UI4) — в логе это годами висело как
@@ -355,7 +405,9 @@ public sealed class VideoEncoder : IDisposable
 
         // Стартовый пресет ставит сам адаптер — он же решает, поддерживает ли его
         // этот энкодер, и дальше подстраивает под нагрузку.
-        _quality = new QualityAdapter(_codecApi, fps);
+        // Низкая задержка включена выше; адаптер знает об этом и может попробовать
+        // отдать её обратно ради качества, когда энкодер уверенно справляется.
+        _quality = new QualityAdapter(_codecApi, fps, lowLatencyOn: true);
 
         _codecApi.LogRateControl();
         _codecApi.LogSupport();

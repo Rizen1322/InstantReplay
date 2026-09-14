@@ -38,14 +38,24 @@ public static class ReplaySaver
     /// пару секунд ничего не стоит, а обращение к освобождённой памяти стоит краха.
     /// </summary>
     private static void UnpinWhenWriterDone(
-        ArenaBufferBatch batch, List<System.Runtime.InteropServices.GCHandle> handles)
+        ArenaBufferBatch batch, List<System.Runtime.InteropServices.GCHandle> handles, long clipBytes)
     {
         if (handles.Count == 0) { batch.Free(); return; }
+
+        // Срок ожидания считаем от размера клипа, а не берём постоянные 30 секунд.
+        // Под игровой нагрузкой запись идёт медленнее в разы: в замерах 42 МБ/с
+        // против 575 МБ/с на свободной машине. Клип в гигабайт при таком темпе
+        // пишется дольше половины минуты, и постоянный срок срабатывал бы не по делу,
+        // навсегда закрепляя блоки арены. Пол считаем по 15 МБ/с — медленнее любого
+        // диска, на котором запись вообще имеет смысл.
+        const double SlowestBytesPerSecond = 15.0 * 1024 * 1024;
+        var limit = TimeSpan.FromSeconds(
+            Math.Clamp(30 + clipBytes / SlowestBytesPerSecond, 30, 180));
 
         Task.Run(() =>
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            while (batch.Alive > 0 && clock.Elapsed < TimeSpan.FromSeconds(30))
+            while (batch.Alive > 0 && clock.Elapsed < limit)
                 Thread.Sleep(20);
 
             if (batch.Alive > 0)
@@ -54,8 +64,8 @@ public static class ReplaySaver
                 // счётчик партии намеренно НЕ освобождаем — живые буферы всё ещё
                 // будут его править. Утечка нескольких десятков мегабайт безопаснее
                 // обращения к чужой памяти.
-                Log.Warn("Saver", $"Писатель не отпустил {batch.Alive} буферов за 30 секунд — " +
-                                  "блоки арены остаются закреплёнными");
+                Log.Warn("Saver", $"Писатель не отпустил {batch.Alive} буферов за " +
+                                  $"{limit.TotalSeconds:F0} секунд — блоки арены остаются закреплёнными");
                 return;
             }
 
@@ -118,6 +128,8 @@ public static class ReplaySaver
         // освобождение писателя тратят память по-своему.
         long memStart = Diagnostics.MemoryMap.PrivateCommittedBytes();
         long memOpen = memStart, memWritten = memStart, memFinal = memStart;
+        // Нужен в finally, где локальных переменных тела уже не видно.
+        long clipBytes = 0;
 
         IMFSinkWriter writer = MfMp4Writer.Create(partPath);
         var handles = new List<System.Runtime.InteropServices.GCHandle>();
@@ -170,6 +182,7 @@ public static class ReplaySaver
         long totalBytes = 0;
         foreach (var f in video) totalBytes += f.Length;
         totalBytes += (long)audio.Count * blockSamples * sizeof(short) * audioStreams.Count;
+        clipBytes = totalBytes;
 
         var drain = new WriteDrain(writer, videoStream, totalBytes, progress);
 
@@ -314,7 +327,7 @@ public static class ReplaySaver
                               $"подача {Mb(memWritten - memOpen)}, финализация {Mb(memFinal - memWritten)}, " +
                               $"закрытие писателя {Mb(memClosed - memFinal)}; " +
                               $"итого {Mb(memClosed - memStart)}");
-            UnpinWhenWriterDone(batch, handles);
+            UnpinWhenWriterDone(batch, handles, clipBytes);
             // Только теперь файл закрыт и его можно переименовать
             publishedPath = PublishOrDiscard(partPath, filePath, finalized);
         }
@@ -458,8 +471,17 @@ public static class ReplaySaver
         private readonly Action<double>? _progress;
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
+        /// <summary>
+        /// Сколько времени сохранение пишет в фоновом режиме Windows, прежде чем
+        /// вернуться к обычному приоритету. Полторы секунды — примерно вдвое больше
+        /// целого сохранения на свободной машине, то есть короткий клип успевает
+        /// записаться тихо целиком, а длинный не растягивается на десяток секунд.
+        /// </summary>
+        private const long BackgroundIoBudgetMs = 1500;
+
         private long _submitted, _lastCheck, _lastProgressMs, _maxQueued;
         private bool _statsAvailable = true;
+        private bool _backgroundIoChecked;
 
         /// <summary>Сколько всего ждали писателя (диагностика в логе).</summary>
         public long WaitedMs { get; private set; }
@@ -492,6 +514,14 @@ public static class ReplaySaver
             ReportProgress();
             if (_submitted - _lastCheck < CheckEveryBytes) return;
             _lastCheck = _submitted;
+
+            if (!_backgroundIoChecked && _clock.ElapsedMilliseconds > BackgroundIoBudgetMs)
+            {
+                _backgroundIoChecked = true;
+                if (BackgroundIoScope.ReleaseForCurrentThread())
+                    Log.Info("Saver", $"Сохранение идёт дольше {BackgroundIoBudgetMs} мс — " +
+                                      "фоновый режим ввода-вывода снят, дописываем в полную силу");
+            }
 
             if (!_statsAvailable) return; // очередь писателя не видна — не тормозим
 

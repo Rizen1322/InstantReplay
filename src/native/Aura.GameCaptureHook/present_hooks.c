@@ -145,6 +145,12 @@ bool aura_present_hooks_install(aura_hook_ipc *ipc)
     return true;
 }
 
+void aura_present_hooks_disable(void)
+{
+    g_ipc = NULL;
+    (void)MH_DisableHook(MH_ALL_HOOKS);
+}
+
 void aura_present_hooks_remove(void)
 {
     g_ipc = NULL;

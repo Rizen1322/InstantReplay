@@ -10,6 +10,7 @@
 #define GL_STREAM_READ 0x88E1
 #define GL_READ_ONLY 0x88B8
 #define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#define GL_READ_FRAMEBUFFER 0x8CA8
 #define GL_BGRA 0x80E1
 
 typedef void(APIENTRY *aura_gl_gen_buffers_fn)(GLsizei, GLuint *);
@@ -18,6 +19,7 @@ typedef void(APIENTRY *aura_gl_bind_buffer_fn)(GLenum, GLuint);
 typedef void(APIENTRY *aura_gl_buffer_data_fn)(GLenum, ptrdiff_t, const void *, GLenum);
 typedef void *(APIENTRY *aura_gl_map_buffer_fn)(GLenum, GLenum);
 typedef GLboolean(APIENTRY *aura_gl_unmap_buffer_fn)(GLenum);
+typedef void(APIENTRY *aura_gl_bind_framebuffer_fn)(GLenum, GLuint);
 
 typedef struct aura_gl_capture_state {
     aura_gl_gen_buffers_fn gen_buffers;
@@ -26,6 +28,7 @@ typedef struct aura_gl_capture_state {
     aura_gl_buffer_data_fn buffer_data;
     aura_gl_map_buffer_fn map_buffer;
     aura_gl_unmap_buffer_fn unmap_buffer;
+    aura_gl_bind_framebuffer_fn bind_framebuffer;
     HGLRC owner_context;
     GLuint pbos[3];
     int width;
@@ -40,6 +43,32 @@ typedef struct aura_gl_capture_state {
 
 static aura_gl_capture_state g_capture;
 static SRWLOCK g_capture_lock = SRWLOCK_INIT;
+static volatile LONG g_release_requested;
+static volatile LONG g_release_done;
+
+/*
+ * Время кадра берётся из счётчика производительности, а не из GetTickCount64.
+ *
+ * GetTickCount64 идёт с шагом системного тика, по умолчанию 15.6 мс, тогда как
+ * кадр при 60 кадрах в секунду длится 16.67 мс. Метка времени ложилась на грубую
+ * решётку, и в сохранённом клипе это видно как дёрганый ход. Та же метка идёт в
+ * PTS кадра, а остальной конвейер (Desktop Duplication, WGC) штампует кадры через
+ * QueryPerformanceCounter. Гибридный захват переключает маршруты прямо во время
+ * записи, и на каждом переключении шкала времени прыгала.
+ *
+ * QueryPerformanceCounter общий для всей системы, и .NET Stopwatch.GetTimestamp
+ * читает его же, поэтому обе стороны теперь живут на одной шкале.
+ */
+static uint64_t now_100ns(void)
+{
+    static LARGE_INTEGER frequency;
+    if (frequency.QuadPart == 0 && !QueryPerformanceFrequency(&frequency)) return 0;
+    LARGE_INTEGER counter;
+    if (!QueryPerformanceCounter(&counter)) return 0;
+    return (uint64_t)counter.QuadPart / (uint64_t)frequency.QuadPart * UINT64_C(10000000) +
+           ((uint64_t)counter.QuadPart % (uint64_t)frequency.QuadPart) * UINT64_C(10000000) /
+               (uint64_t)frequency.QuadPart;
+}
 
 static void *load_gl_function(const char *name, const char *arb_name)
 {
@@ -63,6 +92,10 @@ static int load_functions(aura_gl_capture_state *state)
     state->buffer_data = (aura_gl_buffer_data_fn)load_gl_function("glBufferData", "glBufferDataARB");
     state->map_buffer = (aura_gl_map_buffer_fn)load_gl_function("glMapBuffer", "glMapBufferARB");
     state->unmap_buffer = (aura_gl_unmap_buffer_fn)load_gl_function("glUnmapBuffer", "glUnmapBufferARB");
+    // Необязательная: на контекстах без кадровых буферов игра не может оставить
+    // свой привязанным, и возвращать нечего.
+    state->bind_framebuffer =
+        (aura_gl_bind_framebuffer_fn)load_gl_function("glBindFramebuffer", "glBindFramebufferEXT");
     return state->gen_buffers != NULL && state->delete_buffers != NULL &&
            state->bind_buffer != NULL && state->buffer_data != NULL &&
            state->map_buffer != NULL && state->unmap_buffer != NULL;
@@ -183,6 +216,15 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
 
     aura_gl_capture_result result = AURA_GL_CAPTURE_SKIPPED;
     aura_gl_capture_state *state = &g_capture;
+
+    // Остановка: кольцо PBO принадлежит контексту игры, и освободить его можно
+    // только отсюда, из потока отрисовки. Поток управления ждёт подтверждения.
+    if (InterlockedCompareExchange(&g_release_requested, 0, 0) != 0) {
+        release_current_context(state);
+        InterlockedExchange(&g_release_done, 1);
+        goto done;
+    }
+
     GLint viewport[4] = {0};
     glGetIntegerv(GL_VIEWPORT, viewport);
     int width = viewport[2];
@@ -205,7 +247,7 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         goto done;
     }
 
-    uint64_t now = GetTickCount64() * UINT64_C(10000);
+    uint64_t now = now_100ns();
     int target_fps = ipc->header->target_fps;
     if (target_fps <= 0 || target_fps > 240) {
         result = AURA_GL_CAPTURE_FAILED;
@@ -222,13 +264,32 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
     glGetIntegerv(GL_PACK_ALIGNMENT, &previous_pack_alignment);
     glGetIntegerv(GL_READ_BUFFER, &previous_read_buffer);
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_framebuffer);
-    (void)previous_read_framebuffer;
+
+    // Игра могла оставить привязанным СВОЙ кадровый буфер. Тогда glReadPixels
+    // прочитает его, а не задний буфер окна, и в запись уедет чужая картинка.
+    // Раньше привязка только считывалась и тут же выбрасывалась.
+    if (state->bind_framebuffer != NULL && previous_read_framebuffer != 0)
+        state->bind_framebuffer(GL_READ_FRAMEBUFFER, 0);
 
     unsigned write_index = (unsigned)(state->issued_count % 3);
     state->bind_buffer(GL_PIXEL_PACK_BUFFER, state->pbos[write_index]);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadBuffer(GL_BACK);
+    while (glGetError() != GL_NO_ERROR) { }       // чужие ошибки нас не касаются
     glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, (void *)0);
+    // Ошибку обязательно снимаем с очереди: иначе она достанется игре, а мы
+    // опубликуем содержимое ПРОШЛОГО кадра из того же PBO как свежее.
+    GLenum read_error = glGetError();
+    if (read_error != GL_NO_ERROR) {
+        if (state->bind_framebuffer != NULL && previous_read_framebuffer != 0)
+            state->bind_framebuffer(GL_READ_FRAMEBUFFER, (GLuint)previous_read_framebuffer);
+        glReadBuffer((GLenum)previous_read_buffer);
+        glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
+        state->bind_buffer(GL_PIXEL_PACK_BUFFER, (GLuint)previous_buffer);
+        InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
+        result = AURA_GL_CAPTURE_FAILED;
+        goto done;
+    }
     ++state->issued_count;
     InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_issued);
     result = AURA_GL_CAPTURE_ISSUED;
@@ -250,6 +311,8 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         }
     }
 
+    if (state->bind_framebuffer != NULL && previous_read_framebuffer != 0)
+        state->bind_framebuffer(GL_READ_FRAMEBUFFER, (GLuint)previous_read_framebuffer);
     glReadBuffer((GLenum)previous_read_buffer);
     glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
     state->bind_buffer(GL_PIXEL_PACK_BUFFER, (GLuint)previous_buffer);
@@ -259,9 +322,26 @@ done:
     return result;
 }
 
+void aura_gl_capture_request_release(void)
+{
+    InterlockedExchange(&g_release_done, 0);
+    InterlockedExchange(&g_release_requested, 1);
+}
+
+bool aura_gl_capture_release_done(void)
+{
+    return InterlockedCompareExchange(&g_release_done, 0, 0) != 0;
+}
+
 void aura_gl_capture_abandon(void)
 {
     AcquireSRWLockExclusive(&g_capture_lock);
+    // Буферы здесь НЕ удаляются намеренно: зовут нас из потока управления, у него
+    // нет текущего контекста OpenGL, и вызов ушёл бы в никуда. Освобождает кольцо
+    // поток отрисовки по запросу aura_gl_capture_request_release. Сюда мы попадаем,
+    // только если игра перестала показывать кадры и подтверждения не дождались.
     memset(&g_capture, 0, sizeof(g_capture));
+    InterlockedExchange(&g_release_requested, 0);
+    InterlockedExchange(&g_release_done, 0);
     ReleaseSRWLockExclusive(&g_capture_lock);
 }
