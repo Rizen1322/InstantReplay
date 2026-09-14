@@ -1564,7 +1564,12 @@ public sealed class ReplayEngine : IDisposable
             bool added = _systemSuspendReasons.Add(reason);
             if (_continuousRecordingRequested || _recorder is not null)
             {
-                if (added) Log.Info("Engine", $"{reason}: идёт запись в файл, конвейер не трогаем");
+                if (added) Log.Info("Engine", $"{reason}: идёт запись в файл, пауза отложена");
+                // Повтор обязателен. Причина уже в множестве, поэтому наблюдатель
+                // больше ничего не пришлёт: он сообщает о СМЕНЕ состояния, а оно не
+                // изменится, пока человек не вернётся. Без повтора пауза после
+                // окончания записи не наступила бы вовсе.
+                ScheduleSuspendRetry(reason);
                 return;
             }
             if (_suspendedBySystem || _state == EngineState.Stopped) return;
@@ -1763,6 +1768,11 @@ public sealed class ReplayEngine : IDisposable
     {
         lock (_lifecycle)
         {
+            // Через Toggle идут трей и хоткей, то есть основной путь пользователя.
+            // Сброс системной паузы обязан быть здесь так же, как в Start и Stop:
+            // человек решил сам, и накопленные причины больше не действуют.
+            ForgetSystemSuspend();
+
             if (_state == EngineState.Stopped)
             {
                 StartWithFallbackLocked(preserveBuffers: false);

@@ -90,10 +90,17 @@ public sealed class ClipFolderWatcher : IDisposable
     {
         lock (_sync)
         {
+            // Список путей не бесконечен. Массовая операция в проводнике (удалили
+            // сотню записей разом) насыпала бы их тысячами, а решение всё равно
+            // одно: раз путей слишком много, разбирать их поштучно незачем, дешевле
+            // пройти папку. Пустой список именно это и означает.
+            if (_pending.Count >= 512) return;
+
             // Переименование это два пути: и старый, и новый нас интересуют.
             if (e is RenamedEventArgs renamed && !string.IsNullOrEmpty(renamed.OldFullPath))
                 _pending.Add(renamed.OldFullPath);
             if (!string.IsNullOrEmpty(e.FullPath)) _pending.Add(e.FullPath);
+            if (_pending.Count >= 512) _pending.Clear();
         }
         Schedule();
     }

@@ -287,6 +287,14 @@ public sealed class VideoEncoder : IDisposable
 
             if (!TrySetInputFormat(width, height, fps, tenBit: false))
                 throw new InvalidOperationException("Энкодер не принял ни P010, ни NV12");
+
+            // Пул создавался в расчёте на десять бит, то есть на кадр вдвое тяжелее.
+            // На восьми битах в тот же бюджет видеопамяти помещается вдвое больше
+            // кадров, и отдавать этот запас незачем: от числа слотов зависит глубина
+            // входной очереди, то есть то, сколько конвейер выдержит без потерь.
+            _copyPool?.Dispose();
+            _copyPool = new EncoderTexturePool(device, width, height, tenBit: false);
+            _maxInputQueue = Math.Max(8, _copyPool.Slots - 8);
         }
 
         if (TenBit) Log.Info("Encoder", "Глубина цвета: десять бит (P010, профиль Main 4:2:0 10)");
