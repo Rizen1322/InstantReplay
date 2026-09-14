@@ -568,7 +568,7 @@ public partial class App : Application
         var s = Services.Settings.Current;
         try
         {
-            var (monitor, live) = ScreenshotTarget();
+            var (monitor, live) = ScreenshotTarget(forRegion: true);
             await Views.RegionCaptureWindow.ShowForAsync(monitor, s.RecordCursor, live, s.ScreenshotFolder);
         }
         catch (Exception ex)
@@ -585,7 +585,7 @@ public partial class App : Application
     /// на любом мониторе. Кадр у работающего буфера при этом годится только когда
     /// это ТОТ ЖЕ монитор — иначе в снимок попал бы соседний экран.
     /// </summary>
-    private static (int Monitor, Core.Capture.LiveFrameProvider? Live) ScreenshotTarget()
+    private static (int Monitor, Core.Capture.LiveFrameProvider? Live) ScreenshotTarget(bool forRegion = false)
     {
         var s = Services.Settings.Current;
         int? underCursor = Core.Capture.MonitorLayout.IndexUnderCursor();
@@ -594,7 +594,12 @@ public partial class App : Application
         if (!live)
             Log.Info("Screenshot", $"Снимок на мониторе {monitor}, запись идёт с {s.MonitorIndex} — " +
                                    "живой кадр не подходит, открываю свою сессию");
-        return (monitor, live ? Services.Engine.TryUseLiveFrame : null);
+        if (!live) return (monitor, null);
+        // Оверлею выделения курсор в картинке не нужен: настоящий курсор ходит поверх
+        // замороженного экрана, и вшитый выглядел бы вторым.
+        return (monitor, forRegion
+            ? Services.Engine.TryUseLiveFrameWithoutCursor
+            : Services.Engine.TryUseLiveFrame);
     }
 
     /// <summary>Папка со скриншотами — открывается из трея и со страницы настроек.</summary>

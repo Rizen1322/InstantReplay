@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -48,6 +48,20 @@ public partial class RegionCaptureWindow : Window
     private static RegionCaptureWindow? _open;
     private static int _launching;
     private static byte[]? _pixels;
+
+    /// <summary>Когда закрылся прошлый оверлей (Stopwatch); 0 — ещё не открывался.</summary>
+    private static long _closedAt;
+
+    /// <summary>
+    /// Сколько выждать после закрытия прошлого оверлея, прежде чем снимать экран.
+    ///
+    /// ЗАЧЕМ. Закрытое окно уходит из композиции рабочего стола не мгновенно, а
+    /// системный курсор остаётся перекрестием, пока не придёт следующее сообщение
+    /// мыши. Живой кадр ждёт кадр НОВЕЕ нажатия, и при быстром «закрыть — открыть»
+    /// в него попадал хвост прошлого оверлея: в замороженном снимке оставалось
+    /// перекрестие выделения, а поверх него ходил настоящий курсор.
+    /// </summary>
+    private const int ReopenSettleMs = 250;
 
     private readonly BitmapSource _shot;
     private readonly int _monitorX, _monitorY, _pixelWidth, _pixelHeight;
@@ -144,6 +158,7 @@ public partial class RegionCaptureWindow : Window
         Closed += (_, _) =>
         {
             _open = null;
+            Interlocked.Exchange(ref _closedAt, System.Diagnostics.Stopwatch.GetTimestamp());
             RestorePreviousWindow();
         };
     }
@@ -162,6 +177,14 @@ public partial class RegionCaptureWindow : Window
         IntPtr returnFocus = NativeMethods.GetForegroundWindow();
         try
         {
+            long closedAt = Interlocked.Read(ref _closedAt);
+            if (closedAt != 0)
+            {
+                int sinceClose = (int)System.Diagnostics.Stopwatch.GetElapsedTime(closedAt).TotalMilliseconds;
+                if (sinceClose < ReopenSettleMs)
+                    await Task.Delay(ReopenSettleMs - sinceClose);
+            }
+
             // Буфер кадра переживает закрытие оверлея: 14 МБ на 2560×1440, и выделять их
             // заново на каждое нажатие клавиши незачем. Оверлей всегда один (см. _open),
             // так что делить буфер не с кем.

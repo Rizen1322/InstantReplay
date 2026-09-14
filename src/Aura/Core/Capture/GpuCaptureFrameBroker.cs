@@ -1,4 +1,4 @@
-using Vortice.Direct3D11;
+﻿using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Aura.Core.Diagnostics;
 
@@ -212,10 +212,18 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         }
     }
 
+    /// <param name="withoutCursor">
+    /// Отдать кадр без дорисованного курсора, если он есть. Нужен оверлею выделения
+    /// области: он показывает замороженный экран, а настоящий курсор человека ходит
+    /// поверх. Вшитый в картинку курсор выглядел как второй, а если кадр попадал
+    /// сразу после прошлого оверлея — как застывшее перекрестие выделения.
+    /// У WGC отдельного чистого кадра нет, курсор там рисует система.
+    /// </param>
     public bool TryUseFreshestMonitor(
         long generation,
         TimeSpan waitForNewFrame,
-        Action<ID3D11Texture2D> use)
+        Action<ID3D11Texture2D> use,
+        bool withoutCursor = false)
     {
         ArgumentNullException.ThrowIfNull(use);
         if (!_broker.TryLeaseFreshest(
@@ -231,7 +239,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         if (!ScreenshotFramePolicy.CanUseLiveFrame(lease.Scope))
             return false;
 
-        use(lease.Texture);
+        use(withoutCursor ? lease.CleanTexture ?? lease.Texture : lease.Texture);
         return true;
     }
 
@@ -297,6 +305,9 @@ internal sealed class GpuCaptureFrameLease : IDisposable
 
     public ID3D11Texture2D Texture =>
         _inner?.Slot.Output ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
+    /// <summary>Тот же кадр до дорисовки курсора; null — чистой копии у источника нет.</summary>
+    public ID3D11Texture2D? CleanTexture =>
+        _inner is { } inner ? inner.Slot.Clean : throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
     public long Timestamp =>
         _inner?.Timestamp ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
     public long Generation =>

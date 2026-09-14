@@ -161,7 +161,12 @@ public sealed class ReplayEngine : IDisposable
     /// буфере: DXGI не даёт второй дупликации того же монитора.
     /// false — буфер выключен, вызывающий сделает свою одноразовую сессию.
     /// </summary>
-    public bool TryUseLiveFrame(UseFrame use)
+    public bool TryUseLiveFrame(UseFrame use) => TryUseLiveFrame(use, withoutCursor: false);
+
+    /// <summary>Живой кадр без дорисованного курсора — для оверлея выделения области.</summary>
+    public bool TryUseLiveFrameWithoutCursor(UseFrame use) => TryUseLiveFrame(use, withoutCursor: true);
+
+    private bool TryUseLiveFrame(UseFrame use, bool withoutCursor)
     {
         // Те же ворота, что и у OnFrame: скриншот берёт кадр с живого устройства
         // захвата, и Stop() не должен освободить это устройство прямо во время чтения.
@@ -185,7 +190,8 @@ public sealed class ReplayEngine : IDisposable
             bool used = broker.TryUseFreshestMonitor(
                 generation,
                 ScreenshotFreshFrameWait,
-                texture => use(cap.D3DDevice, cap.D3DContext, texture));
+                texture => use(cap.D3DDevice, cap.D3DContext, texture),
+                withoutCursor);
             if (!used)
                 Log.Info("Screenshot", $"Живой кадр не отдан: нет готового кадра (источник {_captureBackend})");
             return used;

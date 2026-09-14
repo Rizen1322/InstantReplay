@@ -1,4 +1,4 @@
-using Vortice.Direct3D11;
+﻿using Vortice.Direct3D11;
 
 namespace Aura.Core.Diagnostics;
 
@@ -164,6 +164,9 @@ public sealed class GpuStageTimer : IDisposable
 
     private unsafe void CollectLocked(ID3D11DeviceContext context)
     {
+        // Буфер под метки один на весь обход: stackalloc внутри цикла растил бы
+        // стек на каждой итерации до выхода из метода.
+        Span<ulong> marks = stackalloc ulong[MarkCount];
         foreach (Measurement slot in _slots)
         {
             if (!slot.InFlight) continue;
@@ -179,7 +182,7 @@ public sealed class GpuStageTimer : IDisposable
             slot.InFlight = false;
             if (disjoint.Disjoint || disjoint.Frequency == 0) continue;  // частота плыла
 
-            Span<ulong> marks = stackalloc ulong[MarkCount];
+            marks.Clear();
             bool complete = true;
             for (int i = 0; i < MarkCount && complete; i++)
             {
