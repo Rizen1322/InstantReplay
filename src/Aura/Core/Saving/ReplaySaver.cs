@@ -372,6 +372,55 @@ public static class ReplaySaver
     /// диск давал 60 МБ/с». Нет сигнала — не тормозим вообще: память при этом защищена
     /// тем, что кадры возвращаются в пул сразу после записи, а не копятся до конца.
     /// </summary>
+    /// <summary>
+    /// Статистика SinkWriter — читается ПРЯМЫМ вызовом по vtable.
+    ///
+    /// ЗАЧЕМ НЕ ЧЕРЕЗ ОБЁРТКУ. IMFSinkWriter::GetStatistics требует, чтобы поле cb
+    /// структуры было заранее заполнено её размером, иначе вызов отвечает
+    /// E_INVALIDARG. Обёртка Vortice возвращает структуру по значению и cb не
+    /// заполняет — то есть у неё вызов падает ВСЕГДА.
+    ///
+    /// Последствие было не косметическое: WriteDrain ловил исключение, помечал
+    /// статистику недоступной и переставал тормозить подачу вовсе («очередь
+    /// писателя не видна — подача без ограничений» в каждом логе). Media Foundation
+    /// принимала весь клип разом и держала его в нативной памяти: после каждого
+    /// сохранения процесс прибавлял по 100–200 МБ и не отдавал их обратно.
+    ///
+    /// Проверено на живом писателе: обёртка — E_INVALIDARG, прямой вызов с
+    /// заполненным cb — HRESULT 0 и корректные поля.
+    /// </summary>
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    internal struct SinkWriterStats
+    {
+        public uint Cb;
+        public long LastTimestampReceived, LastTimestampEncoded, LastTimestampProcessed;
+        public long LastStreamTickReceived, LastSinkSampleRequest;
+        public ulong NumSamplesReceived, NumSamplesEncoded, NumSamplesProcessed, NumStreamTicksReceived;
+        public uint ByteCountQueued;
+        public ulong ByteCountProcessed;
+        public uint NumOutstandingSinkSampleRequests;
+        public uint AverageSampleRateReceived, AverageSampleRateEncoded, AverageSampleRateProcessed;
+
+        /// <summary>Слот GetStatistics в vtable IMFSinkWriter (3 метода IUnknown + 10 своих).</summary>
+        private const int VtableSlot = 13;
+
+        public static unsafe bool TryRead(IMFSinkWriter writer, int stream, out SinkWriterStats stats)
+        {
+            stats = default;
+            stats.Cb = (uint)sizeof(SinkWriterStats);
+
+            IntPtr native = writer.NativePointer;
+            if (native == IntPtr.Zero) return false;
+
+            var vtable = *(IntPtr**)native;
+            var getStatistics =
+                (delegate* unmanaged[Stdcall]<IntPtr, int, SinkWriterStats*, int>)vtable[VtableSlot];
+
+            fixed (SinkWriterStats* p = &stats)
+                return getStatistics(native, stream, p) == 0;
+        }
+    }
+
     private sealed class WriteDrain
     {
         /// <summary>Как часто сверяться с писателем.</summary>
@@ -458,15 +507,13 @@ public static class ReplaySaver
         {
             try
             {
-                var stats = _writer.GetStatistics(_stream);
-                return stats.ByteCountQueued;
+                if (SinkWriterStats.TryRead(_writer, _stream, out var stats))
+                    return stats.ByteCountQueued;
             }
-            catch
-            {
-                // Обёртка/система не дают статистику — просто больше не спрашиваем
-                _statsAvailable = false;
-                return -1;
-            }
+            catch { /* ниже пометим статистику недоступной */ }
+
+            _statsAvailable = false;
+            return -1;
         }
 
         /// <summary>Прогресс наружу не чаще пяти раз в секунду — его читает UI.</summary>
