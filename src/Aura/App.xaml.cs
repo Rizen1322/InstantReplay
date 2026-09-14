@@ -43,8 +43,7 @@ public static class Services
         Activity = new SystemActivityWatcher(
             Engine.SuspendForSystem,
             Engine.ResumeAfterSystem,
-            Engine.RebuildAfterDisplayChange,
-            () => TimeSpan.FromMinutes(Math.Max(0, Settings.Current.PauseAfterIdleMinutes)));
+            Engine.RebuildAfterDisplayChange);
     }
 }
 

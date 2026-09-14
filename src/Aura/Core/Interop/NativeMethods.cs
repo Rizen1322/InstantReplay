@@ -398,15 +398,4 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnregisterPowerSettingNotification(IntPtr handle);
 
-    /// <summary>Когда система в последний раз видела ввод с клавиатуры или мыши.</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct LastInputInfo
-    {
-        public uint cbSize;
-        public uint dwTime;   // GetTickCount на момент последнего ввода
-    }
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool GetLastInputInfo(ref LastInputInfo info);
 }

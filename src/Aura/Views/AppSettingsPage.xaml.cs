@@ -57,7 +57,6 @@ public partial class AppSettingsPage : PageBase
         AutoStart.IsChecked = s.AutoStartWithWindows;
         StartInTray.IsChecked = s.StartMinimizedToTray;
         AutoBuffer.IsChecked = s.AutoStartReplayBuffer;
-        PauseWhenIdle.IsChecked = s.PauseAfterIdleMinutes > 0;
 
         ShowNotifications.IsChecked = s.ShowNotifications;
         UpdateNotificationOptions();
@@ -138,10 +137,6 @@ public partial class AppSettingsPage : PageBase
             s.AutoStartWithWindows = AutoStart.IsChecked == true;
             s.StartMinimizedToTray = StartInTray.IsChecked == true;
             s.AutoStartReplayBuffer = AutoBuffer.IsChecked == true;
-            // Ноль — не приостанавливать. Значение по умолчанию держим здесь же,
-            // чтобы переключатель не терял выбранный пользователем срок, если он
-            // когда-нибудь станет настраиваемым.
-            s.PauseAfterIdleMinutes = PauseWhenIdle.IsChecked == true ? 15 : 0;
             s.ShowNotifications = ShowNotifications.IsChecked == true;
             s.CheckForUpdates = CheckUpdates.IsChecked == true;
             s.CheckNvidiaDriver = DriverWatch.IsChecked == true;
