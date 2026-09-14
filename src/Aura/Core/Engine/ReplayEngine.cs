@@ -165,17 +165,30 @@ public sealed class ReplayEngine : IDisposable
     {
         // Те же ворота, что и у OnFrame: скриншот берёт кадр с живого устройства
         // захвата, и Stop() не должен освободить это устройство прямо во время чтения.
-        if (!_frameGate.TryEnterReadLock(TimeSpan.FromMilliseconds(50))) return false;
+        // Причина отказа уходит в лог. Раньше false возвращался молча, и по логу
+        // нельзя было отличить «конвейер пересобирается» от «все слоты кадров заняты».
+        if (!_frameGate.TryEnterReadLock(TimeSpan.FromMilliseconds(50)))
+        {
+            Log.Info("Screenshot", "Живой кадр не отдан: конвейер пересобирается");
+            return false;
+        }
         try
         {
             var cap = _capture;
             var broker = _frameBroker;
             long generation = Interlocked.Read(ref _captureGeneration);
-            if (cap is null || broker is null || !_pipelineOpen) return false;
-            return broker.TryUseFreshestMonitor(
+            if (cap is null || broker is null || !_pipelineOpen)
+            {
+                Log.Info("Screenshot", "Живой кадр не отдан: конвейер не запущен");
+                return false;
+            }
+            bool used = broker.TryUseFreshestMonitor(
                 generation,
                 ScreenshotFreshFrameWait,
                 texture => use(cap.D3DDevice, cap.D3DContext, texture));
+            if (!used)
+                Log.Info("Screenshot", $"Живой кадр не отдан: нет готового кадра (источник {_captureBackend})");
+            return used;
         }
         finally { _frameGate.ExitReadLock(); }
     }

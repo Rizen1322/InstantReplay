@@ -588,8 +588,13 @@ public partial class App : Application
     private static (int Monitor, Core.Capture.LiveFrameProvider? Live) ScreenshotTarget()
     {
         var s = Services.Settings.Current;
-        int monitor = Core.Capture.MonitorLayout.IndexUnderCursor() ?? s.MonitorIndex;
-        return (monitor, monitor == s.MonitorIndex ? Services.Engine.TryUseLiveFrame : null);
+        int? underCursor = Core.Capture.MonitorLayout.IndexUnderCursor();
+        int monitor = underCursor ?? s.MonitorIndex;
+        bool live = monitor == s.MonitorIndex;
+        if (!live)
+            Log.Info("Screenshot", $"Снимок на мониторе {monitor}, запись идёт с {s.MonitorIndex} — " +
+                                   "живой кадр не подходит, открываю свою сессию");
+        return (monitor, live ? Services.Engine.TryUseLiveFrame : null);
     }
 
     /// <summary>Папка со скриншотами — открывается из трея и со страницы настроек.</summary>

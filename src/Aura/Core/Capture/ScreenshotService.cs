@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Vortice.Direct3D11;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
@@ -34,6 +34,12 @@ public static class ScreenshotService
     /// ему нужна картинка на экране, а файл появится только если пользователь решит
     /// сохранить. Порядок источников тот же, что и у обычного скриншота.
     /// </summary>
+    /// <summary>
+    /// Сколько ждать живой кадр у работающего буфера, прежде чем открывать свою
+    /// сессию захвата. Затор видеокарты в логах длится меньше секунды.
+    /// </summary>
+    private const int LiveFrameBudgetMs = 1200;
+
     public static async Task<(byte[] Bgra, int W, int H)> CapturePixelsAsync(
         int monitorIndex, bool cursor, LiveFrameProvider? live = null, byte[]? into = null)
     {
@@ -52,18 +58,43 @@ public static class ScreenshotService
         {
             shot = await Task.Run(() =>
             {
-                (byte[] Bgra, int W, int H)? frame = null;
-                try
+                // Несколько попыток, а не одна.
+                //
+                // ЗАЧЕМ. У брокера кадров три слота. Когда видеокарта занята игрой,
+                // преобразование кадра встаёт на сотни миллисекунд (в логе у друга —
+                // до 961 мс), и всё это время слоты заняты: один пишется, другой читает
+                // конвейер. Готового кадра нет, живой путь отказывает, и раньше
+                // скриншот сразу шёл в свою сессию захвата. А своя сессия Desktop
+                // Duplication на том же мониторе при работающем конвейере не создаётся
+                // вовсе: DXGI не даёт второй дупликации одного выхода. Отсюда «снимается
+                // через раз». Затор длится меньше секунды, поэтому немного подождать
+                // здесь дешевле, чем гарантированно упасть там.
+                var deadline = System.Diagnostics.Stopwatch.StartNew();
+                int attempts = 0;
+                while (true)
                 {
-                    live((device, context, texture) => frame = ReadPixels(device, context, texture, into));
-                    if (frame is not null) Log.Info("Screenshot", "Кадр взят у работающего буфера");
+                    attempts++;
+                    (byte[] Bgra, int W, int H)? frame = null;
+                    try
+                    {
+                        live((device, context, texture) => frame = ReadPixels(device, context, texture, into));
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("Screenshot", $"Не удалось взять кадр у буфера: {ex.Message}");
+                        frame = null;
+                    }
+
+                    if (frame is not null)
+                    {
+                        Log.Info("Screenshot", attempts == 1
+                            ? "Кадр взят у работающего буфера"
+                            : $"Кадр взят у работающего буфера с {attempts}-й попытки");
+                        return frame;
+                    }
+                    if (deadline.ElapsedMilliseconds >= LiveFrameBudgetMs) return null;
+                    Thread.Sleep(40);
                 }
-                catch (Exception ex)
-                {
-                    Log.Warn("Screenshot", $"Не удалось взять кадр у буфера: {ex.Message}");
-                    frame = null;
-                }
-                return frame;
             }).ConfigureAwait(false);
         }
 
