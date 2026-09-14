@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using Aura.Core.Logging;
 
 namespace Aura.Core.Storage;
@@ -29,8 +29,11 @@ public sealed class ClipFolderWatcher : IDisposable
     /// </summary>
     private static readonly TimeSpan Settle = TimeSpan.FromSeconds(2);
 
-    private readonly Action _changed;
+    private readonly Action<IReadOnlyCollection<string>> _changed;
     private readonly object _sync = new();
+
+    /// <summary>Пути, о которых сообщим следующим сигналом. Один путь считается один раз.</summary>
+    private readonly HashSet<string> _pending = new(StringComparer.OrdinalIgnoreCase);
 
     private FileSystemWatcher? _watcher;
     private System.Threading.Timer? _settleTimer;
@@ -40,7 +43,7 @@ public sealed class ClipFolderWatcher : IDisposable
     /// <summary>Работает ли слежение. Пока нет — индекс обновляется по старинке.</summary>
     public bool Active { get { lock (_sync) return _watcher is not null; } }
 
-    public ClipFolderWatcher(Action changed) => _changed = changed;
+    public ClipFolderWatcher(Action<IReadOnlyCollection<string>> changed) => _changed = changed;
 
     /// <summary>Начать следить за папкой. Повторный вызов с той же папкой ничего не делает.</summary>
     public void Watch(string root)
@@ -83,7 +86,17 @@ public sealed class ClipFolderWatcher : IDisposable
         }
     }
 
-    private void OnChanged(object sender, FileSystemEventArgs e) => Schedule();
+    private void OnChanged(object sender, FileSystemEventArgs e)
+    {
+        lock (_sync)
+        {
+            // Переименование это два пути: и старый, и новый нас интересуют.
+            if (e is RenamedEventArgs renamed && !string.IsNullOrEmpty(renamed.OldFullPath))
+                _pending.Add(renamed.OldFullPath);
+            if (!string.IsNullOrEmpty(e.FullPath)) _pending.Add(e.FullPath);
+        }
+        Schedule();
+    }
 
     private void OnError(object sender, ErrorEventArgs e)
     {
@@ -96,6 +109,7 @@ public sealed class ClipFolderWatcher : IDisposable
             root = _root;
             StopCore();
         }
+        // Часть событий потеряна — сообщаем пустым списком, это значит «проверь всё».
         Schedule();
         if (!string.IsNullOrEmpty(root)) Watch(root);
     }
@@ -114,7 +128,15 @@ public sealed class ClipFolderWatcher : IDisposable
     private void Fire()
     {
         if (_disposed) return;
-        try { _changed(); }
+
+        string[] paths;
+        lock (_sync)
+        {
+            paths = [.. _pending];
+            _pending.Clear();
+        }
+
+        try { _changed(paths); }
         catch (Exception ex) { Log.Warn("Storage", $"Обновление индекса папки: {ex.Message}"); }
     }
 

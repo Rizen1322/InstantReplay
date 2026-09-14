@@ -220,7 +220,17 @@ public sealed class ReplayEngine : IDisposable
 
     public void Start()
     {
-        lock (_lifecycle) StartWithFallbackLocked(preserveBuffers: false);
+        lock (_lifecycle)
+        {
+            // Человек включил повтор сам — значит спор о том, надо ли писать,
+            // решён в его пользу, и накопленные системные причины паузы больше не
+            // действуют. Без этой строки оставшаяся причина держала бы
+            // _suspendedBySystem поднятым при работающем конвейере, и следующая
+            // пауза не сработала бы вовсе: она выходит сразу, если считает, что уже
+            // приостановила нас.
+            ForgetSystemSuspend();
+            StartWithFallbackLocked(preserveBuffers: false);
+        }
     }
 
     private void StartWithFallbackLocked(bool preserveBuffers)
@@ -1429,8 +1439,34 @@ public sealed class ReplayEngine : IDisposable
         lock (_lifecycle)
         {
             _continuousRecordingRequested = false;
+            // Выключил человек — системной паузе тут больше нечего держать.
+            ForgetSystemSuspend();
             StopLocked();
         }
+    }
+
+    /// <summary>
+    /// Повторить попытку паузы, когда сохранение закончится.
+    ///
+    /// Повторов не накопится: причина попадает в множество один раз, а попытка
+    /// выходит сразу, если причину уже сняли.
+    /// </summary>
+    private void ScheduleSuspendRetry(string reason)
+    {
+        _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
+        {
+            if (_stopRequested) return;
+            lock (_lifecycle)
+                if (!_systemSuspendReasons.Contains(reason)) return;   // причину уже сняли
+            SuspendForSystem(reason);
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>Забыть, что конвейер стоит по системной причине.</summary>
+    private void ForgetSystemSuspend()
+    {
+        _systemSuspendReasons.Clear();
+        _suspendedBySystem = false;
     }
 
     /// <summary>
@@ -1532,6 +1568,18 @@ public sealed class ReplayEngine : IDisposable
                 return;
             }
             if (_suspendedBySystem || _state == EngineState.Stopped) return;
+
+            // Идёт сохранение — останов ждал бы его завершения, держа замок
+            // жизненного цикла. Всё это время хоткей сохранения и любая правка
+            // настроек стояли бы в очереди за нами. Клип важнее паузы: отпускаем
+            // замок и пробуем снова через несколько секунд. Причина уже записана,
+            // поэтому повтор ничего не удвоит.
+            if (_state == EngineState.Saving || _saveTask is { IsCompleted: false })
+            {
+                if (added) Log.Info("Engine", $"{reason}: идёт сохранение, пауза отложена");
+                ScheduleSuspendRetry(reason);
+                return;
+            }
 
             _suspendedBySystem = true;
             Log.Info("Engine", $"{reason}: конвейер приостановлен");

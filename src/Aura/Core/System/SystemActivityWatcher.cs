@@ -257,18 +257,38 @@ public sealed class SystemActivityWatcher : IDisposable
         catch (Exception ex) { Log.Warn("System", $"Проверка бездействия: {ex.Message}"); }
     }
 
-    private void Suspend(string reason)
-    {
-        if (_disposed) return;
-        try { _suspend(reason); }
-        catch (Exception ex) { Log.Error("System", ex); }
-    }
+    // Остановка и подъём конвейера занимают секунды: остановка ждёт незавершённых
+    // сохранений, подъём заново создаёт устройство захвата и кодировщик. А приходят
+    // сюда события питания и смены сеанса ОКОННЫМ СООБЩЕНИЕМ, то есть в потоке
+    // интерфейса. Делать это прямо в нём значит подвесить окно на разблокировке
+    // сеанса ровно тогда, когда человек к нему вернулся. Поэтому работа уходит в
+    // пул потоков, а порядок причин движок разбирает сам под своим замком.
+    private void Suspend(string reason) => RunOffThread(_suspend, reason);
 
-    private void Resume(string reason)
+    private void Resume(string reason) => RunOffThread(_resume, reason);
+
+    /// <summary>
+    /// Очередь из одной задачи: события обрабатываются строго в том порядке,
+    /// в каком пришли.
+    ///
+    /// Без неё уход в пул потоков ломал бы смысл. Экран гаснет и через мгновение
+    /// включается — две задачи стартуют почти одновременно, и та, что сообщает о
+    /// включении, может опередить ту, что сообщает о гашении. Конвейер остался бы
+    /// приостановленным до следующего события, то есть, возможно, навсегда.
+    /// </summary>
+    private Task _queue = Task.CompletedTask;
+    private readonly object _queueSync = new();
+
+    private void RunOffThread(Action<string> action, string reason)
     {
         if (_disposed) return;
-        try { _resume(reason); }
-        catch (Exception ex) { Log.Error("System", ex); }
+        lock (_queueSync)
+            _queue = _queue.ContinueWith(_ =>
+            {
+                if (_disposed) return;
+                try { action(reason); }
+                catch (Exception ex) { Log.Error("System", ex); }
+            }, TaskScheduler.Default);
     }
 
     public void Dispose()

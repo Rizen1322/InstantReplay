@@ -34,9 +34,21 @@ public sealed class StorageManager : IDisposable
     /// <summary>То же, но когда слежение работает и о чужих правках сообщают сразу.</summary>
     private static readonly TimeSpan StaleAfterWatched = TimeSpan.FromMinutes(30);
 
+    /// <summary>
+    /// Сколько путь считается «нашим» после того, как мы его сами занесли в индекс.
+    /// Система сообщает о файле с задержкой, и запас нужен, чтобы собственное
+    /// сохранение не выглядело чужой правкой.
+    /// </summary>
+    private static readonly TimeSpan OwnChangeWindow = TimeSpan.FromSeconds(30);
+
     private readonly SettingsManager _settings;
     private readonly ClipIndex _index = new();
     private readonly ClipFolderWatcher _watcher;
+
+    /// <summary>Что мы сами трогали и когда. По нему отсеиваем эхо своих же правок.</summary>
+    private readonly Dictionary<string, DateTime> _ownChanges = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _ownSync = new();
+
     private int _rebuilding;
 
     public event Action<StorageStats>? StatsChanged;
@@ -44,7 +56,7 @@ public sealed class StorageManager : IDisposable
     public StorageManager(SettingsManager settings)
     {
         _settings = settings;
-        _watcher = new ClipFolderWatcher(() => RequestRebuild(force: true));
+        _watcher = new ClipFolderWatcher(OnFolderChanged);
         _settings.Changed += group =>
         {
             if (group is "" or "storage")
@@ -100,6 +112,7 @@ public sealed class StorageManager : IDisposable
     /// <summary>Файл записан — сразу в индекс, без обхода папки.</summary>
     public void RegisterSaved(string path)
     {
+        RememberOwnChange(path);
         _index.Add(path);
         NotifyStats();
     }
@@ -107,14 +120,65 @@ public sealed class StorageManager : IDisposable
     /// <summary>Файл удалён из панорамы или извне.</summary>
     public void Forget(string path)
     {
+        RememberOwnChange(path);
         _index.Remove(path);
         NotifyStats();
     }
 
     public void Rename(string from, string to)
     {
+        RememberOwnChange(from);
+        RememberOwnChange(to);
         _index.Rename(from, to);
         NotifyStats();
+    }
+
+    /// <summary>
+    /// Отметить путь как свой, чтобы слежение за папкой не приняло его за чужую
+    /// правку. Заодно чистим просроченные отметки: список растёт по одному пути на
+    /// сохранение, и без уборки он жил бы всю сессию.
+    /// </summary>
+    private void RememberOwnChange(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        var now = DateTime.UtcNow;
+        lock (_ownSync)
+        {
+            _ownChanges[path] = now;
+
+            // Запись во время сохранения идёт через .part, и о нём система тоже
+            // сообщит. Считаем его своим вместе с готовым файлом.
+            _ownChanges[path + ".part"] = now;
+
+            if (_ownChanges.Count > 64)
+                foreach (var stale in _ownChanges.Where(x => now - x.Value > OwnChangeWindow).ToList())
+                    _ownChanges.Remove(stale.Key);
+        }
+    }
+
+    /// <summary>
+    /// Система сообщила о переменах в папке. Полный обход запускаем, только если
+    /// среди путей есть хоть один не наш.
+    ///
+    /// ЗАЧЕМ ФИЛЬТР. Каждое сохранение создаёт .part и переименовывает его, то есть
+    /// порождает ровно те события, на которые мы подписаны. Без фильтра обход всей
+    /// библиотеки шёл бы после каждого клипа, причём сразу вслед за записью сотен
+    /// мегабайт, когда диск и так занят. Ради этого обход и убирали.
+    ///
+    /// Пустой список означает потерю событий (переполнение буфера слежения) —
+    /// тогда проверяем всё.
+    /// </summary>
+    private void OnFolderChanged(IReadOnlyCollection<string> paths)
+    {
+        if (paths.Count > 0 && paths.All(IsOwnChange)) return;
+        RequestRebuild(force: true);
+    }
+
+    private bool IsOwnChange(string path)
+    {
+        lock (_ownSync)
+            return _ownChanges.TryGetValue(path, out DateTime when) &&
+                   DateTime.UtcNow - when <= OwnChangeWindow;
     }
 
     private static long FreeSpace(string root)
