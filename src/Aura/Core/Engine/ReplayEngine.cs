@@ -28,6 +28,9 @@ public sealed class ReplayEngine : IDisposable
 
     private IScreenCapture? _capture;
     private VideoProcessorNv12? _processor;
+
+    /// <summary>Время стадий по часам видеокарты. Диагностика, на запись не влияет.</summary>
+    private Diagnostics.GpuStageTimer? _gpuTimer;
     private VideoEncoder? _encoder;
     private GpuCaptureFrameBroker? _frameBroker;
     private readonly AudioMixerEngine _audio = new();
@@ -375,6 +378,9 @@ public sealed class ReplayEngine : IDisposable
             bool wantTenBit = s.Codec == VideoCodec.HEVC &&
                               s.BitDepth is VideoBitDepth.Auto or VideoBitDepth.Ten;
 
+            _gpuTimer?.Dispose();
+            _gpuTimer = new Diagnostics.GpuStageTimer(_capture.D3DDevice);
+
             _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
             try
             {
@@ -596,10 +602,20 @@ public sealed class ReplayEngine : IDisposable
                     return;
                 }
 
+                // Метки видеокарты ставятся вокруг тех же двух стадий, что и
+                // секундомер потока. Сравнение этих двух цифр и есть весь смысл:
+                // процессор здесь только ставит команды в очередь.
+                var context = _capture!.D3DContext;
+                bool timed = _gpuTimer?.BeginFrame(context) == true;
+
                 long t0 = Diagnostics.PipelineProbe.Now();
                 var nv12 = _processor!.Convert(current.Texture);
                 long t1 = Diagnostics.PipelineProbe.Now();
-                _encoder!.SubmitFrame(nv12, current.Timestamp, _capture!.D3DContext);
+                if (timed) _gpuTimer!.Mark(context);
+
+                _encoder!.SubmitFrame(nv12, current.Timestamp, context);
+                if (timed) { _gpuTimer!.Mark(context); _gpuTimer.EndFrame(context); }
+
                 Diagnostics.PipelineProbe.Convert.Add(t0, t1);
                 Diagnostics.PipelineProbe.Submit.Add(t1, Diagnostics.PipelineProbe.Now());
             }
@@ -932,6 +948,9 @@ public sealed class ReplayEngine : IDisposable
         // Где именно уходит бюджет кадра (16.7 мс при 60 fps)
         string probe = Diagnostics.PipelineProbe.TakeReport();
         if (probe.Length > 0) Log.Info("Engine", probe);
+
+        string gpu = _gpuTimer?.TakeReport() ?? "";
+        if (gpu.Length > 0) Log.Info("Engine", gpu);
 
         LogMemory();
 
@@ -1689,6 +1708,7 @@ public sealed class ReplayEngine : IDisposable
         // роняло процесс в CopyResource с NullReferenceException: обёртка Vortice
         // оставалась живой, а нативный указатель внутри неё уже обнулён.
         _encoder?.Dispose(); _encoder = null;
+        _gpuTimer?.Dispose(); _gpuTimer = null;
         _processor?.Dispose(); _processor = null;
         _frameBroker?.Dispose(); _frameBroker = null;
         _capture?.Dispose(); _capture = null;
