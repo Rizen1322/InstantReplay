@@ -1,4 +1,4 @@
-namespace Aura.Core.Capture;
+﻿namespace Aura.Core.Capture;
 
 internal enum CaptureRecoveryAction
 {
@@ -58,13 +58,20 @@ internal readonly record struct CaptureEpisode(
     };
 }
 
+/// <param name="AllowWgc">
+/// Можно ли вообще переходить на WGC. На Windows 10 нельзя: право на захват без
+/// жёлтой рамки там не выдаётся, и любой уход на WGC — мониторный или оконный —
+/// оборачивался рамкой вокруг экрана в самой записи. Там работает только Desktop
+/// Duplication и хук Minecraft.
+/// </param>
 internal readonly record struct CaptureRecoveryContext(
     CaptureBackend ActiveBackend,
     CaptureFailureKind FailureKind,
     bool ForcedBackend,
     GameCaptureTarget? Target,
     CaptureEpisode Episode,
-    CaptureBackend PreferredMonitorBackend);
+    CaptureBackend PreferredMonitorBackend,
+    bool AllowWgc = true);
 
 internal readonly record struct CaptureRecoveryDecision(
     CaptureRecoveryAction Action,
@@ -87,6 +94,9 @@ internal static class CaptureRecoveryPolicy
 
         if (context.ForcedBackend)
             return Restart(context.ActiveBackend, targetRevision: 0, CaptureEpisode.Empty);
+
+        if (!context.AllowWgc)
+            return DecideWithoutWgc(context);
 
         if (context.Target is not GameCaptureTarget target)
         {
@@ -139,6 +149,35 @@ internal static class CaptureRecoveryPolicy
             ? CaptureBackend.MinecraftOpenGl
             : CaptureBackend.WgcWindow;
         return Restart(targetBackend, target.Revision, episode);
+    }
+
+    /// <summary>
+    /// Восстановление там, где WGC запрещён. Выбор короткий: хук Minecraft, если игра
+    /// это Minecraft, иначе снова Desktop Duplication. Шторм смены режима у DDA
+    /// переждётся паузой между попытками — сменить источник всё равно не на что.
+    /// </summary>
+    private static CaptureRecoveryDecision DecideWithoutWgc(in CaptureRecoveryContext context)
+    {
+        if (context.Target is not GameCaptureTarget target)
+            return Restart(CaptureBackend.DesktopDuplication, targetRevision: 0, CaptureEpisode.Empty);
+
+        CaptureEpisode episode = context.Episode.Align(target);
+
+        if (context.ActiveBackend == CaptureBackend.MinecraftOpenGl)
+        {
+            if (context.FailureKind is CaptureFailureKind.DeviceLost or CaptureFailureKind.CaptureFormatChanged)
+                return Restart(CaptureBackend.MinecraftOpenGl, target.Revision, episode);
+
+            // Хук не справился — на экран, а не на WGC окна.
+            episode = episode.Quarantine(CaptureBackend.MinecraftOpenGl);
+            return Restart(CaptureBackend.DesktopDuplication, 0, episode);
+        }
+
+        if (CaptureBackendPolicy.IsMinecraftOpenGlTarget(target) &&
+            !episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
+            return Restart(CaptureBackend.MinecraftOpenGl, target.Revision, episode);
+
+        return Restart(CaptureBackend.DesktopDuplication, 0, episode);
     }
 
     private static CaptureRecoveryDecision Restart(

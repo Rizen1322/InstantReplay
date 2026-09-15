@@ -1,10 +1,11 @@
-namespace Aura.Core.Capture;
+﻿namespace Aura.Core.Capture;
 
 /// <summary>Потокобезопасно связывает foreground target и чистую recovery-policy.</summary>
 internal sealed class GameCaptureRecoveryCoordinator
 {
     private readonly CaptureBackend _preferredMonitorBackend;
     private readonly bool _forcedBackend;
+    private readonly bool _allowWgc;
     private readonly object _sync = new();
     private GameCaptureTarget? _target;
     private CaptureEpisode _episode;
@@ -12,8 +13,10 @@ internal sealed class GameCaptureRecoveryCoordinator
 
     public GameCaptureRecoveryCoordinator(
         CaptureBackend preferredMonitorBackend,
-        bool forcedBackend)
+        bool forcedBackend,
+        bool allowWgc = true)
     {
+        _allowWgc = allowWgc;
         if (preferredMonitorBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
             throw new ArgumentException("Предпочтительный backend должен захватывать монитор", nameof(preferredMonitorBackend));
         _preferredMonitorBackend = preferredMonitorBackend;
@@ -75,7 +78,8 @@ internal sealed class GameCaptureRecoveryCoordinator
                 _forcedBackend,
                 _target,
                 _episode,
-                _preferredMonitorBackend));
+                _preferredMonitorBackend,
+                _allowWgc));
             _episode = decision.Episode;
             return true;
         }

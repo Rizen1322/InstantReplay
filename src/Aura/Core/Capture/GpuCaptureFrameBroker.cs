@@ -102,6 +102,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
                     return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
                     {
                         slot.Scope = captured.Scope;
+                        slot.CleanCurrent = false;
                         CopyFrame(captured, slot.Output);
                     });
 
@@ -112,6 +113,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             return _broker.Publish(surface.Generation, surface.Timestamp, slot =>
             {
                 slot.Scope = captured.Scope;
+                slot.CleanCurrent = false;
                 if (!_separateCursor)
                 {
                     CopyFrame(captured, slot.Output);
@@ -125,6 +127,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
                 }
 
                 CopyFrame(captured, slot.Clean!);
+                slot.CleanCurrent = true;
                 _cursorOverlay!.Compose(slot.Clean!, slot.Output, cursor);
             });
         }
@@ -289,6 +292,14 @@ internal sealed class GpuCaptureFrameSlot : IDisposable
     public ID3D11Texture2D? Clean { get; }
     public CaptureSurfaceScope Scope { get; set; }
 
+    /// <summary>
+    /// Лежит ли в <see cref="Clean"/> этот же кадр. Чистая копия пишется не во всех
+    /// ветках публикации: когда курсор уже нарисован системой, кадр идёт сразу в
+    /// Output, и Clean остаётся от прошлого раза — или пустой, если слот новый.
+    /// Отдать такую текстуру значило отдать чёрный или старый снимок.
+    /// </summary>
+    public bool CleanCurrent { get; set; }
+
     public void Dispose()
     {
         Clean?.Dispose();
@@ -307,7 +318,9 @@ internal sealed class GpuCaptureFrameLease : IDisposable
         _inner?.Slot.Output ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
     /// <summary>Тот же кадр до дорисовки курсора; null — чистой копии у источника нет.</summary>
     public ID3D11Texture2D? CleanTexture =>
-        _inner is { } inner ? inner.Slot.Clean : throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
+        _inner is { } inner
+            ? (inner.Slot.CleanCurrent ? inner.Slot.Clean : null)
+            : throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
     public long Timestamp =>
         _inner?.Timestamp ?? throw new ObjectDisposedException(nameof(GpuCaptureFrameLease));
     public long Generation =>

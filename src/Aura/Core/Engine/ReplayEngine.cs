@@ -224,7 +224,8 @@ public sealed class ReplayEngine : IDisposable
         _captureBackendForced = selection.Forced;
         _gameCaptureRecovery = new GameCaptureRecoveryCoordinator(
             _preferredCaptureBackend,
-            _captureBackendForced);
+            _captureBackendForced,
+            ScreenCaptureFactory.WgcAllowed);
         // Проблемы со звуком должны доходить до человека сразу: немой клип
         // обнаруживается уже после того, как момент упущен
         _audio.Warning += msg => Warning?.Invoke(msg);
@@ -303,7 +304,8 @@ public sealed class ReplayEngine : IDisposable
         {
             _captureHealth.Quarantine(candidate, now, CaptureQuarantine.Transient);
             CaptureBackend alternative = MonitorFallbackFor(candidate);
-            if (!_captureHealth.CanUse(alternative, now) ||
+            if (alternative == candidate ||
+                !_captureHealth.CanUse(alternative, now) ||
                 !_captureHealth.TryRecordSwitch(now)) throw;
 
             Log.Warn("Engine", $"Захват {candidate} не запустился — пробую {alternative}");
@@ -318,6 +320,9 @@ public sealed class ReplayEngine : IDisposable
     private CaptureBackend MonitorFallbackFor(CaptureBackend backend) =>
         backend == CaptureBackend.MinecraftOpenGl
             ? _preferredCaptureBackend
+            // На Windows 10 запасного мониторного источника нет: WGC дал бы рамку.
+            : !ScreenCaptureFactory.WgcAllowed
+            ? CaptureBackend.DesktopDuplication
             : CaptureBackendPolicy.Alternative(backend);
 
     private void StartLocked(
@@ -781,9 +786,11 @@ public sealed class ReplayEngine : IDisposable
                     : "";
                 Log.Warn("Engine", $"Захват generation {observedGeneration}: {previous} → {next}; " +
                                    $"target r{initialDecision.TargetRevision}; {reason}{recoveryMode}");
-                Warning?.Invoke(previous == next
-                    ? "Перезапускаю захват экрана"
-                    : $"Переключаю захват: {previous} → {next}");
+                // Уведомление о начале восстановления не шлём вовсе. Человеку не
+                // нужно знать, что захват переподключается: он узнает об этом только
+                // если восстановиться не вышло. На альт-табе из полноэкранной игры
+                // Desktop Duplication теряет дупликацию несколько раз подряд, и каждый
+                // эпизод давал по два уведомления — отсюда спам.
 
                 // При деградации оконного WGC не рвём конвейер сразу: пейсер
                 // продолжает кодировать последний принятый игровой кадр на время
@@ -868,7 +875,10 @@ public sealed class ReplayEngine : IDisposable
                             : $", удержание {ElapsedMilliseconds(holdStarted)} мс";
                         Log.Info("Engine", $"Конвейер восстановлен на {candidate} " +
                                            $"(попытка {attempt}{held})");
-                        Warning?.Invoke("Запись восстановлена");
+                        // О восстановлении говорим, только если оно было заметным: не с
+                        // первой попытки. Обычная смена режима при альт-табе чинится с
+                        // первой, и сообщать о ней значило бы сообщать о каждом альт-табе.
+                        if (attempt > 1) Warning?.Invoke("Запись восстановлена");
                         return;
                     }
                     catch (OperationCanceledException) when (_stopRequested)

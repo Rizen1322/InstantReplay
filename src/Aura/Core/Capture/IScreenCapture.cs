@@ -1,4 +1,4 @@
-using Vortice.Direct3D11;
+﻿using Vortice.Direct3D11;
 
 namespace Aura.Core.Capture;
 
@@ -65,6 +65,15 @@ public static class ScreenCaptureFactory
     /// Нужен уже здесь: устройство D3D создаётся на адаптере ЭТОГО монитора,
     /// а не на адаптере по умолчанию (см. <see cref="ScreenCaptureSource"/>).
     /// </param>
+    /// <summary>
+    /// Можно ли переходить на WGC. Только Windows 11: на Windows 10 право на захват
+    /// без жёлтой рамки не выдаётся. Принудительный выбор «wgc» через диагностическую
+    /// переменную оставляем — это осознанная проверка, а не автоматика.
+    /// </summary>
+    internal static bool WgcAllowed =>
+        Environment.OSVersion.Version.Build >= 22000 ||
+        Selection is { Forced: true, Backend: CaptureBackend.Wgc };
+
     internal static CaptureBackendSelection Selection => CaptureBackendPolicy.SelectInitial(
         Environment.OSVersion.Version.Build,
         Environment.GetEnvironmentVariable("INSTANTREPLAY_CAPTURE"));

@@ -1,4 +1,4 @@
-using Aura.Core.Capture;
+﻿using Aura.Core.Capture;
 using Xunit;
 
 namespace InstantReplay.Tests;
@@ -168,6 +168,111 @@ public sealed class CaptureRecoveryPolicyTests
         Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.Wgc, decision.Backend);
     }
+
+    // ---------- Windows 10: WGC запрещён, иначе в записи жёлтая рамка ----------
+
+    [Fact]
+    public void Without_wgc_desktop_stall_restarts_desktop_duplication()
+    {
+        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+            CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendStalled,
+            ForcedBackend: false,
+            Target: null,
+            Episode: CaptureEpisode.Empty,
+            PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
+            AllowWgc: false));
+
+        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
+        Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
+    }
+
+    [Fact]
+    public void Without_wgc_game_storm_stays_on_desktop_duplication_instead_of_window_capture()
+    {
+        // Ровно сценарий из лога: альт-таб в полноэкранной игре, шторм смены режима
+        // у DDA. Раньше политика уходила на WGC окна, и на Windows 10 это давало рамку.
+        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+            CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendTransitionStorm,
+            ForcedBackend: false,
+            Target: Game(revision: 2),
+            Episode: CaptureEpisode.Empty,
+            PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
+            AllowWgc: false));
+
+        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
+        Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
+        Assert.NotEqual(CaptureBackend.WgcWindow, decision.Backend);
+    }
+
+    [Fact]
+    public void Without_wgc_minecraft_target_still_uses_opengl_hook()
+    {
+        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+            CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendTransitionStorm,
+            ForcedBackend: false,
+            Target: Minecraft(revision: 5),
+            Episode: CaptureEpisode.Empty,
+            PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
+            AllowWgc: false));
+
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
+        Assert.Equal(5, decision.TargetRevision);
+    }
+
+    [Fact]
+    public void Without_wgc_failed_minecraft_hook_falls_back_to_desktop_duplication()
+    {
+        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+            CaptureBackend.MinecraftOpenGl,
+            CaptureFailureKind.BackendUnavailable,
+            ForcedBackend: false,
+            Target: Minecraft(revision: 5),
+            Episode: CaptureEpisode.Empty,
+            PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
+            AllowWgc: false));
+
+        Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
+        Assert.True(decision.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
+    }
+
+    [Theory]
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureFailureKind.BackendStalled)]
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureFailureKind.BackendTransitionStorm)]
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureFailureKind.BackendUnavailable)]
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureFailureKind.DeviceLost)]
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureFailureKind.CaptureFormatChanged)]
+    [InlineData(CaptureBackend.MinecraftOpenGl, CaptureFailureKind.BackendUnavailable)]
+    public void Without_wgc_no_decision_ever_picks_wgc(CaptureBackend active, CaptureFailureKind failure)
+    {
+        foreach (GameCaptureTarget? target in new GameCaptureTarget?[] { null, Game(revision: 3), Minecraft(revision: 3) })
+        {
+            var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
+                active,
+                failure,
+                ForcedBackend: false,
+                Target: target,
+                Episode: CaptureEpisode.Empty,
+                PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
+                AllowWgc: false));
+
+            Assert.NotEqual(CaptureBackend.Wgc, decision.Backend);
+            Assert.NotEqual(CaptureBackend.WgcWindow, decision.Backend);
+        }
+    }
+
+    private static GameCaptureTarget Game(long revision) => new(
+        Hwnd: (nint)77,
+        ProcessId: 902,
+        ProcessStartTicks: 88_000,
+        ExecutableName: "ProjectZomboid64",
+        GameName: "Project Zomboid",
+        MonitorIndex: 0,
+        ClientBounds: new PixelRect(0, 0, 1920, 1080),
+        MonitorBounds: new PixelRect(0, 0, 1920, 1080),
+        Revision: revision);
 
     private static GameCaptureTarget Minecraft(long revision) => new(
         Hwnd: (nint)42,
