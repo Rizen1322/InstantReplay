@@ -1,3 +1,4 @@
+﻿using Aura.Core.Interop;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -397,10 +398,13 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             return new CaptureCursorUpdate(
                 CaptureCursorMode.Separate, false, false, 0, 0, null, resetState);
 
-        bool hasPosition = info.LastMouseUpdateTime != 0;
-        bool visible = hasPosition && info.PointerPosition.Visible;
-        int x = hasPosition ? info.PointerPosition.Position.X : 0;
-        int y = hasPosition ? info.PointerPosition.Position.Y : 0;
+        bool ddaHasPosition = info.LastMouseUpdateTime != 0;
+        var (hasPosition, visible) = DdaCursorVisibility.Merge(
+            ddaHasPosition,
+            info.PointerPosition.Visible,
+            SystemCursorShowing());
+        int x = ddaHasPosition ? info.PointerPosition.Position.X : 0;
+        int y = ddaHasPosition ? info.PointerPosition.Position.Y : 0;
         DdaCursorShape? cursorShape = null;
 
         if (info.PointerShapeBufferSize > 0)
@@ -455,6 +459,27 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             y,
             cursorShape,
             resetState);
+    }
+
+    /// <summary>
+    /// Показывает ли система курсор прямо сейчас. null — спросить не удалось.
+    /// Вызов дешёвый, его и так делают на каждый кадр: см. DdaCursorVisibility.
+    /// </summary>
+    private static bool? SystemCursorShowing()
+    {
+        try
+        {
+            var cursorInfo = new NativeMethods.CURSORINFO
+            {
+                cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.CURSORINFO>()
+            };
+            if (!NativeMethods.GetCursorInfo(ref cursorInfo)) return null;
+            return (cursorInfo.flags & NativeMethods.CURSOR_SHOWING) != 0;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void WarnInvalidCursorShape(string reason)

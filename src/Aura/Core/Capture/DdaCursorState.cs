@@ -1,4 +1,4 @@
-namespace Aura.Core.Capture;
+﻿namespace Aura.Core.Capture;
 
 internal enum DdaCursorShapeKind
 {
@@ -87,6 +87,38 @@ internal sealed record DdaCursorShape(
         shape = new DdaCursorShape((DdaCursorShapeKind)type, width, visibleHeight, pixels);
         reason = string.Empty;
         return true;
+    }
+}
+
+/// <summary>
+/// Видим ли курсор, если спросить и Desktop Duplication, и систему.
+///
+/// ЗАЧЕМ. Полноэкранная игра с обзором мышью прячет курсор через ShowCursor(FALSE)
+/// и держит его в центре экрана. Desktop Duplication при этом продолжает докладывать
+/// указатель видимым, а раз мышь в системных координатах больше не движется, новых
+/// обновлений тоже не присылает. Последнее состояние «видим, в центре» так и висело,
+/// и в записи посреди игры стоял неподвижный курсор.
+///
+/// GetCursorInfo отдаёт глобальное состояние курсора, и флаг CURSOR_SHOWING там
+/// снят, пока игра его прячет. Так же решает эту задачу OBS при захвате экрана.
+/// </summary>
+internal static class DdaCursorVisibility
+{
+    /// <param name="systemShowing">
+    /// Флаг CURSOR_SHOWING из GetCursorInfo; null — система не ответила, и тогда
+    /// верим одному DDA, как раньше.
+    /// </param>
+    public static (bool HasPosition, bool Visible) Merge(
+        bool ddaHasPosition,
+        bool ddaVisible,
+        bool? systemShowing)
+    {
+        // Система говорит «спрятан» — прячем, даже если DDA в этом кадре молчал о
+        // позиции. Именно молчание DDA и держало курсор на экране.
+        if (systemShowing == false)
+            return (true, false);
+
+        return (ddaHasPosition, ddaHasPosition && ddaVisible);
     }
 }
 
