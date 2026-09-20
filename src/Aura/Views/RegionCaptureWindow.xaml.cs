@@ -895,10 +895,25 @@ public partial class RegionCaptureWindow : Window
     }
 
     /// <summary>
-    /// Размытая копия всего снимка. Делается через обычный эффект размытия WPF, а
-    /// дальше используется как картинка: инструмент рисует её кусок, и в файл попадает
-    /// ровно то же, что видно на экране. Разрешение сохраняем исходное — копия
-    /// готовится в пикселях кадра, а не окна.
+    /// Насколько крупными становятся пиксели. Ширина кадра делится на это число, то
+    /// есть по ширине укладывается примерно столько клеток независимо от разрешения
+    /// монитора: на 1080p клетка около 16 пикселей, на 1440p около 21.
+    /// </summary>
+    private const double PixelateCells = 120;
+
+    /// <summary>
+    /// Копия всего снимка с крупными пикселями. Инструмент рисует её кусок, и в файл
+    /// попадает ровно то же, что видно на экране. Разрешение сохраняем исходное —
+    /// копия готовится в пикселях кадра, а не окна.
+    ///
+    /// ЗАЧЕМ ПИКСЕЛИ, А НЕ РАЗМЫТИЕ. Здесь стояло гауссово размытие радиусом 16.
+    /// Для пряток ника или ключа этого мало: размытие обратимо в принципе, а на
+    /// крупном тексте буквы остаются читаемыми. Усреднение по клетке уничтожает
+    /// мелкие детали безвозвратно — восстанавливать там уже нечего.
+    ///
+    /// Делается в два шага: уменьшение с обычным сглаживанием (оно и усредняет
+    /// клетку) и увеличение обратно ближайшим соседом, чтобы клетки остались
+    /// квадратами, а не расплылись.
     /// </summary>
     private void EnsureBlurred()
     {
@@ -910,18 +925,17 @@ public partial class RegionCaptureWindow : Window
             if (width <= 0 || height <= 0) return;
 
             double factor = _shot.PixelWidth / width;
-            var image = new Image
-            {
-                Source = _shot,
-                Width = width,
-                Height = height,
-                Effect = new System.Windows.Media.Effects.BlurEffect
-                {
-                    Radius = 16,
-                    KernelType = System.Windows.Media.Effects.KernelType.Gaussian,
-                    RenderingBias = System.Windows.Media.Effects.RenderingBias.Performance
-                }
-            };
+            int cell = Math.Max(8, (int)Math.Round(_shot.PixelWidth / PixelateCells));
+            int smallWidth = Math.Max(1, _shot.PixelWidth / cell);
+            int smallHeight = Math.Max(1, _shot.PixelHeight / cell);
+
+            var small = new TransformedBitmap(_shot, new ScaleTransform(
+                (double)smallWidth / _shot.PixelWidth,
+                (double)smallHeight / _shot.PixelHeight));
+            small.Freeze();
+
+            var image = new Image { Source = small, Width = width, Height = height };
+            RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
             image.Measure(new Size(width, height));
             image.Arrange(new Rect(0, 0, width, height));
 
@@ -931,7 +945,7 @@ public partial class RegionCaptureWindow : Window
             bitmap.Freeze();
             Ink.Blurred = bitmap;
         }
-        catch (Exception ex) { Log.Warn("Screenshot", $"Размытие недоступно: {ex.Message}"); }
+        catch (Exception ex) { Log.Warn("Screenshot", $"Пикселизация недоступна: {ex.Message}"); }
     }
 
     // ---------------- Подпись ----------------

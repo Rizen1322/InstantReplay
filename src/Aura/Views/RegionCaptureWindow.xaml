@@ -101,7 +101,7 @@
                     <ToggleButton x:Name="RectBtn" Style="{StaticResource ToolButton}" ToolTip="Прямоугольник (U)">
                         <c:Icon Data="{DynamicResource Ico.Box}" Size="17"/>
                     </ToggleButton>
-                    <ToggleButton x:Name="BlurBtn" Style="{StaticResource ToolButton}" ToolTip="Размыть — скрыть ник, почту, ключ (R)">
+                    <ToggleButton x:Name="BlurBtn" Style="{StaticResource ToolButton}" ToolTip="Скрыть — крупные пиксели поверх ника, почты, ключа (R)">
                         <c:Icon Data="{StaticResource Ico.BlurTool}" Size="17"/>
                     </ToggleButton>
                     <ToggleButton x:Name="TextBtn" Style="{StaticResource ToolButton}" ToolTip="Подпись (T)">

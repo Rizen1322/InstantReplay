@@ -126,11 +126,23 @@ public sealed class InkLayer : FrameworkElement
         new(r.Left, r.Top + r.Height / 2)
     ];
 
-    /// <summary>Только фигуры, без рамки выделения — рамка в файл попадать не должна.</summary>
+    /// <summary>
+    /// Только фигуры, без рамки выделения — рамка в файл попадать не должна.
+    ///
+    /// Скрытие идёт первым независимо от того, когда его добавили. Оно рисует кусок
+    /// пикселизованной копии ИСХОДНОГО кадра, то есть закрашивает всё, что было
+    /// нарисовано в этом месте раньше: обведёшь что-нибудь, спрячешь рядом ник — и
+    /// обводка пропадала. Теперь пометки всегда поверх скрытого участка.
+    /// </summary>
     public void DrawShapes(DrawingContext dc)
     {
-        foreach (var shape in Shapes) Draw(dc, shape);
-        if (Current is not null) Draw(dc, Current);
+        foreach (var shape in Shapes)
+            if (shape.Tool == InkTool.Blur) Draw(dc, shape);
+        if (Current is { Tool: InkTool.Blur }) Draw(dc, Current);
+
+        foreach (var shape in Shapes)
+            if (shape.Tool != InkTool.Blur) Draw(dc, shape);
+        if (Current is { } current && current.Tool != InkTool.Blur) Draw(dc, current);
     }
 
     /// <summary>Есть ли хоть одно размытие — по этому признаку готовится размытая копия.</summary>
