@@ -80,7 +80,19 @@ public partial class RegionCaptureWindow : Window
     private Point _captionAt;
 
     /// <summary>Отменённые фигуры: Ctrl+Y возвращает их обратно, пока не нарисовано новое.</summary>
-    private readonly Stack<InkShape> _undone = new();
+    /// <summary>
+    /// История как снимки состояния, а не стек последних фигур.
+    ///
+    /// ЗАЧЕМ. Раньше отмена просто снимала последнюю фигуру с конца списка. Стирка
+    /// убирает ту, по которой щёлкнули, то есть из середины, и вернуть её на место
+    /// такая отмена уже не смогла бы. Фигур на снимке единицы, поэтому хранить их
+    /// полными списками дешевле, чем описывать каждое действие отдельно.
+    /// </summary>
+    private readonly Stack<List<InkShape>> _undone = new();
+    private readonly Stack<List<InkShape>> _redone = new();
+
+    /// <summary>Насколько мимо можно щёлкнуть стиркой и всё же попасть в пометку.</summary>
+    private const double EraseTolerance = 6;
     private Rect _selection;
     private bool _hasSelection, _selecting, _drawing, _resizing, _moving;
     private Grip _grip;
@@ -133,6 +145,7 @@ public partial class RegionCaptureWindow : Window
         RectBtn.Click += (_, _) => SetTool(InkTool.Rect);
         BlurBtn.Click += (_, _) => SetTool(InkTool.Blur);
         TextBtn.Click += (_, _) => SetTool(InkTool.Text);
+        EraserBtn.Click += (_, _) => SetTool(InkTool.Eraser);
         EyedropperBtn.Click += (_, _) => SetTool(InkTool.Eyedropper);
         ColorBtn.Click += (_, _) => ShowColorPanel(ColorBtn.IsChecked == true);
         ThicknessBtn.Click += (_, _) => CycleThickness();
@@ -368,6 +381,12 @@ public partial class RegionCaptureWindow : Window
                 return;
             }
 
+            if (grip == Grip.Inside && _tool == InkTool.Eraser)
+            {
+                EraseAt(point);
+                return;
+            }
+
             if (grip == Grip.Inside && _tool != InkTool.None)
             {
                 CommitCaption();
@@ -568,10 +587,9 @@ public partial class RegionCaptureWindow : Window
             _drawing = false;
             if (Ink.Current is { } shape)
             {
+                PushHistory();
                 Ink.Shapes.Add(shape);
                 Ink.Current = null;
-                // История линейная: после новой фигуры возвращать нечего
-                _undone.Clear();
                 Ink.Refresh();
             }
             return;
@@ -654,6 +672,7 @@ public partial class RegionCaptureWindow : Window
         Ink.Shapes.Clear();
         Ink.Current = null;
         _undone.Clear();
+        _redone.Clear();
         _lastProbePoint = new Point(double.NaN, double.NaN);   // искать заново с любого места
         Ink.Refresh();
         UpdateHint();
@@ -765,6 +784,17 @@ public partial class RegionCaptureWindow : Window
             case Key.Y when ctrl: Redo(); break;
             case Key.C when ctrl: if (_hasSelection) Finish(copy: true, save: false); break;
             case Key.S when ctrl: if (_hasSelection) Finish(copy: false, save: true); break;
+
+            // Инструменты — одной клавишей, как в графических редакторах. Буквы взяты
+            // оттуда же: B кисть, T текст, E стирка, I пипетка, U фигура. Набор
+            // подписи сюда не доходит: выше стоит ранний выход, пока она открыта.
+            case Key.B when !ctrl: SetTool(InkTool.Pencil); e.Handled = true; break;
+            case Key.A when !ctrl: SetTool(InkTool.Arrow); e.Handled = true; break;
+            case Key.U when !ctrl: SetTool(InkTool.Rect); e.Handled = true; break;
+            case Key.R when !ctrl: SetTool(InkTool.Blur); e.Handled = true; break;
+            case Key.T when !ctrl: SetTool(InkTool.Text); e.Handled = true; break;
+            case Key.I when !ctrl: SetTool(InkTool.Eyedropper); e.Handled = true; break;
+            case Key.E when !ctrl: SetTool(InkTool.Eraser); e.Handled = true; break;
         }
     }
 
@@ -781,6 +811,7 @@ public partial class RegionCaptureWindow : Window
         BlurBtn.IsChecked = _tool == InkTool.Blur;
         TextBtn.IsChecked = _tool == InkTool.Text;
         EyedropperBtn.IsChecked = _tool == InkTool.Eyedropper;
+        EraserBtn.IsChecked = _tool == InkTool.Eraser;
 
         // Размытая копия готовится один раз и только если её попросили: это полный
         // проход по кадру, платить за него тем, кто размытием не пользуется, незачем.
@@ -947,6 +978,7 @@ public partial class RegionCaptureWindow : Window
 
         if (text.Length == 0) return;
 
+        PushHistory();
         Ink.Shapes.Add(new InkShape
         {
             Tool = InkTool.Text,
@@ -955,7 +987,6 @@ public partial class RegionCaptureWindow : Window
             Start = _captionAt,
             Text = text
         });
-        _undone.Clear();
         Ink.Refresh();
     }
 
@@ -966,20 +997,47 @@ public partial class RegionCaptureWindow : Window
         _caption = null;
     }
 
+    /// <summary>Запомнить состояние ДО изменения. Звать перед каждой правкой пометок.</summary>
+    private void PushHistory()
+    {
+        _undone.Push([.. Ink.Shapes]);
+        _redone.Clear();
+    }
+
+    private void RestoreShapes(List<InkShape> state)
+    {
+        Ink.Shapes.Clear();
+        Ink.Shapes.AddRange(state);
+        Ink.Refresh();
+    }
+
+    /// <summary>Убрать пометку под курсором. Ничего не нашли — щелчок просто пропадает.</summary>
+    private void EraseAt(Point point)
+    {
+        for (int i = Ink.Shapes.Count - 1; i >= 0; i--)
+        {
+            if (!InkLayer.HitTest(Ink.Shapes[i], point, EraseTolerance)) continue;
+
+            PushHistory();
+            Ink.Shapes.RemoveAt(i);
+            Ink.Refresh();
+            return;
+        }
+    }
+
     private void Undo()
     {
-        if (Ink.Shapes.Count == 0) return;
-        _undone.Push(Ink.Shapes[^1]);
-        Ink.Shapes.RemoveAt(Ink.Shapes.Count - 1);
-        Ink.Refresh();
+        if (_undone.Count == 0) return;
+        _redone.Push([.. Ink.Shapes]);
+        RestoreShapes(_undone.Pop());
     }
 
     /// <summary>Вернуть отменённое. Ветка истории одна: нарисовал новое — возвращать больше нечего.</summary>
     private void Redo()
     {
-        if (_undone.Count == 0) return;
-        Ink.Shapes.Add(_undone.Pop());
-        Ink.Refresh();
+        if (_redone.Count == 0) return;
+        _undone.Push([.. Ink.Shapes]);
+        RestoreShapes(_redone.Pop());
     }
 
     /// <summary>Затемнение всего экрана с вырезанным выделением (правило EvenOdd).</summary>

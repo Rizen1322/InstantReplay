@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Media;
 
 namespace Aura.Views;
@@ -8,7 +8,7 @@ namespace Aura.Views;
 /// Инструмент панели. <see cref="Eyedropper"/> ничего не рисует — он только берёт
 /// цвет с кадра, поэтому в списке фигур не встречается.
 /// </summary>
-public enum InkTool { None, Pencil, Arrow, Rect, Blur, Text, Eyedropper }
+public enum InkTool { None, Pencil, Arrow, Rect, Blur, Text, Eyedropper, Eraser }
 
 /// <summary>Одна фигура: след карандаша, стрелка, прямоугольник, размытие или подпись.</summary>
 public sealed class InkShape
@@ -187,6 +187,70 @@ public sealed class InkLayer : FrameworkElement
                 DrawArrow(dc, brush, pen, shape);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Попала ли точка в фигуру. Нужна стирке: она убирает ту пометку, по которой
+    /// щёлкнули, а не последнюю нарисованную — этим она и отличается от отмены.
+    ///
+    /// Линии проверяются по расстоянию до отрезка с поправкой на их толщину, рамка
+    /// прямоугольника — только по самой рамке: щелчок в его пустой середине обычно
+    /// метит в то, что лежит под ним. Размытие и подпись, наоборот, сплошные.
+    /// </summary>
+    public static bool HitTest(InkShape shape, Point point, double tolerance)
+    {
+        double reach = tolerance + shape.Thickness / 2;
+
+        switch (shape.Tool)
+        {
+            case InkTool.Pencil:
+                if (shape.Points.Count == 1)
+                    return (shape.Points[0] - point).Length <= reach;
+                for (int i = 1; i < shape.Points.Count; i++)
+                    if (DistanceToSegment(point, shape.Points[i - 1], shape.Points[i]) <= reach)
+                        return true;
+                return false;
+
+            case InkTool.Arrow:
+                return DistanceToSegment(point, shape.Start, shape.End) <= reach;
+
+            case InkTool.Rect:
+            {
+                var rect = new Rect(shape.Start, shape.End);
+                if (rect.Width <= 0 || rect.Height <= 0) return false;
+                bool insideHole =
+                    point.X > rect.X + reach && point.X < rect.Right - reach &&
+                    point.Y > rect.Y + reach && point.Y < rect.Bottom - reach;
+                return Rect.Inflate(rect, reach, reach).Contains(point) && !insideHole;
+            }
+
+            case InkTool.Blur:
+            {
+                var rect = new Rect(shape.Start, shape.End);
+                return rect.Width > 0 && rect.Height > 0 && rect.Contains(point);
+            }
+
+            case InkTool.Text:
+            {
+                if (shape.Text.Length == 0) return false;
+                FormattedText text = Caption(shape, Brushes.Black);
+                var rect = new Rect(shape.Start, new Size(text.Width, text.Height));
+                return Rect.Inflate(rect, tolerance, tolerance).Contains(point);
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    private static double DistanceToSegment(Point point, Point a, Point b)
+    {
+        Vector segment = b - a;
+        double lengthSquared = segment.LengthSquared;
+        if (lengthSquared <= double.Epsilon) return (point - a).Length;
+
+        double t = Math.Clamp((point - a) * segment / lengthSquared, 0, 1);
+        return (point - (a + t * segment)).Length;
     }
 
     /// <summary>
