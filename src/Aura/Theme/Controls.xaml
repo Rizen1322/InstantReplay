@@ -1,4 +1,4 @@
-<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:c="clr-namespace:Aura.Controls">
 
@@ -316,9 +316,22 @@
         <Setter Property="Foreground" Value="{DynamicResource BlueBrush}"/>
     </Style>
 
+    <!-- Опасное действие.
+         Раньше фон был прозрачным, и на панели выделения кнопка «Удалить» вставала
+         рядом с обычной кнопкой такой же тёмной и отличалась только цветом подписи.
+         Теперь у неё своя приглушённая заливка и рамка того же красного: видно
+         сразу, но это по-прежнему не главное действие — им остаётся «Готово». -->
     <Style x:Key="BtnDanger" TargetType="Button" BasedOn="{StaticResource Btn}">
-        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Background" Value="{DynamicResource RecSoftBrush}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource RecEdgeBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Foreground" Value="{DynamicResource RecBrush}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource RecHoverBrush}"/>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <Style x:Key="BtnSquare" TargetType="Button" BasedOn="{StaticResource Btn}">

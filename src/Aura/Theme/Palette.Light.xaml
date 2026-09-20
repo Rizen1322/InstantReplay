@@ -1,4 +1,4 @@
-<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- СВЕТЛАЯ ТЕМА. Не инверсия тёмной: карточки белые и держатся тенью,
@@ -28,6 +28,11 @@
     <Color x:Key="AccentSoftColor">#2434C759</Color>
 
     <Color x:Key="RecColor">#FFE0352B</Color>
+    <!-- Оттенки того же красного для кнопки удаления: заливка, рамка и наведение.
+         Прозрачный фон делал её неотличимой от соседней обычной кнопки. -->
+    <Color x:Key="RecSoftColor">#18E0352B</Color>
+    <Color x:Key="RecEdgeColor">#59E0352B</Color>
+    <Color x:Key="RecHoverColor">#2AE0352B</Color>
     <Color x:Key="BlueColor">#FF0071E3</Color>
     <Color x:Key="IndigoColor">#FF5856D6</Color>
     <Color x:Key="PurpleColor">#FFAF52DE</Color>
@@ -63,6 +68,9 @@
     <SolidColorBrush x:Key="AccentSoftBrush" Color="{DynamicResource AccentSoftColor}"/>
 
     <SolidColorBrush x:Key="RecBrush" Color="{DynamicResource RecColor}"/>
+    <SolidColorBrush x:Key="RecSoftBrush" Color="{DynamicResource RecSoftColor}"/>
+    <SolidColorBrush x:Key="RecEdgeBrush" Color="{DynamicResource RecEdgeColor}"/>
+    <SolidColorBrush x:Key="RecHoverBrush" Color="{DynamicResource RecHoverColor}"/>
     <SolidColorBrush x:Key="BlueBrush" Color="{DynamicResource BlueColor}"/>
     <SolidColorBrush x:Key="IndigoBrush" Color="{DynamicResource IndigoColor}"/>
     <SolidColorBrush x:Key="PurpleBrush" Color="{DynamicResource PurpleColor}"/>
