@@ -21,6 +21,15 @@ public static class ReplaySaver
     private const int MfESinkHeadersNotFound = unchecked((int)0xC00D4A45);
 
     /// <summary>
+    /// С какого времени открытие писателя считается нештатным.
+    ///
+    /// На здоровой системе это десятки миллисекунд (создать файл, поднять AAC-энкодер).
+    /// Порог намеренно низкий: строка в логе ничего не стоит, а без неё «зависло»
+    /// невозможно отличить от «медленно пишет на диск».
+    /// </summary>
+    private const long SlowOpenWarnMs = 1500;
+
+    /// <summary>
     /// Открепить блоки арены — но только когда писатель отпустит ВСЕ буферы ЭТОГО
     /// сохранения.
     ///
@@ -97,7 +106,8 @@ public static class ReplaySaver
         IMFMediaType videoType,
         AudioTrackMode trackMode,
         bool hasGame, bool hasMic,
-        Action<double>? progress = null)
+        Action<double>? progress = null,
+        bool gentleIo = false)
     {
         if (video.Count == 0) throw new InvalidOperationException("Видеобуфер пуст");
 
@@ -146,6 +156,15 @@ public static class ReplaySaver
         writer.BeginWriting();
         tOpen = sw.ElapsedMilliseconds;
         memOpen = Diagnostics.MemoryMap.PrivateCommittedBytes();
+
+        // Построение писателя данных на диск не пишет вовсе: это загрузка DLL кодеков,
+        // чтение реестра и активация COM-объектов. Секунды здесь — всегда чужая беда
+        // (антивирус на создании файла, спящий диск, занятый драйвер видеокарты), и
+        // увидеть её надо СРАЗУ, а не в итоговой строке через полминуты: к тому моменту
+        // пользователь уже считает, что приложение зависло.
+        if (tOpen > SlowOpenWarnMs)
+            Log.Warn("Saver", $"Писатель открывался {tOpen} мс — это не запись на диск, " +
+                              "а построение конвейера Media Foundation");
 
         // Ноль времени клипа = pts первого видеокадра (keyframe)
         long baseTicks = video[0].PtsTicks;
@@ -227,6 +246,12 @@ public static class ReplaySaver
             chunkFill[s] = 0;
         }
 
+        // Отсюда и до конца подачи — единственный участок сохранения, где на диск
+        // действительно летит залп в сотни мегабайт. Только он и заслуживает фонового
+        // режима ввода-вывода: открытие писателя и финализация остаются на обычном
+        // приоритете (почему — см. BackgroundIoScope). Выход гарантирован finally ниже.
+        BackgroundIoScope.EnterIf(gentleIo);
+
         var audioPos = new int[audioStreams.Count];
         for (int fi = 0; fi < video.Count; fi++)
         {
@@ -282,6 +307,13 @@ public static class ReplaySaver
         tAudio = sw.ElapsedMilliseconds;
         memWritten = Diagnostics.MemoryMap.PrivateCommittedBytes();
 
+        // Финализация — один блокирующий вызов без единой точки выхода: он собирает
+        // moov и сбрасывает файл на диск. Прервать его на полпути нельзя, а выйти из
+        // фонового режима может только сам этот поток, поэтому в фоновом режиме
+        // затянувшаяся финализация превратилась бы в такую же глухую паузу, как
+        // открытие писателя. Секунда обычного приоритета в конце — честная плата.
+        BackgroundIoScope.ReleaseForCurrentThread();
+
         try
         {
             writer.Finalize();
@@ -320,6 +352,11 @@ public static class ReplaySaver
         }
         finally
         {
+            // Поток сохранения берётся из пула и вернётся туда же. Утащить фоновый
+            // режим с собой он не имеет права: следующая работа на этом же потоке
+            // получила бы приоритет диска «очень низкий» без всякой причины.
+            // Вызов безвреден, если режим уже снят выше или не включался вовсе.
+            BackgroundIoScope.ReleaseForCurrentThread();
             writer.Dispose();  // отпускает удержанные сэмплы
             long memClosed = Diagnostics.MemoryMap.PrivateCommittedBytes();
             static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";

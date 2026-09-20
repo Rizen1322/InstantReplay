@@ -1,6 +1,7 @@
 ﻿using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
+using Aura.Core.Logging;
 using Aura.Core.Settings;
 
 namespace Aura.Core.Saving;
@@ -14,6 +15,9 @@ internal static class MfMp4Writer
 {
     public const int SampleRate = Audio.AudioCaptureSource.SampleRate;
     public const int Channels = Audio.AudioCaptureSource.Channels;
+
+    /// <summary>С какого времени создание писателя стоит отдельной строки в логе.</summary>
+    private const long SlowCreateLogMs = 1000;
 
     /// <summary>
     /// SinkWriter для MP4. По умолчанию throttling ВЫКЛЮЧЕН — так работают оба
@@ -45,11 +49,21 @@ internal static class MfMp4Writer
         // берётся из атрибута, и имя файла может быть любым.
         attrs.Set(TranscodeAttributeKeys.TranscodeContainertype, TranscodeContainerTypeGuids.Mpeg4);
 
+        // Два замера вместо одного «открытие NNNN мс».
+        //
+        // ЗАЧЕМ. Открытие писателя — это два разных мира: создать файл (диск, права,
+        // антивирус на пути записи) и построить конвейер Media Foundation (загрузка
+        // DLL кодеков, чтение реестра, активация COM-объектов, опрос аппаратных MFT
+        // у драйвера видеокарты). На живой машине этот шаг однажды занял 27.6 секунды,
+        // и по одной суммарной цифре было не понять, кто виноват. Логируем только
+        // когда медленно: на здоровой системе тут десятки миллисекунд и строки не будет.
+        var openClock = System.Diagnostics.Stopwatch.StartNew();
         var stream = MediaFactory.MFCreateFile(
             FileAccessMode.MfAccessModeWrite,
             FileOpenMode.MfOpenModeDeleteIfExist,
             FileFlags.FlagsNone,
             filePath);
+        long fileMs = openClock.ElapsedMilliseconds;
 
         // Байтовый поток отпускаем СРАЗУ после создания писателя. Медиасинк берёт
         // на него свою ссылку, поэтому поток живёт ровно столько, сколько нужен
@@ -66,6 +80,10 @@ internal static class MfMp4Writer
         finally
         {
             stream.Dispose();
+            long totalMs = openClock.ElapsedMilliseconds;
+            if (totalMs > SlowCreateLogMs)
+                Log.Warn("Saver", $"Создание писателя заняло {totalMs} мс " +
+                                  $"(файл {fileMs}, конвейер Media Foundation {totalMs - fileMs})");
         }
     }
 

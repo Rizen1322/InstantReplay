@@ -1249,6 +1249,23 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>Ниже этого числа ЗАКОДИРОВАННЫХ кадров в секунду считаем, что идёт провал.</summary>
     private const int ProbeFpsFloor = 45;
 
+    /// <summary>
+    /// Короче этого окна замер выбрасываем целиком.
+    ///
+    /// ЗАЧЕМ. Таймер зовут раз в секунду, но после долгой паузы процесса (просадка в
+    /// подкачку, блокирующая сборка мусора) система отдаёт накопившиеся срабатывания
+    /// подряд. Второе приходит через миллисекунду после первого, и деление на это
+    /// окно превращает единичные приращения счётчиков в бессмыслицу. Живой пример:
+    ///
+    ///     23:10:36.264 [Probe] получено 4, закодировано 9, запросов 8, дублей 6
+    ///     23:10:36.264 [Probe] получено 0, закодировано 0, запросов 1311, дублей 2623
+    ///
+    /// Во второй строке — три реальных кадра, поделённые на миллисекунду. Такая строка
+    /// не просто бесполезна: она попадает ровно в тот момент, когда читают лог из-за
+    /// настоящего сбоя, и уводит расследование в сторону.
+    /// </summary>
+    private const double ProbeMinWindowSeconds = 0.25;
+
     private void StartCaptureProbe()
     {
         _probeEpisode = false;
@@ -1280,6 +1297,15 @@ public sealed class ReplayEngine : IDisposable
 
         try
         {
+            // Длину окна меряем ПЕРВЫМ делом и на слишком коротком окне выходим,
+            // НЕ тронув ни одного счётчика: иначе приращения этого миллисекундного
+            // огрызка пропали бы из следующего, честного замера (см. ProbeMinWindowSeconds).
+            long sampleTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            double sampleSeconds = (sampleTimestamp - _probeLastTimestamp) /
+                                   (double)System.Diagnostics.Stopwatch.Frequency;
+            if (sampleSeconds < ProbeMinWindowSeconds) return;
+            _probeLastTimestamp = sampleTimestamp;
+
             long recv = cap.FramesReceived, encoded = enc.FramesEncoded;
             long req = enc.InputRequests, drop = enc.FramesDroppedRealQueue, dup = enc.FramesDuplicated;
 
@@ -1287,11 +1313,6 @@ public sealed class ReplayEngine : IDisposable
             long dDrop = drop - _probeDrop, dDup = dup - _probeDup;
             _probeRecv = recv; _probeEnc = encoded; _probeReq = req; _probeDrop = drop; _probeDup = dup;
 
-            long sampleTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-            double sampleSeconds = (sampleTimestamp - _probeLastTimestamp) /
-                                   (double)System.Diagnostics.Stopwatch.Frequency;
-            _probeLastTimestamp = sampleTimestamp;
-            if (sampleSeconds <= 0) return;
             static long PerSecond(long delta, double seconds) =>
                 (long)Math.Round(Math.Max(0, delta) / seconds);
             long fpsRecv = PerSecond(dRecv, sampleSeconds);
@@ -1893,16 +1914,18 @@ public sealed class ReplayEngine : IDisposable
         var video = _videoBuffer.TakeSnapshot(wanted, out long snapshotToken);
         if (video.Count == 0) { SaveFailed?.Invoke("Буфер ещё пуст"); return; }
         SnapshotLease? lease = new(_videoBuffer, snapshotToken, video);
-        string? reservedFile = null;
         try
         {
         // Аудио берём до очистки, затем его шкала начинается заново вместе с видео.
         var audio = _audioBuffer.Snapshot(video[0].PtsTicks, video[^1].PtsTicks);
         _audioBuffer.Clear();
 
-        // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip)
+        // Игра берётся по тому, что было на экране пока копился буфер (см. GameForClip).
+        // Имя файла под неё подбирает уже фоновая задача: подбор упирается в File.Exists,
+        // то есть в ДИСК, а этот метод держит _lifecycle — замок всего жизненного цикла
+        // конвейера. Заснувший или занятый диск не должен останавливать запись.
         string game = GameForClip();
-        string file = reservedFile = ReserveFilePath(game, "replay");
+        DateTime capturedAt = DateTime.Now;
         // Копия, а не ссылка на поле энкодера: запись файла переживёт остановку
         // конвейера, а Dispose энкодера освободил бы тип прямо под SinkWriter.
         var mediaType = _encoder.CloneOutputMediaType();
@@ -1933,16 +1956,20 @@ public sealed class ReplayEngine : IDisposable
             var previousPriority = self.Priority;
             self.Priority = ThreadPriority.BelowNormal;
 
-            // В игре запись клипа уходит в фоновый режим Windows: приоритет дисковых
-            // операций падает, и залп в сотни мегабайт не отбирает ввод-вывод у игры.
+            // В игре залп данных на диск уходит в фоновый режим Windows: приоритет
+            // дисковых операций падает, и сотни мегабайт не отбирают ввод-вывод у игры.
             // На рабочем столе тормозить сохранение незачем — там пишем в полную силу.
+            // Границы режима расставляет сам писатель: под ним идёт ТОЛЬКО подача
+            // сэмплов, открытие и финализация — на обычном приоритете (см. BackgroundIoScope).
             bool inGame = !string.Equals(game, "Desktop", StringComparison.OrdinalIgnoreCase);
-            using var backgroundIo = Saving.BackgroundIoScope.BeginIf(inGame);
+            string? file = null;
             try
             {
+                file = ReserveFilePath(game, "replay", capturedAt);
                 string publishedFile = ReplaySaver.Save(file, video, audio, mediaType, s.TrackMode,
                                                         s.CaptureGameAudio, s.CaptureMicrophone,
-                                                        p => SaveProgress = p);
+                                                        p => SaveProgress = p,
+                                                        gentleIo: inGame);
                 _storage.RegisterSaved(publishedFile); // индекс папки — без повторного обхода диска
                 // Правку счётчика делает фоновый поток — идём через Update, чтобы она
                 // не столкнулась с сохранением настроек из потока интерфейса.
@@ -1966,7 +1993,7 @@ public sealed class ReplayEngine : IDisposable
                 // клипа. Новой памяти на сохранение не тратилось вовсе: всё это
                 // время клип лежал в той же арене, а запись шла в её свободную часть.
                 saveLease.Dispose();
-                ReleaseFilePath(file);
+                if (file is not null) ReleaseFilePath(file);
                 // Писатель закрыт — сводим освободившиеся нативные блоки вместе,
                 // иначе память, занятая под клип, остаётся за процессом до выхода.
                 Diagnostics.MemoryMap.Log("после сохранения");
@@ -1975,14 +2002,12 @@ public sealed class ReplayEngine : IDisposable
             }
         });
         lease = null; // владение ресурсами снимка перешло фоновой задаче
-        reservedFile = null; // и резерв пути тоже
         }
         finally
         {
             // Любая ошибка между TakeSnapshot и успешным Task.Run раньше навсегда
             // оставляла арену зарезервированной, после чего новые кадры отбрасывались.
             lease?.Dispose();
-            if (reservedFile is not null) ReleaseFilePath(reservedFile);
         }
     }
 
@@ -2011,13 +2036,20 @@ public sealed class ReplayEngine : IDisposable
     /// <summary>
     /// Путь файла по шаблону из настроек. {game} {date} {time} {preset} + раскладка по папкам игр.
     /// </summary>
-    private string ReserveFilePath(string game, string fallbackPrefix)
+    /// <summary>
+    /// Занять имя файла под клип.
+    ///
+    /// Время в имени передаётся СНАРУЖИ, а не берётся здесь через DateTime.Now:
+    /// повтор резервирует имя уже в фоновой задаче, и имя обязано помечать момент,
+    /// когда клип сняли, а не момент, когда до записи дошли руки.
+    /// </summary>
+    private string ReserveFilePath(string game, string fallbackPrefix, DateTime capturedAt)
     {
         var s = _settings.Current;
         lock (_pathSync)
         {
             string path = FileNaming.BuildPath(s.SaveRootPath, s.GroupByGame, s.FileNameTemplate, game,
-                DateTime.Now, $"{s.VerticalResolution}p{s.Fps}", fallbackPrefix,
+                capturedAt, $"{s.VerticalResolution}p{s.Fps}", fallbackPrefix,
                 candidate => File.Exists(candidate) || _reservedPaths.Contains(candidate));
             _reservedPaths.Add(path);
             return path;
@@ -2070,7 +2102,7 @@ public sealed class ReplayEngine : IDisposable
         // Тип видеопотока берётся не сейчас, а в момент создания файла (первый keyframe):
         // сразу после старта конвейера энкодер ещё не дописал в него заголовки кодека,
         // и файл, открытый с таким типом, не собирается на финализации.
-        string file = ReserveFilePath(game, "recording");
+        string file = ReserveFilePath(game, "recording", DateTime.Now);
         ManualRecorder recorder;
         try
         {

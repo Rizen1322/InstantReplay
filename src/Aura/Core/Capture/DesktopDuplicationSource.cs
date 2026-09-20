@@ -274,7 +274,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                         break;
                     }
                     if (_lifecycle.InvalidationsInWindow == 1)
-                        Log.Warn("Capture", $"Дупликация повреждена ({cause}) — пересоздаю");
+                        Log.Warn("Capture", $"Дупликация повреждена ({cause}, {DeviceHealth()}) — пересоздаю");
                     RecreateDuplication(token);
                     continue;
                 }
@@ -487,6 +487,32 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         Interlocked.Increment(ref _invalidCursorShapes);
         if (_cursorValidationWarnings.Add(reason))
             Log.Warn("Capture", $"DDA: форма курсора пропущена: {reason}");
+    }
+
+    /// <summary>
+    /// Жив ли ещё GPU-девайс на момент потери дупликации.
+    ///
+    /// ЗАЧЕМ. DXGI_ERROR_ACCESS_LOST в логе выглядит одинаково в двух совершенно разных
+    /// случаях: обычное переключение полноэкранного режима (игра свернулась, сменилось
+    /// разрешение) и сброс драйвера видеокарты, от которого у пользователя вылетают
+    /// программы. Различает их только GetDeviceRemovedReason: при смене режима девайс
+    /// цел и вернёт S_OK, при сбросе драйвера — DXGI_ERROR_DEVICE_REMOVED/RESET/HUNG.
+    /// Без этой строки в логе остаётся гадание, виноват ли рекордер или драйвер.
+    /// </summary>
+    private string DeviceHealth()
+    {
+        try
+        {
+            if (_device is null) return "устройство не создано";
+            SharpGen.Runtime.Result reason = _device.DeviceRemovedReason;
+            return reason.Success
+                ? "устройство цело"
+                : $"устройство потеряно: 0x{unchecked((uint)reason.Code):X8}";
+        }
+        catch (Exception ex)
+        {
+            return $"состояние устройства неизвестно: {ex.Message}";
+        }
     }
 
     private void RecreateDuplication(RunToken token)
