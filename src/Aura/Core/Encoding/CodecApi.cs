@@ -207,8 +207,11 @@ internal sealed class CodecApi
                 int value => value != 0 ? "вкл" : "выкл",
                 _ => "не читается"
             };
-            Log.Info("Encoder", $"Битрейт по факту: {mode}, {mean}, буфер {buffer}; " +
-                                $"сложность {complexity}, low-latency {lowLatency}");
+            string gop = Read(CodecApiGuids.AVEncMPVGOPSize) is uint g ? $"{g} кадров" : "не читается";
+            string maxBitrate = Read(CodecApiGuids.AVEncCommonMaxBitRate) is uint mb
+                ? $"{mb / 1_000_000.0:F0} Мбит/с" : "не читается";
+            Log.Info("Encoder", $"Битрейт по факту: {mode}, {mean} (пик {maxBitrate}), буфер {buffer}; " +
+                                $"сложность {complexity}, low-latency {lowLatency}, GOP {gop}");
         }
         catch (Exception ex)
         {
@@ -296,6 +299,7 @@ internal static class CodecApiGuids
     public static readonly Guid AVEncNumWorkerThreads      = new("b0c8bf60-16f7-4951-a30b-1db1609293d6");
     public static readonly Guid AVEncAdaptiveMode          = new("4419b185-da1f-4f53-bc76-097d0c1efb1e");
     public static readonly Guid AVEncCommonQualityVsSpeed  = new("98332df8-03cd-476b-89fa-3f9e442dec9f");
+    public static readonly Guid AVEncVideoMaxNumRefFrame   = new("964829ed-94f9-43b4-b74d-ef40944b69a0");
 
     /// <summary>
     /// Человекочитаемые имена для лога поддержки ключей.
@@ -322,5 +326,6 @@ internal static class CodecApiGuids
         ("ForceKeyFrame", AVEncVideoForceKeyFrame),
         ("WorkerThreads", AVEncNumWorkerThreads),
         ("AdaptiveMode", AVEncAdaptiveMode),
+        ("MaxNumRefFrame", AVEncVideoMaxNumRefFrame),
     ];
 }

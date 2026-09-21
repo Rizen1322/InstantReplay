@@ -1,4 +1,4 @@
-using NAudio.CoreAudioApi;
+﻿using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
 using Aura.Core.Buffering;
@@ -101,19 +101,39 @@ public sealed class AudioCaptureSource : IDisposable
     /// <summary>Сколько миллисекунд аудио скопилось в буфере (хвост = запаздывание звука).</summary>
     public double BufferedMs => _buffered.BufferedDuration.TotalMilliseconds;
 
-    /// <summary>Выбрасывает излишек буфера, оставляя ~keepMs (ресинхронизация звука).</summary>
-    public void DiscardExcess(int keepMs)
+    /// <summary>
+    /// Подрезать хвост буфера не больше чем на <paramref name="maxMilliseconds"/>.
+    /// Возвращает, сколько миллисекунд реально выброшено.
+    ///
+    /// ЧТО ЗДЕСЬ ПОМЕНЯЛОСЬ. Раньше выбрасывался ВЕСЬ излишек без предела: устройство
+    /// на секунду замолчало и отдало пачку — секунда звука улетала целиком. Теперь
+    /// одна подрезка ограничена сверху, и что реально выброшено, видно в логе.
+    ///
+    /// ЧЕГО ЗДЕСЬ НЕТ И ПОЧЕМУ. Выравнивать понемногу каждый блок было бы соблазнительно,
+    /// но без ресемплера это не «чуть медленнее», а выброшенные сэмплы, то есть разрыв.
+    /// Два миллисекунды на блок в 10 мс — это сорок разрывов в секунду вместо одного:
+    /// щелчок превращается в дребезг. Пока сведение идёт без ресемплера, подрезать надо
+    /// редко и крупно. Правильное лечение — свой захват WASAPI с метками QPC на каждом
+    /// пакете и адаптивный ресемплер; у NAudio этих меток не достать (проверено:
+    /// MMDevice.AudioClient отдаёт ДРУГОЙ, неинициализированный клиент и отвечает
+    /// AUDCLNT_E_NOT_INITIALIZED).
+    ///
+    /// Буфер остаётся ограничен и сверху: BufferedWaveProvider создан с
+    /// DiscardOnBufferOverflow, так что бесконтрольно он не вырастет.
+    /// </summary>
+    public double Trim(double triggerMs, double maxMilliseconds, int keepMs)
     {
-        double excess = BufferedMs - keepMs;
-        if (excess <= 0) return;
+        if (BufferedMs <= triggerMs) return 0;     // хвост в норме — не трогаем вовсе
+
+        double excess = Math.Min(BufferedMs - keepMs, maxMilliseconds);
+        if (excess <= 0) return 0;
+
         int samples = (int)(excess / 1000.0 * SampleRate) * Channels;
-        var scratch = new float[Math.Min(samples, SampleRate * Channels)]; // максимум 1 сек за раз
-        while (samples > 0)
-        {
-            int n = Math.Min(samples, scratch.Length);
-            _pipeline.Read(scratch, 0, n);
-            samples -= n;
-        }
+        if (samples <= 0) return 0;
+
+        var scratch = new float[samples];
+        _pipeline.Read(scratch, 0, samples);
+        return excess;
     }
 
     public void Dispose()
@@ -162,6 +182,15 @@ public sealed class AudioMixerEngine : IDisposable
     public float MicPeak { get; private set; }
 
     private float _gateEnvelope; // сглаженная огибающая гейта (0 закрыт .. 1 открыт)
+
+    /// <summary>Сколько блоков гейт ещё держится открытым после падения уровня.</summary>
+    private int _gateHold;
+
+    /// <summary>На сколько дБ порог закрытия ниже порога открытия.</summary>
+    private const float GateHysteresisDb = 6f;
+
+    /// <summary>Удержание открытого гейта: 25 блоков по 10 мс = четверть секунды.</summary>
+    private const int MicGateHoldBlocks = 25;
 
     public event Action<AudioBlock>? BlockReady;
 
@@ -321,6 +350,20 @@ public sealed class AudioMixerEngine : IDisposable
     /// <summary>Сколько раз подписчик уронил блок звука — считаем, чтобы не спамить в лог.</summary>
     private long _blockFailures;
 
+    /// <summary>С какого хвоста начинаем подрезать. Ниже — звук просто отстаёт на эти миллисекунды.</summary>
+    private const double BacklogTriggerMs = 120;
+
+    /// <summary>Сколько хвоста оставляем после подрезки. Меньше — риск вставки тишины.</summary>
+    private const int BacklogKeepMs = 40;
+
+    /// <summary>
+    /// Потолок одной подрезки. Раньше выбрасывался весь излишек без предела: пачка
+    /// от зависшего на секунду устройства уносила эту секунду звука целиком.
+    /// </summary>
+    private const double TrimLimitMs = 120;
+
+    private double _gameTrimmedMs, _micTrimmedMs;
+
     private void MixLoop()
     {
         // Поток микшера фоновый, и необработанное исключение в нём завершает процесс
@@ -359,22 +402,42 @@ public sealed class AudioMixerEngine : IDisposable
         var gameOut = new short[BlockSamples];
         var micOut = new short[BlockSamples];
         int backlogCheck = 0;
+        int backlogReport = 0;
 
         while (_running)
         {
-            // Раз в секунду следим за хвостом буферов: под игровой нагрузкой WASAPI
-            // отдаёт данные пачками, хвост растёт — звук всё сильнее отстаёт.
             // Читаем РОВНО 480 фреймов из каждого источника; если данных нет —
             // BufferedWaveProvider вернёт тишину. Поток не останавливается никогда.
             bool hasMic;
             lock (_restartSync)
             {
+                // Раз в секунду смотрим хвост буферов: под нагрузкой WASAPI отдаёт
+                // данные пачками, хвост растёт — звук всё сильнее отстаёт от видео.
+                //
+                // Срезаем РЕДКО и КРУПНО, а не понемногу каждый блок. Ровного способа
+                // убрать лишнее у нас нет: без ресемплера любое выравнивание — это
+                // выброшенные сэмплы, то есть разрыв. Один разрыв раз в секунду слышен
+                // как щелчок, сорок мелких за ту же секунду — как дребезг. Пока
+                // ресемплера нет, реже и крупнее — меньшее зло.
                 if (++backlogCheck >= 100)
                 {
                     backlogCheck = 0;
-                    if (_game is { BufferedMs: > 120 } g) g.DiscardExcess(40);
-                    if (_mic is { BufferedMs: > 120 } m) m.DiscardExcess(40);
+                    _gameTrimmedMs += _game?.Trim(BacklogTriggerMs, TrimLimitMs, BacklogKeepMs) ?? 0;
+                    _micTrimmedMs += _mic?.Trim(BacklogTriggerMs, TrimLimitMs, BacklogKeepMs) ?? 0;
+
+                    // Раз в минуту — строка о том, как ведут себя часы звуковых устройств.
+                    // Без этой цифры компенсация задержки подбирается гаданием.
+                    if (++backlogReport >= 60)
+                    {
+                        backlogReport = 0;
+                        Log.Info("Audio", $"Хвост буферов: игра {_game?.BufferedMs ?? 0:F0} мс, " +
+                                          $"микрофон {_mic?.BufferedMs ?? 0:F0} мс; " +
+                                          $"срезано за минуту: игра {_gameTrimmedMs:F0} мс, " +
+                                          $"микрофон {_micTrimmedMs:F0} мс");
+                        _gameTrimmedMs = _micTrimmedMs = 0;
+                    }
                 }
+
                 if (_game is not null) _game.Read(gameBuf, BlockSamples); else Array.Clear(gameBuf);
                 if (_mic is not null) _mic.Read(micBuf, BlockSamples); else Array.Clear(micBuf);
                 hasMic = _mic is not null;
@@ -389,8 +452,26 @@ public sealed class AudioMixerEngine : IDisposable
                 double sum = 0;
                 for (int i = 0; i < BlockSamples; i++) sum += micBuf[i] * micBuf[i];
                 float rms = (float)Math.Sqrt(sum / BlockSamples);
-                float threshold = (float)Math.Pow(10, Math.Clamp(MicGateThresholdDb, -70f, -10f) / 20.0);
-                float target = rms > threshold ? 1f : 0f;
+
+                // Два порога и удержание вместо одного порога.
+                //
+                // ЗАЧЕМ. С единственным порогом голос, который держится ровно на его
+                // уровне (тихая речь, конец фразы, человек отвернулся от микрофона),
+                // проходит по границе: блок выше — открылись, следующий ниже —
+                // закрылись. На слух это дребезг, который хуже исходного фона.
+                // Закрываемся теперь на 6 дБ ниже, чем открываемся, и ещё держим
+                // канал открытым MicGateHoldBlocks блоков после падения уровня —
+                // столько длится обычная пауза между словами.
+                float openLevel = (float)Math.Pow(10, Math.Clamp(MicGateThresholdDb, -70f, -10f) / 20.0);
+                float closeLevel = (float)Math.Pow(10, (Math.Clamp(MicGateThresholdDb, -70f, -10f) - GateHysteresisDb) / 20.0);
+
+                if (rms > openLevel) _gateHold = MicGateHoldBlocks;          // открыть и продлить
+                else if (rms < closeLevel) _gateHold = Math.Max(0, _gateHold - 1);
+                // Уровень между порогами — состояние не трогаем: открытый гейт
+                // остаётся открытым, закрытый закрытым. Именно этот зазор и гасит
+                // дребезг, поэтому открывать в нём нельзя.
+
+                float target = _gateHold > 0 ? 1f : 0f;
                 float coef = target > _gateEnvelope ? 0.6f : 0.06f;
                 _gateEnvelope += (target - _gateEnvelope) * coef;
                 gate = _gateEnvelope;

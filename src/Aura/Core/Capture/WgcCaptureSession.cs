@@ -1,4 +1,4 @@
-using Windows.Graphics;
+﻿using Windows.Graphics;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
@@ -32,6 +32,12 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private bool _started;
     private long _minFrameIntervalTicks;
     private long _nextFrameDeadline;
+
+    /// <summary>
+    /// Насколько раньше своего слота кадр ещё принимается. Ноль, пока система сама
+    /// шлёт кадры с избытком (как на Windows 10): там лишние есть всегда.
+    /// </summary>
+    private long _earlyToleranceTicks;
     private long _framesReceived;
     private long _framesAccepted;
     private int _callbacksInFlight;
@@ -101,6 +107,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             _started = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _nextFrameDeadline = 0;
+            _earlyToleranceTicks = 0;
             Interlocked.Exchange(ref _framesReceived, 0);
             Interlocked.Exchange(ref _framesAccepted, 0);
             Interlocked.Exchange(ref _closedReported, 0);
@@ -122,6 +129,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             CaptureAccess.EnsureBorderlessAccess();
             _session = _framePool.CreateCaptureSession(_item);
             DisableBorder();
+            LimitUpdateRate(targetFps);
             try { _session.IsCursorCaptureEnabled = !_forceCursorDisabled && captureCursor; }
             catch (Exception ex) { Log.Warn("Capture", $"Настройка курсора недоступна: {ex.Message}"); }
 
@@ -143,6 +151,63 @@ internal sealed class WgcCaptureSession : IScreenCapture
             Log.Info("Capture", $"Захват запущен ({_sourceName}): монитор #{_monitorIndex}, " +
                                 $"{Width}x{Height}, target {_targetFps} fps");
             LogAdapters(_monitorIndex);
+        }
+    }
+
+    /// <summary>
+    /// Попросить систему не присылать кадры чаще, чем нам нужно.
+    ///
+    /// ЗАЧЕМ. Отбор по времени в <see cref="DrainFrames"/> отбрасывает лишние кадры
+    /// УЖЕ ПОСЛЕ того, как система их сделала: на мониторе 144 или 240 Гц DWM
+    /// композитит и копирует вдвое-вчетверо больше кадров, чем попадёт в запись,
+    /// и платит за это видеокарта — та самая, на которой в этот момент идёт игра.
+    /// MinUpdateInterval переносит ограничение на сторону системы: лишние кадры
+    /// просто не делаются.
+    ///
+    /// Свойство живёт на IGraphicsCaptureSession5 и появилось в Windows 11 22H2.
+    /// На Windows 10 обращение к нему отвечает E_NOINTERFACE, поэтому программный
+    /// отбор остаётся на месте и работает как раньше — он же страхует и случай,
+    /// когда система приняла интервал, но соблюдает его неточно.
+    /// </summary>
+    private void LimitUpdateRate(int targetFps)
+    {
+        if (targetFps <= 0 || _session is null) return;
+        try
+        {
+            // Просим ПОЛОВИНУ интервала кадра, а не весь.
+            //
+            // ЗАЧЕМ. DWM отдаёт кадры только на синхроимпульсах монитора. Попроси мы
+            // ровно 16.67 мс при 60 fps — на мониторе 144 Гц следующий разрешённый
+            // импульс придётся через три периода, 20.8 мс, и запись получила бы 48 кадров
+            // в секунду вместо 60 (остальное пейсер закрыл бы дубликатами — рывки). На
+            // 120 Гц интервал совпадает с двумя периодами впритык, и любой джиттер
+            // выбрасывал бы кадр без замены. С половиной интервала система отдаёт с
+            // запасом (на 144 Гц — 72 кадра вместо 144, то есть вдвое меньше работы
+            // для DWM), а ровно 60 из них выбирает программный отбор ниже.
+            long wanted = 10_000_000L / targetFps / 2;
+            TimeSpan? accepted = Interop.CaptureInterop.TrySetMinUpdateInterval(
+                _session, TimeSpan.FromTicks(wanted));
+            if (accepted is { } interval)
+            {
+                // Когда кадров приходит впритык, их метки времени гуляют вокруг сетки на
+                // доли периода. Четверть кадра допуска не даёт выбросить кадр, пришедший
+                // чуть раньше своего слота: средняя частота выше заданной всё равно не
+                // поднимется — дедлайн каждый раз сдвигается на целый интервал.
+                _earlyToleranceTicks = _minFrameIntervalTicks / 4;
+                Log.Info("Capture", $"{_sourceName}: система ограничена интервалом " +
+                                    $"{interval.TotalMilliseconds:F2} мс (MinUpdateInterval), " +
+                                    $"точную частоту {targetFps} кадров/с держит программный отбор");
+            }
+            else
+            {
+                Log.Info("Capture", $"{_sourceName}: MinUpdateInterval недоступен — частоту держит программный отбор");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Ожидаемо на Windows 10 — пишем один раз при подготовке сессии, не в цикле.
+            Log.Info("Capture", $"{_sourceName}: MinUpdateInterval не применился ({ex.Message}) — " +
+                                "частоту держит программный отбор");
         }
     }
 
@@ -235,7 +300,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             if (_minFrameIntervalTicks > 0)
             {
                 if (_nextFrameDeadline == 0) _nextFrameDeadline = ticks;
-                if (ticks < _nextFrameDeadline) continue;
+                if (ticks < _nextFrameDeadline - _earlyToleranceTicks) continue;
                 _nextFrameDeadline += _minFrameIntervalTicks;
                 if (ticks - _nextFrameDeadline > _minFrameIntervalTicks * 4)
                     _nextFrameDeadline = ticks + _minFrameIntervalTicks;

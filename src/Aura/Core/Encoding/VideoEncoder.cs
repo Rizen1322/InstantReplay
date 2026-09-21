@@ -380,8 +380,69 @@ public sealed class VideoEncoder : IDisposable
         _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, (uint)bitrateBps, optional: true);
         _codecApi.Set(
             CodecApiGuids.AVEncCommonMaxBitRate,
-            (uint)Math.Min(bitrateBps + bitrateBps / 2, uint.MaxValue),
+            PeakBitrate(bitrateBps),
             optional: true);
+
+        // Размер группы кадров — тоже структурный параметр, и ровно на нём это
+        // подтвердилось замером. Выставленный ПОСЛЕ медиатипов, он у NVIDIA HEVC
+        // принимается без ошибки и даже читается обратно, но энкодер продолжает жить
+        // со своим значением по умолчанию: ключевой кадр каждые 60 кадров, то есть
+        // каждую секунду, а не каждые две. В сохранённых клипах так и было — 181
+        // ключевой кадр на три минуты, и каждый весил в 12 раз больше обычного:
+        // 17.6% всего битрейта уходило на ключевые кадры, а кадры сразу после них
+        // сжимались сильнее, чтобы отдать долг буфера. Выставленный здесь, до типов,
+        // он соблюдается: на RTX 3070 группа стала 120 кадров. Позднее присваивание
+        // в ConfigureCodecApi оставлено для энкодеров, которые понимают только его.
+        _codecApi.Set(CodecApiGuids.AVEncMPVGOPSize, (uint)(Fps * 2), optional: true);
+
+        ConfigureReferenceFrames();
+    }
+
+    /// <summary>
+    /// Потолок битрейта для VBR — вдвое выше среднего.
+    ///
+    /// ЗАЧЕМ ВДВОЕ, А НЕ В ПОЛТОРА РАЗА. Средний битрейт от потолка не меняется, а
+    /// сложным сценам (взрыв, резкий разворот камеры) разрешено занять больше. Замер
+    /// на реальной записи 1440p60 при 15 Мбит/с, VMAF по модели для близкого
+    /// просмотра: потолок ×1.5 — 96.48 (5% худших кадров 92.35), ×2 — 96.50 (92.63).
+    /// Выигрыш небольшой, но он весь приходится на худшие кадры — те, что и видно.
+    /// Длину буфера повтора это не меняет: арена считается по среднему битрейту.
+    /// </summary>
+    private static uint PeakBitrate(long bitrateBps) =>
+        (uint)Math.Min(bitrateBps * 2, uint.MaxValue);
+
+    /// <summary>Сколько опорных кадров просим у энкодера.</summary>
+    private const uint WantedReferenceFrames = 3;
+
+    /// <summary>
+    /// Больше опорных кадров — меньше битрейта на неподвижный фон.
+    ///
+    /// ЗАЧЕМ. В режиме низкой задержки энкодер держит минимум опорных кадров, обычно
+    /// один: каждый кадр предсказывается только от предыдущего. В геймплее фон и
+    /// интерфейс почти не меняются, но их всё равно приходится описывать заново после
+    /// каждого резкого движения камеры. С тремя опорными кадрами энкодер находит
+    /// неизменившийся кусок на кадр-два назад и тратит на него биты один раз.
+    /// Задержки это не добавляет: её дают B-кадры, а они у нас выключены.
+    ///
+    /// Ключ СТАТИЧЕСКИЙ: Microsoft прямо пишет, что он задаётся только до начала
+    /// сеанса кодирования. Поэтому он здесь, вместе с остальными структурными
+    /// параметрами, а не в ConfigureCodecApi — там энкодер уже отвечал бы отказом.
+    ///
+    /// Диапазон спрашиваем у драйвера: рекомендованное значение по умолчанию — 2,
+    /// но верхняя граница у разных MFT разная, и запрос выше неё драйвер либо молча
+    /// зажимает, либо отвергает целиком.
+    /// </summary>
+    private void ConfigureReferenceFrames()
+    {
+        if (_codecApi is null || !_codecApi.IsSupported(CodecApiGuids.AVEncVideoMaxNumRefFrame)) return;
+
+        uint wanted = WantedReferenceFrames;
+        if (_codecApi.TryGetUIntRange(CodecApiGuids.AVEncVideoMaxNumRefFrame, out uint min, out uint max))
+            wanted = Math.Clamp(wanted, min, Math.Max(min, max));
+
+        _codecApi.Set(CodecApiGuids.AVEncVideoMaxNumRefFrame, wanted, optional: true);
+        if (_codecApi.TryReadUInt(CodecApiGuids.AVEncVideoMaxNumRefFrame, out uint accepted))
+            Log.Info("Encoder", $"Опорных кадров: {accepted}");
     }
 
     /// <summary>eAVEncCommonRateControlMode: VBR со средним битрейтом и потолком.</summary>
@@ -486,15 +547,14 @@ public sealed class VideoEncoder : IDisposable
     ///
     /// Режим 1 берёт лучшее от обоих: СРЕДНИЙ битрейт равен заданному, поэтому
     /// расчёт длины буфера повтора остаётся верным, а на сложных сценах энкодер
-    /// может занять до потолка. Потолок в полтора раза — запас, которого хватает
-    /// на резкое усложнение картинки и который не растягивает буфер.
+    /// может занять до потолка. Потолок — вдвое выше среднего (см. PeakBitrate).
     /// </summary>
     private void ConfigureRateControl(long bitrateBps)
     {
         if (_codecApi is null) return;
 
         uint mean = (uint)bitrateBps;
-        uint peak = (uint)Math.Min(bitrateBps + bitrateBps / 2, uint.MaxValue);
+        uint peak = PeakBitrate(bitrateBps);
 
         // Режим уже пробовали поставить до медиатипов (ConfigureCodecApiEarly).
         // Повторяем на случай энкодеров, которые принимают его только здесь, и
@@ -643,19 +703,13 @@ public sealed class VideoEncoder : IDisposable
             }
             else
             {
-                long n = (ticks - _cfrBase + _frameDurationTicks / 2) / _frameDurationTicks;
-                pts = _cfrBase + n * _frameDurationTicks;
-
-                // Слот занят (дубликатом от пейсера или предыдущим кадром) — НЕ выбрасываем
-                // реальный кадр, а ставим в следующий слот: живое движение всегда лучше
-                // повтора. Раньше так терялось ~90 настоящих кадров в минуту, и вместо них
-                // в записи оставались замершие дубликаты — это и читалось как «меньше fps».
-                if (pts <= _lastCfrPts)
-                    pts = _lastCfrPts + _frameDurationTicks;
+                // Счёт слотов и число дубликатов задним числом — в EncoderCfrPolicy:
+                // это единственная часть конвейера, которую можно проверить тестом.
+                pts = EncoderCfrPolicy.QuantizePts(ticks, _cfrBase, _lastCfrPts, _frameDurationTicks);
 
                 // Пропущенные слоты между прошлым кадром и этим — дубликаты задним числом
                 if (_lastSubmittedTex is not null &&
-                    pts - _lastCfrPts <= _frameDurationTicks * (MaxBackfillSlots + 1))
+                    EncoderCfrPolicy.BackfillSlots(_lastCfrPts, pts, _frameDurationTicks, MaxBackfillSlots) > 0)
                 {
                     while (_lastCfrPts + _frameDurationTicks < pts)
                     {

@@ -40,6 +40,13 @@ public static class ScreenshotService
     /// </summary>
     private const int LiveFrameBudgetMs = 1200;
 
+    /// <summary>
+    /// Бюджет ожидания СВЕЖЕГО кадра, когда есть чистый запасной путь. Внутри каждой
+    /// попытки брокер и так ждёт новый кадр 200 мс; больше одной-двух попыток значит
+    /// держать человека секунду перед снимком, который своя сессия сделает быстрее.
+    /// </summary>
+    private const int StrictLiveBudgetMs = 250;
+
     public static async Task<(byte[] Bgra, int W, int H)> CapturePixelsAsync(
         int monitorIndex, bool cursor, LiveFrameProvider? live = null, byte[]? into = null)
     {
@@ -54,53 +61,85 @@ public static class ScreenshotService
         // из обработчика горячей клавиши, и нажатие PrintScreen подвешивало окно.
         // Обычный скриншот от этого был защищён своим Task.Run в App — лишняя
         // обёртка там ничего не стоит, а здесь чинит корень.
+        bool pipelineHoldsDuplication =
+            live is not null && ScreenCaptureFactory.Selection.Backend == CaptureBackend.DesktopDuplication;
+
+        // Можно ли, отказавшись от кадра буфера, снять экран своей сессией без потерь.
+        //
+        // Пока работает буфер, второй Desktop Duplication того же монитора система не
+        // создаёт вовсе (E_INVALIDARG), и остаётся только WGC. На Windows 11 это честный
+        // обмен: рамку захвата там можно отключить. На Windows 10 нельзя — сессия WGC
+        // рисует жёлтую рамку вокруг экрана, и она попала бы в снимок.
+        bool ownSessionIsClean =
+            !pipelineHoldsDuplication ||
+            (ScreenCaptureFactory.IsWgcAvailable && CaptureAccess.IsBorderControlSupported);
+
         if (live is not null)
         {
-            shot = await Task.Run(() =>
-            {
-                // Несколько попыток, а не одна.
-                //
-                // ЗАЧЕМ. У брокера кадров три слота. Когда видеокарта занята игрой,
-                // преобразование кадра встаёт на сотни миллисекунд (в логе у друга —
-                // до 961 мс), и всё это время слоты заняты: один пишется, другой читает
-                // конвейер. Готового кадра нет, живой путь отказывает, и раньше
-                // скриншот сразу шёл в свою сессию захвата. А своя сессия Desktop
-                // Duplication на том же мониторе при работающем конвейере не создаётся
-                // вовсе: DXGI не даёт второй дупликации одного выхода. Отсюда «снимается
-                // через раз». Затор длится меньше секунды, поэтому немного подождать
-                // здесь дешевле, чем гарантированно упасть там.
-                var deadline = System.Diagnostics.Stopwatch.StartNew();
-                int attempts = 0;
-                while (true)
-                {
-                    attempts++;
-                    (byte[] Bgra, int W, int H)? frame = null;
-                    try
-                    {
-                        live((device, context, texture) => frame = ReadPixels(device, context, texture, into));
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Warn("Screenshot", $"Не удалось взять кадр у буфера: {ex.Message}");
-                        frame = null;
-                    }
-
-                    if (frame is not null)
-                    {
-                        Log.Info("Screenshot", attempts == 1
-                            ? "Кадр взят у работающего буфера"
-                            : $"Кадр взят у работающего буфера с {attempts}-й попытки");
-                        return frame;
-                    }
-                    if (deadline.ElapsedMilliseconds >= LiveFrameBudgetMs) return null;
-                    Thread.Sleep(40);
-                }
-            }).ConfigureAwait(false);
+            // Есть чистый запасной путь — берём у буфера только СВЕЖИЙ кадр и ждём
+            // недолго: устаревший кадр честнее переснять, чем отдать.
+            //
+            // Чистого пути нет (Windows 10 при работающем буфере) — устаревший кадр
+            // берётся как есть, и ждать ради «свежести» бессмысленно: отказываться от
+            // него всё равно некуда. Тогда даём полный бюджет повторов на случай, когда
+            // все слоты брокера заняты конвейером.
+            shot = ownSessionIsClean
+                ? await Task.Run(() => TakeLiveFrame(live, into, allowStale: false, budgetMs: StrictLiveBudgetMs))
+                    .ConfigureAwait(false)
+                : await Task.Run(() => TakeLiveFrame(live, into, allowStale: true, budgetMs: LiveFrameBudgetMs))
+                    .ConfigureAwait(false);
         }
 
-        // 2) Буфер выключен — своя одноразовая сессия
-        shot ??= await CaptureOwnSessionAsync(monitorIndex, cursor);
+        // 2) Своя одноразовая сессия. WGC принудительно — только когда он чистый;
+        // иначе прежнее поведение: сессия настроенного источника (на Windows 10 при
+        // занятой дупликации она честно упадёт с ошибкой, а не испортит снимок рамкой).
+        shot ??= await CaptureOwnSessionAsync(
+            monitorIndex, cursor, forceWgc: pipelineHoldsDuplication && ownSessionIsClean);
         return shot.Value;
+    }
+
+    /// <summary>Кадр у работающего буфера. null — буфер его не отдал.</summary>
+    private static (byte[] Bgra, int W, int H)? TakeLiveFrame(
+        LiveFrameProvider live, byte[]? into, bool allowStale, int budgetMs)
+    {
+        // Несколько попыток, а не одна.
+        //
+        // ЗАЧЕМ. У брокера кадров три слота. Когда видеокарта занята игрой,
+        // преобразование кадра встаёт на сотни миллисекунд (в логе у друга —
+        // до 961 мс), и всё это время слоты заняты: один пишется, другой читает
+        // конвейер. Готового кадра нет, живой путь отказывает, и раньше
+        // скриншот сразу шёл в свою сессию захвата. А своя сессия Desktop
+        // Duplication на том же мониторе при работающем конвейере не создаётся
+        // вовсе: DXGI не даёт второй дупликации одного выхода. Отсюда «снимается
+        // через раз». Затор длится меньше секунды, поэтому немного подождать
+        // здесь дешевле, чем гарантированно упасть там.
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        int attempts = 0;
+        while (true)
+        {
+            attempts++;
+            (byte[] Bgra, int W, int H)? frame = null;
+            try
+            {
+                live((device, context, texture) => frame = ReadPixels(device, context, texture, into),
+                     allowStale);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Screenshot", $"Не удалось взять кадр у буфера: {ex.Message}");
+                frame = null;
+            }
+
+            if (frame is not null)
+            {
+                Log.Info("Screenshot", attempts == 1
+                    ? "Кадр взят у работающего буфера"
+                    : $"Кадр взят у работающего буфера с {attempts}-й попытки");
+                return frame;
+            }
+            if (deadline.ElapsedMilliseconds >= budgetMs) return null;
+            Thread.Sleep(40);
+        }
     }
 
     /// <summary>
@@ -168,12 +207,21 @@ public static class ScreenshotService
     }
 
     /// <summary>Одноразовая сессия захвата: живёт ~200 мс, ждём первый кадр.</summary>
-    private static async Task<(byte[] Bgra, int W, int H)> CaptureOwnSessionAsync(int monitorIndex, bool cursor)
+    /// <param name="forceWgc">
+    /// Брать WGC независимо от настроенного источника. Нужно, когда дупликация
+    /// монитора уже занята работающим буфером: второй сессии DDA система не даёт.
+    /// </param>
+    private static async Task<(byte[] Bgra, int W, int H)> CaptureOwnSessionAsync(
+        int monitorIndex, bool cursor, bool forceWgc)
     {
         var tcs = new TaskCompletionSource<(byte[] Bgra, int W, int H)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        CaptureBackend backend = ScreenCaptureFactory.Selection.Backend;
+        CaptureBackend backend = forceWgc && ScreenCaptureFactory.IsWgcAvailable
+            ? CaptureBackend.Wgc
+            : ScreenCaptureFactory.Selection.Backend;
+        if (forceWgc)
+            Log.Info("Screenshot", $"Своя сессия захвата: {backend} (буфер занял дупликацию)");
         using var source = ScreenCaptureFactory.Create(
             CaptureSourceRequest.Create(backend, monitorIndex, target: null));
         const long generation = 1;

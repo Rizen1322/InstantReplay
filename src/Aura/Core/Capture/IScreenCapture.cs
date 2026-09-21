@@ -47,9 +47,16 @@ public delegate void UseFrame(ID3D11Device device, ID3D11DeviceContext context, 
 
 /// <summary>
 /// Поставщик кадра из уже работающего захвата. false — живого захвата нет
-/// (буфер выключен), вызывающий делает собственную одноразовую сессию.
+/// (буфер выключен) или готовый кадр не годится; вызывающий делает собственную
+/// одноразовую сессию.
+///
+/// <paramref name="allowStale"/> — согласен ли вызывающий на последний готовый кадр
+/// ЛЮБОГО возраста. Для миниатюры уведомления это нормально: она иллюстрирует
+/// событие, которое уже произошло. Для скриншота — нет: там кадр обязан совпадать
+/// с тем, что человек видит на экране прямо сейчас. Запрос с false отдаёт кадр,
+/// только если он свежий, и позволяет вызывающему уйти на свою сессию захвата.
 /// </summary>
-public delegate bool LiveFrameProvider(UseFrame use);
+public delegate bool LiveFrameProvider(UseFrame use, bool allowStale);
 
 /// <summary>Выбор способа захвата экрана.</summary>
 public static class ScreenCaptureFactory
@@ -73,6 +80,27 @@ public static class ScreenCaptureFactory
     internal static bool WgcAllowed =>
         Environment.OSVersion.Version.Build >= 22000 ||
         Selection is { Forced: true, Backend: CaptureBackend.Wgc };
+
+    /// <summary>
+    /// Есть ли WGC на этой системе вообще.
+    ///
+    /// Отличается от <see cref="WgcAllowed"/> намеренно. Там решается, можно ли
+    /// ПИСАТЬ через WGC: на Windows 10 нельзя, потому что запись получит жёлтую
+    /// рамку. Здесь — можно ли ОДИН РАЗ снять экран, и рамка на снимке не успевает
+    /// появиться. Это единственный способ сделать скриншот, пока буфер держит
+    /// дупликацию монитора: вторую сессию DDA того же выхода система не создаёт.
+    ///
+    /// API появился в Windows 10 1903 (сборка 18362).
+    /// </summary>
+    internal static bool IsWgcAvailable
+    {
+        get
+        {
+            if (Environment.OSVersion.Version.Build < 18362) return false;
+            try { return Windows.Graphics.Capture.GraphicsCaptureSession.IsSupported(); }
+            catch { return false; }
+        }
+    }
 
     internal static CaptureBackendSelection Selection => CaptureBackendPolicy.SelectInitial(
         Environment.OSVersion.Version.Build,

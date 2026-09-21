@@ -110,15 +110,18 @@ public sealed class VideoProcessorNv12 : IDisposable
             // ровно то, что плееры ожидают от H.264/HEVC. Раньше выход был помечен как
             // full-range (Nominal_Range=2), а плееры декодировали как limited —
             // отсюда «накинутый цветокор» (пережатый контраст, серые чёрные).
-            _videoContext.VideoProcessorSetStreamColorSpace(_processor, 0, new VideoProcessorColorSpace
+            if (!TrySetColorSpaces())
             {
-                Usage = 0, RGB_Range = 0, YCbCr_Matrix = 1, YCbCr_xvYCC = 0, Nominal_Range = 0
-            });
-            _videoContext.VideoProcessorSetOutputColorSpace(_processor, new VideoProcessorColorSpace
-            {
-                Usage = 0, RGB_Range = 0, YCbCr_Matrix = 1, YCbCr_xvYCC = 0,
-                Nominal_Range = 1 // D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235
-            });
+                _videoContext.VideoProcessorSetStreamColorSpace(_processor, 0, new VideoProcessorColorSpace
+                {
+                    Usage = 0, RGB_Range = 0, YCbCr_Matrix = 1, YCbCr_xvYCC = 0, Nominal_Range = 0
+                });
+                _videoContext.VideoProcessorSetOutputColorSpace(_processor, new VideoProcessorColorSpace
+                {
+                    Usage = 0, RGB_Range = 0, YCbCr_Matrix = 1, YCbCr_xvYCC = 0,
+                    Nominal_Range = 1 // D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235
+                });
+            }
 
             // Драйверная «автообработка» кадра — шумодав, повышение резкости и прочее,
             // что вендор включает по умолчанию для ВОСПРОИЗВЕДЕНИЯ видео. Для записи
@@ -151,6 +154,44 @@ public sealed class VideoProcessorNv12 : IDisposable
                     throw new InvalidOperationException("Видеопроцессор не отдал пул кадров в NV12");
             }
             _poolIndex = 0;
+        }
+    }
+
+    /// <summary>
+    /// Задать цветовые пространства современным способом — через DXGI_COLOR_SPACE_TYPE.
+    ///
+    /// ЗАЧЕМ ВМЕСТО СТАРОГО ВЫЗОВА. D3D11_VIDEO_PROCESSOR_COLOR_SPACE описывает цвет
+    /// четырьмя разрозненными полями и не умеет выразить ничего, кроме BT.601/BT.709:
+    /// для BT.2020 и кривой PQ там просто нет значений. Версия с DXGI-перечислением
+    /// называет пространство целиком и однозначно, и это единственный путь, по которому
+    /// в конвейер когда-нибудь войдёт HDR. Заодно исчезает двусмысленность полного и
+    /// урезанного диапазона, из-за которой запись однажды уехала по контрасту.
+    ///
+    /// Значения подобраны так, чтобы поведение НЕ изменилось: на входе рабочий стол
+    /// в полном диапазоне sRGB/BT.709, на выходе YCbCr BT.709 студийного диапазона
+    /// (16-235) — ровно то, что задавали четыре поля старого вызова.
+    ///
+    /// false — драйвер не отдал ID3D11VideoContext1 (интерфейс появился в Windows 8),
+    /// вызывающий оставляет старый путь.
+    /// </summary>
+    private bool TrySetColorSpaces()
+    {
+        try
+        {
+            using var context1 = _videoContext.QueryInterfaceOrNull<ID3D11VideoContext1>();
+            if (context1 is null) return false;
+
+            context1.VideoProcessorSetStreamColorSpace1(
+                _processor!, 0, ColorSpaceType.RgbFullG22NoneP709);
+            context1.VideoProcessorSetOutputColorSpace1(
+                _processor!, ColorSpaceType.YcbcrStudioG22LeftP709);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logging.Log.Info("Capture", $"Цветовое пространство через DXGI не задано ({ex.Message}) — " +
+                                        "остаётся прежний вызов");
+            return false;
         }
     }
 

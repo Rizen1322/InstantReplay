@@ -141,7 +141,9 @@ public static class ReplaySaver
         // Нужен в finally, где локальных переменных тела уже не видно.
         long clipBytes = 0;
 
-        IMFSinkWriter writer = MfMp4Writer.Create(partPath);
+        MfMp4Writer.Mp4Target target = MfMp4Writer.Open(
+            partPath, videoType, trackMode, hasGame, hasMic);
+        IMFSinkWriter writer = target.Writer;
         var handles = new List<System.Runtime.InteropServices.GCHandle>();
         // Своя партия буферов на это сохранение — по ней и ждём разгрузки писателя
         var batch = new ArenaBufferBatch();
@@ -150,10 +152,9 @@ public static class ReplaySaver
         try
         {
 
-        int videoStream = MfMp4Writer.AddPassthroughVideoStream(writer, videoType);
-        var audioStreams = MfMp4Writer.AddAudioStreams(writer, trackMode, hasGame, hasMic);
+        int videoStream = target.VideoStream;
+        var audioStreams = target.AudioStreams;
 
-        writer.BeginWriting();
         tOpen = sw.ElapsedMilliseconds;
         memOpen = Diagnostics.MemoryMap.PrivateCommittedBytes();
 
@@ -339,7 +340,8 @@ public static class ReplaySaver
         try { fileBytes = new FileInfo(partPath).Length; } catch { }
 
         Log.Info("Saver", $"Сохранено: {filePath} ({frameCount} кадров за {clipSeconds:F1} с{fps}, " +
-                          $"{audio.Count} аудиоблоков)");
+                          $"{audio.Count} аудиоблоков, контейнер " +
+                          $"{(target.Fragmented ? "фрагментированный" : "обычный")})");
         Log.Info("Saver", MfMp4Writer.SampleReport);
         Log.Info("Saver", $"Запись файла заняла {total} мс " +
                           $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +

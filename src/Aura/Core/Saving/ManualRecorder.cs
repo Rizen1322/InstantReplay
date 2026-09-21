@@ -120,7 +120,20 @@ public sealed class ManualRecorder : IDisposable
     private long _droppedFrames;
 
     public string FilePath => _files.Count > 0 ? _files[0] : _firstFilePath;
+
+    /// <summary>Когда начали — для показа человеку («запись с 21:14»).</summary>
     public DateTime StartedAt { get; } = DateTime.Now;
+
+    /// <summary>
+    /// Длительность записи меряем МОНОТОННЫМИ часами, а не настенными.
+    ///
+    /// ЗАЧЕМ. Длительность уходит в уведомление и в карточку библиотеки, а раньше
+    /// она считалась как разность двух DateTime.Now. Перевод часов, переход на зимнее
+    /// время или обычная синхронизация с сервером времени посреди записи сдвигают эту
+    /// разность на целый час — и запись на двадцать минут показывается как запись на
+    /// минус сорок. Stopwatch к системному времени не привязан.
+    /// </summary>
+    public System.Diagnostics.Stopwatch Elapsed { get; } = System.Diagnostics.Stopwatch.StartNew();
     /// <summary>Сколько частей файла уже создано (для показа в интерфейсе).</summary>
     public int PartCount { get { lock (_files) return _files.Count; } }
 
@@ -157,13 +170,35 @@ public sealed class ManualRecorder : IDisposable
             Volatile.Write(ref _baseTicks, f.PtsTicks);
         }
 
+        // Потеряв кадр, досматриваем текущую группу до конца и НЕ пишем её остаток.
+        //
+        // ЗАЧЕМ. Кадры между ключевыми описаны разницей с предыдущими. Выкинуть один
+        // из середины значит оставить в файле все последующие кадры группы без того,
+        // на что они ссылаются: плеер показывает рассыпающуюся картинку до самого
+        // следующего ключевого кадра — а это две секунды. Раньше дроп по переполнению
+        // очереди рвал группу ровно так. Дешевле пропустить остаток группы целиком:
+        // в записи будет честный скачок на границе, а не две секунды мусора.
+        if (_droppingUntilKeyframe)
+        {
+            if (!f.IsKeyframe)
+            {
+                Interlocked.Increment(ref _droppedFrames);
+                return;
+            }
+            _droppingUntilKeyframe = false;
+        }
+
         // Буфер кадра живёт только на время события энкодера — копируем себе
         // (100 КБ на кадр, 6 МБ/с). Копия короткоживущая: писатель вернёт её в пул
         // сразу после WriteSample, поэтому пул держит лишь несколько массивов.
         var copy = ArrayPool<byte>.Shared.Rent(f.Length);
         Buffer.BlockCopy(f.Data, f.Offset, copy, 0, f.Length);
-        Enqueue(new Item(copy, f.Length, f.PtsTicks - _baseTicks, f.DurationTicks, -1, f.IsKeyframe));
+        if (!Enqueue(new Item(copy, f.Length, f.PtsTicks - _baseTicks, f.DurationTicks, -1, f.IsKeyframe)))
+            _droppingUntilKeyframe = true;
     }
+
+    /// <summary>Идёт ли сейчас пропуск остатка группы кадров после потери одного из них.</summary>
+    private volatile bool _droppingUntilKeyframe;
 
     public void OnAudio(AudioBlock block)
     {
@@ -204,7 +239,7 @@ public sealed class ManualRecorder : IDisposable
         return new Item(bytes, byteCount, _chunkStart[s], fill * 100_000L, s, false);
     }
 
-    private void Enqueue(Item item, int timeoutMs = 0)
+    private bool Enqueue(Item item, int timeoutMs = 0)
     {
         // В callback не ждём вообще: подвесить поток энкодера или микшера из-за
         // медленного диска — ровно та беда, от которой мы уходим. Только Finish
@@ -227,12 +262,13 @@ public sealed class ManualRecorder : IDisposable
             // Очередь закрыли прямо сейчас — записывать больше некуда, и это норма
         }
 
-        if (queued) return;
+        if (queued) return true;
 
         ArrayPool<byte>.Shared.Return(item.Buffer);
         if (Interlocked.Increment(ref _droppedFrames) is 1 or 100 or 1000)
             Log.Warn("Recorder", $"Диск не успевает: очередь писателя переполнена, " +
                                  $"потеряно {Interlocked.Read(ref _droppedFrames)} сэмплов");
+        return false;
     }
 
     // ---------------- Поток писателя: единственный, кто трогает Media Foundation ----------------
@@ -326,10 +362,13 @@ public sealed class ManualRecorder : IDisposable
 
         // Пишем в .part и переименовываем при закрытии части: незавершённый MP4
         // не должен носить имя записи и попадать в библиотеку (см. ReplaySaver)
-        var writer = MfMp4Writer.Create(path + PartSuffix);
-        int videoStream = MfMp4Writer.AddPassthroughVideoStream(writer, videoType);
-        var audioStreams = MfMp4Writer.AddAudioStreams(writer, _trackMode, _hasGame, _hasMic);
-        writer.BeginWriting();
+        MfMp4Writer.Mp4Target target = MfMp4Writer.Open(
+            path + PartSuffix, videoType, _trackMode, _hasGame, _hasMic);
+        IMFSinkWriter writer = target.Writer;
+        int videoStream = target.VideoStream;
+        var audioStreams = target.AudioStreams;
+        if (_segmentIndex == 0)
+            Log.Info("Recorder", $"Контейнер: {(target.Fragmented ? "фрагментированный MP4" : "обычный MP4")}");
 
         _writer = writer;
         _videoStream = videoStream;
@@ -439,7 +478,7 @@ public sealed class ManualRecorder : IDisposable
         return new Result(_error is null && files.Count > 0, seconds, _error, files);
     }
 
-    private int Seconds => (int)Math.Round((DateTime.Now - StartedAt).TotalSeconds);
+    private int Seconds => (int)Math.Round(Elapsed.Elapsed.TotalSeconds);
     private IReadOnlyList<string> Files { get { lock (_files) return _files.ToArray(); } }
 
     public void Dispose()

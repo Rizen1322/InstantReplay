@@ -218,6 +218,65 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         }
     }
 
+    /// <summary>
+    /// Сколько ждать «затравочный» кадр сразу после создания дупликации.
+    ///
+    /// Короткий намеренно: если системе нечего отдать, ждать нечего — настоящий
+    /// первый кадр заберёт обычный цикл.
+    /// </summary>
+    private const int PrimeTimeoutMs = 16;
+
+    /// <summary>
+    /// Выбросить первый кадр дупликации, если он не несёт ни одного обновления экрана.
+    ///
+    /// ЗАЧЕМ. Сразу после DuplicateOutput система отдаёт поверхность, в которую ещё
+    /// не скопировала ни одного обновления рабочего стола: AcquireNextFrame отвечает
+    /// успехом, а AccumulatedFrames равен нулю. Содержимое такой поверхности — это
+    /// рабочий стол на момент, который нам неизвестен, и он может быть заметно старше
+    /// текущего. Для записи это незаметно (следующий кадр всё перекроет), а для
+    /// скриншота это ровно тот симптом, с которым пришёл отчёт: человек снимает
+    /// область поверх своего окна, а на снимке оказывается окно, лежащее ПОД ним.
+    /// Собственный образец Microsoft (DesktopDuplication) так же пропускает первый
+    /// кадр и начинает со второго.
+    ///
+    /// ПОЧЕМУ ЭТО ВАЖНО НЕ ТОЛЬКО ПРИ СТАРТЕ. Дупликация пересоздаётся на каждой
+    /// смене режима экрана, а она происходит ровно тогда, когда человек выходит из
+    /// игры в своё окно. После пересоздания <c>_firstFrameSinceStart</c> публикует
+    /// первый же кадр без условий — то есть ту самую неинициализированную
+    /// поверхность, и она уезжает в буфер как «текущий экран».
+    ///
+    /// Забранный кадр приходится отпускать в любом случае: вернуть его системе
+    /// непрочитанным нельзя. Для записи потеря одного кадра ничего не стоит —
+    /// пейсер закрывает дыру дубликатом, — а ждём мы не дольше PrimeTimeoutMs.
+    /// </summary>
+    private static void DiscardStaleFirstFrame(IDXGIOutputDuplication duplication)
+    {
+        IDXGIResource? resource = null;
+        bool acquired = false;
+        try
+        {
+            SharpGen.Runtime.Result result =
+                duplication.AcquireNextFrame(PrimeTimeoutMs, out var info, out resource);
+            if (result.Failure) return;                    // таймаут — отдавать было нечего
+            acquired = true;
+
+            if (info.AccumulatedFrames == 0)
+                Log.Info("Capture", "DDA: первый кадр дупликации без обновлений — пропущен как устаревший");
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Capture", $"DDA: затравочный кадр не взят ({ex.Message})");
+        }
+        finally
+        {
+            resource?.Dispose();
+            // Отпускаем только то, что взяли: ReleaseFrame без кадра — это
+            // DXGI_ERROR_INVALID_CALL, а на нём цикл захвата пересоздаёт сессию.
+            if (acquired)
+                try { duplication.ReleaseFrame(); } catch { }
+        }
+    }
+
     /// <summary>Признак «этому потоку ещё работать». Свой на каждый запуск захвата.</summary>
     private sealed class RunToken { public volatile bool Running = true; }
     private RunToken? _run;
@@ -549,6 +608,12 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             }
             Volatile.Write(ref _resetCursorOnNextFrame, 1);
             _firstFrameSinceStart = true;
+            // Только здесь, а не при первом создании: одноразовый скриншот при
+            // выключенном буфере создаёт дупликацию заново и на статичном экране живёт
+            // ровно одним первым кадром. Выброси мы его — снимок ждал бы движения
+            // мыши и падал по таймауту. А вот после смены режима экрана первый кадр
+            // и есть та самая устаревшая поверхность (см. DiscardStaleFirstFrame).
+            if (_duplication is { } restored) DiscardStaleFirstFrame(restored);
             Log.Info("Capture", "Дупликация восстановлена");
             return;
         }

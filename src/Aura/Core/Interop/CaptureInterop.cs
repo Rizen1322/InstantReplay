@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX.Direct3D11;
 using Vortice.Direct3D11;
@@ -23,6 +23,7 @@ internal interface IDirect3DDxgiInterfaceAccess
 {
     IntPtr GetInterface(ref Guid iid);
 }
+
 
 internal static class CaptureInterop
 {
@@ -75,6 +76,62 @@ internal static class CaptureInterop
         var device = WinRT.MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
         Marshal.Release(inspectable);
         return device;
+    }
+
+    /// <summary>
+    /// IID пятой версии интерфейса сессии захвата — единственное, что она добавляет,
+    /// это минимальный интервал между кадрами. Сверено с windows.graphics.capture.h
+    /// (MIDL_INTERFACE("67C0EA62-1F85-5061-925A-239BE0AC09CB") IGraphicsCaptureSession5).
+    /// </summary>
+    private static readonly Guid IGraphicsCaptureSession5Iid = new("67C0EA62-1F85-5061-925A-239BE0AC09CB");
+
+    /// <summary>
+    /// Слоты vtable: 3 метода IUnknown, 3 метода IInspectable, затем get и put
+    /// в порядке объявления в заголовке.
+    /// </summary>
+    private const int GetMinUpdateIntervalSlot = 6;
+    private const int PutMinUpdateIntervalSlot = 7;
+
+    /// <summary>
+    /// Ограничить частоту, с которой система делает кадры для этой сессии.
+    ///
+    /// ЗАЧЕМ ЧЕРЕЗ VTABLE, А НЕ СВОЙСТВОМ КЛАССА. Свойство MinUpdateInterval появилось
+    /// в Windows 11 22H2, и проекция WinRT в нашей целевой версии SDK (22621) его ещё не
+    /// объявляет — сборка падает с CS1061. Поднимать целевую версию SDK ради одного
+    /// свойства значит менять требования ко всей сборке и упаковке. Прямой запрос
+    /// интерфейса честно отвечает E_NOINTERFACE там, где свойства нет (Windows 10).
+    ///
+    /// Вызов идёт указателем на функцию, а не через [ComImport]-интерфейс: встроенная
+    /// обёртка COM в современном .NET не обещает правильной раскладки для интерфейсов,
+    /// унаследованных от IInspectable, а промах на один слот здесь означал бы вызов
+    /// чужого метода с чужими аргументами. После записи значение читается обратно —
+    /// по нему видно, что попали в нужный метод и система его приняла.
+    ///
+    /// Возвращает принятый системой интервал; null — интерфейса нет.
+    /// </summary>
+    public static unsafe TimeSpan? TrySetMinUpdateInterval(GraphicsCaptureSession session, TimeSpan interval)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        IntPtr inspectable = WinRT.MarshalInspectable<GraphicsCaptureSession>.FromManaged(session);
+        try
+        {
+            Guid iid = IGraphicsCaptureSession5Iid;
+            if (Marshal.QueryInterface(inspectable, in iid, out IntPtr session5) != 0 || session5 == IntPtr.Zero)
+                return null;
+            try
+            {
+                var vtable = *(IntPtr**)session5;
+                var put = (delegate* unmanaged[Stdcall]<IntPtr, long, int>)vtable[PutMinUpdateIntervalSlot];
+                var get = (delegate* unmanaged[Stdcall]<IntPtr, long*, int>)vtable[GetMinUpdateIntervalSlot];
+
+                Marshal.ThrowExceptionForHR(put(session5, interval.Ticks));
+                long accepted;
+                Marshal.ThrowExceptionForHR(get(session5, &accepted));
+                return TimeSpan.FromTicks(accepted);
+            }
+            finally { Marshal.Release(session5); }
+        }
+        finally { Marshal.Release(inspectable); }
     }
 
     /// <summary>Достаёт нативную ID3D11Texture2D из кадра Direct3D11CaptureFrame.Surface.</summary>

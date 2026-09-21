@@ -87,6 +87,147 @@ internal static class MfMp4Writer
         }
     }
 
+    /// <summary>
+    /// Открытый файл: писатель и готовые номера потоков.
+    ///
+    /// Номера раздаёт не вызывающий, а сам контейнер, и у фрагментированного MP4 они
+    /// фиксированы ещё до создания писателя. Поэтому оба пути возвращают одно и то же
+    /// описание, и вызывающему не нужно знать, какой контейнер ему достался.
+    /// </summary>
+    internal readonly record struct Mp4Target(
+        IMFSinkWriter Writer,
+        int VideoStream,
+        List<(int Index, AudioTrackKind Kind)> AudioStreams,
+        bool Fragmented);
+
+    /// <summary>
+    /// Открыть MP4 на запись: сначала фрагментированный, при отказе — обычный.
+    ///
+    /// ЗАЧЕМ ФРАГМЕНТИРОВАННЫЙ. Обычный MP4 держит оглавление (moov) в конце файла, и
+    /// до успешной финализации файла фактически нет: падение, выключение питания или
+    /// ошибка на Finalize оставляли от записи ноль. Замер на этой машине, файл обрезан
+    /// на 60% длины:
+    ///
+    ///   фрагментированный — Windows читает 1280x720, 3.00 с, миниатюра есть,
+    ///                       Media Foundation вычитывает 55 кадров из 90;
+    ///   обычный           — Windows показывает 0x0 и 0.00 с, миниатюры нет,
+    ///                       Media Foundation падает с ошибкой.
+    ///
+    /// То есть у фрагментированного уцелело всё, что успело лечь на диск. Заодно
+    /// исчезает причина, по которой запись резалась на части по 3.5 ГБ: каждый
+    /// фрагмент адресуется сам по себе.
+    ///
+    /// Проверено там же: Windows одинаково читает оба контейнера целиком (размер кадра,
+    /// длительность, битрейт, миниатюра), passthrough сжатого H.264 через этот синк
+    /// работает, и вторая звуковая дорожка добавляется (режим «раздельно» не теряется).
+    ///
+    /// Откат на обычный контейнер оставлен на случай кодека, которого фрагментированный
+    /// синк не знает: лучше записать по-старому, чем не записать вовсе.
+    /// </summary>
+    public static Mp4Target Open(
+        string filePath,
+        IMFMediaType videoType,
+        AudioTrackMode trackMode,
+        bool hasGame,
+        bool hasMic,
+        bool disableThrottling = true)
+    {
+        try
+        {
+            return OpenFragmented(filePath, videoType, trackMode, hasGame, hasMic, disableThrottling);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Saver", $"Фрагментированный MP4 не открылся ({ex.Message}) — пишу обычный");
+        }
+
+        IMFSinkWriter writer = Create(filePath, disableThrottling);
+        int videoStream = AddPassthroughVideoStream(writer, videoType);
+        var audioStreams = AddAudioStreams(writer, trackMode, hasGame, hasMic);
+        writer.BeginWriting();
+        return new Mp4Target(writer, videoStream, audioStreams, Fragmented: false);
+    }
+
+    /// <summary>
+    /// Фрагментированный MP4. Дорожки объявляются ДО создания писателя: синк берёт
+    /// типы в конструкторе, а не принимает AddStream, как обычный писатель.
+    ///
+    /// Порядок дорожек проверен на живом синке: индекс 0 — видео, дальше звук в том
+    /// порядке, в котором их добавляли. Идентификаторы 1 и 2 синк занимает сам, поэтому
+    /// вторая звуковая идёт под номером 3 (номера 1 и 2 отвечают MF_E_STREAMSINK_EXISTS).
+    /// </summary>
+    private static Mp4Target OpenFragmented(
+        string filePath,
+        IMFMediaType videoType,
+        AudioTrackMode trackMode,
+        bool hasGame,
+        bool hasMic,
+        bool disableThrottling)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+
+        var kinds = AudioTrackKinds(trackMode, hasGame, hasMic);
+
+        var stream = MediaFactory.MFCreateFile(
+            FileAccessMode.MfAccessModeWrite,
+            FileOpenMode.MfOpenModeDeleteIfExist,
+            FileFlags.FlagsNone,
+            filePath);
+
+        IMFMediaSink? sink = null;
+        IMFMediaType? firstAudio = null;
+        try
+        {
+            firstAudio = kinds.Count > 0 ? AacOutputType() : null;
+            MediaFactory.MFCreateFMPEG4MediaSink(stream, videoType, firstAudio, out sink).CheckError();
+
+            // Вторая звуковая дорожка — только для режима «раздельно».
+            const int SecondAudioStreamId = 3;
+            if (kinds.Count > 1)
+            {
+                using IMFMediaType secondAudio = AacOutputType();
+                sink.AddStreamSink(SecondAudioStreamId, secondAudio).Dispose();
+            }
+
+            using IMFAttributes attrs = MediaFactory.MFCreateAttributes(2);
+            attrs.Set(SinkWriterAttributeKeys.ReadwriteEnableHardwareTransforms, 1u);
+            if (disableThrottling) attrs.Set(SinkWriterAttributeKeys.DisableThrottling, 1u);
+
+            IMFSinkWriter writer = MediaFactory.MFCreateSinkWriterFromMediaSink(sink, attrs);
+            try
+            {
+                // Видео идёт без перекодирования: вход тем же типом, что и выход.
+                writer.SetInputMediaType(0, videoType, null);
+
+                var audioStreams = new List<(int Index, AudioTrackKind Kind)>(kinds.Count);
+                for (int i = 0; i < kinds.Count; i++)
+                {
+                    using IMFMediaType pcm = PcmInputType();
+                    writer.SetInputMediaType(i + 1, pcm, null);
+                    audioStreams.Add((i + 1, kinds[i]));
+                }
+
+                writer.BeginWriting();
+                return new Mp4Target(writer, 0, audioStreams, Fragmented: true);
+            }
+            catch
+            {
+                // Писатель держит файл открытым. Не закрыв его, запасной обычный путь
+                // открыл бы то же имя и получил отказ доступа — то есть отказ
+                // фрагментированного контейнера превращался бы в отказ записи вообще.
+                writer.Dispose();
+                sink.Shutdown();
+                throw;
+            }
+        }
+        finally
+        {
+            firstAudio?.Dispose();
+            sink?.Dispose();     // писатель держит свою ссылку на синк
+            stream.Dispose();    // и на байтовый поток
+        }
+    }
+
     /// <summary>Видеопоток без перекодирования: input type == output type == сжатый.</summary>
     public static int AddPassthroughVideoStream(IMFSinkWriter writer, IMFMediaType videoType)
     {
@@ -95,19 +236,23 @@ internal static class MfMp4Writer
         return index;
     }
 
-    /// <summary>AAC-LC 48k stereo 192 kbps; на вход — PCM16 из микшера.</summary>
-    public static int AddAacStream(IMFSinkWriter writer)
+    /// <summary>AAC-LC 48k stereo 192 kbps — то, что лежит в файле.</summary>
+    private static IMFMediaType AacOutputType()
     {
-        using var outType = MediaFactory.MFCreateMediaType();
+        var outType = MediaFactory.MFCreateMediaType();
         outType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio);
         outType.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Aac);
         outType.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, SampleRate);
         outType.Set(MediaTypeAttributeKeys.AudioNumChannels, Channels);
         outType.Set(MediaTypeAttributeKeys.AudioBitsPerSample, 16);
         outType.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, 24000); // 192 kbps
-        int idx = writer.AddStream(outType);
+        return outType;
+    }
 
-        using var inType = MediaFactory.MFCreateMediaType();
+    /// <summary>PCM16 из микшера — то, что мы подаём писателю; в AAC он кодирует сам.</summary>
+    private static IMFMediaType PcmInputType()
+    {
+        var inType = MediaFactory.MFCreateMediaType();
         inType.Set(MediaTypeAttributeKeys.MajorType, MediaTypeGuids.Audio);
         inType.Set(MediaTypeAttributeKeys.Subtype, AudioFormatGuids.Pcm);
         inType.Set(MediaTypeAttributeKeys.AudioSamplesPerSecond, SampleRate);
@@ -115,8 +260,38 @@ internal static class MfMp4Writer
         inType.Set(MediaTypeAttributeKeys.AudioBitsPerSample, 16);
         inType.Set(MediaTypeAttributeKeys.AudioBlockAlignment, Channels * 2);
         inType.Set(MediaTypeAttributeKeys.AudioAvgBytesPerSecond, SampleRate * Channels * 2);
+        return inType;
+    }
+
+    /// <summary>AAC-LC 48k stereo 192 kbps; на вход — PCM16 из микшера.</summary>
+    public static int AddAacStream(IMFSinkWriter writer)
+    {
+        using var outType = AacOutputType();
+        int idx = writer.AddStream(outType);
+
+        using var inType = PcmInputType();
         writer.SetInputMediaType(idx, inType, null);
         return idx;
+    }
+
+    /// <summary>
+    /// Какие звуковые дорожки окажутся в файле — по режиму и по тому, что вообще писали.
+    /// Вынесено отдельно, потому что фрагментированному синку дорожки надо объявить
+    /// ДО создания писателя, а обычному — после.
+    /// </summary>
+    private static List<AudioTrackKind> AudioTrackKinds(
+        AudioTrackMode trackMode, bool hasGame, bool hasMic)
+    {
+        bool wantGame = hasGame && trackMode is not AudioTrackMode.MicOnly;
+        bool wantMic = hasMic && trackMode is not AudioTrackMode.GameOnly;
+        if (!wantGame && !wantMic) return [];
+
+        if (trackMode == AudioTrackMode.Separate && wantGame && wantMic)
+            return [AudioTrackKind.Game, AudioTrackKind.Mic];
+
+        return [!wantMic ? AudioTrackKind.Game
+              : !wantGame ? AudioTrackKind.Mic
+              : AudioTrackKind.Mixed];
     }
 
     /// <summary>
@@ -131,22 +306,8 @@ internal static class MfMp4Writer
         IMFSinkWriter writer, AudioTrackMode trackMode, bool hasGame, bool hasMic)
     {
         var streams = new List<(int, AudioTrackKind)>();
-        bool wantGame = hasGame && trackMode is not AudioTrackMode.MicOnly;
-        bool wantMic = hasMic && trackMode is not AudioTrackMode.GameOnly;
-        if (!wantGame && !wantMic) return streams;
-
-        if (trackMode == AudioTrackMode.Separate && wantGame && wantMic)
-        {
-            streams.Add((AddAacStream(writer), AudioTrackKind.Game));
-            streams.Add((AddAacStream(writer), AudioTrackKind.Mic));
-        }
-        else
-        {
-            streams.Add((AddAacStream(writer),
-                !wantMic ? AudioTrackKind.Game
-                : !wantGame ? AudioTrackKind.Mic
-                : AudioTrackKind.Mixed));
-        }
+        foreach (AudioTrackKind kind in AudioTrackKinds(trackMode, hasGame, hasMic))
+            streams.Add((AddAacStream(writer), kind));
         return streams;
     }
 

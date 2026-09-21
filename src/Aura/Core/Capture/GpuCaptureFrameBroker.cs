@@ -222,29 +222,63 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     /// сразу после прошлого оверлея — как застывшее перекрестие выделения.
     /// У WGC отдельного чистого кадра нет, курсор там рисует система.
     /// </param>
+    /// <param name="maxAge">
+    /// Насколько старым позволено быть кадру, если нового так и не пришло.
+    ///
+    /// ЗАЧЕМ ОГРАНИЧЕНИЕ. Раньше запасным вариантом был последний готовый кадр
+    /// ЛЮБОГО возраста. На статичном экране Desktop Duplication не присылает ничего,
+    /// и «последний» мог быть снят минуты назад — до того, как человек переключился
+    /// в другое окно. Снимок области выходил с содержимым, которого на экране уже
+    /// нет: типичный отчёт — «снимал поверх своего окна, а получил окно под ним».
+    /// Старый кадр честнее не отдавать вовсе: вызывающий откроет свою сессию
+    /// захвата и снимет то, что на экране сейчас.
+    /// </param>
     public bool TryUseFreshestMonitor(
         long generation,
         TimeSpan waitForNewFrame,
+        TimeSpan maxAge,
         Action<ID3D11Texture2D> use,
-        bool withoutCursor = false)
+        bool withoutCursor,
+        out string rejection)
     {
         ArgumentNullException.ThrowIfNull(use);
+        rejection = "";
         if (!_broker.TryLeaseFreshest(
                 generation,
                 waitForNewFrame,
                 out CaptureFrameLease<GpuCaptureFrameSlot>? inner,
-                out _))
+                out bool receivedNewFrame))
         {
+            rejection = "готового кадра нет";
             return false;
         }
 
         using var lease = new GpuCaptureFrameLease(inner!);
         if (!ScreenshotFramePolicy.CanUseLiveFrame(lease.Scope))
+        {
+            rejection = $"кадр не мониторный ({lease.Scope})";
             return false;
+        }
+
+        long ageTicks = Math.Max(0, NowTicks() - lease.Timestamp);
+        if (!receivedNewFrame && ageTicks > maxAge.Ticks)
+        {
+            rejection = $"последний кадр устарел на {ageTicks / 10_000} мс";
+            return false;
+        }
+
+        Logging.Log.Info("Screenshot", receivedNewFrame
+            ? "Кадр буфера: свежий"
+            : $"Кадр буфера: последний готовый, возраст {ageTicks / 10_000} мс");
 
         use(withoutCursor ? lease.CleanTexture ?? lease.Texture : lease.Texture);
         return true;
     }
+
+    /// <summary>Те же 100-нс тики, в которых источники захвата ставят метки кадрам.</summary>
+    private static long NowTicks() =>
+        (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
+               (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
 
     public void Dispose()
     {

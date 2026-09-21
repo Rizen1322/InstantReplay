@@ -116,8 +116,12 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
         try
         {
             (byte[] Bgra, int W, int H)? frame = null;
+            // Миниатюра иллюстрирует уже случившееся событие, поэтому последний
+            // готовый кадр любого возраста тут подходит: своей сессии захвата ради
+            // картинки 180 пикселей шириной поднимать незачем.
             source((device, context, texture) =>
-                frame = Capture.ScreenshotService.ReadPixels(device, context, texture));
+                frame = Capture.ScreenshotService.ReadPixels(device, context, texture),
+                   allowStale: true);
             if (frame is null) return null;
 
             var (pixels, w, h) = Downscale(frame.Value.Bgra, frame.Value.W, frame.Value.H, 180);
