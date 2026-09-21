@@ -84,6 +84,10 @@ public static class Ffmpeg
         };
         psi.ArgumentList.Add("-n");
         psi.ArgumentList.Add("-hide_banner");
+        // ffmpeg по умолчанию слушает stdin (клавиша «q» и прочее). У процесса без
+        // консоли stdin — унаследованный дескриптор приложения, и чтение из него
+        // может встать намертво: ffmpeg ждёт ввода, мы ждём ffmpeg.
+        psi.ArgumentList.Add("-nostdin");
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         if (scale.Length > 0) { psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(scale); }
         psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add("libx264");
@@ -162,6 +166,10 @@ public static class Ffmpeg
         };
         psi.ArgumentList.Add("-n");
         psi.ArgumentList.Add("-hide_banner");
+        // ffmpeg по умолчанию слушает stdin (клавиша «q» и прочее). У процесса без
+        // консоли stdin — унаследованный дескриптор приложения, и чтение из него
+        // может встать намертво: ffmpeg ждёт ввода, мы ждём ffmpeg.
+        psi.ArgumentList.Add("-nostdin");
         psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(Seconds(start));
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(Seconds(end - start));
@@ -250,6 +258,10 @@ public static class Ffmpeg
         string inputs = string.Concat(Enumerable.Range(0, audioTrackCount).Select(i => $"[0:a:{i}]"));
         psi.ArgumentList.Add("-y");
         psi.ArgumentList.Add("-hide_banner");
+        // ffmpeg по умолчанию слушает stdin (клавиша «q» и прочее). У процесса без
+        // консоли stdin — унаследованный дескриптор приложения, и чтение из него
+        // может встать намертво: ffmpeg ждёт ввода, мы ждём ffmpeg.
+        psi.ArgumentList.Add("-nostdin");
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         psi.ArgumentList.Add("-filter_complex");
         psi.ArgumentList.Add($"{inputs}amix=inputs={audioTrackCount}:duration=longest:normalize=0[aout]");
@@ -262,19 +274,28 @@ public static class Ffmpeg
         psi.ArgumentList.Add(output);
 
         Log.Info("Editor", $"Готовлю общий звук для {Path.GetFileName(input)}");
+        // Предел по времени: сведение звука трёхминутного клипа занимает секунды, и
+        // если ffmpeg за минуту не справился, он уже не справится — а редактор не
+        // должен ждать его вечно с надписью «свожу звук».
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
         try
         {
             using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
             string errors;
             try
             {
-                errors = await process.StandardError.ReadToEndAsync(ct);
-                await process.WaitForExitAsync(ct);
+                errors = await process.StandardError.ReadToEndAsync(timeout.Token);
+                await process.WaitForExitAsync(timeout.Token);
             }
             catch (OperationCanceledException)
             {
                 try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
                 try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
+                // Отмена снаружи (редактор закрыли) — это отмена. Сработал наш предел —
+                // это ошибка, и о ней надо сказать, а не молча оставить «свожу звук».
+                if (!ct.IsCancellationRequested)
+                    throw new TimeoutException("ffmpeg не успел свести звук за минуту");
                 throw;
             }
 

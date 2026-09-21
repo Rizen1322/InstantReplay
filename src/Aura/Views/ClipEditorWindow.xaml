@@ -5,7 +5,7 @@
         xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
         xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="Редактор Aura" Width="1100" Height="760" MinWidth="820" MinHeight="640"
+        Title="Редактор Aura" Width="1180" Height="800" MinWidth="880" MinHeight="660"
         WindowStyle="None" WindowStartupLocation="CenterOwner"
         Background="{DynamicResource CanvasBrush}" UseLayoutRounding="True"
         PreviewKeyDown="Window_KeyDown">
@@ -14,45 +14,78 @@
                             ResizeBorderThickness="6" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
     <Window.Resources>
+        <!-- Иконки, которых нет в общем наборе. Тот же квадрат 24×24, что у Icons.xaml. -->
+        <PathGeometry x:Key="Ico.Pause" Figures="M7.2 5h3.2v14H7.2z M13.6 5h3.2v14h-3.2z"/>
+        <PathGeometry x:Key="Ico.FrameBack" Figures="M14.5 6l-6 6 6 6"/>
+        <PathGeometry x:Key="Ico.FrameFwd" Figures="M9.5 6l6 6-6 6"/>
+        <PathGeometry x:Key="Ico.ToStart" Figures="M6.5 5.5v13 M18 6l-7 6 7 6"/>
+        <PathGeometry x:Key="Ico.ToEnd" Figures="M17.5 5.5v13 M6 6l7 6-7 6"/>
+        <PathGeometry x:Key="Ico.SpeakerOff" Figures="M4 9.4h3.4L12 5.6v12.8L7.4 14.6H4z M15.8 9.6l4.8 4.8 M20.6 9.6l-4.8 4.8"/>
+        <PathGeometry x:Key="Ico.MarkIn" Figures="M8 5v14 M8 5h5 M8 19h5 M17 12h-5 M14.5 9.5L17 12l-2.5 2.5"/>
+        <PathGeometry x:Key="Ico.MarkOut" Figures="M16 5v14 M16 5h-5 M16 19h-5 M7 12h5 M9.5 9.5L7 12l2.5 2.5"/>
+
         <Style x:Key="TimelineHandle" TargetType="{x:Type primitives:Thumb}">
-            <Setter Property="Width" Value="18"/><Setter Property="Height" Value="46"/>
+            <Setter Property="Width" Value="14"/><Setter Property="Height" Value="50"/>
             <Setter Property="Cursor" Value="SizeWE"/>
             <Setter Property="Template">
                 <Setter.Value><ControlTemplate TargetType="{x:Type primitives:Thumb}">
-                    <Grid>
-                        <Border Width="18" Background="{DynamicResource AccentBrush}" CornerRadius="5"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <Rectangle Width="1" Height="13" Fill="#BFFFFFFF"/>
-                            <Rectangle Width="1" Height="13" Fill="#BFFFFFFF" Margin="3,0,0,0"/>
-                        </StackPanel>
+                    <Grid Background="Transparent">
+                        <Border x:Name="Grip" Width="12" Background="{DynamicResource AccentBrush}" CornerRadius="4">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Rectangle Width="1.5" Height="14" Fill="#CCFFFFFF" RadiusX="0.75" RadiusY="0.75"/>
+                                <Rectangle Width="1.5" Height="14" Fill="#CCFFFFFF" RadiusX="0.75" RadiusY="0.75" Margin="2.5,0,0,0"/>
+                            </StackPanel>
+                        </Border>
                     </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Grip" Property="Width" Value="14"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="Grip" Property="Width" Value="14"/>
+                            <Setter TargetName="Grip" Property="Effect">
+                                <Setter.Value><DropShadowEffect BlurRadius="10" ShadowDepth="0" Opacity="0.55"
+                                                                Color="{DynamicResource AccentColor}"/></Setter.Value>
+                            </Setter>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
                 </ControlTemplate></Setter.Value>
             </Setter>
+        </Style>
+
+        <!-- Круглая кнопка транспорта: только иконка, подсказка — в ToolTip. -->
+        <Style x:Key="TransportButton" TargetType="Button" BasedOn="{StaticResource Btn}">
+            <Setter Property="Width" Value="36"/><Setter Property="Height" Value="36"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource Tx2Brush}"/>
         </Style>
     </Window.Resources>
 
     <Grid>
         <Rectangle Fill="{DynamicResource AmbientBrush}" IsHitTestVisible="False"/>
-        <Grid Margin="20,12,20,18">
+        <Grid Margin="20,10,20,16">
             <Grid.RowDefinitions>
-                <RowDefinition Height="48"/><RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                <RowDefinition Height="52"/><RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
-                <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="Редактор клипа" FontFamily="{DynamicResource DispFont}" FontSize="19" FontWeight="SemiBold"/>
+            <!-- ЗАГОЛОВОК -->
+            <Grid Grid.Row="0" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" Background="Transparent">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <c:IconTile Data="{DynamicResource Ico.Scissors}" Background="{DynamicResource AccentBrush}"
+                            TileSize="32" IconSize="17" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Text="Редактор клипа" FontFamily="{DynamicResource DispFont}" FontSize="18" FontWeight="SemiBold"/>
                     <TextBlock x:Name="FileNameText" Foreground="{DynamicResource Tx2Brush}" FontSize="11.5" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
-                <TextBlock Grid.Column="1" Text="Space — пауза   I / O — границы   ← / → — кадр   M — звук"
-                           VerticalAlignment="Center" Margin="16,0,18,0" Foreground="{DynamicResource Tx3Brush}" FontSize="11.5"/>
-                <Button Grid.Column="2" Width="34" Height="34" Padding="0" Click="Close_Click" ToolTip="Закрыть (Esc)">
+                <Button Grid.Column="2" Style="{StaticResource BtnSquare}" Width="34" Height="34" Click="Close_Click" ToolTip="Закрыть (Esc)">
                     <c:Icon Data="{DynamicResource Ico.X}" Size="15"/>
                 </Button>
             </Grid>
 
-            <!-- LibVLC и кодеки поставляются вместе с Aura: Windows Media Player не нужен. -->
+            <!-- ПРЕДПРОСМОТР. LibVLC и кодеки поставляются вместе с Aura. -->
             <Border Grid.Row="1" Background="#FF030607" BorderBrush="{DynamicResource HairBrush}"
                     BorderThickness="1" CornerRadius="14" ClipToBounds="True">
                 <Grid>
@@ -71,86 +104,172 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,12" Margin="0,12,0,10">
+            <!-- ТРАНСПОРТ, ШКАЛА, ГРАНИЦЫ -->
+            <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,10,16,12" Margin="0,12,0,10">
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Button Content="− кадр" Click="PreviousFrame_Click"/>
-                            <Button x:Name="PlayButton" Content="▶  Играть" Width="100" Margin="8,0"
-                                    Style="{StaticResource BtnPri}" Click="Play_Click"/>
-                            <Button Content="+ кадр" Click="NextFrame_Click"/>
+                            <TextBlock x:Name="PreviewTime" Text="00:00.000" FontSize="17" FontWeight="SemiBold"
+                                       FontFamily="Consolas" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="DurationText" Text=" / 00:00.000" FontSize="13" FontFamily="Consolas"
+                                       Foreground="{DynamicResource Tx3Brush}" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
                         </StackPanel>
-                        <TextBlock x:Name="PreviewTime" Grid.Column="1" Text="00:00.000 / 00:00.000"
-                                   FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button x:Name="MuteButton" Content="Звук включён" Click="Mute_Click"/>
-                            <ComboBox x:Name="AudioBox" Width="190" Height="34" Margin="8,0,0,0"
-                                      IsEnabled="False" SelectionChanged="AudioTrack_Changed"
-                                      ToolTip="Что слышно в предпросмотре и попадёт в экспорт">
-                                <ComboBoxItem Content="Поиск аудиодорожек…"/>
-                            </ComboBox>
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Style="{StaticResource TransportButton}" Click="ToStart_Click" ToolTip="К началу фрагмента (Home)">
+                                <c:Icon Data="{DynamicResource Ico.ToStart}" Size="17"/>
+                            </Button>
+                            <Button Style="{StaticResource TransportButton}" Click="PreviousFrame_Click" Margin="2,0" ToolTip="Кадр назад (←)">
+                                <c:Icon Data="{DynamicResource Ico.FrameBack}" Size="17"/>
+                            </Button>
+                            <Button x:Name="PlayButton" Style="{StaticResource BtnPri}" Width="48" Height="48" Padding="0"
+                                    Margin="8,0" Click="Play_Click" ToolTip="Воспроизведение (Space)">
+                                <c:Icon x:Name="PlayIcon" Data="{DynamicResource Ico.Play}" Filled="True" Size="20"/>
+                            </Button>
+                            <Button Style="{StaticResource TransportButton}" Click="NextFrame_Click" Margin="2,0" ToolTip="Кадр вперёд (→)">
+                                <c:Icon Data="{DynamicResource Ico.FrameFwd}" Size="17"/>
+                            </Button>
+                            <Button Style="{StaticResource TransportButton}" Click="ToEnd_Click" ToolTip="К концу фрагмента (End)">
+                                <c:Icon Data="{DynamicResource Ico.ToEnd}" Size="17"/>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <c:Segmented x:Name="SpeedSegment" SelectionChanged="Speed_Changed" ToolTip="Скорость предпросмотра">
+                                <ListBoxItem Content="0.5×" Tag="0.5"/>
+                                <ListBoxItem Content="1×" Tag="1" IsSelected="True"/>
+                                <ListBoxItem Content="2×" Tag="2"/>
+                            </c:Segmented>
+                            <Button x:Name="MuteButton" Style="{StaticResource TransportButton}" Margin="10,0,4,0"
+                                    Click="Mute_Click" ToolTip="Звук (M)">
+                                <c:Icon x:Name="MuteIcon" Data="{DynamicResource Ico.Speaker}" Size="17"/>
+                            </Button>
+                            <TextBlock x:Name="AudioLabel" Text="Поиск звука…" Foreground="{DynamicResource Tx3Brush}"
+                                       VerticalAlignment="Center" Margin="2,0,0,0"/>
+                            <c:Segmented x:Name="AudioSegment" Visibility="Collapsed" SelectionChanged="AudioTrack_Changed"
+                                         ToolTip="Что слышно в предпросмотре и попадёт в сохранённый фрагмент"/>
                         </StackPanel>
                     </Grid>
 
-                    <Grid Margin="2,13,2,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="ВЫБРАННЫЙ ФРАГМЕНТ" Foreground="{DynamicResource Tx3Brush}" FontSize="10.5" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="SelectionTimeText" Grid.Column="1" Text="00:00.000"
-                                   Foreground="{DynamicResource AccentBrush}" FontWeight="SemiBold"/>
-                    </Grid>
+                    <!-- Разметка времени над шкалой -->
+                    <Canvas x:Name="Ruler" Height="18" Margin="0,12,0,0" IsHitTestVisible="False" ClipToBounds="False"/>
 
-                    <!-- Одна шкала: затемнённое отрезается, зелёное сохраняется. -->
-                    <Canvas x:Name="Timeline" Height="54" Margin="0,6,0,0" Background="Transparent"
-                            SizeChanged="Timeline_SizeChanged" MouseLeftButtonDown="Timeline_MouseLeftButtonDown">
-                        <Border x:Name="TimelineTrack" Height="38" CornerRadius="7" Background="{DynamicResource Card2Brush}"
+                    <!-- Одна шкала: затемнённое отрезается, выделенное сохраняется. -->
+                    <Canvas x:Name="Timeline" Height="56" Background="Transparent" Cursor="Hand"
+                            SizeChanged="Timeline_SizeChanged"
+                            MouseLeftButtonDown="Timeline_MouseLeftButtonDown"
+                            MouseLeftButtonUp="Timeline_MouseLeftButtonUp"
+                            MouseMove="Timeline_MouseMove" MouseLeave="Timeline_MouseLeave">
+                        <Border x:Name="TimelineTrack" Height="40" CornerRadius="8" Background="{DynamicResource Card2Brush}"
                                 BorderBrush="{DynamicResource HairBrush}" BorderThickness="1" Canvas.Top="8"/>
-                        <Border x:Name="DimBefore" Height="38" Background="#8C000000" CornerRadius="7,0,0,7" Canvas.Top="8"/>
-                        <Border x:Name="SelectedRange" Height="38" Background="#3545E879"
+                        <Border x:Name="DimBefore" Height="40" Background="#99000000" CornerRadius="8,0,0,8" Canvas.Top="8"/>
+                        <Border x:Name="SelectedRange" Height="40" Background="#2645E879"
                                 BorderBrush="{DynamicResource AccentBrush}" BorderThickness="0,2" Canvas.Top="8"/>
-                        <Border x:Name="DimAfter" Height="38" Background="#8C000000" CornerRadius="0,7,7,0" Canvas.Top="8"/>
-                        <Border x:Name="Playhead" Width="3" Height="50" CornerRadius="2" Background="White"
-                                Canvas.Top="2" IsHitTestVisible="False"/>
-                        <primitives:Thumb x:Name="InHandle" Style="{StaticResource TimelineHandle}" Canvas.Top="4"
-                                          DragDelta="InHandle_DragDelta"/>
-                        <primitives:Thumb x:Name="OutHandle" Style="{StaticResource TimelineHandle}" Canvas.Top="4"
-                                          DragDelta="OutHandle_DragDelta"/>
+                        <Border x:Name="DimAfter" Height="40" Background="#99000000" CornerRadius="0,8,8,0" Canvas.Top="8"/>
+                        <Rectangle x:Name="HoverLine" Width="1" Height="40" Canvas.Top="8" Fill="{DynamicResource Tx3Brush}"
+                                   Visibility="Collapsed" IsHitTestVisible="False"/>
+                        <Grid x:Name="Playhead" Width="12" Height="56" IsHitTestVisible="False">
+                            <Rectangle Width="2" Fill="White" HorizontalAlignment="Center"/>
+                            <Ellipse Width="10" Height="10" Fill="White" VerticalAlignment="Top"/>
+                        </Grid>
+                        <primitives:Thumb x:Name="InHandle" Style="{StaticResource TimelineHandle}" Canvas.Top="3"
+                                          DragDelta="InHandle_DragDelta" ToolTip="Начало фрагмента"/>
+                        <primitives:Thumb x:Name="OutHandle" Style="{StaticResource TimelineHandle}" Canvas.Top="3"
+                                          DragDelta="OutHandle_DragDelta" ToolTip="Конец фрагмента"/>
+                        <Border x:Name="HoverLabel" Canvas.Top="-24" Background="{DynamicResource Card2Brush}"
+                                BorderBrush="{DynamicResource HairBrush}" BorderThickness="1" CornerRadius="6"
+                                Padding="6,2" Visibility="Collapsed" IsHitTestVisible="False">
+                            <TextBlock x:Name="HoverText" FontFamily="Consolas" FontSize="11.5"/>
+                        </Border>
                     </Canvas>
 
-                    <Grid Margin="0,5,0,0">
+                    <Grid Margin="0,8,0,0">
                         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="IN  " Foreground="{DynamicResource Tx3Brush}"/>
-                            <TextBlock x:Name="StartTimeText" Text="00:00.000" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
-                            <Button Content="поставить" Padding="9,3" Margin="8,-5,0,-5" Click="SetIn_Click"/>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button Click="SetIn_Click" c:Deco.Icon="{StaticResource Ico.MarkIn}" Content="Начало"
+                                    Padding="10,0" ToolTip="Поставить начало на текущий кадр (I)"/>
+                            <TextBlock x:Name="StartTimeText" Text="00:00.000" FontFamily="Consolas" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="10,0,0,0"/>
                         </StackPanel>
-                        <Button Grid.Column="1" Content="Сбросить границы" Padding="10,3" Margin="0,-5" Click="Reset_Click"/>
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="поставить" Padding="9,3" Margin="0,-5,8,-5" Click="SetOut_Click"/>
-                            <TextBlock Text="OUT  " Foreground="{DynamicResource Tx3Brush}"/>
-                            <TextBlock x:Name="EndTimeText" Text="00:00.000" FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"/>
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Background="{DynamicResource TrackBrush}" CornerRadius="9" Padding="10,4">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Фрагмент" Foreground="{DynamicResource Tx2Brush}" FontSize="12"
+                                               VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                    <TextBlock x:Name="SelectionTimeText" Text="00:00.000" FontFamily="Consolas"
+                                               FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                            <Button Style="{StaticResource TransportButton}" Margin="6,0,0,0" Click="Reset_Click"
+                                    ToolTip="Сбросить границы — весь клип">
+                                <c:Icon Data="{DynamicResource Ico.Undo}" Size="15"/>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <TextBlock x:Name="EndTimeText" Text="00:00.000" FontFamily="Consolas" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <Button Click="SetOut_Click" c:Deco.Icon="{StaticResource Ico.MarkOut}" Content="Конец"
+                                    Padding="10,0" ToolTip="Поставить конец на текущий кадр (O)"/>
                         </StackPanel>
                     </Grid>
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="3" Style="{StaticResource Card}" Padding="16,13">
+            <!-- СОХРАНЕНИЕ -->
+            <Border Grid.Row="3" Style="{StaticResource Card}" Padding="16,12">
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock x:Name="ExportStatus" Text="Готово к экспорту" Style="{StaticResource RowLabel}"/>
-                        <TextBlock x:Name="ExportHint" Text="Точно — кадр в кадр. Без потери — быстро, по ключевым кадрам."
-                                   Style="{StaticResource RowSub}" Margin="0,3,12,0"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="ExportStatus" Text="Готово к сохранению" Style="{StaticResource RowLabel}"/>
+                            <TextBlock x:Name="SizeEstimateText" Foreground="{DynamicResource Tx3Brush}" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" FontSize="12"/>
+                        </StackPanel>
+                        <TextBlock x:Name="ExportHint" Text="Видео копируется без потери качества."
+                                   Style="{StaticResource RowSub}" Margin="0,3,12,0" TextTrimming="CharacterEllipsis"/>
                         <ProgressBar x:Name="ExportProgress" Height="4" Margin="0,9,14,0" Minimum="0" Maximum="1" Visibility="Collapsed"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="OpenFolderButton" Content="Показать в папке" c:Deco.Icon="{DynamicResource Ico.FolderOpen}"
+                                Click="OpenFolder_Click" Visibility="Collapsed" Margin="0,0,8,0"/>
                         <Button x:Name="CancelExportButton" Content="Отменить" Click="CancelExport_Click" Visibility="Collapsed" Margin="0,0,8,0"/>
-                        <Button x:Name="ExportButton" Content="Экспортировать" MinWidth="150"
-                                Style="{StaticResource BtnPri}" Click="Export_Click"
-                                ToolTip="Сохранить выбранный фрагмент"/>
+                        <Button x:Name="ExportButton" Content="Сохранить фрагмент" MinWidth="170" Height="38"
+                                Style="{StaticResource BtnPri}" c:Deco.Icon="{DynamicResource Ico.Scissors}"
+                                Click="Export_Click" ToolTip="Сохранить выбранный фрагмент (Ctrl+E)"/>
                     </StackPanel>
                 </Grid>
             </Border>
+
+            <!-- ПОДСКАЗКА ПО КЛАВИШАМ -->
+            <WrapPanel Grid.Row="4" Margin="4,10,0,0" HorizontalAlignment="Center">
+                <WrapPanel.Resources>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{DynamicResource Tx3Brush}"/>
+                        <Setter Property="FontSize" Value="11.5"/>
+                        <Setter Property="VerticalAlignment" Value="Center"/>
+                        <Setter Property="Margin" Value="3,0,16,0"/>
+                    </Style>
+                </WrapPanel.Resources>
+                <c:KeyCaps Combo="Space"/><TextBlock Text="пауза"/>
+                <c:KeyCaps Combo="I"/><c:KeyCaps Combo="O"/><TextBlock Text="начало / конец"/>
+                <c:KeyCaps Combo="←"/><c:KeyCaps Combo="→"/><TextBlock Text="кадр"/>
+                <!-- Колпачок «Shift» вручную: KeyCaps превращает его в «⇧», а в шрифте
+                     интерфейса этого глифа нет — выходил пустой прямоугольник. -->
+                <Border Background="{DynamicResource TrackBrush}" CornerRadius="6" Margin="0,0,3,0"
+                        MinWidth="22" Height="21" Padding="6,0" VerticalAlignment="Center">
+                    <TextBlock Text="Shift" FontSize="11" FontWeight="SemiBold" Margin="0"
+                               Foreground="{DynamicResource Tx2Brush}" HorizontalAlignment="Center"/>
+                </Border>
+                <c:KeyCaps Combo="←"/><TextBlock Text="секунда"/>
+                <c:KeyCaps Combo="Home"/><c:KeyCaps Combo="End"/><TextBlock Text="к границам"/>
+                <c:KeyCaps Combo="M"/><TextBlock Text="звук"/>
+                <c:KeyCaps Combo="Ctrl+E"/><TextBlock Text="сохранить"/>
+            </WrapPanel>
         </Grid>
     </Grid>
 </Window>

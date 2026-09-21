@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -28,9 +28,23 @@ public partial class ClipEditorWindow : Window
     private LibVLC? _libVlc;
     private VlcMediaPlayer? _player;
     private VlcMedia? _media;
-    private VlcMediaPlayer? _mixedAudioPlayer;
-    private VlcMedia? _mixedAudioMedia;
     private int[] _audioTrackIds = [];
+    /// <summary>
+    /// Идентификатор сведённой дорожки «игра + микрофон» внутри ОСНОВНОГО плеера.
+    ///
+    /// Раньше под неё запускался второй плеер LibVLC и его подгоняли к первому
+    /// вызовами Time/Pause/Play из потока окна плюс таймером каждые полсекунды. Это и
+    /// вешало редактор при выборе «Игра + микрофон»: вызов LibVLC из потока окна
+    /// ждёт внутренний поток LibVLC, а тот, в свою очередь, ждёт очередь сообщений
+    /// того же окна (VideoView — это HWND), и оба стоят. Плюс два плеера разом
+    /// открывали одно звуковое устройство. Теперь сведённый M4A подключается к
+    /// основному плееру дорожкой-«slave» (AddSlave): синхронизацию с видео держит
+    /// сам LibVLC, второго плеера нет вовсе. Проверено на реальном клипе: дорожка
+    /// появляется сразу, переключение занимает доли миллисекунды и переживает
+    /// перемотку.
+    /// </summary>
+    private int? _mixTrackId;
+    private bool _mixSlaveAdded;
     // -1 = свести все дорожки, 0..N = оставить одну дорожку.
     private int _audioSelection = -1;
     private double _durationSeconds;
@@ -39,7 +53,9 @@ public partial class ClipEditorWindow : Window
     private bool _pauseOnFirstFrame = true;
     private bool _isMuted;
     private bool _disposed;
-    private long _lastAudioSyncTick;
+    private bool _scrubbing;
+    private string? _savedPath;
+    private long _fileBytes;
     private CancellationTokenSource? _exportCancellation;
     private readonly CancellationTokenSource _previewMixCancellation = new();
     private Task? _mixGenerationTask;
@@ -53,9 +69,8 @@ public partial class ClipEditorWindow : Window
         FileNameText.Text = item.FileName;
 
         _ffmpeg = Ffmpeg.Find(Services.Settings.Current.FfmpegPath, Services.Settings.Current.LosslessCutPath);
-        ExportHint.Text = _ffmpeg is null
-            ? "Точный встроенный экспорт — никаких внешних программ."
-            : "Быстрый экспорт: видео копируется без потери качества.";
+        ExportHint.Text = DefaultHint();
+        try { _fileBytes = new FileInfo(item.FullPath).Length; } catch { }
 
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += Timer_Tick;
@@ -134,17 +149,23 @@ public partial class ClipEditorWindow : Window
             _player?.Pause();
             return;
         }
-        PlayButton.Content = "Ⅱ  Пауза";
+        SetPlayIcon(playing: true);
     });
 
     private void Player_Paused(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => PlayButton.Content = "▶  Играть");
+        Dispatcher.BeginInvoke(() => SetPlayIcon(playing: false));
 
     private void Player_EndReached(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
-        PlayButton.Content = "▶  Играть";
+        SetPlayIcon(playing: false);
         Seek(_startSeconds);
     });
+
+    private void SetPlayIcon(bool playing)
+    {
+        PlayIcon.Data = (Geometry)FindResource(playing ? "Ico.Pause" : "Ico.Play");
+        PlayButton.ToolTip = playing ? "Пауза (Space)" : "Воспроизведение (Space)";
+    }
 
     private void ConfigureTimeline(double seconds)
     {
@@ -162,6 +183,7 @@ public partial class ClipEditorWindow : Window
             _endSeconds = Math.Clamp(_endSeconds, _startSeconds + MinimumSelectionSeconds, seconds);
         }
         UpdateTimelineVisuals();
+        BuildRuler();
         UpdatePreviewTime(CurrentSeconds);
     }
 
@@ -175,13 +197,11 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying)
         {
             _player.Pause();
-            _mixedAudioPlayer?.Pause();
             return;
         }
         double position = CurrentSeconds;
         if (position < _startSeconds || position >= _endSeconds - 0.02) Seek(_startSeconds);
         _player.Play();
-        if (_audioSelection < 0 && _mixedAudioPlayer is not null) _mixedAudioPlayer.Play();
     }
 
     private void Timer_Tick(object? sender, EventArgs e)
@@ -191,33 +211,31 @@ public partial class ClipEditorWindow : Window
         if (_player.IsPlaying && position >= _endSeconds)
         {
             _player.Pause();
-            _mixedAudioPlayer?.Pause();
             Seek(_endSeconds);
             return;
         }
-        long tick = Environment.TickCount64;
-        if (_audioSelection < 0 && _mixedAudioPlayer?.IsPlaying == true &&
-            tick - _lastAudioSyncTick >= 500)
-        {
-            _lastAudioSyncTick = tick;
-            if (Math.Abs(_mixedAudioPlayer.Time - _player.Time) > 120)
-                _mixedAudioPlayer.Time = _player.Time;
-        }
+        if (_scrubbing) return;            // пока тянут шкалу, позицию ведёт мышь
         UpdatePlayhead(position);
         UpdatePreviewTime(position);
     }
 
     private void PreviousFrame_Click(object sender, RoutedEventArgs e) => Step(-FrameStep);
     private void NextFrame_Click(object sender, RoutedEventArgs e) => Step(FrameStep);
+    private void ToStart_Click(object sender, RoutedEventArgs e) => Seek(_startSeconds);
+    private void ToEnd_Click(object sender, RoutedEventArgs e) => Seek(_endSeconds);
+
+    private void Speed_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_player is null || SpeedSegment.SelectedItem is not ListBoxItem { Tag: string tag }) return;
+        if (float.TryParse(tag, System.Globalization.NumberStyles.Float,
+                           System.Globalization.CultureInfo.InvariantCulture, out float rate))
+            _player.SetRate(rate);
+    }
 
     private void Step(TimeSpan delta)
     {
         if (_player is null) return;
-        if (_player.IsPlaying)
-        {
-            _player.Pause();
-            _mixedAudioPlayer?.Pause();
-        }
+        if (_player.IsPlaying) _player.Pause();
         if (delta > TimeSpan.Zero)
         {
             _player.NextFrame();
@@ -236,7 +254,6 @@ public partial class ClipEditorWindow : Window
         if (_player is null || _durationSeconds <= 0) return;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
         _player.Time = (long)Math.Round(seconds * 1000);
-        if (_mixedAudioPlayer is not null) _mixedAudioPlayer.Time = _player.Time;
         UpdatePlayhead(seconds);
         UpdatePreviewTime(seconds);
     }
@@ -258,77 +275,86 @@ public partial class ClipEditorWindow : Window
     {
         if (_player is null || _audioTrackIds.Length > 0) return;
         var descriptions = _player.AudioTrackDescription?.Where(track => track.Id >= 0).ToArray() ?? [];
-        if (descriptions.Length == 0) return;
+        if (descriptions.Length == 0)
+        {
+            AudioLabel.Text = "Без звука";
+            return;
+        }
 
         _audioTrackIds = descriptions.Select(track => track.Id).ToArray();
-        AudioBox.Items.Clear();
+        if (_audioTrackIds.Length == 1)
+        {
+            // Выбирать нечего — не показываем переключатель из одной кнопки.
+            AudioLabel.Text = "Одна звуковая дорожка";
+            return;
+        }
+
+        AudioSegment.Items.Clear();
         for (int i = 0; i < _audioTrackIds.Length; i++)
         {
-            string label = _audioTrackIds.Length == 1 ? "Единая аудиодорожка"
-                : i == 0 ? "Только игра"
-                : i == 1 ? "Только микрофон"
-                : $"Только дорожка {i + 1}";
-            AudioBox.Items.Add(new ComboBoxItem { Content = label, Tag = i });
+            string label = i == 0 ? "Игра" : i == 1 ? "Микрофон" : $"Дорожка {i + 1}";
+            AudioSegment.Items.Add(new ListBoxItem { Content = label, Tag = i });
         }
-        if (_audioTrackIds.Length > 1)
-            AudioBox.Items.Add(new ComboBoxItem { Content = "Игра + микрофон", Tag = -1 });
+        var together = new ListBoxItem { Content = "Вместе", Tag = -1 };
+        AudioSegment.Items.Add(together);
 
-        AudioBox.IsEnabled = true;
-        // Одна дорожка не требует второго проигрывателя и открывается мгновенно.
-        // Общий микс остаётся доступен явным выбором пользователя.
-        AudioBox.SelectedIndex = 0;
+        AudioLabel.Visibility = Visibility.Collapsed;
+        AudioSegment.Visibility = Visibility.Visible;
+
+        // Сведённый звук готовим сразу, в фоне: к моменту, когда человек нажмёт
+        // «Вместе», он уже лежит на диске, и переключение мгновенное.
+        if (_ffmpeg is not null) _ = EnsureMixedAudioAsync();
+
+        // По умолчанию — «Вместе»: так ведёт себя и LosslessCut (в файл попадает
+        // весь звук), а раньше редактор молча сохранял одну игру без микрофона.
+        // Без ffmpeg предпросмотр общего звука невозможен — там остаётся игра.
+        AudioSegment.SelectedItem = _ffmpeg is not null ? together : AudioSegment.Items[0];
     }
 
     private async void AudioTrack_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (_player is null || AudioBox.SelectedItem is not ComboBoxItem { Tag: int selected }) return;
+        if (_player is null || AudioSegment.SelectedItem is not ListBoxItem { Tag: int selected }) return;
         _audioSelection = selected;
+        UpdateSizeEstimate();
 
         if (selected >= 0)
         {
-            StopMixedAudio();
             if (selected < _audioTrackIds.Length) _player.SetAudioTrack(_audioTrackIds[selected]);
+            SetStatus("Готово к сохранению", DefaultHint());
             return;
         }
 
-        // LibVLC умеет проигрывать только одну встроенную дорожку за раз. Поэтому
-        // ffmpeg один раз в фоне сводит звук в маленький временный M4A. Второй
-        // плеер больше не открывает исходный HEVC и не может уронить видеодрайвер.
-        if (_audioTrackIds.Length > 1 && _ffmpeg is not null)
-        {
-            AudioBox.IsEnabled = false;
-            ExportStatus.Text = "Готовлю звук игры + микрофона…";
-            try
-            {
-                await EnsureMixedAudioAsync();
-                if (!_disposed && _audioSelection < 0)
-                {
-                    _player.SetAudioTrack(-1);
-                    StartMixedAudio();
-                    ExportStatus.Text = "Готово к экспорту";
-                }
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                Log.Warn("Editor", $"Предпросмотр общего звука: {ex.Message}");
-                if (!_disposed)
-                {
-                    _player.SetAudioTrack(_audioTrackIds[0]);
-                    ExportStatus.Text = "Предпросмотр общего звука недоступен";
-                    ExportHint.Text = "Экспорт всё равно сведёт игру и микрофон.";
-                }
-            }
-            finally
-            {
-                if (!_disposed && _exportCancellation is null) AudioBox.IsEnabled = true;
-            }
-        }
-        else if (_audioTrackIds.Length > 1)
+        if (_ffmpeg is null)
         {
             _player.SetAudioTrack(_audioTrackIds[0]);
-            ExportStatus.Text = "В предпросмотре звучит игра";
-            ExportHint.Text = "При экспорте игра и микрофон будут сведены вместе.";
+            SetStatus("В предпросмотре звучит игра",
+                      "В сохранённый фрагмент игра и микрофон попадут вместе.");
+            return;
+        }
+
+        // Пока сведённый звук не готов, играет игра — окно при этом не блокируется
+        // и переключатель остаётся живым: можно передумать и выбрать другую дорожку.
+        if (_mixTrackId is null) _player.SetAudioTrack(_audioTrackIds[0]);
+        try
+        {
+            if (_mixTrackId is null)
+            {
+                SetStatus("Свожу игру и микрофон…", "Первый раз это занимает пару секунд.");
+                await EnsureMixedAudioAsync();
+                await AttachMixedAudioAsync();
+            }
+            if (_disposed || _player is null || _audioSelection >= 0) return;   // пока ждали, выбрали другое
+            if (_mixTrackId is int mixId) _player.SetAudioTrack(mixId);
+            SetStatus("Готово к сохранению", DefaultHint());
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warn("Editor", $"Предпросмотр общего звука: {ex.Message}");
+            if (_disposed || _player is null) return;
+            _player.SetAudioTrack(_audioTrackIds[0]);
+            SetStatus("Общий звук в предпросмотре недоступен",
+                      "В сохранённый фрагмент игра и микрофон всё равно попадут вместе.");
         }
     }
 
@@ -342,37 +368,43 @@ public partial class ClipEditorWindow : Window
         return _mixGenerationTask;
     }
 
-    private void StartMixedAudio()
+    /// <summary>
+    /// Подключить сведённый звук к основному плееру и дождаться, когда LibVLC покажет
+    /// его отдельной дорожкой. Номер дорожки система назначает сама, поэтому ищем
+    /// ту, которой не было среди встроенных.
+    /// </summary>
+    private async Task AttachMixedAudioAsync()
     {
-        if (_libVlc is null || _player is null || _mixedAudioPath is null || !File.Exists(_mixedAudioPath)) return;
-        if (_mixedAudioPlayer is null)
+        if (_player is null || _mixedAudioPath is null || !File.Exists(_mixedAudioPath)) return;
+        if (!_mixSlaveAdded)
         {
-            _mixedAudioPlayer = new VlcMediaPlayer(_libVlc);
-            _mixedAudioPlayer.Playing += (_, _) => Dispatcher.BeginInvoke(() =>
-            {
-                if (_disposed || _mixedAudioPlayer is null || _player is null) return;
-                _mixedAudioPlayer.Time = _player.Time;
-                ApplyMuteState();
-                if (!_player.IsPlaying) _mixedAudioPlayer.Pause();
-            });
-            _mixedAudioMedia = new VlcMedia(_libVlc, new Uri(_mixedAudioPath));
+            _mixSlaveAdded = true;
+            if (!_player.AddSlave(MediaSlaveType.Audio, new Uri(_mixedAudioPath).AbsoluteUri, select: false))
+                throw new InvalidOperationException("LibVLC не принял сведённый звук");
         }
 
-        if (!_mixedAudioPlayer.IsPlaying && _mixedAudioMedia is not null)
+        var known = new HashSet<int>(_audioTrackIds);
+        for (int attempt = 0; attempt < 40 && !_disposed && _player is not null && _mixTrackId is null; attempt++)
         {
-            var player = _mixedAudioPlayer;
-            var media = _mixedAudioMedia;
-            _ = Task.Run(() =>
-            {
-                try { if (!_disposed) player.Play(media); }
-                catch (Exception ex) { Log.Warn("Editor", $"Общий звук: {ex.Message}"); }
-            });
+            foreach (var track in _player.AudioTrackDescription ?? [])
+                if (track.Id >= 0 && !known.Contains(track.Id)) { _mixTrackId = track.Id; break; }
+            if (_mixTrackId is null) await Task.Delay(75);
         }
+        if (_mixTrackId is null && !_disposed)
+            throw new InvalidOperationException("сведённая дорожка не появилась в плеере");
     }
 
-    private void StopMixedAudio()
+    private string DefaultHint() => _ffmpeg is null
+        ? "Точное сохранение кадр в кадр — встроенными средствами, без внешних программ."
+        : _audioSelection < 0 && _audioTrackIds.Length > 1
+            ? "Видео копируется без потери качества, игра и микрофон сводятся в одну дорожку."
+            : "Видео и звук копируются без потери качества — это быстро.";
+
+    private void SetStatus(string status, string hint)
     {
-        _mixedAudioPlayer?.Pause();
+        if (_exportCancellation is not null) return;       // во время сохранения строку не трогаем
+        ExportStatus.Text = status;
+        ExportHint.Text = hint;
     }
 
     private void ApplyMuteState()
@@ -380,16 +412,91 @@ public partial class ClipEditorWindow : Window
         // У LibVLC свойство Mute на части Windows-систем возвращает устаревшее
         // состояние. Громкость задаём явно и храним истину в окне редактора.
         if (_player is not null) _player.Volume = _isMuted ? 0 : 100;
-        if (_mixedAudioPlayer is not null) _mixedAudioPlayer.Volume = _isMuted ? 0 : 100;
-        MuteButton.Content = _isMuted ? "Звук выключен" : "Звук включён";
+        MuteIcon.Data = (Geometry)FindResource(_isMuted ? "Ico.SpeakerOff" : "Ico.Speaker");
+        MuteButton.ToolTip = _isMuted ? "Звук выключен (M)" : "Звук (M)";
     }
 
-    private void Timeline_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateTimelineVisuals();
+    private void Timeline_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateTimelineVisuals();
+        BuildRuler();
+    }
+
+    private double TimelineSeconds(double x) =>
+        Math.Clamp(x / Math.Max(1, Timeline.ActualWidth), 0, 1) * _durationSeconds;
 
     private void Timeline_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (_durationSeconds <= 0 || FindParent<Thumb>(e.OriginalSource as DependencyObject) is not null) return;
-        Seek(e.GetPosition(Timeline).X / Math.Max(1, Timeline.ActualWidth) * _durationSeconds);
+        // Щелчок перематывает, а протягивание — «скраббинг», как в LosslessCut.
+        _scrubbing = true;
+        Timeline.CaptureMouse();
+        Seek(TimelineSeconds(e.GetPosition(Timeline).X));
+    }
+
+    private void Timeline_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_scrubbing) return;
+        _scrubbing = false;
+        Timeline.ReleaseMouseCapture();
+    }
+
+    private void Timeline_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_durationSeconds <= 0) return;
+        double x = Math.Clamp(e.GetPosition(Timeline).X, 0, Timeline.ActualWidth);
+        double seconds = TimelineSeconds(x);
+        if (_scrubbing) Seek(seconds);
+
+        HoverLine.Visibility = Visibility.Visible;
+        HoverLabel.Visibility = Visibility.Visible;
+        Canvas.SetLeft(HoverLine, x);
+        HoverText.Text = Format(TimeSpan.FromSeconds(seconds));
+        HoverLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double labelWidth = HoverLabel.DesiredSize.Width;
+        Canvas.SetLeft(HoverLabel, Math.Clamp(x - labelWidth / 2, 0, Math.Max(0, Timeline.ActualWidth - labelWidth)));
+    }
+
+    private void Timeline_MouseLeave(object sender, MouseEventArgs e)
+    {
+        HoverLine.Visibility = Visibility.Collapsed;
+        HoverLabel.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Отметки времени над шкалой. Шаг подбирается так, чтобы подписи не слипались:
+    /// не чаще одной на ~90 пикселей.
+    /// </summary>
+    private void BuildRuler()
+    {
+        Ruler.Children.Clear();
+        double width = Timeline.ActualWidth;
+        if (width <= 0 || _durationSeconds <= 0) return;
+
+        double[] steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+        double step = steps.FirstOrDefault(value => value / _durationSeconds * width >= 90, 600);
+        var brush = (Brush)FindResource("Tx3Brush");
+        for (double t = 0; t <= _durationSeconds + 1e-6; t += step)
+        {
+            double x = t / _durationSeconds * width;
+            var tick = new System.Windows.Shapes.Rectangle { Width = 1, Height = 5, Fill = brush, Opacity = 0.7 };
+            Ruler.Children.Add(tick);
+            Canvas.SetLeft(tick, x);
+            Canvas.SetTop(tick, 13);
+
+            var time = TimeSpan.FromSeconds(t);
+            var label = new TextBlock
+            {
+                Text = time.TotalHours >= 1 ? time.ToString(@"h\:mm\:ss")
+                     : time.ToString(step < 1 ? @"m\:ss\.f" : @"m\:ss"),
+                FontSize = 10.5,
+                Foreground = brush
+            };
+            label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            Ruler.Children.Add(label);
+            Canvas.SetLeft(label, Math.Clamp(x - label.DesiredSize.Width / 2, 0, Math.Max(0, width - label.DesiredSize.Width)));
+            Canvas.SetTop(label, -1);
+        }
     }
 
     private void InHandle_DragDelta(object sender, DragDeltaEventArgs e)
@@ -455,6 +562,19 @@ public partial class ClipEditorWindow : Window
         EndTimeText.Text = Format(TimeSpan.FromSeconds(_endSeconds));
         SelectionTimeText.Text = Format(TimeSpan.FromSeconds(_endSeconds - _startSeconds));
         UpdatePlayhead(CurrentSeconds);
+        UpdateSizeEstimate();
+    }
+
+    /// <summary>
+    /// Примерный размер результата. Видео копируется без перекодирования, поэтому
+    /// доля от исходного файла по длительности — хорошая оценка; сведение дорожек
+    /// меняет только звук, а он в клипе — единицы процентов.
+    /// </summary>
+    private void UpdateSizeEstimate()
+    {
+        if (_fileBytes <= 0 || _durationSeconds <= 0) { SizeEstimateText.Text = ""; return; }
+        double share = (_endSeconds - _startSeconds) / _durationSeconds;
+        SizeEstimateText.Text = $"≈ {Aura.Core.Storage.ByteSize.Format((long)(_fileBytes * share))}";
     }
 
     private void UpdatePlayhead(double seconds)
@@ -500,13 +620,13 @@ public partial class ClipEditorWindow : Window
     {
         if (_exportCancellation is not null || _durationSeconds <= 0) return;
         _player?.Pause();
-        _mixedAudioPlayer?.Pause();
+        ExportStatus.Text = "Сохраняю фрагмент…";
+        ExportHint.Text = fast
+            ? "Видео копируется без потери качества; исходный клип не меняется."
+            : "Точное сохранение кадр в кадр; исходный клип не меняется.";
         _exportCancellation = new CancellationTokenSource();
         SetExporting(true, fast);
-        ExportStatus.Text = "Экспортирую фрагмент…";
-        ExportHint.Text = fast
-            ? "Видео копируется без потери; выбранные аудиодорожки сохраняются."
-            : "Встроенный точный экспорт; исходник остаётся нетронутым.";
+        OpenFolderButton.Visibility = Visibility.Collapsed;
 
         var progress = new Progress<double>(value => ExportProgress.Value = value);
         try
@@ -518,11 +638,13 @@ public partial class ClipEditorWindow : Window
             ExportProgress.Value = 1;
             ExportStatus.Text = "Фрагмент сохранён";
             ExportHint.Text = output;
+            _savedPath = output;
+            OpenFolderButton.Visibility = Visibility.Visible;
             Services.Notifications.Show(NotificationKind.Saved, "Фрагмент сохранён", Path.GetFileName(output));
         }
         catch (OperationCanceledException)
         {
-            ExportStatus.Text = "Экспорт отменён";
+            ExportStatus.Text = "Сохранение отменено";
             ExportHint.Text = "Исходный клип не изменён.";
         }
         catch (Exception ex)
@@ -530,7 +652,7 @@ public partial class ClipEditorWindow : Window
             Log.Error("Editor", ex);
             ExportStatus.Text = "Не удалось сохранить";
             ExportHint.Text = ex.Message;
-            Dialogs.Say("Ошибка экспорта", ex.Message);
+            Dialogs.Say("Не удалось сохранить фрагмент", ex.Message);
         }
         finally
         {
@@ -543,7 +665,7 @@ public partial class ClipEditorWindow : Window
     private void SetExporting(bool value, bool fast)
     {
         ExportButton.IsEnabled = !value;
-        AudioBox.IsEnabled = !value && _audioTrackIds.Length > 0;
+        AudioSegment.IsEnabled = !value;
         CancelExportButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.IsIndeterminate = value && fast;
@@ -565,16 +687,42 @@ public partial class ClipEditorWindow : Window
         _exportCancellation?.Cancel();
         _previewMixCancellation.Cancel();
         Preview.MediaPlayer = null;
-        try { _player?.Stop(); } catch { }
-        try { _mixedAudioPlayer?.Stop(); } catch { }
-        _mixedAudioMedia?.Dispose();
-        _mixedAudioPlayer?.Dispose();
-        _media?.Dispose();
-        _player?.Dispose();
-        _libVlc?.Dispose();
-        _previewMixCancellation.Dispose();
-        if (_mixedAudioPath is not null)
-            try { File.Delete(_mixedAudioPath); } catch { }
+
+        // Остановку и освобождение LibVLC уносим из потока окна. Stop синхронный
+        // (в замере — около 80 мс) и ждёт внутренние потоки LibVLC; если один из них
+        // в этот момент шлёт сообщение окну видеовывода, поток окна, стоящий в Stop,
+        // его не примет — и закрытие редактора подвисает. В фоне ждать некому.
+        var player = _player;
+        var media = _media;
+        var engine = _libVlc;
+        var mixPath = _mixedAudioPath;
+        var mixTask = _mixGenerationTask;
+        var mixCancellation = _previewMixCancellation;
+        _player = null; _media = null; _libVlc = null;
+        _ = Task.Run(async () =>
+        {
+            try { player?.Stop(); } catch { }
+            media?.Dispose();
+            player?.Dispose();
+            engine?.Dispose();
+            // ffmpeg мог ещё дописывать сведённый звук — дожидаемся отмены, иначе
+            // файл удалить нельзя: он занят.
+            try { if (mixTask is not null) await mixTask; } catch { }
+            mixCancellation.Dispose();
+            if (mixPath is not null)
+                try { File.Delete(mixPath); } catch { }
+        });
+    }
+
+    private void OpenFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (_savedPath is null || !File.Exists(_savedPath)) return;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                "explorer.exe", "/select,\"" + _savedPath + "\"") { UseShellExecute = true });
+        }
+        catch (Exception ex) { Log.Warn("Editor", $"Не удалось открыть папку: {ex.Message}"); }
     }
 
     private void CancelExport_Click(object sender, RoutedEventArgs e) => _exportCancellation?.Cancel();
@@ -622,8 +770,11 @@ public partial class ClipEditorWindow : Window
         else DragMove();
     }
 
-    private void UpdatePreviewTime(double seconds) =>
-        PreviewTime.Text = $"{Format(TimeSpan.FromSeconds(seconds))} / {Format(TimeSpan.FromSeconds(_durationSeconds))}";
+    private void UpdatePreviewTime(double seconds)
+    {
+        PreviewTime.Text = Format(TimeSpan.FromSeconds(seconds));
+        DurationText.Text = $" / {Format(TimeSpan.FromSeconds(_durationSeconds))}";
+    }
 
     private static string Format(TimeSpan value) => value.TotalHours >= 1
         ? value.ToString(@"hh\:mm\:ss\.fff")
