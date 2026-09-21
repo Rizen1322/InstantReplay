@@ -37,14 +37,36 @@ public partial class ClipEditorWindow : Window
     /// вешало редактор при выборе «Игра + микрофон»: вызов LibVLC из потока окна
     /// ждёт внутренний поток LibVLC, а тот, в свою очередь, ждёт очередь сообщений
     /// того же окна (VideoView — это HWND), и оба стоят. Плюс два плеера разом
-    /// открывали одно звуковое устройство. Теперь сведённый M4A подключается к
-    /// основному плееру дорожкой-«slave» (AddSlave): синхронизацию с видео держит
-    /// сам LibVLC, второго плеера нет вовсе. Проверено на реальном клипе: дорожка
-    /// появляется сразу, переключение занимает доли миллисекунды и переживает
-    /// перемотку.
+    /// открывали одно звуковое устройство.
+    ///
+    /// Теперь сведённый M4A — дополнительная дорожка основного плеера. Подключается
+    /// он к ФАЙЛУ до воспроизведения (Media.AddSlave), а не на лету
+    /// (MediaPlayer.AddSlave), и разница проверена замером через перехват звука:
+    /// у дорожки, добавленной на лету, перемотка на паузе уводила видео вперёд
+    /// примерно на двадцать секунд. У подключённой к файлу перемотка на паузе и во
+    /// время воспроизведения работает верно и со звуком.
     /// </summary>
     private int? _mixTrackId;
-    private bool _mixSlaveAdded;
+
+    /// <summary>Файл уже переоткрыт вместе со сведённым звуком.</summary>
+    private bool _mixAttached;
+
+    /// <summary>Подготовка сведённого звука и переоткрытие файла с ним — один раз.</summary>
+    private Task? _mixPreparation;
+
+    /// <summary>
+    /// Куда вернуться после переоткрытия файла: позиция и играло ли видео.
+    /// null — переоткрытия сейчас нет.
+    /// </summary>
+    private (long TimeMs, bool Playing)? _reopenRestore;
+
+    /// <summary>
+    /// Завершается, когда после переоткрытия найден номер сведённой дорожки (или
+    /// искать перестали). Без него подготовка заканчивалась раньше, чем LibVLC
+    /// показывал дорожку, и выбор «Вместе» видел пустой номер.
+    /// </summary>
+    private readonly TaskCompletionSource _mixTrackSearch =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     // -1 = свести все дорожки, 0..N = оставить одну дорожку.
     private int _audioSelection = -1;
     private double _durationSeconds;
@@ -142,6 +164,18 @@ public partial class ClipEditorWindow : Window
     private void Player_Playing(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
         PreviewLoading.Visibility = Visibility.Collapsed;
+        if (_reopenRestore is { } restore)
+        {
+            // Файл только что переоткрыт со сведённым звуком: возвращаем позицию и
+            // состояние. Перемотка на паузе у подключённой к файлу дорожки безопасна.
+            _reopenRestore = null;
+            if (_player is null) return;
+            _player.Time = restore.TimeMs;
+            if (!restore.Playing) _player.Pause();
+            else SetPlayIcon(playing: true);
+            _ = FindMixTrackAsync();
+            return;
+        }
         ConfigureAudioChoices();
         if (_pauseOnFirstFrame)
         {
@@ -303,7 +337,7 @@ public partial class ClipEditorWindow : Window
 
         // Сведённый звук готовим сразу, в фоне: к моменту, когда человек нажмёт
         // «Вместе», он уже лежит на диске, и переключение мгновенное.
-        if (_ffmpeg is not null) _ = EnsureMixedAudioAsync();
+        if (_ffmpeg is not null) _mixPreparation = PrepareMixAsync();
 
         // По умолчанию — «Вместе»: так ведёт себя и LosslessCut (в файл попадает
         // весь звук), а раньше редактор молча сохранял одну игру без микрофона.
@@ -319,7 +353,7 @@ public partial class ClipEditorWindow : Window
 
         if (selected >= 0)
         {
-            if (selected < _audioTrackIds.Length) _player.SetAudioTrack(_audioTrackIds[selected]);
+            ApplyAudioSelection();
             SetStatus("Готово к сохранению", DefaultHint());
             return;
         }
@@ -332,19 +366,23 @@ public partial class ClipEditorWindow : Window
             return;
         }
 
+        if (_mixTrackId is not null)
+        {
+            ApplyAudioSelection();
+            SetStatus("Готово к сохранению", DefaultHint());
+            return;
+        }
+
         // Пока сведённый звук не готов, играет игра — окно при этом не блокируется
         // и переключатель остаётся живым: можно передумать и выбрать другую дорожку.
-        if (_mixTrackId is null) _player.SetAudioTrack(_audioTrackIds[0]);
+        _player.SetAudioTrack(_audioTrackIds[0]);
+        SetStatus("Свожу игру и микрофон…", "Первый раз это занимает пару секунд.");
         try
         {
-            if (_mixTrackId is null)
-            {
-                SetStatus("Свожу игру и микрофон…", "Первый раз это занимает пару секунд.");
-                await EnsureMixedAudioAsync();
-                await AttachMixedAudioAsync();
-            }
-            if (_disposed || _player is null || _audioSelection >= 0) return;   // пока ждали, выбрали другое
-            if (_mixTrackId is int mixId) _player.SetAudioTrack(mixId);
+            if (_mixPreparation is not null) await _mixPreparation;
+            if (_disposed || _player is null || _audioSelection >= 0) return;
+            if (_mixTrackId is null) throw new InvalidOperationException("сведённая дорожка не появилась в плеере");
+            ApplyAudioSelection();
             SetStatus("Готово к сохранению", DefaultHint());
         }
         catch (OperationCanceledException) { }
@@ -358,6 +396,26 @@ public partial class ClipEditorWindow : Window
         }
     }
 
+    /// <summary>Включить в плеере ту дорожку, что выбрана в переключателе.</summary>
+    private void ApplyAudioSelection()
+    {
+        if (_player is null) return;
+        if (_audioSelection >= 0)
+        {
+            if (_audioSelection < _audioTrackIds.Length) _player.SetAudioTrack(_audioTrackIds[_audioSelection]);
+            return;
+        }
+        if (_mixTrackId is not int mixId) return;
+
+        _player.SetAudioTrack(mixId);
+        // Сведённая дорожка, выбранная ВО ВРЕМЯ воспроизведения, молчит, пока не
+        // случится перемотка: LibVLC не подтягивает её к текущей позиции. Замер через
+        // перехват звука — без перемотки сэмплов нет вовсе, после перемотки на то же
+        // место звук идёт сразу. Плата — заминка около 0.4 с. На паузе перемотка не
+        // нужна: звук появляется с ближайшим воспроизведением сам.
+        if (_player.IsPlaying) _player.Time = _player.Time;
+    }
+
     private Task EnsureMixedAudioAsync()
     {
         if (_ffmpeg is null || _audioTrackIds.Length < 2) return Task.CompletedTask;
@@ -369,29 +427,61 @@ public partial class ClipEditorWindow : Window
     }
 
     /// <summary>
-    /// Подключить сведённый звук к основному плееру и дождаться, когда LibVLC покажет
-    /// его отдельной дорожкой. Номер дорожки система назначает сама, поэтому ищем
-    /// ту, которой не было среди встроенных.
+    /// Свести звук в фоне и переоткрыть файл уже вместе с ним.
+    ///
+    /// Переоткрытие нужно один раз: дорожку можно подключить к файлу только до
+    /// начала воспроизведения (см. <see cref="_mixTrackId"/>). Позиция и состояние
+    /// «играет / пауза» переносятся, так что для человека это короткое мигание
+    /// картинки через пару секунд после открытия, а не остановка.
     /// </summary>
-    private async Task AttachMixedAudioAsync()
+    private async Task PrepareMixAsync()
     {
-        if (_player is null || _mixedAudioPath is null || !File.Exists(_mixedAudioPath)) return;
-        if (!_mixSlaveAdded)
-        {
-            _mixSlaveAdded = true;
-            if (!_player.AddSlave(MediaSlaveType.Audio, new Uri(_mixedAudioPath).AbsoluteUri, select: false))
-                throw new InvalidOperationException("LibVLC не принял сведённый звук");
-        }
+        await EnsureMixedAudioAsync();
+        if (_disposed || _player is null || _libVlc is null || _mixAttached ||
+            _mixedAudioPath is null || !File.Exists(_mixedAudioPath)) return;
 
+        _mixAttached = true;
+        var media = new VlcMedia(_libVlc, new Uri(_item.FullPath));
+        media.AddSlave(MediaSlaveType.Audio, 4, new Uri(_mixedAudioPath).AbsoluteUri);
+        _reopenRestore = ((long)Math.Round(CurrentSeconds * 1000), _player.IsPlaying);
+
+        // Смена файла синхронно останавливает текущий — в потоке окна это та самая
+        // взаимная блокировка с видеовыводом, поэтому уходим в фон.
+        var player = _player;
+        var previous = _media;
+        _media = media;
+        await Task.Run(() => player.Play(media));
+        previous?.Dispose();
+        // Предел ожидания: если после переоткрытия плеер так и не начал играть
+        // (ошибка декодирования), поиск дорожки не начнётся вовсе, и выбор «Вместе»
+        // висел бы с надписью «свожу звук» бесконечно.
+        await Task.WhenAny(_mixTrackSearch.Task, Task.Delay(TimeSpan.FromSeconds(8)));
+    }
+
+    /// <summary>
+    /// Найти номер сведённой дорожки после переоткрытия: это та, которой не было
+    /// среди встроенных. Список дорожек LibVLC заполняет не мгновенно, поэтому ждём.
+    /// </summary>
+    private async Task FindMixTrackAsync()
+    {
         var known = new HashSet<int>(_audioTrackIds);
-        for (int attempt = 0; attempt < 40 && !_disposed && _player is not null && _mixTrackId is null; attempt++)
+        for (int attempt = 0; attempt < 40 && !_disposed && _player is not null; attempt++)
         {
             foreach (var track in _player.AudioTrackDescription ?? [])
-                if (track.Id >= 0 && !known.Contains(track.Id)) { _mixTrackId = track.Id; break; }
-            if (_mixTrackId is null) await Task.Delay(75);
+                if (track.Id >= 0 && !known.Contains(track.Id))
+                {
+                    _mixTrackId = track.Id;
+                    // По умолчанию LibVLC включает подключённую дорожку сам; ставим ту,
+                    // что выбрана в переключателе.
+                    ApplyAudioSelection();
+                    _mixTrackSearch.TrySetResult();
+                    return;
+                }
+            await Task.Delay(75);
         }
-        if (_mixTrackId is null && !_disposed)
-            throw new InvalidOperationException("сведённая дорожка не появилась в плеере");
+        Log.Warn("Editor", "Сведённая дорожка не появилась после переоткрытия");
+        if (!_disposed && _player is not null) ApplyAudioSelection();
+        _mixTrackSearch.TrySetResult();
     }
 
     private string DefaultHint() => _ffmpeg is null

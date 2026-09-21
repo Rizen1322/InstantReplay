@@ -185,38 +185,34 @@
                         </Border>
                     </Canvas>
 
-                    <Grid Margin="0,8,0,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Button Click="SetIn_Click" c:Deco.Icon="{StaticResource Ico.MarkIn}" Content="Начало"
-                                    Padding="10,0" ToolTip="Поставить начало на текущий кадр (I)"/>
-                            <TextBlock x:Name="StartTimeText" Text="00:00.000" FontFamily="Consolas" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="10,0,0,0"/>
-                        </StackPanel>
+                    <!-- Границы фрагмента одной группой по центру: начало, длительность,
+                         конец. Раньше кнопки стояли по краям окна, и до каждой надо было
+                         тянуться через всю ширину. -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                        <Button Click="SetIn_Click" c:Deco.Icon="{StaticResource Ico.MarkIn}" Content="Начало"
+                                Padding="10,0" ToolTip="Поставить начало на текущий кадр (I)"/>
+                        <TextBlock x:Name="StartTimeText" Text="00:00.000" FontFamily="Consolas" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="10,0,14,0"/>
 
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                            <Border Background="{DynamicResource TrackBrush}" CornerRadius="9" Padding="10,4">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="Фрагмент" Foreground="{DynamicResource Tx2Brush}" FontSize="12"
-                                               VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                    <TextBlock x:Name="SelectionTimeText" Text="00:00.000" FontFamily="Consolas"
-                                               FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"
-                                               VerticalAlignment="Center"/>
-                                </StackPanel>
-                            </Border>
-                            <Button Style="{StaticResource TransportButton}" Margin="6,0,0,0" Click="Reset_Click"
-                                    ToolTip="Сбросить границы — весь клип">
-                                <c:Icon Data="{DynamicResource Ico.Undo}" Size="15"/>
-                            </Button>
-                        </StackPanel>
+                        <Border Background="{DynamicResource TrackBrush}" CornerRadius="9" Padding="10,4" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Фрагмент" Foreground="{DynamicResource Tx2Brush}" FontSize="12"
+                                           VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                <TextBlock x:Name="SelectionTimeText" Text="00:00.000" FontFamily="Consolas"
+                                           FontWeight="SemiBold" Foreground="{DynamicResource AccentBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                        <Button Style="{StaticResource TransportButton}" Margin="4,0,0,0" Click="Reset_Click"
+                                ToolTip="Сбросить границы — весь клип">
+                            <c:Icon Data="{DynamicResource Ico.Undo}" Size="15"/>
+                        </Button>
 
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                            <TextBlock x:Name="EndTimeText" Text="00:00.000" FontFamily="Consolas" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <Button Click="SetOut_Click" c:Deco.Icon="{StaticResource Ico.MarkOut}" Content="Конец"
-                                    Padding="10,0" ToolTip="Поставить конец на текущий кадр (O)"/>
-                        </StackPanel>
-                    </Grid>
+                        <TextBlock x:Name="EndTimeText" Text="00:00.000" FontFamily="Consolas" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center" Margin="10,0,10,0"/>
+                        <Button Click="SetOut_Click" c:Deco.Icon="{StaticResource Ico.MarkOut}" Content="Конец"
+                                Padding="10,0" ToolTip="Поставить конец на текущий кадр (O)"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
