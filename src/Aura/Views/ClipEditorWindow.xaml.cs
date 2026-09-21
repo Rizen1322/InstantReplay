@@ -171,7 +171,7 @@ public partial class ClipEditorWindow : Window
             _reopenRestore = null;
             if (_player is null) return;
             _player.Time = restore.TimeMs;
-            if (!restore.Playing) _player.Pause();
+            if (!restore.Playing) _player.SetPause(true);
             else SetPlayIcon(playing: true);
             _ = FindMixTrackAsync();
             return;
@@ -180,7 +180,7 @@ public partial class ClipEditorWindow : Window
         if (_pauseOnFirstFrame)
         {
             _pauseOnFirstFrame = false;
-            _player?.Pause();
+            _player?.SetPause(true);
             return;
         }
         SetPlayIcon(playing: true);
@@ -230,7 +230,7 @@ public partial class ClipEditorWindow : Window
         if (_player is null || _durationSeconds <= 0) return;
         if (_player.IsPlaying)
         {
-            _player.Pause();
+            _player.SetPause(true);
             return;
         }
         double position = CurrentSeconds;
@@ -244,7 +244,7 @@ public partial class ClipEditorWindow : Window
         double position = CurrentSeconds;
         if (_player.IsPlaying && position >= _endSeconds)
         {
-            _player.Pause();
+            _player.SetPause(true);
             Seek(_endSeconds);
             return;
         }
@@ -269,7 +269,7 @@ public partial class ClipEditorWindow : Window
     private void Step(TimeSpan delta)
     {
         if (_player is null) return;
-        if (_player.IsPlaying) _player.Pause();
+        if (_player.IsPlaying) _player.SetPause(true);
         if (delta > TimeSpan.Zero)
         {
             _player.NextFrame();
@@ -709,7 +709,12 @@ public partial class ClipEditorWindow : Window
         bool fast)
     {
         if (_exportCancellation is not null || _durationSeconds <= 0) return;
-        _player?.Pause();
+        // SetPause(true), а не Pause(): в LibVLC Pause() — ПЕРЕКЛЮЧАТЕЛЬ. Если видео уже
+        // стояло на паузе, «остановка перед сохранением» его запускала, и после
+        // сохранения всё шло наоборот: иконка «воспроизвести», а видео играет, нажатие
+        // Play ставит паузу — со стороны это выглядело как неработающая кнопка.
+        // Поэтому во всём редакторе пауза ставится только явно.
+        _player?.SetPause(true);
         ExportStatus.Text = "Сохраняю фрагмент…";
         ExportHint.Text = fast
             ? "Видео копируется без потери качества; исходный клип не меняется."
