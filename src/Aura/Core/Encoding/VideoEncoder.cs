@@ -339,12 +339,32 @@ public sealed class VideoEncoder : IDisposable
     }
 
     // ---------------- NVENC напрямую ----------------
+    //
+    // УСТРОЙСТВО. У NVENC своё устройство D3D11 на той же видеокарте, как в OBS
+    // (plugins/obs-nvenc/nvenc-d3d11.c). Захват и пейсер копируют кадры в общие
+    // текстуры пула на своём устройстве (keyed mutex, см. EncoderTexturePool), а
+    // поток NVENC переносит каждый кадр в собственную входную текстуру на своём.
+    // Прежде NVENC работал на общем с захватом устройстве, и драйвер внутри вызова
+    // NVENC держал замок этого устройства, пока наши потоки захвата, пейсера и
+    // копий ждали его же: в играх конвейер вставал намертво.
+    //
+    // ПОТОК ОДИН. Подача, забор выхода и снятие отображения идут из одного потока,
+    // как у OBS. Прежде подача и выдача шли из двух потоков параллельно.
 
     private NvencSession? _nvenc;
-    private SemaphoreSlim? _nvencSlots;
     private readonly Queue<long> _nvencInputPts = new();
     private long _nvencLastDts = long.MinValue;
     private byte[]? _nvencHeader;
+    private ID3D11Device? _nvencDevice;
+    private ID3D11DeviceContext? _nvencContext;
+    private ID3D11Texture2D[] _nvencInputs = [];
+    private long _nvencSubmitted;
+
+    /// <summary>
+    /// Прямой NVENC выключен до конца работы программы: он уже вставал в этом
+    /// процессе, и новая сессия NVENC рядом с зависшей не оживёт. Дальше — MFT.
+    /// </summary>
+    public static volatile bool DirectNvencDisabled;
 
     /// <summary>Кодирование идёт напрямую через NVENC, а не через MFT.</summary>
     public bool DirectNvenc => _nvenc is not null;
@@ -352,28 +372,82 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Поток готов к записи в файл: энкодер знает свои заголовки.</summary>
     public bool StreamReady => _nvenc is not null || OutputMediaType is not null;
 
+    /// <summary>Состояние сессии NVENC и её последние вызовы — для лога, когда конвейер встал.</summary>
+    public string? NvencTrace() => _nvenc?.Trace();
+
     private VideoCodec _nvencCodec;
 
     private bool TryInitializeNvenc(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
     {
         _nvencCodec = codec;
+        if (DirectNvencDisabled) return false;
         string adapter = AdapterDescriptionOf(device);
         if (!NvencSession.Available(adapter)) return false;
 
-        var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit);
-        var session = NvencSession.TryCreate(device.NativePointer, config, out string error);
-        if (session is null)
+        ID3D11Device? encoderDevice = null;
+        ID3D11DeviceContext? encoderContext = null;
+        NvencSession? session = null;
+        try
         {
-            Log.Info("Encoder", $"NVENC напрямую недоступен ({error}) — кодирую через MFT");
+            using (var dxgi = device.QueryInterface<Vortice.DXGI.IDXGIDevice>())
+            using (var gpu = dxgi.GetAdapter())
+            {
+                D3D11.D3D11CreateDevice(gpu, Vortice.Direct3D.DriverType.Unknown, DeviceCreationFlags.None,
+                    [Vortice.Direct3D.FeatureLevel.Level_11_1, Vortice.Direct3D.FeatureLevel.Level_11_0],
+                    out encoderDevice, out _, out encoderContext).CheckError();
+            }
+            using (var multithread = encoderDevice!.QueryInterface<ID3D11Multithread>())
+                multithread.SetMultithreadProtected(true);
+            Capture.GpuPriority.TryRaise(encoderDevice);
+
+            var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit);
+            session = NvencSession.TryCreate(encoderDevice.NativePointer, config, out string error);
+            if (session is null)
+            {
+                Log.Info("Encoder", $"NVENC напрямую недоступен ({error}) — кодирую через MFT");
+                encoderContext?.Dispose();
+                encoderDevice.Dispose();
+                return false;
+            }
+
+            bool tenBit = session.Settings.TenBit == 1;
+            int buffers = session.Settings.BufferCount;
+            // Входные текстуры энкодера: по одной на выходной буфер. Текстура i
+            // снова в деле, только когда выход её номера забран и отображение снято.
+            var inputDesc = new Texture2DDescription
+            {
+                Width = (uint)width,
+                Height = (uint)height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = tenBit ? Vortice.DXGI.Format.P010 : Vortice.DXGI.Format.NV12,
+                SampleDescription = new Vortice.DXGI.SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.RenderTarget,
+            };
+            var inputs = new ID3D11Texture2D[buffers];
+            for (int i = 0; i < buffers; i++) inputs[i] = encoderDevice.CreateTexture2D(inputDesc);
+            // Общий пул нужен только на время от копии захвата до переноса на
+            // устройство энкодера — очередь плюс запас.
+            var pool = new EncoderTexturePool(device, encoderDevice, width, height, tenBit, slots: 24);
+
+            _nvenc = session;
+            _nvencDevice = encoderDevice;
+            _nvencContext = encoderContext;
+            _nvencInputs = inputs;
+            _copyPool = pool;
+            TenBit = tenBit;
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Encoder", $"NVENC напрямую не поднялся ({ex.Message}) — кодирую через MFT");
+            session?.Dispose();
+            encoderContext?.Dispose();
+            encoderDevice?.Dispose();
             return false;
         }
 
-        _nvenc = session;
-        TenBit = session.Settings.TenBit == 1;
-        int buffers = session.Settings.BufferCount;
-        _copyPool = new EncoderTexturePool(device, width, height, TenBit, minSlots: buffers + 12, renderTarget: true);
-        _maxInputQueue = Math.Max(8, _copyPool.Slots - buffers - 2);
-        _nvencSlots = new SemaphoreSlim(buffers, buffers);
+        _maxInputQueue = Math.Max(8, _copyPool.Slots - 4);
         _nvencHeader = session.SequenceHeader();
 
         EncoderName = "NVIDIA NVENC (напрямую)";
@@ -381,17 +455,18 @@ public sealed class VideoEncoder : IDisposable
         EncoderLabel = $"{codec.ToString().ToLowerInvariant()}_nvenc";
 
         _running = true;
-        _eventThread = new Thread(NvencOutputLoop) { IsBackground = true, Name = "VideoEncoder.NvencOut", Priority = ThreadPriority.AboveNormal };
+        _eventThread = new Thread(NvencLoop) { IsBackground = true, Name = "VideoEncoder.Nvenc", Priority = ThreadPriority.AboveNormal };
         _eventThread.Start();
-        _feedThread = new Thread(NvencFeedLoop) { IsBackground = true, Name = "VideoEncoder.NvencFeed", Priority = ThreadPriority.AboveNormal };
-        _feedThread.Start();
         _pacerThread = new Thread(PacerLoop) { IsBackground = true, Name = "VideoEncoder.Pacer", Priority = ThreadPriority.AboveNormal };
         _pacerThread.Start();
 
-        Log.Info("Encoder", $"HW-энкодер: NVENC напрямую, {codec}, {width}x{height}@{fps}, {bitrateBps / 1_000_000} Мбит/с " +
+        long frameBytes = TenBit ? (long)width * height * 3 : (long)width * height * 3 / 2;
+        Log.Info("Encoder", $"HW-энкодер: NVENC напрямую (своё устройство D3D11, один поток), {codec}, " +
+                            $"{width}x{height}@{fps}, {bitrateBps / 1_000_000} Мбит/с " +
                             $"(VBR, пик {bitrateBps * 2 / 1_000_000}); {session.Describe()}");
-        Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров, пул {_copyPool.Slots} текстур " +
-                            $"= {(TenBit ? (long)width * height * 3 : (long)width * height * 3 / 2) * _copyPool.Slots / (1024 * 1024)} МБ видеопамяти");
+        Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров, общий пул {_copyPool.Slots} " +
+                            $"+ входов энкодера {_nvencInputs.Length} = " +
+                            $"{frameBytes * (_copyPool.Slots + _nvencInputs.Length) / (1024 * 1024)} МБ видеопамяти");
         return true;
     }
 
@@ -406,59 +481,51 @@ public sealed class VideoEncoder : IDisposable
         catch { return ""; }
     }
 
-    /// <summary>Подача кадров в NVENC: по свободному выходному буферу, как по NeedInput у MFT.</summary>
-    private void NvencFeedLoop()
+    /// <summary>
+    /// Единственный поток NVENC: забирает готовые выходы, подаёт новые кадры и ждёт,
+    /// когда нечего делать. Ни один вызов NVENC не идёт параллельно другому.
+    /// </summary>
+    private void NvencLoop()
     {
-        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.NvencFeed");
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.Nvenc");
         var session = _nvenc!;
-        var slots = _nvencSlots!;
+        int buffers = session.Settings.BufferCount;
+        // Сдвиг времени декодирования: с B-кадрами кадр N по порядку декодирования
+        // декодируется на столько кадров раньше N-го входного. Без B-кадров сдвига нет.
+        long reorderTicks = session.Settings.BFrames * _frameDurationTicks;
         while (_running)
         {
             try
             {
-                if (!slots.Wait(200)) continue;              // свободный выходной буфер = «просьба кадра»
-                Interlocked.Increment(ref InputRequests);
-
-                bool gotFrame = false;
-                Volatile.Write(ref _inputRequestWaitingForFrame, 1);
-                try
+                bool worked = false;
+                while (session.PendingCount > 0 && session.TryGet(0) is { } done)
                 {
-                    while (_running && !(gotFrame = _inputAvailable.Wait(200))) { }
+                    DeliverNvenc(done.Data, done.Pts, done.PictureType, reorderTicks);
+                    worked = true;
                 }
-                finally { Volatile.Write(ref _inputRequestWaitingForFrame, 0); }
-                if (!gotFrame) { slots.Release(); break; }
-
-                EncoderInputFrame item;
-                lock (_queueLock)
+                if (session.PendingCount < buffers && TakeInput(0, out var item))
                 {
-                    if (_inputQueue.Count == 0) { slots.Release(); continue; }
-                    item = _inputQueue.Dequeue();
+                    SubmitNvenc(session, item);
+                    worked = true;
                 }
+                if (worked) continue;
 
-                // Просьба ключевого кадра (буфер потерял кадр или начал копить заново)
-                bool forceIdr = _keyframeRequested;
-                if (forceIdr) _keyframeRequested = false;
-
-                lock (_nvencInputPts) _nvencInputPts.Enqueue(item.Ticks);
-                int inFlight = Interlocked.Increment(ref _inFlight);
-                long peak;
-                while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
-                    if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
-
-                long start = Diagnostics.PipelineProbe.Now();
-                lock (_submittedTextures) _submittedTextures.Enqueue(item.Texture);
-                if (!session.Encode(item.Texture.NativePointer, item.Ticks, forceIdr))
+                if (session.PendingCount >= buffers)
                 {
-                    // Буфер занят — так быть не должно (его выдал семафор). Кадр теряем честно.
-                    lock (_nvencInputPts) RemoveLast(_nvencInputPts);
-                    lock (_submittedTextures) RemoveLast(_submittedTextures);
-                    _copyPool?.Release(item.Texture);
-                    Interlocked.Decrement(ref _inFlight);
-                    slots.Release();
-                    Interlocked.Increment(ref FramesDroppedRealQueue);
-                    continue;
+                    // Все буферы в работе — ждём самый старый выход
+                    if (session.TryGet(4) is { } frame) DeliverNvenc(frame.Data, frame.Pts, frame.PictureType, reorderTicks);
                 }
-                Diagnostics.PipelineProbe.ProcessInput.Add(start, Diagnostics.PipelineProbe.Now());
+                else
+                {
+                    // Буфер свободен: ждём кадр, но не дольше пары миллисекунд, если
+                    // в работе есть выходы, которые пора забирать
+                    Volatile.Write(ref _inputRequestWaitingForFrame, 1);
+                    bool got;
+                    EncoderInputFrame next;
+                    try { got = TakeInput(session.PendingCount > 0 ? 2 : 20, out next); }
+                    finally { Volatile.Write(ref _inputRequestWaitingForFrame, 0); }
+                    if (got) SubmitNvenc(session, next);
+                }
             }
             catch (Exception ex)
             {
@@ -468,6 +535,71 @@ public sealed class VideoEncoder : IDisposable
             }
         }
     }
+
+    /// <summary>Взять кадр из очереди (ждать не дольше <paramref name="timeoutMs"/>).</summary>
+    private bool TakeInput(int timeoutMs, out EncoderInputFrame item)
+    {
+        item = default;
+        if (!_inputAvailable.Wait(timeoutMs)) return false;
+        lock (_queueLock)
+        {
+            if (_inputQueue.Count == 0) return false;
+            item = _inputQueue.Dequeue();
+        }
+        Interlocked.Increment(ref InputRequests);
+        return true;
+    }
+
+    /// <summary>Перенести кадр на устройство энкодера и отправить в NVENC.</summary>
+    private void SubmitNvenc(NvencSession session, EncoderInputFrame item)
+    {
+        var pool = _copyPool!;
+        var shared = pool.AcquireForEncoder(item.Texture, 200);
+        if (shared is null)
+        {
+            // Захват так и не отдал слот — кадр теряем, слот остаётся занятым
+            Interlocked.Increment(ref FramesDroppedRealQueue);
+            if (Interlocked.Increment(ref _nvencAcquireFailures) is 1 or 100)
+                Log.Warn("Encoder", $"NVENC: слот общего пула не получен за 200 мс ({_nvencAcquireFailures} раз)");
+            return;
+        }
+        var input = _nvencInputs[(int)(_nvencSubmitted % _nvencInputs.Length)];
+        long start = Diagnostics.PipelineProbe.Now();
+        _nvencContext!.CopyResource(input, shared);
+        pool.ReleaseFromEncoder(item.Texture);        // слот свободен: копия уже в очереди видеокарты
+
+        // Просьба ключевого кадра (буфер потерял кадр или начал копить заново)
+        bool forceIdr = _keyframeRequested;
+        if (forceIdr) _keyframeRequested = false;
+
+        lock (_nvencInputPts) _nvencInputPts.Enqueue(item.Ticks);
+        int inFlight = Interlocked.Increment(ref _inFlight);
+        long peak;
+        while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
+            if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
+
+        bool accepted;
+        try { accepted = session.Encode(input.NativePointer, item.Ticks, forceIdr); }
+        catch
+        {
+            // Ошибка NVENC: кадр не ушёл, его метка не должна остаться в очереди
+            lock (_nvencInputPts) RemoveLast(_nvencInputPts);
+            Interlocked.Decrement(ref _inFlight);
+            throw;
+        }
+        if (!accepted)
+        {
+            // Буфер занят — так быть не должно (поток сам считает свободные). Кадр теряем честно.
+            lock (_nvencInputPts) RemoveLast(_nvencInputPts);
+            Interlocked.Decrement(ref _inFlight);
+            Interlocked.Increment(ref FramesDroppedRealQueue);
+            return;
+        }
+        _nvencSubmitted++;
+        Diagnostics.PipelineProbe.ProcessInput.Add(start, Diagnostics.PipelineProbe.Now());
+    }
+
+    private long _nvencAcquireFailures;
 
     private static void RemoveLast<T>(Queue<T> queue)
     {
@@ -479,40 +611,17 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
-    /// <summary>Выдача NVENC: кадры в порядке декодирования, с временем декодирования.</summary>
-    private void NvencOutputLoop()
-    {
-        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.NvencOut");
-        var session = _nvenc!;
-        // Сдвиг времени декодирования: с B-кадрами кадр N по порядку декодирования
-        // декодируется на столько кадров раньше N-го входного (стандартная схема,
-        // так же считает ffmpeg). Без B-кадров сдвига нет.
-        long reorderTicks = session.Settings.BFrames * _frameDurationTicks;
-        while (_running)
-        {
-            try
-            {
-                var output = session.TryGet(100);
-                if (output is not { } frame) continue;
-                DeliverNvenc(frame.Data, frame.Pts, frame.PictureType, reorderTicks);
-            }
-            catch (Exception ex)
-            {
-                if (!_running) break;
-                Log.Error("Encoder", ex);
-                Thread.Sleep(5);
-            }
-        }
-    }
-
     private void DeliverNvenc(ArraySegment<byte> data, long pts, int pictureType, long reorderTicks)
     {
         long inputPts;
         lock (_nvencInputPts) inputPts = _nvencInputPts.Count > 0 ? _nvencInputPts.Dequeue() : pts;
-        // Вход этого порядкового номера NVENC уже отпустил (снял отображение)
-        ReleaseSubmitted();
-        _nvencSlots?.Release();
         Interlocked.Decrement(ref _inFlight);
+        if (pictureType == NvencSession.SkippedPicture)
+        {
+            // Выход пропущен: метку сняли, чтобы следующие кадры не съехали на один
+            Interlocked.Increment(ref FramesDroppedRealQueue);
+            return;
+        }
 
         long dts = Math.Min(inputPts - reorderTicks, pts);
         if (_nvencLastDts != long.MinValue && dts <= _nvencLastDts) dts = _nvencLastDts + 1;
@@ -535,46 +644,58 @@ public sealed class VideoEncoder : IDisposable
                                               pts, _frameDurationTicks, keyframe, dts));
     }
 
+    /// <summary>Брошенные сессии NVENC: их поток завис в драйвере, освобождать под ним нельзя.</summary>
+    private static readonly List<object> s_abandonedNvenc = [];
+
     private void DisposeNvenc()
     {
         _running = false;
-        // Семафор слотов будить незачем: поток подачи ждёт его с таймаутом 200 мс
-        _inputAvailable.Release(4);
-        bool feedExited = _feedThread?.Join(2000) ?? true;
+        bool loopExited = _eventThread?.Join(3000) ?? true;
         bool pacerExited = _pacerThread?.Join(5000) ?? true;
-        bool outputExited = _eventThread?.Join(2000) ?? true;
 
         var session = Interlocked.Exchange(ref _nvenc, null);
-        if (session is not null && (!feedExited || !outputExited))
+        if (!loopExited)
         {
-            // Поток всё ещё внутри вызова NVENC (видеокарта зависла на работе игры).
-            // Уничтожить сессию под ним — обращение к освобождённой памяти и падение
-            // процесса. Утечка одной сессии безопаснее; пул текстур тоже не трогаем.
-            Log.Warn("Encoder", "Поток NVENC не завершился — сессия оставлена, чтобы не уронить процесс");
+            // Поток всё ещё внутри вызова NVENC. Уничтожить сессию, устройство или
+            // текстуры под ним — обращение к освобождённой памяти. Бросаем всё разом
+            // и держим ссылки, чтобы сборщик мусора не освободил их позже.
+            Log.Warn("Encoder", "Поток NVENC не завершился — сессия и её устройство оставлены. " +
+                                $"Состояние NVENC:\n{session?.Trace()}");
+            lock (s_abandonedNvenc)
+                s_abandonedNvenc.AddRange(new object?[] { session, _nvencDevice, _nvencContext, _nvencInputs, _copyPool }
+                                              .Where(o => o is not null)!);
             _copyPool = null;
+            _nvencDevice = null;
+            _nvencContext = null;
+            _nvencInputs = [];
             return;
         }
         if (session is not null)
         {
-            // Конец потока: NVENC отдаёт то, что держит у себя, и отпускает входные
-            // текстуры. Кадры уже никому не нужны — просто забираем их.
+            // Конец потока: NVENC отдаёт то, что держит у себя, и снимает отображение
+            // входов. Кадры уже никому не нужны — просто забираем их.
             try
             {
                 session.EndOfStream();
                 var clock = System.Diagnostics.Stopwatch.StartNew();
-                while (clock.ElapsedMilliseconds < 1000 && session.TryGet(50) is not null) { }
+                while (clock.ElapsedMilliseconds < 1000 && session.PendingCount > 0 && session.TryGet(50) is not null) { }
             }
             catch (Exception ex) { Log.Info("Encoder", $"NVENC: хвост не выдан при закрытии ({ex.Message})"); }
             session.Dispose();
         }
         lock (_queueLock) _inputQueue.Clear();
+        foreach (var input in _nvencInputs) input.Dispose();
+        _nvencInputs = [];
         if (pacerExited) { _copyPool?.Dispose(); _copyPool = null; }
         else
         {
             Log.Warn("Encoder", "Пейсер не завершился за 5 секунд — пул текстур оставлен сборщику");
             _copyPool = null;
         }
-        _nvencSlots?.Dispose();
+        _nvencContext?.Dispose();
+        _nvencContext = null;
+        _nvencDevice?.Dispose();
+        _nvencDevice = null;
     }
 
     /// <summary>Есть ли у кодека десятибитный профиль, который мы готовы просить.</summary>

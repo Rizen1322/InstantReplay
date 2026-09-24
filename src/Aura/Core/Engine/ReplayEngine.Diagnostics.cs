@@ -401,6 +401,7 @@ public sealed partial class ReplayEngine
         catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
     }
 
+    private int _wedgeCount;
     private long _wdEncoded;
     private DateTime _wdEncodedAt;
 
@@ -490,6 +491,29 @@ public sealed partial class ReplayEngine
 
             if (EncoderWedged(out double stuck))
             {
+                // Встал прямой NVENC: пишем, на каком вызове, и до перезапуска
+                // программы кодируем через MFT — новая сессия NVENC рядом с
+                // зависшей не оживёт.
+                if (_encoder is { DirectNvenc: true } wedgedEncoder)
+                {
+                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
+                    VideoEncoder.DirectNvencDisabled = true;
+                }
+                // Второй эпизод за сессию — видеокарта в этом процессе уже не
+                // оправится: каждая следующая пересборка вставала бы снова и
+                // оставляла брошенный конвейер (память и крутящийся в драйвере
+                // поток). Раньше так набегало 12 пересборок, 6 ГБ и 100% процессора.
+                if (Interlocked.Increment(ref _wedgeCount) > 1)
+                {
+                    Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров) — видеокарта не отвечает, " +
+                                        "повтор выключаю, чтобы не копить брошенные конвейеры");
+                    _ = Task.Run(() =>
+                    {
+                        try { Stop(); } catch (Exception ex) { Log.Error("Engine", ex); }
+                        Warning?.Invoke("Запись остановлена: видеокарта перестала отвечать. Перезапустите Aura.");
+                    });
+                    return;
+                }
                 Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом конвейере — " +
                                     "взаимная блокировка на видеокарте, пересобираю конвейер");
                 long wedgedGeneration = Interlocked.Read(ref _captureGeneration);

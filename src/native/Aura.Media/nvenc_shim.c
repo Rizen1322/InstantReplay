@@ -6,13 +6,17 @@
 // компилятор по официальному заголовку, а наружу торчит десяток простых функций.
 //
 // Модель работы:
-// • кадры приходят текстурами D3D11 (NV12 или P010) из пула энкодера Aura;
-//   каждая текстура регистрируется в NVENC один раз и дальше только отображается;
+// • у NVENC своё устройство D3D11 (как у OBS), и все вызовы идут из ОДНОГО потока
+//   Aura: подача, забор выхода и снятие отображения. Прежде подача и выдача шли из
+//   двух потоков на общем с захватом устройстве, и драйвер внутри вызова NVENC
+//   держал замок устройства, пока другие наши потоки ждали его же;
+// • кадры приходят собственными текстурами энкодера (NV12 или P010); каждая
+//   регистрируется в NVENC один раз и дальше только отображается;
 // • кодирование асинхронное: у каждого выходного буфера своё событие, кадры
-//   забираются строго по порядку отправки;
-// • с просмотром вперёд и B-кадрами NVENC держит входные кадры у себя, пока не
-//   выдаст их выход, поэтому вход освобождается (unmap) вместе с выходом того же
-//   порядкового номера.
+//   забираются строго по порядку отправки, вход освобождается (unmap) вместе с
+//   выходом того же порядкового номера;
+// • каждый вызов NVENC пишется в кольцо трассировки (aura_nvenc_trace): если
+//   конвейер встанет, в логе будет последний вызов, поток и сколько он длится.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -61,6 +65,20 @@ typedef struct AuraNvencApplied {
 
 #define MAX_BUFFERS 64
 #define MAX_REGISTERED 256
+#define TRACE_SIZE 64
+
+enum {
+    API_REGISTER = 1, API_MAP, API_ENCODE, API_LOCK, API_UNLOCK, API_UNMAP, API_EOS, API_DESTROY, API_WAIT
+};
+
+typedef struct TraceEntry {
+    int api;
+    int status;
+    int64_t frame;
+    DWORD thread;
+    int64_t enter;      // QPC
+    int64_t exit;       // 0 — вызов ещё не вернулся
+} TraceEntry;
 
 typedef struct Slot {
     NV_ENC_OUTPUT_PTR bitstream;
@@ -88,7 +106,43 @@ typedef struct Session {
     CRITICAL_SECTION lock;     // счётчики: отправка и выдача идут из разных потоков
     CRITICAL_SECTION apiLock;  // регистрация, отображение входа и его снятие — строго по одному
     int eosSent;
+    TraceEntry trace[TRACE_SIZE];
+    volatile LONG traceNext;
+    char lastError[256];
+    uint8_t* out;              // копия последнего выхода: растёт под самый большой кадр
+    int outCapacity;
 } Session;
+
+static int64_t qpc_now(void) {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+static int trace_begin(Session* s, int api, int64_t frame) {
+    LONG i = InterlockedIncrement(&s->traceNext) - 1;
+    TraceEntry* e = &s->trace[i % TRACE_SIZE];
+    e->exit = 0;
+    e->api = api;
+    e->status = 0;
+    e->frame = frame;
+    e->thread = GetCurrentThreadId();
+    e->enter = qpc_now();
+    return (int)i;
+}
+
+static void trace_end(Session* s, int i, NVENCSTATUS status) {
+    TraceEntry* e = &s->trace[i % TRACE_SIZE];
+    e->status = (int)status;
+    e->exit = qpc_now();
+}
+
+static void remember_error(Session* s, const char* call, NVENCSTATUS status) {
+    const char* text = s->encoder && s->api.nvEncGetLastErrorString
+        ? s->api.nvEncGetLastErrorString(s->encoder) : NULL;
+    snprintf(s->lastError, sizeof s->lastError, "%s: NVENCSTATUS %d%s%s", call, (int)status,
+             text && *text ? " — " : "", text ? text : "");
+}
 
 typedef NVENCSTATUS (NVENCAPI* CreateInstanceFn)(NV_ENCODE_API_FUNCTION_LIST*);
 typedef NVENCSTATUS (NVENCAPI* MaxVersionFn)(uint32_t*);
@@ -169,6 +223,7 @@ static void destroy_session(Session* s) {
         s->api.nvEncDestroyEncoder(s->encoder);
     }
     if (s->dll) FreeLibrary(s->dll);
+    if (s->out) HeapFree(GetProcessHeap(), 0, s->out);
     DeleteCriticalSection(&s->lock);
     DeleteCriticalSection(&s->apiLock);
     HeapFree(GetProcessHeap(), 0, s);
@@ -374,7 +429,10 @@ static NV_ENC_REGISTERED_PTR register_texture(Session* s, void* texture) {
     reg.resourceToRegister = texture;
     reg.bufferFormat = s->format;
     reg.bufferUsage = NV_ENC_INPUT_IMAGE;
-    if (s->api.nvEncRegisterResource(s->encoder, &reg) != NV_ENC_SUCCESS) return NULL;
+    int t = trace_begin(s, API_REGISTER, s->sent);
+    NVENCSTATUS st = s->api.nvEncRegisterResource(s->encoder, &reg);
+    trace_end(s, t, st);
+    if (st != NV_ENC_SUCCESS) { remember_error(s, "nvEncRegisterResource", st); return NULL; }
     s->registered[s->registeredCount].texture = texture;
     s->registered[s->registeredCount].handle = reg.registeredResource;
     s->registeredCount++;
@@ -407,8 +465,10 @@ AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int 
     NV_ENC_MAP_INPUT_RESOURCE map = { 0 };
     map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
     map.registeredResource = reg;
+    int t = trace_begin(s, API_MAP, s->sent);
     NVENCSTATUS st = s->api.nvEncMapInputResource(s->encoder, &map);
-    if (st != NV_ENC_SUCCESS) { LeaveCriticalSection(&s->apiLock); return -(int)st; }
+    trace_end(s, t, st);
+    if (st != NV_ENC_SUCCESS) { remember_error(s, "nvEncMapInputResource", st); LeaveCriticalSection(&s->apiLock); return -(int)st; }
 
     NV_ENC_PIC_PARAMS pic = { 0 };
     pic.version = NV_ENC_PIC_PARAMS_VER;
@@ -423,8 +483,11 @@ AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int 
     if (forceIdr) pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
 
     slot->mapped = map.mappedResource;
+    t = trace_begin(s, API_ENCODE, s->sent);
     st = s->api.nvEncEncodePicture(s->encoder, &pic);
+    trace_end(s, t, st);
     if (st != NV_ENC_SUCCESS && st != NV_ENC_ERR_NEED_MORE_INPUT) {
+        remember_error(s, "nvEncEncodePicture", st);
         s->api.nvEncUnmapInputResource(s->encoder, map.mappedResource);
         slot->mapped = NULL;
         LeaveCriticalSection(&s->apiLock);
@@ -452,14 +515,23 @@ AURA_EXPORT void aura_nvenc_end(void* handle) {
     // В асинхронном режиме конец потока сигналит событием последнего буфера
     pic.completionEvent = s->slots[s->sent % s->slotCount].event;
     EnterCriticalSection(&s->apiLock);
-    s->api.nvEncEncodePicture(s->encoder, &pic);
+    int t = trace_begin(s, API_EOS, s->sent);
+    NVENCSTATUS st = s->api.nvEncEncodePicture(s->encoder, &pic);
+    trace_end(s, t, st);
     LeaveCriticalSection(&s->apiLock);
 }
 
-// Забрать следующий выход по порядку. 1 — кадр в buffer, 0 — ещё не готов за
-// timeoutMs, -1 — буфер мал (нужный размер в *size), -2 — отправленных кадров нет,
+// Забрать следующий выход по порядку. 1 — кадр в *data (действителен до следующего
+// вызова), 0 — ещё не готов за timeoutMs, -2 — отправленных кадров нет,
 // <-2 — ошибка NVENC.
-AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, uint8_t* buffer, int capacity, int* size,
+//
+// Выход блокируется РОВНО ОДИН раз. Прежде кадр, не влезший в буфер вызывающего,
+// отпускался, событие взводилось заново, и тот же выход блокировался повторно с
+// большим буфером. Повторный nvEncLockBitstream после разблокировки навсегда
+// вешается в драйвере: так вставал конвейер на крупных ключевых кадрах (игра,
+// 1440p, 10 бит — больше мегабайта). Теперь кадр копируется во внутренний буфер,
+// который растёт под размер кадра.
+AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t** data, int* size,
                                int64_t* pts, int* pictureType) {
     Session* s = (Session*)handle;
     EnterCriticalSection(&s->lock);
@@ -473,29 +545,56 @@ AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, uint8_t* buffer
     NV_ENC_LOCK_BITSTREAM lock = { 0 };
     lock.version = NV_ENC_LOCK_BITSTREAM_VER;
     lock.outputBitstream = slot->bitstream;
+    int t = trace_begin(s, API_LOCK, s->got);
     NVENCSTATUS st = s->api.nvEncLockBitstream(s->encoder, &lock);
-    if (st != NV_ENC_SUCCESS) return -(int)st - 3;
+    trace_end(s, t, st);
+    if (st != NV_ENC_SUCCESS) {
+        // Выход не получить — пропускаем его целиком: снимаем отображение входа и
+        // идём к следующему. Иначе следующий вызов ждал бы уже снятое событие этого
+        // же выхода, и энкодер встал бы насовсем.
+        remember_error(s, "nvEncLockBitstream", st);
+        EnterCriticalSection(&s->apiLock);
+        if (slot->mapped) {
+            s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
+            slot->mapped = NULL;
+        }
+        LeaveCriticalSection(&s->apiLock);
+        EnterCriticalSection(&s->lock);
+        s->got++;
+        LeaveCriticalSection(&s->lock);
+        return -(int)st - 3;
+    }
 
     int bytes = (int)lock.bitstreamSizeInBytes;
     int result = 1;
-    if (bytes > capacity) {
-        // Кадр не влез: событие уже снято, поэтому возвращаем его обратно, чтобы
-        // следующий вызов с большим буфером забрал тот же кадр.
-        *size = bytes;
-        s->api.nvEncUnlockBitstream(s->encoder, slot->bitstream);
-        SetEvent(slot->event);
-        return -1;
+    if (bytes > s->outCapacity) {
+        int grown = bytes * 2 > (1 << 20) ? bytes * 2 : (1 << 20);
+        uint8_t* bigger = s->out ? (uint8_t*)HeapReAlloc(GetProcessHeap(), 0, s->out, (SIZE_T)grown)
+                                 : (uint8_t*)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)grown);
+        if (bigger) { s->out = bigger; s->outCapacity = grown; }
     }
-    memcpy(buffer, lock.bitstreamBufferPtr, (size_t)bytes);
+    if (bytes <= s->outCapacity) {
+        memcpy(s->out, lock.bitstreamBufferPtr, (size_t)bytes);
+    } else {
+        // Памяти нет даже под один кадр: кадр теряется, но выход всё равно
+        // отпускается и снимается как обычно — повторно его не блокируем.
+        bytes = 0;
+        result = -1;
+    }
+    *data = s->out;
     *size = bytes;
     *pts = (int64_t)lock.outputTimeStamp;
     *pictureType = (int)lock.pictureType;
-    s->api.nvEncUnlockBitstream(s->encoder, slot->bitstream);
+    t = trace_begin(s, API_UNLOCK, s->got);
+    st = s->api.nvEncUnlockBitstream(s->encoder, slot->bitstream);
+    trace_end(s, t, st);
 
     // Вход этого порядкового номера NVENC больше не держит
     EnterCriticalSection(&s->apiLock);
     if (slot->mapped) {
-        s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
+        t = trace_begin(s, API_UNMAP, s->got);
+        st = s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
+        trace_end(s, t, st);
         slot->mapped = NULL;
     }
     LeaveCriticalSection(&s->apiLock);
@@ -522,4 +621,51 @@ AURA_EXPORT int aura_nvenc_sequence_header(void* handle, uint8_t* buffer, int ca
 
 AURA_EXPORT void aura_nvenc_destroy(void* handle) {
     destroy_session((Session*)handle);
+}
+
+static const char* api_name(int api) {
+    switch (api) {
+        case API_REGISTER: return "nvEncRegisterResource";
+        case API_MAP: return "nvEncMapInputResource";
+        case API_ENCODE: return "nvEncEncodePicture";
+        case API_LOCK: return "nvEncLockBitstream";
+        case API_UNLOCK: return "nvEncUnlockBitstream";
+        case API_UNMAP: return "nvEncUnmapInputResource";
+        case API_EOS: return "nvEncEncodePicture(EOS)";
+        case API_DESTROY: return "nvEncDestroyEncoder";
+        default: return "?";
+    }
+}
+
+// Снимок состояния сессии и последних вызовов NVENC — для лога, когда конвейер встал.
+// Читается из другого потока без замков: это диагностика, гонка на одном поле
+// безвредна, а брать замок, который может держать зависший поток, нельзя.
+AURA_EXPORT int aura_nvenc_trace(void* handle, char* buffer, int capacity) {
+    Session* s = (Session*)handle;
+    if (!s || !buffer || capacity <= 0) return 0;
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    int64_t now = qpc_now();
+    int mapped = 0;
+    for (int i = 0; i < s->slotCount; i++) if (s->slots[i].mapped) mapped++;
+    int n = snprintf(buffer, (size_t)capacity,
+                     "отправлено %lld, забрано %lld, в работе %lld/%d, отображено входов %d, зарегистрировано %d%s%s\n",
+                     (long long)s->sent, (long long)s->got, (long long)(s->sent - s->got), s->slotCount,
+                     mapped, s->registeredCount, s->lastError[0] ? "; последняя ошибка: " : "", s->lastError);
+    LONG next = s->traceNext;
+    LONG first = next > 16 ? next - 16 : 0;
+    for (LONG i = first; i < next && n < capacity - 1; i++) {
+        TraceEntry e = s->trace[i % TRACE_SIZE];
+        double since = (double)(now - e.enter) * 1000.0 / (double)freq.QuadPart;
+        if (e.exit == 0)
+            n += snprintf(buffer + n, (size_t)(capacity - n),
+                          "  кадр %lld поток %lu %s — ВНУТРИ ВЫЗОВА уже %.0f мс\n",
+                          (long long)e.frame, e.thread, api_name(e.api), since);
+        else
+            n += snprintf(buffer + n, (size_t)(capacity - n),
+                          "  кадр %lld поток %lu %s → %d за %.2f мс (%.0f мс назад)\n",
+                          (long long)e.frame, e.thread, api_name(e.api), e.status,
+                          (double)(e.exit - e.enter) * 1000.0 / (double)freq.QuadPart, since);
+    }
+    return n;
 }

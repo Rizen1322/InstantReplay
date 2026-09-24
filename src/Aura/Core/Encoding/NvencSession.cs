@@ -52,8 +52,8 @@ internal sealed partial class NvencSession : IDisposable
     private static partial void End(IntPtr session);
 
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_get")]
-    private static unsafe partial int Get(IntPtr session, uint timeoutMs, byte* buffer, int capacity,
-                                          out int size, out long pts, out int pictureType);
+    private static partial int Get(IntPtr session, uint timeoutMs, out IntPtr data, out int size,
+                                   out long pts, out int pictureType);
 
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_sequence_header")]
     private static unsafe partial int SequenceHeaderNative(IntPtr session, byte* buffer, int capacity, out int size);
@@ -61,9 +61,14 @@ internal sealed partial class NvencSession : IDisposable
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_destroy")]
     private static partial void Destroy(IntPtr session);
 
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_trace")]
+    private static unsafe partial int TraceNative(IntPtr session, byte* buffer, int capacity);
+
     /// <summary>NV_ENC_PIC_TYPE: P, B, I, IDR…</summary>
     public const int PictureIdr = 3;
     public const int PictureI = 2;
+    /// <summary>Не тип NVENC: выход пропущен, данных нет.</summary>
+    public const int SkippedPicture = -1;
 
     private IntPtr _session;
     private byte[] _output = new byte[1 << 20];
@@ -80,8 +85,14 @@ internal sealed partial class NvencSession : IDisposable
     /// Есть ли смысл пробовать NVENC: видеокарта NVIDIA и прослойка на месте.
     /// AURA_NO_NVENC=1 выключает прямой путь для проверки на MFT.
     /// </summary>
+    /// <remarks>
+    /// AURA_NO_NVENC=1 (или AURA_DIRECT_NVENC=0) — сразу MFT. Если прямой NVENC всё же
+    /// встанет, сторож движка переключит программу на MFT до её перезапуска
+    /// (<see cref="VideoEncoder.DirectNvencDisabled"/>).
+    /// </remarks>
     public static bool Available(string adapterDescription) =>
         adapterDescription.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) &&
+        Environment.GetEnvironmentVariable("AURA_DIRECT_NVENC") != "0" &&
         Environment.GetEnvironmentVariable("AURA_NO_NVENC") != "1" &&
         File.Exists(Path.Combine(AppContext.BaseDirectory, Dll));
 
@@ -116,11 +127,14 @@ internal sealed partial class NvencSession : IDisposable
             // Воспроизведено 4 раза из 4 и снято нативными стеками; без просмотра
             // вперёд — ни одного зависания. Временной AQ без него не работает.
             Lookahead = 0,
-            BFrames = veryHeavy ? 0 : 2,
+            // Без B-кадров и многопроходности: так NVIDIA советует кодировать в
+            // реальном времени, и так меньше кадров живёт внутри энкодера. Включаются
+            // переменными AURA_NVENC_BFRAMES / AURA_NVENC_MULTIPASS для проверок.
+            BFrames = 0,
             SpatialAq = 1,
             TemporalAq = 0,
             AqStrength = 8,
-            Multipass = heavy ? 0 : 1,
+            Multipass = 0,
             BufferCount = 0,                                         // прослойка посчитает сама
         });
     }
@@ -164,6 +178,20 @@ internal sealed partial class NvencSession : IDisposable
 
     public int FreeSlotCount => _session == IntPtr.Zero ? 0 : FreeSlots(_session);
 
+    /// <summary>Сколько кадров отправлено и ещё не забрано.</summary>
+    public int PendingCount => _session == IntPtr.Zero ? 0 : Settings.BufferCount - FreeSlots(_session);
+
+    /// <summary>Состояние сессии и последние вызовы NVENC (из трассировки прослойки).</summary>
+    public unsafe string Trace()
+    {
+        var session = _session;
+        if (session == IntPtr.Zero) return "сессия закрыта";
+        var buffer = new byte[8192];
+        int n;
+        fixed (byte* p = buffer) n = TraceNative(session, p, buffer.Length);
+        return System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Clamp(n, 0, buffer.Length)).TrimEnd();
+    }
+
     /// <summary>1 — принят, 0 — нет свободного буфера, иначе исключение.</summary>
     public bool Encode(IntPtr texture, long pts, bool forceIdr)
     {
@@ -177,22 +205,27 @@ internal sealed partial class NvencSession : IDisposable
         if (_session != IntPtr.Zero) End(_session);
     }
 
-    /// <summary>Следующий выход. null — ещё не готов (или отправленных кадров нет).</summary>
-    public unsafe (ArraySegment<byte> Data, long Pts, int PictureType)? TryGet(uint timeoutMs)
+    /// <summary>
+    /// Следующий выход. null — ещё не готов (или отправленных кадров нет). Данные
+    /// действительны до следующего вызова. Прослойка блокирует каждый выход ровно
+    /// один раз и копирует его в свой буфер: повторная блокировка того же выхода
+    /// вешала драйвер на крупных ключевых кадрах (см. aura_nvenc_get).
+    /// </summary>
+    public (ArraySegment<byte> Data, long Pts, int PictureType)? TryGet(uint timeoutMs)
     {
-        while (true)
+        int result = Get(_session, timeoutMs, out IntPtr data, out int size, out long pts, out int type);
+        if (result == 1)
         {
-            int result;
-            int size;
-            long pts;
-            int type;
-            fixed (byte* p = _output)
-                result = Get(_session, timeoutMs, p, _output.Length, out size, out pts, out type);
-            if (result == 1) return (new ArraySegment<byte>(_output, 0, size), pts, type);
-            if (result == -1) { _output = new byte[Math.Max(size, _output.Length * 2)]; continue; }
-            if (result == 0 || result == -2) return null;
-            throw new InvalidOperationException($"NVENC: ошибка выдачи {-(result + 3)}");
+            if (_output.Length < size) _output = new byte[Math.Max(size, _output.Length * 2)];
+            Marshal.Copy(data, _output, 0, size);
+            return (new ArraySegment<byte>(_output, 0, size), pts, type);
         }
+        if (result == 0 || result == -2) return null;
+        // Выход пропущен (нет памяти под кадр или ошибка NVENC). Прослойка уже
+        // перешла к следующему; вызывающему нужно снять метку времени этого кадра.
+        if (result == -1) Log.Warn("Encoder", "NVENC: кадр не поместился в память и пропущен");
+        else Log.Error("Encoder", $"NVENC: ошибка выдачи {-(result + 3)} — кадр пропущен. {Trace().Split('\n')[0]}");
+        return (default, pts, SkippedPicture);
     }
 
     public unsafe byte[]? SequenceHeader()
