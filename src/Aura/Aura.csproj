@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- TFM с версией Windows SDK: WPF + проекции WinRT (Windows.Graphics.Capture,
@@ -16,9 +16,9 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyVersion>1.1.105.0</AssemblyVersion>
-    <FileVersion>1.1.105.0</FileVersion>
-    <Version>1.1.105</Version>
+    <AssemblyVersion>1.1.106.0</AssemblyVersion>
+    <FileVersion>1.1.106.0</FileVersion>
+    <Version>1.1.106</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>

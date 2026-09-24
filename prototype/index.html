@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aura</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Рабочий стол Windows 11: обои, окно Aura, панель задач с треем.
+     Всё, кроме самого окна, это декорация, чтобы приложение было видно
+     в своей среде: окно двигается, разворачивается, сворачивается в трей. -->
+<div class="wallpaper" id="wallpaper"></div>
+
+<div class="window is-active" id="win" role="application" aria-label="Aura">
+  <div class="win-mica" aria-hidden="true"></div>
+
+  <header class="titlebar" id="titlebar">
+    <svg class="app-mark" viewBox="0 0 24 24" aria-hidden="true"><circle class="mark-dot" cx="12" cy="12" r="3.6"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg>
+    <span class="app-title">Aura</span>
+    <div class="title-fill"></div>
+    <!-- состояние повтора в заголовке: видно из любого раздела -->
+    <div class="title-status" id="title-status">
+      <button class="ts-state" id="ts-state" data-tip="Открыть «Захват»"><span class="tally"></span><span id="ts-label">Повтор</span><span class="ts-time" id="ts-time">3:00</span></button>
+      <button class="ts-save" id="ts-save" data-tip="Сохранить повтор" data-kbd="F9"><span class="g">&#xE74E;</span><span id="ts-save-label">Сохранить</span></button>
+    </div>
+    <div class="caption">
+      <button class="cap-btn" id="cap-min" aria-label="Свернуть"><span class="g">&#xE921;</span></button>
+      <button class="cap-btn" id="cap-max" aria-label="Развернуть"><span class="g" id="cap-max-g">&#xE922;</span></button>
+      <button class="cap-btn cap-close" id="cap-close" aria-label="Закрыть"><span class="g">&#xE8BB;</span></button>
+    </div>
+  </header>
+
+  <div class="win-body">
+    <nav class="navpane" id="navpane" aria-label="Разделы">
+      <button class="nav-item nav-toggle" id="nav-toggle" data-tip="Развернуть меню"><span class="g">&#xE700;</span></button>
+      <div class="nav-list" id="nav-list">
+        <span class="nav-pill" id="nav-pill"></span>
+        <button class="nav-item" data-view="capture" data-tip="Захват" data-kbd="Ctrl 1"><span class="g">&#xE714;</span><span class="nav-label">Захват</span></button>
+        <button class="nav-item" data-view="clips" data-tip="Клипы" data-kbd="Ctrl 2"><span class="g">&#xE8B2;</span><span class="nav-label">Клипы</span><span class="nav-badge" id="nav-badge"></span></button>
+      </div>
+      <div class="nav-fill"></div>
+      <div class="nav-list nav-foot">
+        <button class="nav-item" id="nav-overlay" data-tip="Панель поверх игры" data-kbd="Alt Q"><span class="g">&#xE7FC;</span><span class="nav-label">Панель в игре</span></button>
+        <button class="nav-item" data-view="settings" data-tip="Настройки" data-kbd="Ctrl ,"><span class="g">&#xE713;</span><span class="nav-label">Настройки</span></button>
+      </div>
+    </nav>
+
+    <main class="layer" id="layer-main">
+
+      <!-- ================= ЗАХВАТ ================= -->
+      <section class="view" data-view="capture">
+        <div class="cmdbar">
+          <div class="state">
+            <span class="tally tally-lg"></span>
+            <div class="state-text">
+              <div class="state-title"><span id="st-title">Повтор идёт</span><span class="rec-badge" id="rec-badge"><span class="g">&#xE7C8;</span><span id="rec-time">0:00</span></span></div>
+              <div class="state-sub" id="st-sub">Counter-Strike 2, окно игры</div>
+            </div>
+          </div>
+          <div class="cmd-fill"></div>
+          <label class="toggle-inline">
+            <span>Мгновенный повтор</span>
+            <button class="tgl" id="replay-tgl" role="switch" aria-checked="true"><span></span></button>
+          </label>
+          <span class="cmd-sep"></span>
+          <button class="btn" id="btn-shot" data-tip="Скриншот области" data-kbd="End"><span class="g">&#xE7A8;</span>Скриншот</button>
+          <button class="btn" id="btn-rec" data-tip="Клавиша не назначена"><span class="g rec-g">&#xE7C8;</span><span id="btn-rec-label">Запись</span></button>
+          <button class="btn btn-accent btn-save" id="btn-save">
+            <span class="save-fill"></span>
+            <span class="g save-g">&#xE74E;</span><span class="save-label">Сохранить повтор</span><span class="keyhint" data-keys="F9"></span>
+          </button>
+        </div>
+
+        <div class="workspace">
+          <!-- монитор: последний кадр того, что пишется сейчас -->
+          <div class="monitor" id="monitor">
+            <img class="mon-img" id="mon-a" alt="">
+            <img class="mon-img" id="mon-b" alt="">
+            <div class="mon-off" id="mon-off"><span class="g">&#xE714;</span><div>Захват не идёт</div><span>Включите мгновенный повтор, и здесь появится картинка</span></div>
+            <div class="mon-chip mon-tl" id="mon-tl"><span class="tally"></span><span id="mon-buf">3:00 в памяти</span></div>
+          </div>
+
+          <aside class="inspector" id="inspector"></aside>
+
+          <!-- таймлайн повтора: как дорожки в монтажке -->
+          <div class="timeline" id="timeline">
+            <div class="tl-bar">
+              <div class="tl-title">Повтор в памяти</div>
+              <div class="tl-caption" id="tl-caption">Последние 3:00. Протяните по дорожкам, чтобы сохранить только кусок</div>
+              <div class="cmd-fill"></div>
+              <div class="tl-sel" id="tl-sel" hidden>
+                <span id="tl-sel-text">Выделено 0:45</span>
+                <button class="btn btn-subtle btn-sm" id="tl-sel-clear">Снять выделение</button>
+                <button class="btn btn-sm" id="tl-sel-save"><span class="g">&#xE74E;</span>Сохранить выделенное</button>
+              </div>
+            </div>
+            <div class="tl-grid">
+              <div class="tl-heads">
+                <div class="tl-head tl-head-ruler"></div>
+                <div class="tl-head" style="--h:54px"><span class="g">&#xE714;</span>Видео</div>
+                <div class="tl-head" style="--h:34px"><span class="g">&#xE767;</span>Игра<button class="tl-mute" id="mute-game" data-tip="Выключить звук игры в записи"><span class="g">&#xE767;</span></button></div>
+                <div class="tl-head" style="--h:34px"><span class="g">&#xE720;</span>Микрофон<button class="tl-mute" id="mute-mic" data-tip="Выключить микрофон"><span class="g">&#xE720;</span></button></div>
+                <div class="tl-head" style="--h:22px"><span class="g">&#xE7C1;</span>Метки</div>
+              </div>
+              <div class="tl-tracks" id="tl-tracks">
+                <canvas id="tl-canvas"></canvas>
+                <div class="tl-now"><span class="tl-now-cap">сейчас</span></div>
+                <div class="tl-hover" id="tl-hover"><span class="tl-hover-t" id="tl-hover-t"></span></div>
+                <div class="tl-peek" id="tl-peek"><img alt=""><span></span></div>
+                <div class="tl-empty" id="tl-empty">В памяти пусто</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= КЛИПЫ ================= -->
+      <section class="view" data-view="clips">
+        <div class="cmdbar">
+          <div class="selector" id="kind-bar" role="tablist"></div>
+          <span class="cmd-sep"></span>
+          <button class="combo" id="game-combo"></button>
+          <button class="btn btn-subtle" id="sort-btn"><span class="g">&#xE8CB;</span><span id="sort-label">Сначала новые</span></button>
+          <div class="cmd-fill"></div>
+          <label class="searchbox">
+            <input id="clip-search" placeholder="Поиск в клипах" spellcheck="false" autocomplete="off">
+            <span class="g">&#xE721;</span>
+          </label>
+          <button class="btn btn-subtle btn-icon" id="details-btn" data-tip="Область сведений" data-kbd="Alt Shift P"><span class="g">&#xE90D;</span></button>
+        </div>
+        <div class="clips-body">
+          <div class="gallery" id="gallery" tabindex="0">
+            <div id="gallery-inner"></div>
+            <div class="marquee" id="marquee"></div>
+          </div>
+          <aside class="details" id="details"></aside>
+        </div>
+        <div class="statusbar">
+          <span id="sb-count"></span>
+          <span class="sb-sep"></span>
+          <span id="sb-sel"></span>
+          <div class="cmd-fill"></div>
+          <span id="sb-path">E:\видео</span>
+          <span class="sb-sep"></span>
+          <span class="g sb-g">&#xE8B9;</span>
+          <input type="range" class="mini-range" id="thumb-size" min="150" max="320" value="210" aria-label="Размер эскизов">
+          <span class="sb-sep"></span>
+          <div class="sb-views" id="sb-views">
+            <button data-v="grid" data-tip="Эскизы"><span class="g">&#xF0E2;</span></button>
+            <button data-v="list" data-tip="Таблица"><span class="g">&#xEA37;</span></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= НАСТРОЙКИ ================= -->
+      <section class="view" data-view="settings">
+        <div class="settings">
+          <div class="set-nav">
+            <div class="set-user">
+              <div class="set-user-mark"><svg viewBox="0 0 24 24"><circle class="mark-dot" cx="12" cy="12" r="3.6"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg></div>
+              <div><div class="set-user-name">Aura 1.1.105</div><div class="set-user-sub">RTX 3070, драйвер 616.64</div></div>
+            </div>
+            <label class="searchbox searchbox-full">
+              <input id="set-search" placeholder="Найти параметр" spellcheck="false" autocomplete="off">
+              <span class="g">&#xE721;</span>
+            </label>
+            <div class="set-list" id="set-list"></div>
+          </div>
+          <div class="set-page" id="set-page"></div>
+        </div>
+      </section>
+
+      <div class="app-toasts" id="app-toasts" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <div class="rz rz-n" data-rz="n"></div><div class="rz rz-s" data-rz="s"></div><div class="rz rz-e" data-rz="e"></div><div class="rz rz-w" data-rz="w"></div>
+  <div class="rz rz-ne" data-rz="ne"></div><div class="rz rz-nw" data-rz="nw"></div><div class="rz rz-se" data-rz="se"></div><div class="rz rz-sw" data-rz="sw"></div>
+</div>
+
+<!-- панель задач: только то, что нужно Aura -->
+<footer class="taskbar" id="taskbar">
+  <div class="tb-center">
+    <button class="tb-app is-running is-focused" id="tb-aura" data-tip="Aura"><svg viewBox="0 0 24 24"><circle class="mark-dot" cx="12" cy="12" r="3.6"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg></button>
+    <button class="tb-app is-running" id="tb-game" data-tip="Counter-Strike 2. Перейти в игру"><span class="g">&#xE7FC;</span></button>
+  </div>
+  <div class="tb-tray">
+    <button class="tray-btn" data-tip="Показать скрытые значки"><span class="g">&#xE70E;</span></button>
+    <button class="tray-btn tray-aura" id="tray-aura" data-tip="Aura: повтор идёт, 3:00"><svg viewBox="0 0 24 24"><circle class="mark-dot" cx="12" cy="12" r="3.6"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg></button>
+    <span class="tray-sys"><span class="g">&#xE701;</span><span class="g">&#xE767;</span></span>
+    <span class="tray-clock"><span>18:52</span><span>21.09.2026</span></span>
+  </div>
+</footer>
+
+<!-- уведомления Windows (когда окно спрятано в трей) -->
+<div class="win-toasts" id="win-toasts"></div>
+
+<!-- игра на весь экран и панель Aura поверх неё -->
+<div class="game" id="game" aria-hidden="true">
+  <div class="game-flash" id="game-flash"></div>
+  <div class="game-hint" id="game-hint">Прототип: вы в игре. <b>Alt Q</b> панель Aura, <b>F9</b> сохранить, <b>Esc</b> вернуться на рабочий стол</div>
+  <div class="qp" id="qp" role="dialog" aria-label="Панель Aura">
+    <div class="qp-head">
+      <svg class="qp-mark" viewBox="0 0 24 24"><circle class="mark-dot" cx="12" cy="12" r="3.6"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg>
+      <span class="qp-title" id="qp-title">Повтор идёт</span>
+      <span class="qp-time" id="qp-time">3:00</span>
+      <span class="cmd-fill"></span>
+      <span class="keyhint" data-keys="Alt Q"></span>
+    </div>
+    <canvas class="qp-tape" id="qp-tape"></canvas>
+    <button class="btn btn-accent btn-save qp-save" id="qp-save">
+      <span class="save-fill"></span>
+      <span class="g save-g">&#xE74E;</span><span class="save-label">Сохранить повтор</span><span class="keyhint" data-keys="F9"></span>
+    </button>
+    <div class="qp-grid" id="qp-grid"></div>
+    <div class="qp-foot"><button class="qp-link" id="qp-open">Открыть Aura</button><span class="cmd-fill"></span><span>Стрелки и 1-4, Esc закрыть</span></div>
+  </div>
+  <div class="game-toasts" id="game-toasts"></div>
+</div>
+
+<div class="flyouts" id="flyouts"></div>
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<!-- не часть продукта: переключатели состояний прототипа -->
+<div class="demo" id="demo">
+  <button class="demo-btn" id="demo-btn">Состояния прототипа</button>
+  <div class="demo-panel" id="demo-panel"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

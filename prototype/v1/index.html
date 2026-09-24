@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aura</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="icon-defs"></defs></svg>
+
+<div class="app" id="app" data-page="capture">
+
+  <!-- Узкая колонка навигации. Центральная точка логотипа — это и есть индикатор
+       состояния: зелёная, пока повтор в памяти, красная во время записи. -->
+  <aside class="rail" aria-label="Разделы">
+    <div class="rail-mark" id="rail-mark" title="Aura">
+      <svg viewBox="0 0 24 24" class="mark"><circle class="mark-dot" cx="12" cy="12" r="3.4"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg>
+    </div>
+    <nav class="rail-nav" id="rail-nav">
+      <span class="rail-head" id="rail-head" aria-hidden="true"></span>
+      <button class="rail-item" data-page="capture" aria-label="Захват" data-tip="Захват" data-kbd="Ctrl 1"><svg class="i"><use href="#i-deck"/></svg><span>Захват</span></button>
+      <button class="rail-item" data-page="clips" aria-label="Клипы" data-tip="Клипы" data-kbd="Ctrl 2"><svg class="i"><use href="#i-film"/></svg><span>Клипы</span></button>
+    </nav>
+    <div class="rail-foot">
+      <button class="rail-item" id="open-overlay" aria-label="Панель поверх игры" data-tip="Панель поверх игры" data-kbd="Alt Q"><svg class="i"><use href="#i-panel"/></svg><span>Панель</span></button>
+      <button class="rail-item" data-page="settings" aria-label="Настройки" data-tip="Настройки" data-kbd="Ctrl ,"><svg class="i"><use href="#i-cog"/></svg><span>Настройки</span></button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="titlebar">
+      <div class="crumbs" id="crumbs"><span class="crumb-page">Захват</span></div>
+      <div class="titlebar-fill"></div>
+
+      <!-- Капсула повтора: видна на всех разделах, кроме «Захвата», где есть
+           полная панель. Сохранить можно, не уходя из клипов или настроек. -->
+      <div class="capsule" id="capsule">
+        <button class="capsule-state" id="capsule-state" data-tip="Открыть «Захват»">
+          <span class="tally"></span>
+          <span class="capsule-label" id="capsule-label">Повтор</span>
+          <span class="capsule-time mono" id="capsule-time">3:00</span>
+          <canvas class="capsule-wave" id="capsule-wave" width="72" height="20"></canvas>
+        </button>
+        <button class="capsule-save" id="capsule-save">
+          <span class="capsule-save-label">Сохранить</span><span class="kbd-set" data-keys="F9"></span>
+        </button>
+      </div>
+
+      <div class="winctl" aria-label="Окно">
+        <button class="winbtn" data-tip="Свернуть"><svg viewBox="0 0 10 10"><path d="M0 5h10"/></svg></button>
+        <button class="winbtn" data-tip="Развернуть"><svg viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" rx="1.5"/></svg></button>
+        <button class="winbtn winbtn-close" data-tip="Скрыть в трей. Aura продолжит писать повтор"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0 0 10"/></svg></button>
+      </div>
+    </header>
+
+    <div class="pages">
+      <!-- ================= ЗАХВАТ ================= -->
+      <section class="page" id="page-capture" data-page="capture">
+        <div class="capture">
+          <div class="deck" id="deck">
+            <div class="deck-head">
+              <div class="deck-status">
+                <span class="tally tally-lg"></span>
+                <div>
+                  <div class="deck-status-title" id="deck-title">Повтор идёт</div>
+                  <div class="deck-status-sub" id="deck-sub">Counter-Strike 2, захват игры</div>
+                </div>
+                <span class="rec-chip" id="rec-chip"><span class="rec-dot"></span><span class="mono" id="rec-time">0:00</span></span>
+              </div>
+              <label class="deck-toggle">
+                <span>Мгновенный повтор</span>
+                <button class="switch" id="replay-switch" role="switch" aria-checked="true"><span></span></button>
+              </label>
+            </div>
+
+            <div class="deck-main">
+              <div class="readout">
+                <div class="timer"><span class="timer-val" id="timer">3:00</span><span class="timer-of" id="timer-of">в памяти</span></div>
+                <div class="spec" id="spec"></div>
+              </div>
+              <div class="deck-actions">
+                <button class="btn btn-lg btn-ghost-tape" id="sel-clear" hidden>Весь повтор</button>
+                <button class="btn btn-lg btn-icon" id="btn-shot" data-tip="Скриншот области" data-kbd="End" aria-label="Скриншот области"><svg class="i"><use href="#i-crop"/></svg></button>
+                <button class="btn btn-lg" id="btn-rec"><span class="rec-glyph"></span><span id="btn-rec-label">Запись</span></button>
+                <button class="btn btn-lg btn-primary btn-save" id="btn-save">
+                  <span class="save-fill"></span>
+                  <span class="save-content">
+                    <svg class="i save-ico"><use href="#i-save"/></svg>
+                    <span class="save-label" id="save-label">Сохранить повтор</span>
+                    <span class="kbd-set kbd-on-accent" data-keys="F9"></span>
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Лента буфера: кадры и звук последних трёх минут. Правый край —
+                 «сейчас», у левого старое уходит из памяти. Щелчок по ленте
+                 выбирает начало фрагмента, протягивание — любой отрезок. -->
+            <div class="tape" id="tape">
+              <canvas id="tape-canvas"></canvas>
+              <div class="tape-labels" aria-hidden="true">
+                <span class="lane-label" style="--row:2">Игра</span>
+                <span class="lane-label" style="--row:3">Микрофон</span>
+              </div>
+              <div class="tape-now"><span class="tape-now-cap">сейчас</span></div>
+              <div class="tape-hover" id="tape-hover"><span class="tape-hover-time mono" id="tape-hover-time"></span></div>
+              <div class="tape-empty" id="tape-empty">
+                <div>В памяти пусто</div>
+                <span id="tape-empty-sub">Включите повтор, и лента начнёт заполняться: кадры, звук игры и микрофона за последние 3:00</span>
+              </div>
+            </div>
+            <div class="tape-foot">
+              <span class="mono" id="tape-left">−3:00</span>
+              <span class="tape-hint" id="tape-hint">Щёлкните по ленте, чтобы сохранить только часть: от этого места до «сейчас»</span>
+              <span class="mono" id="tape-mid"></span>
+            </div>
+          </div>
+
+          <div class="cap-lower">
+            <section class="recent">
+              <div class="sec-head">
+                <h2>Последние клипы</h2>
+                <span class="sec-meta" id="recent-meta"></span>
+                <span class="fill"></span>
+                <button class="btn btn-quiet btn-sm" id="to-clips">Все клипы<svg class="i i-sm"><use href="#i-chev"/></svg></button>
+              </div>
+              <div class="recent-grid" id="recent-grid"></div>
+            </section>
+
+            <section class="health">
+              <div class="sec-head"><h2>Состояние</h2><span class="fill"></span><span class="sec-meta">обновляется раз в секунду</span></div>
+              <div class="panel" id="health"></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= КЛИПЫ ================= -->
+      <section class="page" id="page-clips" data-page="clips">
+        <div class="clips">
+          <div class="clips-main">
+            <div class="clips-head">
+              <div class="clips-title">
+                <h1>Клипы</h1>
+                <span class="sec-meta" id="lib-meta"></span>
+              </div>
+              <div class="fill"></div>
+              <label class="search">
+                <svg class="i i-sm"><use href="#i-search"/></svg>
+                <input id="clip-search" placeholder="Название или игра" spellcheck="false">
+                <span class="kbd-set" data-keys="Ctrl F"></span>
+              </label>
+              <button class="btn btn-quiet" id="open-folder"><svg class="i i-sm"><use href="#i-folder"/></svg>Открыть папку</button>
+            </div>
+            <div class="clips-bar">
+              <div class="seg" id="kind-seg" role="tablist"></div>
+              <button class="select" id="game-select"></button>
+              <button class="select" id="sort-select"></button>
+              <div class="fill"></div>
+              <span class="sel-count" id="sel-count"></span>
+              <div class="seg seg-icons" id="view-seg"></div>
+            </div>
+            <div class="clips-scroll" id="clips-scroll">
+              <div id="clips-body"></div>
+            </div>
+          </div>
+          <aside class="inspector" id="inspector" aria-label="Выбранный клип"></aside>
+        </div>
+      </section>
+
+      <!-- ================= НАСТРОЙКИ ================= -->
+      <section class="page" id="page-settings" data-page="settings">
+        <div class="settings">
+          <nav class="set-nav">
+            <label class="search search-full">
+              <svg class="i i-sm"><use href="#i-search"/></svg>
+              <input id="set-search" placeholder="Найти настройку" spellcheck="false">
+            </label>
+            <div class="set-nav-list" id="set-nav"></div>
+          </nav>
+          <div class="set-scroll" id="set-scroll">
+            <div class="set-content" id="set-content"></div>
+          </div>
+          <div class="apply-bar" id="apply-bar">
+            <svg class="i i-sm"><use href="#i-info"/></svg>
+            <span id="apply-text">Новое качество начнёт действовать сразу. Повтор в памяти начнётся заново.</span>
+            <button class="btn btn-sm" id="apply-revert">Отменить</button>
+            <button class="btn btn-sm btn-primary" id="apply-ok">Применить</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- Сцена «поверх игры»: кадр из игры на весь экран и панель Aura -->
+<div class="scene" id="scene" aria-hidden="true">
+  <div class="scene-flash" id="scene-flash"></div>
+  <div class="qp" id="qp" role="dialog" aria-label="Панель Aura">
+    <div class="qp-head">
+      <svg viewBox="0 0 24 24" class="mark qp-mark"><circle class="mark-dot" cx="12" cy="12" r="3.4"/><path class="mark-arc" d="M12 3.6a8.4 8.4 0 0 1 0 16.8"/><path class="mark-arc" d="M12 6.9a5.1 5.1 0 0 1 0 10.2"/></svg>
+      <span class="qp-title" id="qp-title">Повтор идёт</span>
+      <span class="qp-time mono" id="qp-time">3:00</span>
+      <span class="fill"></span>
+      <span class="kbd-set" data-keys="Alt Q"></span>
+    </div>
+    <canvas class="qp-tape" id="qp-tape"></canvas>
+    <button class="btn btn-primary btn-xl btn-save" id="qp-save">
+      <span class="save-fill"></span>
+      <span class="save-content"><svg class="i save-ico"><use href="#i-save"/></svg><span class="save-label">Сохранить повтор</span><span class="kbd-set kbd-on-accent" data-keys="F9"></span></span>
+    </button>
+    <div class="qp-grid" id="qp-grid"></div>
+    <div class="qp-foot"><button class="qp-link" id="qp-open">Открыть Aura</button><span class="fill"></span><span>Стрелки и 1-4, Esc закрыть</span></div>
+  </div>
+  <div class="game-toasts" id="game-toasts"></div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="layer" id="layer"></div>
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<!-- Не часть продукта: переключатели состояний, чтобы посмотреть все экраны -->
+<div class="demo" id="demo">
+  <button class="demo-toggle" id="demo-toggle" data-tip="Состояния прототипа. Не часть приложения">демо</button>
+  <div class="demo-panel" id="demo-panel"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
