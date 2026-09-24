@@ -393,6 +393,43 @@ public sealed partial class ReplayEngine
         catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
     }
 
+    private long _wdEncoded;
+    private DateTime _wdEncodedAt;
+
+    /// <summary>Порог молчания энкодера, после которого конвейер считается вставшим.</summary>
+    private const double EncoderWedgeSeconds = 4;
+
+    /// <summary>
+    /// Встал ли конвейер целиком. Главный признак жизни — закодированные кадры:
+    /// после первого кадра пейсер добивает частоту дубликатами, и энкодер выдаёт
+    /// ровно fps кадров в секунду ВСЕГДА — на любом захвате, на статичном экране,
+    /// под любой игрой. Ноль за несколько секунд бывает только при взаимной
+    /// блокировке на устройстве видеокарты (NVENC, захват и копии кадров делят
+    /// один замок). Раньше такой конвейер стоял до перезапуска программы: на DDA
+    /// сторожа не было вовсе, а на WGC он смотрел только на кадры захвата.
+    /// </summary>
+    private bool EncoderWedged(out double stuck)
+    {
+        stuck = 0;
+        var encoder = _encoder;
+        if (encoder is null || !_encodedStreamReady) { _wdEncoded = -1; return false; }
+
+        long encoded = Interlocked.Read(ref encoder.FramesEncoded);
+        var now = DateTime.UtcNow;
+        // Пока не было ни одного кадра, дубликатам не с чего браться: DDA на
+        // статичном экране законно молчит с самого старта.
+        if (encoded == 0 || encoded != _wdEncoded)
+        {
+            _wdEncoded = encoded;
+            _wdEncodedAt = now;
+            return false;
+        }
+        stuck = (now - _wdEncodedAt).TotalSeconds;
+        if (stuck < EncoderWedgeSeconds) return false;
+        _wdEncodedAt = now;   // один эпизод — одна пересборка
+        return true;
+    }
+
     private bool _wdStaticLogged;
     private DateTime? _wdEvidenceSince;
     private (int X, int Y) _wdCursor;
@@ -425,13 +462,9 @@ public sealed partial class ReplayEngine
         _watchdog = null;
 
         // DDA не присылает кадры, пока изображение рабочего стола не меняется —
-        // это штатное поведение AcquireNextFrame, а не зависание. Его состояние
-        // контролируется через ACCESS_LOST/Failed внутри самого источника.
-        if (_capture is DesktopDuplicationSource)
-        {
-            Log.Info("Engine", "Watchdog тишины не нужен для Desktop Duplication");
-            return;
-        }
+        // это штатное поведение AcquireNextFrame, а не зависание. Тишину захвата
+        // для него не проверяем, но живость энкодера — да (см. EncoderWedged).
+        bool checkCaptureSilence = _capture is not DesktopDuplicationSource;
 
         _wdLastReceived = -1;
         _wdLastRate = 0;
@@ -440,10 +473,27 @@ public sealed partial class ReplayEngine
         _wdStaticLogged = false;
         _wdCursor = CursorPosition();
         _wdInputTick = LastInputTick();
+        _wdEncoded = -1;
+        _wdEncodedAt = DateTime.UtcNow;
         _watchdog = new System.Threading.Timer(_ =>
         {
             var cap = _capture;
             if (cap is null || !_pipelineOpen || _stopRequested) return;
+
+            if (EncoderWedged(out double stuck))
+            {
+                Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом конвейере — " +
+                                    "взаимная блокировка на видеокарте, пересобираю конвейер");
+                long wedgedGeneration = Interlocked.Read(ref _captureGeneration);
+                OnCaptureFailed(new CaptureFailure(
+                    CaptureFailureKind.BackendStalled,
+                    new InvalidOperationException($"энкодер молчит {stuck:F0} с"),
+                    "конвейер встал",
+                    wedgedGeneration,
+                    ActiveCaptureTarget()?.Revision ?? 0), wedgedGeneration);
+                return;
+            }
+            if (!checkCaptureSilence) return;
 
             long received = cap.FramesReceived;
             if (received != _wdLastReceived)
@@ -556,6 +606,6 @@ public sealed partial class ReplayEngine
                 "WGC: поток кадров остановился",
                 generation,
                 target?.Revision ?? 0), generation);
-        }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
     }
 }
