@@ -1,4 +1,4 @@
-namespace Aura.Core.Encoding;
+﻿namespace Aura.Core.Encoding;
 
 /// <summary>
 /// Арифметика постоянной частоты кадров: куда на сетке 1/fps встаёт пришедший кадр
@@ -25,14 +25,32 @@ internal static class EncoderCfrPolicy
     /// выбрасывать настоящий кадр — он встаёт в следующий. Живое движение всегда
     /// лучше повтора: раньше на этом терялось около девяноста настоящих кадров в
     /// минуту, и вместо них в записи оставались замершие дубликаты.
+    ///
+    /// Но сдвигать можно не дальше <paramref name="maxLeadSlots"/> слотов от времени
+    /// захвата. Раньше сдвиг был любой: под игрой кадры захвата приходили с
+    /// опозданием, пейсер успевал закрыть их слоты дубликатами, и опоздавшие кадры
+    /// вставали за ними — видео уезжало вперёд времени захвата. Каждый такой
+    /// эпизод добавлял сдвиг, и в записи картинка отставала от звука на
+    /// полсекунды-секунду. Кадр, опоздавший сильнее, не пишется (возвращается
+    /// null): его слот уже закрыт повтором, а картинка пойдёт в следующие повторы.
     /// </summary>
-    public static long QuantizePts(long ticks, long baseTicks, long lastPts, long frameDurationTicks)
+    public static long? QuantizePts(long ticks, long baseTicks, long lastPts, long frameDurationTicks,
+                                    int maxLeadSlots = 1)
     {
         if (frameDurationTicks <= 0) return ticks;
 
+        long pts = NaturalSlot(ticks, baseTicks, frameDurationTicks);
+        if (pts > lastPts) return pts;
+        long pushed = lastPts + frameDurationTicks;
+        return pushed - pts <= maxLeadSlots * frameDurationTicks ? pushed : null;
+    }
+
+    /// <summary>Слот сетки, ближайший к времени захвата кадра.</summary>
+    public static long NaturalSlot(long ticks, long baseTicks, long frameDurationTicks)
+    {
+        if (frameDurationTicks <= 0) return ticks;
         long slots = (ticks - baseTicks + frameDurationTicks / 2) / frameDurationTicks;
-        long pts = baseTicks + slots * frameDurationTicks;
-        return pts <= lastPts ? lastPts + frameDurationTicks : pts;
+        return baseTicks + slots * frameDurationTicks;
     }
 
     /// <summary>

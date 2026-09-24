@@ -1,4 +1,4 @@
-using Aura.Core.Encoding;
+﻿using Aura.Core.Encoding;
 using Xunit;
 
 namespace InstantReplay.Tests;
@@ -45,6 +45,35 @@ public sealed class EncoderCfrPolicyTests
     }
 
     [Fact]
+    public void Frame_late_behind_duplicates_is_dropped_instead_of_shifting_video()
+    {
+        // Пейсер закрыл слоты 3..6 повторами, пока кадр захвата шёл с опозданием.
+        // Кадр слота 3 не должен вставать в слот 7: видео уехало бы от звука.
+        long lastPts = Frame60 * 6;
+        Assert.Null(EncoderCfrPolicy.QuantizePts(Frame60 * 3, baseTicks: 0, lastPts, Frame60));
+        // Свой слот 7 занимает свой кадр
+        Assert.Equal(Frame60 * 7, EncoderCfrPolicy.QuantizePts(Frame60 * 7, 0, lastPts, Frame60));
+    }
+
+    [Fact]
+    public void Shift_never_accumulates_over_many_hiccups()
+    {
+        // Сто эпизодов: каждый раз кадр приходит в уже занятый слот. Сдвиг
+        // относительно времени захвата не должен превышать одного слота.
+        long last = 0;
+        for (int slot = 1; slot < 1000; slot++)
+        {
+            long ticks = Frame60 * slot;
+            if (slot % 10 == 0) last = Math.Max(last, ticks + Frame60 * 3);   // повторы ушли вперёд
+            if (EncoderCfrPolicy.QuantizePts(ticks, 0, last, Frame60) is long pts)
+            {
+                Assert.True(pts - ticks <= Frame60, $"сдвиг {(pts - ticks) / (double)Frame60:F1} слота");
+                last = pts;
+            }
+        }
+    }
+
+    [Fact]
     public void Adjacent_frames_need_no_backfill()
     {
         Assert.Equal(0, EncoderCfrPolicy.BackfillSlots(
@@ -79,7 +108,7 @@ public sealed class EncoderCfrPolicyTests
     public void Zero_frame_duration_is_survivable()
     {
         // Частота кадров ещё не задана — счёт не должен делить на ноль.
-        Assert.Equal(12345, EncoderCfrPolicy.QuantizePts(12345, 0, 0, frameDurationTicks: 0));
+        Assert.Equal(12345L, EncoderCfrPolicy.QuantizePts(12345, 0, 0, frameDurationTicks: 0));
         Assert.Equal(0, EncoderCfrPolicy.BackfillSlots(0, 12345, frameDurationTicks: 0, maxSlots: 8));
     }
 }

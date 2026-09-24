@@ -1,4 +1,4 @@
-using Vortice.Direct3D11;
+﻿using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Aura.Core.Logging;
 
@@ -14,15 +14,20 @@ namespace Aura.Core.Capture;
 /// (в замерах 1600 настоящих кадров в минуту из 3600).
 ///
 /// Приоритет НЕ добавляет работы: он меняет только очерёдность. Наша работа на кадр —
-/// доли миллисекунды, поэтому берём +2, а не потолок +7: заметно поднять нас над
-/// обычной очередью, но не отбирать у игры больше, чем она и так нам отдаёт.
+/// доли миллисекунды. Раньше брали +2, и под CS2 этого не хватало: копия кадра,
+/// которая сама по себе занимает 0.1 мс, ждала в очереди за игрой 8-11 мс, NVENC
+/// ждал копию, и запись проседала до 35-45 кадров в секунду. Теперь потолок +7,
+/// как у OBS (libobs-d3d11 ставит максимальный приоритет GPU-потока). Класс
+/// приоритета процесса остаётся HIGH, а не REALTIME: с REALTIME и аппаратным
+/// планированием у NVIDIA описаны зависания NVENC.
 ///
 /// Значения выше нуля система вправе проигнорировать у непривилегированного процесса —
 /// поэтому ошибка здесь не фатальна, просто пишем в лог.
 /// </summary>
 internal static class GpuPriority
 {
-    private const int CapturePriority = 2;
+    private const int CapturePriority = 7;
+    private const int FallbackPriority = 2;
 
     public static void TryRaise(ID3D11Device device)
     {
@@ -31,7 +36,13 @@ internal static class GpuPriority
             using var dxgi = device.QueryInterface<IDXGIDevice>();
             dxgi.SetGPUThreadPriority(CapturePriority);
             dxgi.GetGPUThreadPriority(out int applied);
-            if (applied == CapturePriority)
+            if (applied != CapturePriority)
+            {
+                // Без прав администратора +7 не дают — берём что дадут
+                dxgi.SetGPUThreadPriority(FallbackPriority);
+                dxgi.GetGPUThreadPriority(out applied);
+            }
+            if (applied > 0)
                 Log.Info("Capture", $"Приоритет GPU-очереди захвата поднят до {applied}");
             else
                 Log.Info("Capture", $"Система не приняла приоритет GPU-очереди (осталось {applied})");

@@ -146,6 +146,13 @@ public sealed class VideoEncoder : IDisposable
     public long FramesDuplicated;
     public long FramesDroppedQueue;
     public long FramesDroppedRealQueue;
+    /// <summary>
+    /// Насколько время кадра в записи отходит от времени его захвата (за окно
+    /// статистики). Больше кадра — видео уезжает от звука.
+    /// </summary>
+    public long MaxPtsLeadTicks = long.MinValue, MinPtsLeadTicks = long.MaxValue;
+    /// <summary>Кадры, пришедшие позже, чем их слот закрыли повторы, — не записаны.</summary>
+    public long FramesDroppedLate;
     /// <summary>Кадры, потерянные из-за того, что все слоты пула держал энкодер.</summary>
     public long FramesDroppedNoSlot;
     public long FramesDiscardedDuplicates;
@@ -991,6 +998,33 @@ public sealed class VideoEncoder : IDisposable
 
         lock (_cfrLock)
         {
+            // Квантование PTS к сетке CFR. Слот считается ДО копии в пул: кадр,
+            // опоздавший за уже закрытый повторами слот, в энкодер не идёт вовсе.
+            long pts;
+            long natural;
+            bool first = _cfrBase < 0;
+            if (first)
+            {
+                natural = pts = ticks;
+            }
+            else
+            {
+                // Счёт слотов и число дубликатов задним числом — в EncoderCfrPolicy:
+                // это единственная часть конвейера, которую можно проверить тестом.
+                natural = EncoderCfrPolicy.NaturalSlot(ticks, _cfrBase, _frameDurationTicks);
+                if (EncoderCfrPolicy.QuantizePts(ticks, _cfrBase, _lastCfrPts, _frameDurationTicks) is not long placed)
+                {
+                    // Слот давно закрыт повторами. Картинку сохраняем как источник
+                    // следующих повторов, а время для пейсера — настоящее.
+                    _copyPool!.KeepLatest(nv12PoolTexture, _context!);
+                    _lastRealPts = natural;
+                    _lastRealArrivalWall = NowQpcTicks();
+                    Interlocked.Increment(ref FramesDroppedLate);
+                    return;
+                }
+                pts = placed;
+            }
+
             var copy = CopyIntoPool(nv12PoolTexture);
             if (copy is null)
             {
@@ -1000,20 +1034,13 @@ public sealed class VideoEncoder : IDisposable
                 return;
             }
 
-            // Квантование PTS к сетке CFR
-            long pts;
-            if (_cfrBase < 0)
+            if (first)
             {
                 _cfrBase = ticks;
                 _lastCfrPts = ticks;
-                pts = ticks;
             }
             else
             {
-                // Счёт слотов и число дубликатов задним числом — в EncoderCfrPolicy:
-                // это единственная часть конвейера, которую можно проверить тестом.
-                pts = EncoderCfrPolicy.QuantizePts(ticks, _cfrBase, _lastCfrPts, _frameDurationTicks);
-
                 // Пропущенные слоты между прошлым кадром и этим — дубликаты задним числом
                 if (_copyPool!.Latest is not null &&
                     EncoderCfrPolicy.BackfillSlots(_lastCfrPts, pts, _frameDurationTicks, MaxBackfillSlots) > 0)
@@ -1049,7 +1076,13 @@ public sealed class VideoEncoder : IDisposable
             // Источник дубликатов — отдельная копия, НЕ текстура, ушедшая в энкодер
             // (см. EncoderTexturePool.Latest). После досыпки: та брала прошлый кадр.
             _copyPool!.KeepLatest(nv12PoolTexture, _context!);
-            _lastRealPts = pts;
+            long lead = pts - ticks;
+            if (lead > Interlocked.Read(ref MaxPtsLeadTicks)) Interlocked.Exchange(ref MaxPtsLeadTicks, lead);
+            if (lead < Interlocked.Read(ref MinPtsLeadTicks)) Interlocked.Exchange(ref MinPtsLeadTicks, lead);
+            // Пейсер отсчитывает паузу от НАСТОЯЩЕГО времени кадра. Раньше сюда
+            // шёл сдвинутый вперёд слот, повторы строились от него, и сдвиг видео
+            // относительно звука не рассасывался никогда.
+            _lastRealPts = natural;
             _lastRealArrivalWall = NowQpcTicks();
             Interlocked.Increment(ref FramesSubmitted);
             if (!Enqueue(copy, pts, isDuplicate: false, encoderBehind: false)) _copyPool!.Release(copy);

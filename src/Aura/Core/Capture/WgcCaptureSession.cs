@@ -297,6 +297,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
 
             long ticks = frame.SystemRelativeTime.Ticks;
             Interlocked.Increment(ref _framesReceived);
+            RecordArrivalLag(ticks);
             if (_minFrameIntervalTicks > 0)
             {
                 if (_nextFrameDeadline == 0) _nextFrameDeadline = ticks;
@@ -325,6 +326,26 @@ internal sealed class WgcCaptureSession : IScreenCapture
                 cursor,
                 _scope,
                 _targetRevision));
+        }
+    }
+
+    // Насколько поздно кадр приходит к нам относительно своей метки времени. Под
+    // тяжёлой игрой система может собирать кадр для захвата с запаздыванием; если
+    // метка отражает это позднее время, видео в записи отстаёт от звука.
+    private long _lagSum, _lagMax, _lagCount;
+
+    private void RecordArrivalLag(long ticks)
+    {
+        long now = (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
+                          (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
+        long lag = now - ticks;
+        _lagSum += lag; _lagCount++;
+        if (lag > _lagMax) _lagMax = lag;
+        if (_lagCount >= 3600)
+        {
+            Log.Info("Capture", $"{_sourceName}: кадр приходит через {_lagSum / _lagCount / 10_000.0:F1} мс " +
+                                $"после своей метки (пик {_lagMax / 10_000.0:F1} мс)");
+            _lagSum = _lagMax = _lagCount = 0;
         }
     }
 
