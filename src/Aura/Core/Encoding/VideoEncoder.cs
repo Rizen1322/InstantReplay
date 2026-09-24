@@ -387,7 +387,11 @@ public sealed class VideoEncoder : IDisposable
     private bool TryInitializeNvenc(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
     {
         _nvencCodec = codec;
-        if (DirectNvencDisabled) return false;
+        if (DirectNvencDisabled)
+        {
+            Interlocked.Increment(ref NvencStats.FallbackCount);
+            return false;
+        }
         string adapter = AdapterDescriptionOf(device);
         if (!NvencSession.Available(adapter)) return false;
 
@@ -500,6 +504,7 @@ public sealed class VideoEncoder : IDisposable
         // Сдвиг времени декодирования: с B-кадрами кадр N по порядку декодирования
         // декодируется на столько кадров раньше N-го входного. Без B-кадров сдвига нет.
         long reorderTicks = session.Settings.BFrames * _frameDurationTicks;
+        _nvencReorderTicks = reorderTicks;
         while (_running)
         {
             try
@@ -573,6 +578,7 @@ public sealed class VideoEncoder : IDisposable
         {
             // Захват так и не отдал слот — кадр теряем, слот остаётся занятым
             Interlocked.Increment(ref FramesDroppedRealQueue);
+            Interlocked.Increment(ref NvencStats.DroppedInputFrames);
             if (Interlocked.Increment(ref _nvencAcquireFailures) is 1 or 100)
                 Log.Warn("Encoder", $"NVENC: слот общего пула не получен за 200 мс ({_nvencAcquireFailures} раз)");
             return;
@@ -586,20 +592,39 @@ public sealed class VideoEncoder : IDisposable
         bool forceIdr = _keyframeRequested;
         if (forceIdr) _keyframeRequested = false;
 
-        lock (_nvencInputPts) _nvencInputPts.Enqueue(item.Ticks);
-        int inFlight = Interlocked.Increment(ref _inFlight);
-        long peak;
-        while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
-            if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
-
-        int result = session.Encode(input.NativePointer, item.Ticks, forceIdr);
-        if (result < 0)
+        int result;
+        for (int busyRetries = 0; ; busyRetries++)
         {
+            lock (_nvencInputPts) _nvencInputPts.Enqueue(item.Ticks);
+            int inFlight = Interlocked.Increment(ref _inFlight);
+            long peak;
+            while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
+                if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
+
+            result = session.Encode(input.NativePointer, item.Ticks, forceIdr);
+            if (result >= 0) break;
+
             // Кадр не ушёл: прослойка уже сняла отображение входа, выходной буфер не
             // занят. Снимаем его метку, чтобы очередь меток совпадала с выходами.
             lock (_nvencInputPts) RemoveLast(_nvencInputPts);
             Interlocked.Decrement(ref _inFlight);
+            if (-result != NvencSession.StatusEncoderBusy) break;
+
+            // ENCODER_BUSY по nvEncodeAPI.h — «повторите через несколько миллисекунд»,
+            // а не повод терять кадр. Пока ждём, забираем готовый выход, если он есть:
+            // это и освобождает энкодер. Кадр теряем, только если NVENC занят дольше
+            // нескольких попыток — дальше ждать значит задерживать весь поток.
+            Interlocked.Increment(ref NvencStats.BusyCount);
+            if (busyRetries >= NvencBusyRetries || !_running) break;
+            if (session.PendingCount > 0 && session.TryGet(1) is { } done)
+                DeliverNvenc(done.Data, done.Pts, done.PictureType, _nvencReorderTicks);
+            else
+                Thread.Sleep(1);
+        }
+        if (result < 0)
+        {
             Interlocked.Increment(ref FramesDroppedRealQueue);
+            Interlocked.Increment(ref NvencStats.DroppedInputFrames);
             if (forceIdr) _keyframeRequested = true;         // просьба ключевого кадра не теряется
             int status = -result;
             if (NvencSession.IsTransient(status))
@@ -616,13 +641,23 @@ public sealed class VideoEncoder : IDisposable
             lock (_nvencInputPts) RemoveLast(_nvencInputPts);
             Interlocked.Decrement(ref _inFlight);
             Interlocked.Increment(ref FramesDroppedRealQueue);
+            Interlocked.Increment(ref NvencStats.DroppedInputFrames);
+            if (forceIdr) _keyframeRequested = true;
             return;
         }
+        if (result == NvencSession.AcceptedNeedMoreInput) Interlocked.Increment(ref NvencStats.NeedMoreInputCount);
+        if (forceIdr) Interlocked.Increment(ref NvencStats.ForcedIdrCount);
         _nvencSubmitted++;
         Diagnostics.PipelineProbe.ProcessInput.Add(start, Diagnostics.PipelineProbe.Now());
     }
 
     private long _nvencAcquireFailures;
+
+    /// <summary>Сколько раз повторить кадр после ENCODER_BUSY, прежде чем его потерять.</summary>
+    private const int NvencBusyRetries = 5;
+
+    /// <summary>Сдвиг декодирования для выходов, забранных внутри SubmitNvenc.</summary>
+    private long _nvencReorderTicks;
     private long _nvencTransientDrops;
 
     /// <summary>Сессия NVENC сломана: дальше в неё ничего не отправляем.</summary>
@@ -639,6 +674,7 @@ public sealed class VideoEncoder : IDisposable
         if (_nvencFailed) return;
         _nvencFailed = true;
         DirectNvencDisabled = true;
+        Interlocked.Increment(ref NvencStats.FatalErrors);
         Log.Error("Encoder", $"NVENC: {reason} — сессия непригодна, дальше кодирую через MFT. " +
                              $"Состояние NVENC:\n{_nvenc?.Trace()}");
         var handler = Failed;
@@ -664,6 +700,7 @@ public sealed class VideoEncoder : IDisposable
         {
             // Выход пропущен: метку сняли, чтобы следующие кадры не съехали на один
             Interlocked.Increment(ref FramesDroppedRealQueue);
+            Interlocked.Increment(ref NvencStats.DroppedOutputFrames);
             var session = _nvenc;
             if (session is { LastSkipFatal: true }) FailNvenc(session.LastSkipReason);
             else
@@ -690,6 +727,7 @@ public sealed class VideoEncoder : IDisposable
             if (!keyframe)
             {
                 Interlocked.Increment(ref FramesDroppedRealQueue);
+                Interlocked.Increment(ref NvencStats.DroppedOutputFrames);
                 return;
             }
             _nvencResync = false;

@@ -211,6 +211,7 @@ public sealed partial class ReplayEngine
         _encoder.FrameEncoded += _recorderFrameHandler;
         _audio.FrameEncoded += recorder.OnAudio;
         _recorder = recorder;
+        _recorderNvencStats = NvencStats.Take();
         _recorderDetached = false;
         _recorderSequenceHeader = _bufferSequenceHeader;
         _recorderStream = (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps);
@@ -234,11 +235,15 @@ public sealed partial class ReplayEngine
         }
     }
 
+    /// <summary>Счётчики NVENC в начале записи в файл: в конце печатаем разницу.</summary>
+    private NvencStats.Snapshot _recorderNvencStats;
+
     private string? StopRecordingLocked(bool wait)
     {
         var recorder = _recorder;
         if (recorder is null) return null;
         _recorder = null;
+        Log.Info("Encoder", $"NVENC за запись: {NvencStats.Take().Since(_recorderNvencStats)}");
         // Одно чтение поля вместо двух: параллельный снос обнулял _encoder ровно
         // между проверкой и использованием
         var encoder = _encoder;

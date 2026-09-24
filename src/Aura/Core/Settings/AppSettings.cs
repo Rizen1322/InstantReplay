@@ -109,6 +109,9 @@ public sealed class AppSettings
     /// <summary>Громкость микрофона в записи, проценты (0–200).</summary>
     public int MicVolumePercent { get; set; } = 100;
 
+    /// <summary>Громкость предпросмотра в редакторе клипов, % (на сам файл не влияет).</summary>
+    public int EditorVolumePercent { get; set; } = 100;
+
     // ---------- Горячие клавиши (строковый формат "Alt+F10") ----------
     public string HotkeySaveReplay { get; set; } = "Alt+F10";
     public string HotkeySaveLast30 { get; set; } = "Alt+Shift+F10";
@@ -237,6 +240,7 @@ public sealed class AppSettings
         MicNoiseGateDb = float.IsFinite(MicNoiseGateDb) ? Math.Clamp(MicNoiseGateDb, -70f, -10f) : -44f;
         GameVolumePercent = Math.Clamp(GameVolumePercent, 0, 200);
         MicVolumePercent = Math.Clamp(MicVolumePercent, 0, 200);
+        EditorVolumePercent = Math.Clamp(EditorVolumePercent, 0, 150);
         AttachmentSizeMb = Math.Clamp(AttachmentSizeMb, 2, 2048);
         NotificationDurationSeconds = double.IsFinite(NotificationDurationSeconds)
             ? Math.Clamp(NotificationDurationSeconds, 0.5, 30) : 3.5;

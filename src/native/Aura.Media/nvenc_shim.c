@@ -448,7 +448,8 @@ AURA_EXPORT int aura_nvenc_free_slots(void* handle) {
     return free;
 }
 
-// Отправить кадр. 1 — принят, 0 — нет свободного буфера, <0 — ошибка NVENC.
+// Отправить кадр. 1 — принят, 2 — принят с NV_ENC_ERR_NEED_MORE_INPUT (выход позже),
+// 0 — нет свободного буфера, <0 — ошибка NVENC.
 AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int forceIdr) {
     Session* s = (Session*)handle;
     EnterCriticalSection(&s->lock);
@@ -498,7 +499,7 @@ AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int 
     EnterCriticalSection(&s->lock);
     s->sent++;
     LeaveCriticalSection(&s->lock);
-    return 1;
+    return st == NV_ENC_ERR_NEED_MORE_INPUT ? 2 : 1;
 }
 
 // Сообщить о конце потока: NVENC выдаст всё, что держит у себя.

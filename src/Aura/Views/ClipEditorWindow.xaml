@@ -1,4 +1,4 @@
-<Window x:Class="Aura.Views.ClipEditorWindow"
+﻿<Window x:Class="Aura.Views.ClipEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:c="clr-namespace:Aura.Controls"
@@ -146,6 +146,12 @@
                                     Click="Mute_Click" ToolTip="Звук (M)">
                                 <c:Icon x:Name="MuteIcon" Data="{DynamicResource Ico.Speaker}" Size="17"/>
                             </Button>
+                            <Slider x:Name="VolumeSlider" Width="96" Minimum="0" Maximum="150" TickFrequency="5"
+                                    IsSnapToTickEnabled="True" VerticalAlignment="Center" Margin="2,0,6,0"
+                                    ValueChanged="Volume_Changed"
+                                    ToolTip="Громкость предпросмотра (↑/↓ шагом 10%). На сохранённый файл не влияет"/>
+                            <TextBlock x:Name="VolumeValue" Text="100%" MinWidth="38" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource Tx3Brush}" Margin="0,0,8,0"/>
                             <TextBlock x:Name="AudioLabel" Text="Поиск звука…" Foreground="{DynamicResource Tx3Brush}"
                                        VerticalAlignment="Center" Margin="2,0,0,0"/>
                             <c:Segmented x:Name="AudioSegment" Visibility="Collapsed" SelectionChanged="AudioTrack_Changed"

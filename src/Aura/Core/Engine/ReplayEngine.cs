@@ -255,6 +255,9 @@ public sealed partial class ReplayEngine : IDisposable
         _settings.Changed += OnSettingsChanged;
     }
 
+    /// <summary>Счётчики NVENC при включении повтора: при выключении печатаем разницу.</summary>
+    private NvencStats.Snapshot? _replayNvencStats;
+
     public void Start()
     {
         lock (_lifecycle)
@@ -266,6 +269,7 @@ public sealed partial class ReplayEngine : IDisposable
             // пауза не сработала бы вовсе: она выходит сразу, если считает, что уже
             // приостановила нас.
             ForgetSystemSuspend();
+            if (_state == EngineState.Stopped) _replayNvencStats = NvencStats.Take();
             StartWithFallbackLocked(preserveBuffers: false);
         }
     }
@@ -1122,6 +1126,12 @@ public sealed partial class ReplayEngine : IDisposable
         Log.Info("Engine", intent == PipelineStopIntent.UserStop
             ? "Instant Replay выключен"
             : "Видеоконвейер остановлен для автовосстановления; replay остался в RAM");
+        // Stop и Dispose оба доходят сюда: итог печатаем один раз
+        if (intent == PipelineStopIntent.UserStop && _replayNvencStats is { } replayStart)
+        {
+            Log.Info("Encoder", $"NVENC за сеанс повтора: {NvencStats.Take().Since(replayStart)}");
+            _replayNvencStats = null;
+        }
         if (intent == PipelineStopIntent.UserStop) ReleaseMemory();
     }
 

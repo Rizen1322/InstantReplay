@@ -83,6 +83,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\DdaLifecycleMonitor.cs" Link="App\DdaLifecycleMonitor.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderCfrPolicy.cs" Link="App\EncoderCfrPolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Encoding\NvencStats.cs" Link="App\NvencStats.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderQueueAdmissionPolicy.cs" Link="App\EncoderQueueAdmissionPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncodedStreamCompatibility.cs" Link="App\EncodedStreamCompatibility.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\RecordingQualityPolicy.cs" Link="App\RecordingQualityPolicy.cs" />

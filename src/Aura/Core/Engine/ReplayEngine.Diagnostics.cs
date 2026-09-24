@@ -498,6 +498,7 @@ public sealed partial class ReplayEngine
                 {
                     Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
                     VideoEncoder.DirectNvencDisabled = true;
+                    Interlocked.Increment(ref NvencStats.FatalErrors);
                 }
                 // Второй эпизод за сессию — видеокарта в этом процессе уже не
                 // оправится: каждая следующая пересборка вставала бы снова и

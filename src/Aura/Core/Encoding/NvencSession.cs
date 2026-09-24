@@ -188,9 +188,8 @@ internal sealed partial class NvencSession : IDisposable
         return System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Clamp(n, 0, buffer.Length)).TrimEnd();
     }
 
-    /// <summary>1 — принят, 0 — нет свободного буфера, иначе исключение.</summary>
     /// <summary>
-    /// Отправить кадр. 1 — принят (в том числе NV_ENC_ERR_NEED_MORE_INPUT: это не
+    /// Отправить кадр. 1 — принят, 2 — принят с NV_ENC_ERR_NEED_MORE_INPUT (это не
     /// ошибка, выход придёт позже), 0 — нет свободного выходного буфера, иначе минус
     /// код NVENCSTATUS (-1000 — текстуру не удалось зарегистрировать).
     /// </summary>
@@ -202,8 +201,15 @@ internal sealed partial class NvencSession : IDisposable
     public const int StatusNeedMoreInput = 17;
     public const int StatusEncoderBusy = 18;
 
+    /// <summary>Encode: кадр принят, но NVENC ждёт ещё входов (NEED_MORE_INPUT).</summary>
+    public const int AcceptedNeedMoreInput = 2;
+
     /// <summary>
-    /// Временное состояние: этот кадр пропускаем, сессия цела. Всё остальное —
+    /// Временное состояние, сессия цела. ENCODER_BUSY по nvEncodeAPI.h 12.1: «HW
+    /// encoder is busy… call NvEncEncodePicture() again after few milliseconds» —
+    /// VideoEncoder повторяет тот же кадр несколько раз и пропускает его, только
+    /// если NVENC так и не освободился. LOCK_BUSY бывает лишь при неблокирующей
+    /// блокировке выхода (doNotWait), прослойка блокирует с ожиданием. Всё остальное —
     /// неверный вызов, нехватка памяти, пропавшее устройство, общий сбой — считается
     /// поломкой сессии: пропускать кадры дальше бессмысленно, нужен MFT.
     /// </summary>

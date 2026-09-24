@@ -88,6 +88,9 @@ public partial class ClipEditorWindow : Window
     {
         _item = item;
         InitializeComponent();
+        _volume = Services.Settings.Current.EditorVolumePercent;
+        VolumeSlider.Value = _volume;
+        ShowVolume();
         FileNameText.Text = item.FileName;
 
         _ffmpeg = Ffmpeg.Find(Services.Settings.Current.FfmpegPath, Services.Settings.Current.LosslessCutPath);
@@ -97,7 +100,14 @@ public partial class ClipEditorWindow : Window
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += Timer_Tick;
         Loaded += Window_Loaded;
-        Closed += (_, _) => DisposePlayer();
+        Closed += (_, _) =>
+        {
+            DisposePlayer();
+            // Громкость запоминаем при закрытии, а не на каждом шаге ползунка:
+            // запись настроек на диск на каждое движение мыши ни к чему.
+            if (_volume != Services.Settings.Current.EditorVolumePercent)
+                Services.Settings.Update(s => s.EditorVolumePercent = _volume, "editor");
+        };
     }
 
     public static void ShowFor(ClipItem item)
@@ -124,7 +134,13 @@ public partial class ClipEditorWindow : Window
             var created = await Task.Run(() =>
             {
                 LibVLCSharp.Shared.Core.Initialize();
-                var engine = new LibVLC("--no-video-title-show", "--quiet");
+                // Ресемплер задаём явно. Если частота устройства не 48 кГц (гарнитуры
+                // часто работают на 44,1 кГц), VLC пересчитывает звук сам. В сборке
+                // VideoLAN.LibVLC.Windows нет soxr, и по умолчанию берётся «ugly»:
+                // искажения около −26 дБ и зеркальные частоты, звук «как у робота».
+                // С speex тот же тест даёт −59 дБ, как без пересчёта.
+                var engine = new LibVLC("--no-video-title-show", "--quiet",
+                    "--audio-resampler=speex_resampler");
                 var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = true };
                 var media = new VlcMedia(engine, new Uri(_item.FullPath));
                 return (engine, player, media);
@@ -164,6 +180,8 @@ public partial class ClipEditorWindow : Window
     private void Player_Playing(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
         PreviewLoading.Visibility = Visibility.Collapsed;
+        // Громкость, заданная до начала воспроизведения, LibVLC может не применить
+        ApplyMuteState();
         if (_reopenRestore is { } restore)
         {
             // Файл только что переоткрыт со сведённым звуком: возвращаем позицию и
@@ -297,6 +315,24 @@ public partial class ClipEditorWindow : Window
         if (_player is null) return;
         ToggleMute();
     }
+
+    /// <summary>Громкость предпросмотра, % (LibVLC принимает до 200).</summary>
+    private int _volume = 100;
+
+    private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _volume = (int)Math.Round(e.NewValue);
+        if (VolumeValue is null) return;          // ещё идёт InitializeComponent
+        ShowVolume();
+        // Двинули ползунок — значит, звук хотят слышать
+        if (_isMuted && _volume > 0) _isMuted = false;
+        ApplyMuteState();
+    }
+
+    private void ShowVolume() => VolumeValue.Text = $"{_volume}%";
+
+    private void StepVolume(int delta) =>
+        VolumeSlider.Value = Math.Clamp(_volume + delta, VolumeSlider.Minimum, VolumeSlider.Maximum);
 
     private void ToggleMute()
     {
@@ -501,7 +537,7 @@ public partial class ClipEditorWindow : Window
     {
         // У LibVLC свойство Mute на части Windows-систем возвращает устаревшее
         // состояние. Громкость задаём явно и храним истину в окне редактора.
-        if (_player is not null) _player.Volume = _isMuted ? 0 : 100;
+        if (_player is not null) _player.Volume = _isMuted ? 0 : _volume;
         MuteIcon.Data = (Geometry)FindResource(_isMuted ? "Ico.SpeakerOff" : "Ico.Speaker");
         MuteButton.ToolTip = _isMuted ? "Звук выключен (M)" : "Звук (M)";
     }
@@ -838,6 +874,8 @@ public partial class ClipEditorWindow : Window
         else if (e.Key == Key.I) { SetIn(); e.Handled = true; }
         else if (e.Key == Key.O) { SetOut(); e.Handled = true; }
         else if (e.Key == Key.M) { ToggleMute(); e.Handled = true; }
+        else if (e.Key == Key.Up) { StepVolume(10); e.Handled = true; }
+        else if (e.Key == Key.Down) { StepVolume(-10); e.Handled = true; }
         else if (e.Key == Key.Home) { Seek(_startSeconds); e.Handled = true; }
         else if (e.Key == Key.End) { Seek(_endSeconds); e.Handled = true; }
         else if (e.Key == Key.Left)
