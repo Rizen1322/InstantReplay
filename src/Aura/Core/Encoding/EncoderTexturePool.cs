@@ -131,7 +131,7 @@ internal sealed class EncoderTexturePool : IDisposable
         {
             for (int i = 0; i < slots; i++)
             {
-                var encoder = encoderDevice.CreateTexture2D(desc);
+                var encoder = Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(desc), "общий пул");
                 var encoderLock = encoder.QueryInterface<IDXGIKeyedMutex>();
                 using var resource = encoder.QueryInterface<IDXGIResource>();
                 var capture = captureDevice.OpenSharedResource<ID3D11Texture2D>(resource.SharedHandle);
@@ -205,7 +205,7 @@ internal sealed class EncoderTexturePool : IDisposable
         {
             desc.BindFlags = _renderTarget ? BindFlags.RenderTarget : BindFlags.None;
             desc.MiscFlags = ResourceOptionFlags.None;
-            var created = _device.CreateTexture2D(desc);
+            var created = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "пул энкодера");
             lock (_sync)
             {
                 if (destination is not null)
@@ -253,7 +253,7 @@ internal sealed class EncoderTexturePool : IDisposable
             desc.BindFlags = BindFlags.None;
             desc.MiscFlags = ResourceOptionFlags.None;
             _latest?.Dispose();
-            _latest = _device.CreateTexture2D(desc);
+            _latest = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "последний кадр");
         }
         lock (_device) context.CopyResource(_latest, source);
     }

@@ -202,6 +202,57 @@ public sealed partial class ReplayEngine
                            $"живых объектов {Mb(heap)}, коммит сборщика {Mb(gcCommitted)} (сборок gen2 {gen2}), " +
                            $"нативная ~{Mb(Math.Max(0, priv - gcCommitted))}, " +
                            $"частная всего {Mb(priv)}, рабочий набор {Mb(working)}");
+        LogMemoryBreakdown();
+    }
+
+    /// <summary>
+    /// Подробная раскладка памяти раз в минуту: что из занятого — полезные кадры
+    /// повтора, что — запас и накладные расходы, сколько держат сборщик, DLL и
+    /// видеокарта. Цель — отличить «так устроено» от «есть что ужать».
+    /// </summary>
+    private void LogMemoryBreakdown()
+    {
+        static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";
+        try
+        {
+            var v = _videoBuffer.GetMemoryStats();
+            int seconds = (int)(_videoBuffer.MaxDurationTicks / 10_000_000);
+            Log.Info("Memory",
+                $"Повтор: кадры {Mb(v.PayloadBytes)} (из них последние {seconds} с — {Mb(v.NeededBytes)}, " +
+                $"запас сверх длины {Mb(v.PayloadBytes - v.NeededBytes)}), с довесками кольца {Mb(v.UsedBytes)}, " +
+                $"у сохраняемого снимка {Mb(v.SnapshotBytes)}; " +
+                $"{(v.OnDisk ? "на диске" : "в RAM")} выдано {Mb(v.ResidentBytes)} ({v.ResidentChunks} блоков по 16 МБ), " +
+                $"накладные {Mb(v.ResidentBytes - v.PayloadBytes - v.SnapshotBytes)}, резерв адресов {Mb(v.ReservedAddressBytes)}; " +
+                $"пакетов {v.Packets}, ключевых {v.Keyframes}, мест в кольце записей {v.RingSlots}. " +
+                $"Звук: занято {Mb(_audioBuffer.TotalBytes)} из выделенных {Mb(_audioBuffer.CapacityBytes)}");
+
+            var gc = GC.GetGCMemoryInfo();
+            var gens = gc.GenerationInfo;
+            long loh = gens.Length > 3 ? gens[3].SizeAfterBytes : 0;
+            long poh = gens.Length > 4 ? gens[4].SizeAfterBytes : 0;
+            var map = Diagnostics.MemoryMap.Breakdown();
+            int threads = 0, handles = 0;
+            long working = 0, priv = 0;
+            try
+            {
+                using var self = System.Diagnostics.Process.GetCurrentProcess();
+                threads = self.Threads.Count;
+                handles = self.HandleCount;
+                working = self.WorkingSet64;
+                priv = self.PrivateMemorySize64;
+            }
+            catch { }
+            Log.Info("Memory",
+                $"Процесс: рабочий набор {Mb(working)}, частная {Mb(priv)}; закоммичено: частные области {Mb(map.Private)} " +
+                $"({map.PrivateRegions} шт), образы DLL {Mb(map.Image)}, отображения {Mb(map.Mapped)}; " +
+                $"сборщик: живых {Mb(GC.GetTotalMemory(false))}, куча {Mb(gc.HeapSizeBytes)}, LOH {Mb(loh)}, POH {Mb(poh)}, " +
+                $"фрагментация {Mb(gc.FragmentedBytes)}, коммит {Mb(gc.TotalCommittedBytes)}; " +
+                $"потоков {threads}, дескрипторов {handles}; LibVLC {(Diagnostics.MemoryMap.IsModuleLoaded("libvlc.dll") ? "загружен" : "не загружен")}");
+
+            Log.Info("Memory",
+                $"Видеокарта: {Diagnostics.GpuResourceLedger.Summary()}; кодирование — {_encoder?.ResourceSummary() ?? "нет"}");
+        }
+        catch (Exception ex) { Log.Warn("Memory", $"Раскладка памяти недоступна: {ex.Message}"); }
     }
 
     // Вотчдог захвата: если WGC замолчал надолго (монитор выключился по AFK, сон,

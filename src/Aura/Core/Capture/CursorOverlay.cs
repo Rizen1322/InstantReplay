@@ -180,7 +180,7 @@ internal sealed class CursorOverlay : IDisposable
         try
         {
             var data = new SubresourceData(handle.AddrOfPinnedObject(), (uint)(width * 4));
-            _shape = _device.CreateTexture2D(description, [data]);
+            _shape = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(description, [data]), "курсор");
         }
         finally { handle.Free(); }
 
@@ -321,7 +321,7 @@ internal sealed class CursorOverlay : IDisposable
         {
             _maskedBackgroundView?.Dispose();
             _maskedBackground?.Dispose();
-            _maskedBackground = _device.CreateTexture2D(new Texture2DDescription
+            _maskedBackground = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(new Texture2DDescription
             {
                 Width = (uint)_shapeWidth,
                 Height = (uint)_shapeHeight,
@@ -331,7 +331,7 @@ internal sealed class CursorOverlay : IDisposable
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.ShaderResource
-            });
+            }), "курсор");
             _maskedBackgroundView = _device.CreateShaderResourceView(_maskedBackground);
         }
 

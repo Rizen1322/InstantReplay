@@ -175,6 +175,40 @@ public sealed class ReplayVideoBuffer
     /// <summary>Буфер лежит в файле на диске.</summary>
     public bool OnDisk { get { lock (_sync) return _storage?.OnDisk == true; } }
 
+    /// <summary>
+    /// Раскладка памяти буфера для диагностики. Payload — байты самих кадров,
+    /// Used — они же вместе с довесками на стыке кольца, Resident — физически
+    /// выданные арене блоки, Reserved — только адресное пространство (RAM не
+    /// занимает). Needed — байты последних MaxDuration, то есть то, что реально
+    /// нужно для клипа заказанной длины; остальное в Payload — запас (GOP и
+    /// страховка вытеснения).
+    /// </summary>
+    public readonly record struct MemoryStats(
+        long PayloadBytes, long UsedBytes, long NeededBytes, long ResidentBytes, long ReservedAddressBytes,
+        long SnapshotBytes, int Packets, int Keyframes, int RingSlots, int ResidentChunks, bool OnDisk);
+
+    public MemoryStats GetMemoryStats()
+    {
+        lock (_sync)
+        {
+            long payload = 0, needed = 0;
+            int keyframes = 0;
+            long newest = _ringCount > 0 ? At(_ringCount - 1).DtsTicks : 0;
+            long from = MaxDurationTicks > 0 ? newest - MaxDurationTicks : long.MinValue;
+            for (int i = 0; i < _ringCount; i++)
+            {
+                ref Entry e = ref At(i);
+                payload += e.Length;
+                if (e.IsKeyframe) keyframes++;
+                if (e.DtsTicks >= from) needed += e.Length;
+            }
+            int chunks = _storage?.ResidentChunks ?? 0;
+            return new MemoryStats(payload, _used, needed, (long)chunks * ChunkBytes, _capacity,
+                                   _reserved, _ringCount, keyframes, _ring.Length, chunks,
+                                   _storage?.OnDisk == true);
+        }
+    }
+
     /// <summary>Сколько кадров отброшено из-за нехватки места (для диагностики).</summary>
     public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
 

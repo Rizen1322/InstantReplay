@@ -403,13 +403,13 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             CPUAccessFlags = CpuAccessFlags.Write,
             BindFlags = BindFlags.ShaderResource
         };
-        _uploadTexture = _device.CreateTexture2D(uploadDescription);
-        _frameTexture = _device.CreateTexture2D(uploadDescription with
+        _uploadTexture = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(uploadDescription), "мост OpenGL");
+        _frameTexture = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(uploadDescription with
         {
             Usage = ResourceUsage.Default,
             CPUAccessFlags = CpuAccessFlags.None,
             BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget
-        });
+        }), "мост OpenGL");
     }
 
     private void HeartbeatAndCheckHealth()

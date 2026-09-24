@@ -57,6 +57,47 @@ public static class MemoryMap
         catch { return 0; }
     }
 
+    /// <summary>Закоммиченная память по типам: образы DLL, отображения, частные и число частных областей.</summary>
+    public static (long Image, long Mapped, long Private, int PrivateRegions) Breakdown()
+    {
+        long image = 0, mapped = 0, priv = 0;
+        int count = 0;
+        try
+        {
+            IntPtr address = IntPtr.Zero;
+            int guard = 0;
+            while (guard++ < 200_000)
+            {
+                nuint written = NativeMethods.VirtualQuery(
+                    address, out var info, (nuint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MemoryBasicInformation>());
+                if (written == 0) break;
+                long size = (long)info.RegionSize;
+                if (size <= 0) break;
+                if (info.State == NativeMethods.MemCommit)
+                {
+                    if (info.Type == NativeMethods.MemImage) image += size;
+                    else if (info.Type == NativeMethods.MemMapped) mapped += size;
+                    else if (info.Type == NativeMethods.MemPrivate) { priv += size; count++; }
+                }
+                long next = (long)address + size;
+                if (next <= (long)address) break;
+                address = (IntPtr)next;
+            }
+        }
+        catch { }
+        return (image, mapped, priv, count);
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandleW(string name);
+
+    /// <summary>Загружен ли в процесс модуль (например, libvlc.dll).</summary>
+    public static bool IsModuleLoaded(string name)
+    {
+        try { return GetModuleHandleW(name) != IntPtr.Zero; }
+        catch { return false; }
+    }
+
     public static void Log(string when)
     {
         try

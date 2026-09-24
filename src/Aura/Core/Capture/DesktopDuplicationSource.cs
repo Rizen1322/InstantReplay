@@ -168,7 +168,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
                 D3D11.D3D11CreateDevice(targetAdapter, DriverType.Unknown, flags, levels,
                     out ID3D11Device device, out _, out ID3D11DeviceContext context).CheckError();
-                _device = device;
+                _device = Aura.Core.Diagnostics.GpuResourceLedger.Track(device, "захват DDA");
                 _context = context;
 
                 // Кодировщик и захват работают в разных потоках

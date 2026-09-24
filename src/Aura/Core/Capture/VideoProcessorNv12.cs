@@ -244,7 +244,7 @@ public sealed class VideoProcessorNv12 : IDisposable
         {
             for (int i = 0; i < PoolSize; i++)
             {
-                pool[i] = _device.CreateTexture2D(new Texture2DDescription
+                pool[i] = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(new Texture2DDescription
                 {
                     Width = (uint)OutWidth,
                     Height = (uint)OutHeight,
@@ -255,7 +255,7 @@ public sealed class VideoProcessorNv12 : IDisposable
                     Usage = ResourceUsage.Default,
                     BindFlags = bindFlags,
                     CPUAccessFlags = CpuAccessFlags.None
-                });
+                }), "конвертер цвета");
                 views[i] = _videoDevice.CreateVideoProcessorOutputView(
                     pool[i]!, _enumerator!,
                     new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D });

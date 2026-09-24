@@ -76,6 +76,12 @@ public sealed class ReplayAudioBuffer
         get { lock (_sync) return _tracks.Sum(t => t?.Used ?? 0); }
     }
 
+    /// <summary>Сколько байт выделено под кольца звука (массивы создаются целиком сразу).</summary>
+    public long CapacityBytes
+    {
+        get { lock (_sync) return _tracks.Sum(t => t?.Capacity ?? 0); }
+    }
+
     /// <summary>
     /// Выделить кольца под заданную длительность. Зовётся при старте конвейера.
     /// Выключенная дорожка не занимает ничего.

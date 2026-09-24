@@ -170,8 +170,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             MiscFlags = ResourceOptionFlags.None,
             BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget
         };
-        _windowCursorClean = _device.CreateTexture2D(description);
-        _windowCursorComposed = _device.CreateTexture2D(description);
+        _windowCursorClean = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(description), "курсор окна");
+        _windowCursorComposed = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(description), "курсор окна");
     }
 
     private void CopyFrame(in CapturedSurface captured, ID3D11Texture2D destination)
@@ -317,9 +317,9 @@ internal sealed class GpuCaptureFrameSlot : IDisposable
             BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget
         };
 
-        Output = device.CreateTexture2D(description);
+        Output = Aura.Core.Diagnostics.GpuResourceLedger.Track(device.CreateTexture2D(description), "брокер кадров");
         if (createCleanTexture)
-            Clean = device.CreateTexture2D(description);
+            Clean = Aura.Core.Diagnostics.GpuResourceLedger.Track(device.CreateTexture2D(description), "брокер кадров");
     }
 
     public ID3D11Texture2D Output { get; }

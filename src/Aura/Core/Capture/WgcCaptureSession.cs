@@ -75,7 +75,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             out ID3D11Device device,
             out _,
             out ID3D11DeviceContext context).CheckError();
-        D3DDevice = device;
+        D3DDevice = Aura.Core.Diagnostics.GpuResourceLedger.Track(device, "захват WGC");
         D3DContext = context;
 
         using var multithread = D3DDevice.QueryInterface<ID3D11Multithread>();

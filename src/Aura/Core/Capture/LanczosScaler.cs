@@ -147,21 +147,21 @@ internal sealed class LanczosScaler : IDisposable
         BuildAxis(_h, _srcW, OutWidth, horizontal: true);
         BuildAxis(_v, _srcH, OutHeight, horizontal: false);
 
-        _middle = _device.CreateTexture2D(new Texture2DDescription
+        _middle = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(new Texture2DDescription
         {
             Width = (uint)OutWidth, Height = (uint)_srcH, MipLevels = 1, ArraySize = 1,
             Format = Format.R16G16B16A16_Float, SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default, BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource
-        });
+        }), "масштабирование");
         _middleRtv = _device.CreateRenderTargetView(_middle);
         _middleSrv = _device.CreateShaderResourceView(_middle);
 
-        _output = _device.CreateTexture2D(new Texture2DDescription
+        _output = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(new Texture2DDescription
         {
             Width = (uint)OutWidth, Height = (uint)OutHeight, MipLevels = 1, ArraySize = 1,
             Format = Format.B8G8R8A8_UNorm, SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default, BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource
-        });
+        }), "масштабирование");
         _outputRtv = _device.CreateRenderTargetView(_output);
     }
 

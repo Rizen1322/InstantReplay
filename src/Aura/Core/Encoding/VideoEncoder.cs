@@ -376,6 +376,12 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Кодирование идёт напрямую через NVENC, а не через MFT.</summary>
     public bool DirectNvenc => _nvenc is not null;
 
+    /// <summary>Ресурсы кодирования для строки диагностики памяти.</summary>
+    public string ResourceSummary() => _nvenc is { } session
+        ? $"NVENC напрямую: входных поверхностей {_nvencInputs.Length}, выходных буферов {session.Settings.BufferCount}, " +
+          $"общий пул {_copyPool?.Slots ?? 0} слотов"
+        : $"MFT: пул копий {_copyPool?.Slots ?? 0} слотов";
+
     /// <summary>Поток готов к записи в файл: энкодер знает свои заголовки.</summary>
     public bool StreamReady => _nvenc is not null || OutputMediaType is not null;
 
@@ -407,6 +413,7 @@ public sealed class VideoEncoder : IDisposable
                     [Vortice.Direct3D.FeatureLevel.Level_11_1, Vortice.Direct3D.FeatureLevel.Level_11_0],
                     out encoderDevice, out _, out encoderContext).CheckError();
             }
+            Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice!, "NVENC");
             using (var multithread = encoderDevice!.QueryInterface<ID3D11Multithread>())
                 multithread.SetMultithreadProtected(true);
             Capture.GpuPriority.TryRaise(encoderDevice);
@@ -437,7 +444,7 @@ public sealed class VideoEncoder : IDisposable
                 BindFlags = BindFlags.RenderTarget,
             };
             var inputs = new ID3D11Texture2D[buffers];
-            for (int i = 0; i < buffers; i++) inputs[i] = encoderDevice.CreateTexture2D(inputDesc);
+            for (int i = 0; i < buffers; i++) inputs[i] = Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(inputDesc), "входы NVENC");
             // Общий пул нужен только на время от копии захвата до переноса на
             // устройство энкодера — очередь плюс запас.
             var pool = new EncoderTexturePool(device, encoderDevice, width, height, tenBit, slots: 24);
