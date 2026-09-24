@@ -41,6 +41,7 @@
     <Compile Include="..\..\src\Aura\Core\Audio\AudioTimeline.cs" Link="App\AudioTimeline.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioDsp.cs" Link="App\AudioDsp.cs" />
     <Compile Include="..\..\src\Aura\Core\Storage\DiskSpace.cs" Link="App\DiskSpace.cs" />
+    <Compile Include="..\..\src\Aura\Core\Encoding\PoolSlotLedger.cs" Link="App\PoolSlotLedger.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\LanczosWeights.cs" Link="App\LanczosWeights.cs" />
     <Compile Include="..\..\src\Aura\Core\Logging\Log.cs" Link="App\Log.cs" />
     <Compile Include="..\..\src\Aura\Core\Diagnostics\PipelineProbe.cs" Link="App\PipelineProbe.cs" />

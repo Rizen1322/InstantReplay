@@ -9,9 +9,14 @@ namespace Aura.Core.Encoding;
 /// в играх они дают фризы записи. Поэтому копии складываются в заранее посчитанное
 /// кольцо слотов и переиспользуются по кругу.
 ///
-/// Слотов заметно больше, чем глубина входной очереди плюс кадры в работе у MFT,
-/// иначе кольцо пойдёт по второму кругу и перезапишет текстуры, которые ещё лежат
-/// в очереди неотправленными.
+/// Каждый слот знает, занят ли он: слот держат очередь, энкодер (до выдачи кадра)
+/// и последний поданный кадр, с которого пейсер делает дубликаты. Копия идёт только
+/// в свободный слот. Раньше кольцо шло по кругу вслепую, и при всплеске (очередь
+/// переполнена, кадры вытесняются, а копии всё равно идут) переписывало текстуру,
+/// которую NVENC ещё держал отображённой для просмотра вперёд. Копия на видеокарте
+/// ждала NVENC, NVENC ждал новых кадров, а замок устройства D3D держала копия —
+/// вставали захват, кодирование и вместе с ними снос конвейера.
+/// Нет свободного слота — кадр теряется, конвейер идёт дальше.
 /// </summary>
 internal sealed class EncoderTexturePool : IDisposable
 {
@@ -35,7 +40,9 @@ internal sealed class EncoderTexturePool : IDisposable
 
     private readonly ID3D11Device _device;
     private readonly ID3D11Texture2D?[] _slots;
-    private int _next;
+    private readonly PoolSlotLedger _ledger;
+    private readonly Dictionary<nint, int> _slotOf = [];
+    private readonly object _sync = new();
 
     /// <summary>Сколько слотов в кольце — по этому числу считается глубина очереди.</summary>
     public int Slots => _slots.Length;
@@ -61,7 +68,11 @@ internal sealed class EncoderTexturePool : IDisposable
         long frameBytes = Math.Max(tenBit ? pixels * 3 : pixels * 3 / 2, 1);
         long bySlots = Math.Clamp(BudgetBytes(device) / frameBytes, 24, 96);
         _slots = new ID3D11Texture2D?[Math.Max(bySlots, minSlots)];
+        _ledger = new PoolSlotLedger(_slots.Length);
     }
+
+    /// <summary>Сколько слотов сейчас занято — для диагностики.</summary>
+    public int BusySlots => _ledger.Busy;
 
     /// <summary>Сколько байт видеопамяти пул готов занять прямо сейчас.</summary>
     private static long BudgetBytes(ID3D11Device device)
@@ -74,36 +85,69 @@ internal sealed class EncoderTexturePool : IDisposable
     }
 
     /// <summary>
-    /// GPU-копия источника в следующий слот кольца.
+    /// GPU-копия источника в следующий свободный слот. Возвращённая текстура занята
+    /// одной ссылкой вызывающего: её отдают очереди или отпускают через
+    /// <see cref="Release"/>. null — свободных слотов нет.
     ///
     /// Лок на устройстве: контекст D3D один на конвейер, а копии делают и поток
     /// захвата, и пейсер.
     /// </summary>
-    public ID3D11Texture2D Copy(ID3D11Texture2D source, ID3D11DeviceContext context)
+    public ID3D11Texture2D? TryCopy(ID3D11Texture2D source, ID3D11DeviceContext context)
     {
-        int slot = _next;
-        _next = (_next + 1) % _slots.Length;
+        int slot = _ledger.TryTake();
+        if (slot < 0) return null;
 
         var destination = _slots[slot];
         var desc = source.Description;
         if (destination is null || destination.Description.Width != desc.Width
                                 || destination.Description.Height != desc.Height)
         {
-            destination?.Dispose();
             desc.BindFlags = _renderTarget ? BindFlags.RenderTarget : BindFlags.None;
             desc.MiscFlags = ResourceOptionFlags.None;
-            destination = _slots[slot] = _device.CreateTexture2D(desc);
+            var created = _device.CreateTexture2D(desc);
+            lock (_sync)
+            {
+                if (destination is not null)
+                {
+                    _slotOf.Remove(destination.NativePointer);
+                    destination.Dispose();
+                }
+                destination = _slots[slot] = created;
+                _slotOf[created.NativePointer] = slot;
+            }
         }
         lock (_device) context.CopyResource(destination, source);
         return destination;
     }
 
+    /// <summary>Ещё одна ссылка на занятую текстуру пула (пейсер держит последний кадр).</summary>
+    public void AddRef(ID3D11Texture2D texture)
+    {
+        int slot;
+        lock (_sync) if (!_slotOf.TryGetValue(texture.NativePointer, out slot)) return;
+        _ledger.AddRef(slot);
+    }
+
+    /// <summary>Отпустить ссылку; слот без ссылок снова свободен для копий.</summary>
+    public void Release(ID3D11Texture2D? texture)
+    {
+        if (texture is null) return;
+        int slot;
+        lock (_sync) if (!_slotOf.TryGetValue(texture.NativePointer, out slot)) return;
+        _ledger.Release(slot);
+    }
+
     public void Dispose()
     {
-        for (int i = 0; i < _slots.Length; i++)
+        lock (_sync)
         {
-            _slots[i]?.Dispose();
-            _slots[i] = null;
+            for (int i = 0; i < _slots.Length; i++)
+            {
+                _slots[i]?.Dispose();
+                _slots[i] = null;
+            }
+            _slotOf.Clear();
+            _ledger.Reset();
         }
     }
 }

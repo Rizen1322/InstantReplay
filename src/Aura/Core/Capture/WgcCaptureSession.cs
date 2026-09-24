@@ -375,27 +375,39 @@ internal sealed class WgcCaptureSession : IScreenCapture
     {
         _prepared = false;
         _started = false;
-        _session?.Dispose();
-        _session = null;
-        if (_framePool is not null)
-        {
-            _framePool.FrameArrived -= OnFrameArrived;
-            _framePool.Dispose();
-            _framePool = null;
-        }
+        if (_framePool is not null) _framePool.FrameArrived -= OnFrameArrived;
         if (_item is not null && _targetCanClose) _item.Closed -= OnItemClosed;
         _item = null;
 
+        // Сначала дожидаемся колбэка, и только потом закрываем пул кадров: закрытие
+        // пула ждёт колбэк БЕЗ ограничения. Если колбэк завис (видеокарта или драйвер
+        // встали на копии кадра), закрытие вешало весь снос конвейера под замком
+        // жизненного цикла, а с ним и приложение. Пул и сессию тогда бросаем.
         long deadline = Environment.TickCount64 + 2000;
         while (Volatile.Read(ref _callbacksInFlight) > 0 && Environment.TickCount64 < deadline)
             Thread.Sleep(1);
         if (Volatile.Read(ref _callbacksInFlight) > 0)
-            Log.Warn("Capture", $"Колбэк {_sourceName} не завершился за 2 секунды");
+        {
+            Log.Warn("Capture", $"Колбэк {_sourceName} не завершился за 2 секунды — пул кадров оставлен, чтобы не повиснуть");
+            _abandoned = true;
+            _session = null;
+            _framePool = null;
+            return;
+        }
+
+        _session?.Dispose();
+        _session = null;
+        _framePool?.Dispose();
+        _framePool = null;
     }
+
+    /// <summary>Колбэк завис, и объекты захвата брошены: устройство под ним освобождать нельзя.</summary>
+    private bool _abandoned;
 
     public void Dispose()
     {
         Stop();
+        if (_abandoned) return;   // висящий колбэк ещё держит устройство
         _winrtDevice.Dispose();
         D3DContext.Dispose();
         D3DDevice.Dispose();

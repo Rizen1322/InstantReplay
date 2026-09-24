@@ -22,7 +22,33 @@ public sealed partial class ReplayEngine
 
     public void SaveReplay(int? secondsOverride = null)
     {
-        lock (_lifecycle) SaveReplayLocked(secondsOverride);
+        // Зовётся с потока интерфейса (хоткей, трей). Пока конвейер пересобирается,
+        // замок жизненного цикла может быть занят надолго, и ждать его здесь значило
+        // бы заморозить всё приложение. Тогда сохранение уходит в фон и ждёт там.
+        if (Monitor.TryEnter(_lifecycle, 200))
+        {
+            try { SaveReplayLocked(secondsOverride); }
+            finally { Monitor.Exit(_lifecycle); }
+            return;
+        }
+
+        Log.Info("Engine", "Сохранение ждёт пересборку конвейера");
+        _ = Task.Run(() =>
+        {
+            if (!Monitor.TryEnter(_lifecycle, TimeSpan.FromSeconds(20)))
+            {
+                Log.Warn("Engine", "Сохранение не дождалось пересборки конвейера за 20 секунд");
+                SaveFailed?.Invoke("Захват перезапускается и не отвечает — клип не сохранён. Попробуйте ещё раз.");
+                return;
+            }
+            try { SaveReplayLocked(secondsOverride); }
+            catch (Exception ex)
+            {
+                Log.Error("Engine", ex);
+                SaveFailed?.Invoke(ex.Message);
+            }
+            finally { Monitor.Exit(_lifecycle); }
+        });
     }
 
     private void SaveReplayLocked(int? secondsOverride)

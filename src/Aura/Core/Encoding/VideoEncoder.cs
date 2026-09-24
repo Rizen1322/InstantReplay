@@ -147,6 +147,8 @@ public sealed class VideoEncoder : IDisposable
     public long FramesDuplicated;
     public long FramesDroppedQueue;
     public long FramesDroppedRealQueue;
+    /// <summary>Кадры, потерянные из-за того, что все слоты пула держал энкодер.</summary>
+    public long FramesDroppedNoSlot;
     public long FramesDiscardedDuplicates;
     public long FramesSuppressedDuplicates;
     public long FramesEncoded;
@@ -438,10 +440,13 @@ public sealed class VideoEncoder : IDisposable
                     if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
 
                 long start = Diagnostics.PipelineProbe.Now();
+                lock (_submittedTextures) _submittedTextures.Enqueue(item.Texture);
                 if (!session.Encode(item.Texture.NativePointer, item.Ticks, forceIdr))
                 {
                     // Буфер занят — так быть не должно (его выдал семафор). Кадр теряем честно.
                     lock (_nvencInputPts) RemoveLast(_nvencInputPts);
+                    lock (_submittedTextures) RemoveLast(_submittedTextures);
+                    _copyPool?.Release(item.Texture);
                     Interlocked.Decrement(ref _inFlight);
                     slots.Release();
                     Interlocked.Increment(ref FramesDroppedRealQueue);
@@ -458,12 +463,12 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
-    private static void RemoveLast(Queue<long> queue)
+    private static void RemoveLast<T>(Queue<T> queue)
     {
         int count = queue.Count;
         for (int i = 0; i < count; i++)
         {
-            long v = queue.Dequeue();
+            T v = queue.Dequeue();
             if (i < count - 1) queue.Enqueue(v);
         }
     }
@@ -498,6 +503,8 @@ public sealed class VideoEncoder : IDisposable
     {
         long inputPts;
         lock (_nvencInputPts) inputPts = _nvencInputPts.Count > 0 ? _nvencInputPts.Dequeue() : pts;
+        // Вход этого порядкового номера NVENC уже отпустил (снял отображение)
+        ReleaseSubmitted();
         _nvencSlots?.Release();
         Interlocked.Decrement(ref _inFlight);
 
@@ -955,8 +962,35 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     private ID3D11DeviceContext? _context;
 
-    /// <summary>GPU-копия источника в следующий слот кольцевого пула.</summary>
-    private ID3D11Texture2D CopyIntoPool(ID3D11Texture2D src) => _copyPool!.Copy(src, _context!);
+    /// <summary>
+    /// GPU-копия источника в свободный слот пула; null — свободных нет (энкодер
+    /// держит всё, что есть). Текстура занята ссылкой вызывающего, см.
+    /// <see cref="EncoderTexturePool"/>.
+    /// </summary>
+    private ID3D11Texture2D? CopyIntoPool(ID3D11Texture2D src) => _copyPool!.TryCopy(src, _context!);
+
+    /// <summary>
+    /// Последний поданный кадр держит свой слот: с него пейсер делает дубликаты.
+    /// Зовётся, пока кадр ещё у вызывающего (до очереди), — иначе энкодер мог бы
+    /// успеть отпустить слот, и ссылка легла бы на уже свободный.
+    /// </summary>
+    private void SetLastSubmitted(ID3D11Texture2D texture)
+    {
+        _copyPool!.AddRef(texture);
+        _copyPool.Release(_lastSubmittedTex);
+        _lastSubmittedTex = texture;
+    }
+
+    /// <summary>Кадр вышел из энкодера: слот его входа свободен.</summary>
+    private void ReleaseSubmitted()
+    {
+        ID3D11Texture2D? texture = null;
+        lock (_submittedTextures) if (_submittedTextures.Count > 0) texture = _submittedTextures.Dequeue();
+        _copyPool?.Release(texture);
+    }
+
+    /// <summary>Текстуры, поданные в энкодер, в порядке подачи: слот отпускается по выходу кадра.</summary>
+    private readonly Queue<ID3D11Texture2D> _submittedTextures = new();
 
     // Дозаполнение коротких пропусков сетки задним числом (гонка пейсера с реальным
     // кадром неизбежна — пейсер может не успеть за 4-мс окно). Длинные паузы
@@ -971,6 +1005,13 @@ public sealed class VideoEncoder : IDisposable
         lock (_cfrLock)
         {
             var copy = CopyIntoPool(nv12PoolTexture);
+            if (copy is null)
+            {
+                // Все слоты держит энкодер: кадр теряем, конвейер не ждёт
+                Interlocked.Increment(ref FramesDroppedRealQueue);
+                Interlocked.Increment(ref FramesDroppedNoSlot);
+                return;
+            }
 
             // Квантование PTS к сетке CFR
             long pts;
@@ -1001,27 +1042,29 @@ public sealed class VideoEncoder : IDisposable
                             break;
                         }
                         var dup = CopyIntoPool(_lastSubmittedTex);
-                        if (!Enqueue(
-                                dup,
-                                duplicatePts,
-                                isDuplicate: true,
-                                encoderBehind))
+                        if (dup is null)
                         {
                             Interlocked.Increment(ref PacerBlocked);
                             break;
                         }
+                        SetLastSubmitted(dup);   // до очереди: см. SetLastSubmitted
+                        if (!Enqueue(dup, duplicatePts, isDuplicate: true, encoderBehind))
+                        {
+                            _copyPool!.Release(dup);
+                            Interlocked.Increment(ref PacerBlocked);
+                            break;
+                        }
                         _lastCfrPts = duplicatePts;
-                        _lastSubmittedTex = dup;
                         Interlocked.Increment(ref FramesDuplicated);
                     }
                 }
                 _lastCfrPts = pts;
             }
-            _lastSubmittedTex = copy;
+            SetLastSubmitted(copy);
             _lastRealPts = pts;
             _lastRealArrivalWall = NowQpcTicks();
             Interlocked.Increment(ref FramesSubmitted);
-            _ = Enqueue(copy, pts, isDuplicate: false, encoderBehind: false);
+            if (!Enqueue(copy, pts, isDuplicate: false, encoderBehind: false)) _copyPool!.Release(copy);
         }
     }
 
@@ -1068,7 +1111,7 @@ public sealed class VideoEncoder : IDisposable
             }
             else if (admission == EncoderQueueAdmission.EvictOldestReal)
             {
-                _inputQueue.Dequeue();
+                _copyPool?.Release(_inputQueue.Dequeue().Texture);
                 RemoveOneAvailableSignal();
                 Interlocked.Increment(ref FramesDroppedRealQueue);
                 Interlocked.Increment(ref FramesDroppedQueue);
@@ -1101,6 +1144,7 @@ public sealed class VideoEncoder : IDisposable
         {
             EncoderInputFrame frame = _inputQueue.Dequeue();
             if (index != removalIndex) _inputQueue.Enqueue(frame);
+            else _copyPool?.Release(frame.Texture);
         }
         RemoveOneAvailableSignal();
     }
@@ -1201,13 +1245,19 @@ public sealed class VideoEncoder : IDisposable
 
                     long pts = _lastCfrPts + _frameDurationTicks;
                     var dup = CopyIntoPool(_lastSubmittedTex);
-                    if (!Enqueue(dup, pts, isDuplicate: true, encoderBehind))
+                    if (dup is null)
                     {
                         Interlocked.Increment(ref PacerBlocked);
                         break;
                     }
+                    SetLastSubmitted(dup);   // до очереди: см. SetLastSubmitted
+                    if (!Enqueue(dup, pts, isDuplicate: true, encoderBehind))
+                    {
+                        _copyPool!.Release(dup);
+                        Interlocked.Increment(ref PacerBlocked);
+                        break;
+                    }
                     _lastCfrPts = pts;
-                    _lastSubmittedTex = dup;
                     Interlocked.Increment(ref FramesDuplicated);
                 }
             }
@@ -1304,7 +1354,14 @@ public sealed class VideoEncoder : IDisposable
                     sample.AddBuffer(buffer);
                     sample.SampleTime = item.Ticks;
                     sample.SampleDuration = _frameDurationTicks;
-                    _transform!.ProcessInput(0, sample, 0);
+                    lock (_submittedTextures) _submittedTextures.Enqueue(item.Texture);
+                    try { _transform!.ProcessInput(0, sample, 0); }
+                    catch
+                    {
+                        lock (_submittedTextures) RemoveLast(_submittedTextures);
+                        _copyPool?.Release(item.Texture);
+                        throw;
+                    }
                     Diagnostics.PipelineProbe.ProcessInput.Add(piStart, Diagnostics.PipelineProbe.Now());
                     // текстура из кольцевого пула — не Dispose, слот переиспользуется
                 }
@@ -1427,6 +1484,7 @@ public sealed class VideoEncoder : IDisposable
         // он опускается ровно тогда, когда кадр действительно вышел наружу.
         if (hr.Failure) { ourSample?.Dispose(); return; }
         Interlocked.Decrement(ref _inFlight);
+        ReleaseSubmitted();
 
         RefreshOutputTypeOnce();
 

@@ -23,6 +23,8 @@ namespace Aura.Core.Engine;
 /// </summary>
 public sealed partial class ReplayEngine
 {
+    private long _lastNoSlot;
+
     // Раз в минуту — здоровье конвейера в лог: по этим цифрам видно, ГДЕ теряются
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
     private System.Threading.Timer? _statsTimer;
@@ -82,7 +84,11 @@ public sealed partial class ReplayEngine
             (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (давление очереди/MFT)" : "") +
             (skipped > _lastSkippedBeforeConvert
                 ? $"; не преобразовано на забитой очереди {skipped - _lastSkippedBeforeConvert}"
+                : "") +
+            (enc.FramesDroppedNoSlot > _lastNoSlot
+                ? $"; нет свободной текстуры пула {enc.FramesDroppedNoSlot - _lastNoSlot} раз"
                 : ""));
+        _lastNoSlot = enc.FramesDroppedNoSlot;
 
         // Видеопамять: превышение бюджета означает вытеснение текстур в оперативную
         // память через шину, и тогда застревает всё, что трогает GPU — и захват, и
