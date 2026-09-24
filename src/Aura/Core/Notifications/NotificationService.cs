@@ -95,7 +95,7 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
         {
             NotificationKind.Warning    => "OrangeBrush",
             NotificationKind.Recording  => "RecBrush",
-            NotificationKind.Screenshot => "IndigoBrush",
+            NotificationKind.Screenshot => "AccentBrush",
             NotificationKind.Stopped    => "GrayBrush",
             _                           => "AccentBrush"
         };

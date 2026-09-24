@@ -17,6 +17,28 @@
     <Window.Resources>
         <c:BoolToVisibility x:Key="Show"/>
         <c:BoolToVisibility x:Key="Hide" Inverted="True"/>
+
+        <!-- Подпись пункта меню: прячется, когда колонка свёрнута в иконки -->
+        <Style x:Key="NavLabel" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
+            <Setter Property="Margin" Value="11,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="13.5"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+            <Setter Property="Visibility" Value="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+        </Style>
+        <!-- Иконка пункта: однотонная, у выбранного — акцентная -->
+        <Style x:Key="NavIcon" TargetType="{x:Type c:Icon}" BasedOn="{StaticResource {x:Type c:Icon}}">
+            <Setter Property="Size" Value="17"/>
+            <Setter Property="Thickness" Value="1.7"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=RadioButton}}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <!-- Корень масштабируется целиком: «Размер интерфейса» в настройках -->
@@ -24,49 +46,106 @@
         <Grid.LayoutTransform>
             <ScaleTransform x:Name="UiScale" ScaleX="1" ScaleY="1"/>
         </Grid.LayoutTransform>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="44"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
 
-        <!-- Фоновое свечение -->
-        <Rectangle Fill="{DynamicResource AmbientBrush}" IsHitTestVisible="False"/>
-        <Rectangle Fill="{DynamicResource Ambient2Brush}" IsHitTestVisible="False"/>
-
-        <Grid>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- ==================== БОКОВАЯ КОЛОНКА ====================
-                 Ширину можно тянуть за правый край: у разделов длинные названия
-                 («Включать мгновенный повтор при старте» в подписях), а на широком
-                 мониторе места в колонке не жалко. Ручка — прозрачная полоска
-                 поверх границы, поэтому сама граница не дёргается. -->
+        <!-- ==================== ШАПКА ====================
+             На всю ширину окна: логотип, состояние повтора, действия раздела и
+             кнопки окна. Пустое место в шапке таскает окно. -->
+        <Border x:Name="Toolbar" Grid.ColumnSpan="2" Background="{DynamicResource CanvasBrush}"
+                BorderBrush="{DynamicResource SepBrush}" BorderThickness="0,0,0,1"
+                MouseLeftButtonDown="Toolbar_Drag">
             <Grid>
-            <Border x:Name="Side" Width="236" Background="{DynamicResource GlassBrush}"
-                    BorderBrush="{DynamicResource SepBrush}" BorderThickness="0,0,1,0">
-                <DockPanel x:Name="SideContent" Margin="12,14,12,12" LastChildFill="True">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
 
-                    <!-- Логотип и название -->
-                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2,0,2,14">
-                        <!-- Градиент берётся из палитры: у каждой темы он свой -->
-                        <Border Width="30" Height="30" CornerRadius="9"
-                                Background="{DynamicResource LogoBrush}">
-                            <c:Icon Data="{DynamicResource Ico.Aura}" Size="17" Foreground="White"
-                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <TextBlock Text="Aura" FontFamily="{DynamicResource DispFont}" FontSize="16"
-                                   FontWeight="SemiBold" VerticalAlignment="Center" Margin="10,0,0,0"
-                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                <StackPanel x:Name="Brand" Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
+                    <Border Width="22" Height="22" CornerRadius="6" Background="{DynamicResource AccentBrush}">
+                        <Ellipse Width="9" Height="9" Stroke="{DynamicResource AccentInkBrush}" StrokeThickness="2"/>
+                    </Border>
+                    <TextBlock Text="Aura" FontFamily="{DynamicResource DispFont}" FontSize="15" FontWeight="Bold"
+                               VerticalAlignment="Center" Margin="9,0,0,1"/>
+                </StackPanel>
+
+                <!-- Состояние повтора. Нажатие включает и выключает повтор. Красная
+                     точка — единственный «живой» индикатор в интерфейсе. -->
+                <Button x:Name="StatusChip" Grid.Column="1" Margin="36,0,0,0" Height="30" Padding="11,0,12,0"
+                        Click="Master_Click" ToolTip="Включить или выключить мгновенный повтор"
+                        Background="{DynamicResource HoverBrush}" BorderBrush="{DynamicResource SepBrush}">
+                    <StackPanel Orientation="Horizontal">
+                        <Grid Width="8" Height="8" VerticalAlignment="Center">
+                            <Ellipse x:Name="StatusHalo" Fill="{DynamicResource RecSoftBrush}" Margin="-3"/>
+                            <Ellipse x:Name="StatusDot" Fill="{DynamicResource RecBrush}"/>
+                        </Grid>
+                        <TextBlock x:Name="StatusText" Text="Повтор" FontSize="12" FontWeight="SemiBold"
+                                   Margin="9,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="StatusTime" Text="0:00" FontSize="12" FontWeight="SemiBold"
+                                   FontFamily="{DynamicResource DispFont}" Margin="8,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
+                </Button>
 
-                    <!-- Низ колонки: обновление и главный переключатель -->
+                <!-- Идёт запись в файл: отдельная красная плашка со временем записи -->
+                <Border x:Name="RecChip" Grid.Column="2" HorizontalAlignment="Left" Margin="8,0,0,0" Height="30"
+                        CornerRadius="8" Background="{DynamicResource RecBrush}" Padding="11,0,12,0"
+                        Visibility="Collapsed" ToolTip="Идёт запись в файл">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="8" Height="8" Fill="White" VerticalAlignment="Center"/>
+                        <TextBlock Text="Запись" FontSize="12" FontWeight="SemiBold" Foreground="White"
+                                   Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="RecTime" Text="0:00" FontSize="12" FontWeight="SemiBold" Foreground="White"
+                                   FontFamily="{DynamicResource DispFont}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="ToolTitle" Grid.Column="2" Margin="18,0,0,0" VerticalAlignment="Center"
+                           FontFamily="{DynamicResource DispFont}" FontSize="13.5" FontWeight="SemiBold"
+                           Foreground="{DynamicResource Tx2Brush}" Opacity="0"/>
+
+                <StackPanel x:Name="ToolActions" Grid.Column="3" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="0,0,10,0"/>
+
+                <StackPanel Grid.Column="4" Orientation="Horizontal">
+                    <Button Style="{StaticResource WindowButton}" Click="Minimize_Click" ToolTip="Свернуть">
+                        <c:Icon Data="{DynamicResource Ico.Min}" Size="11" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                    <Button Style="{StaticResource WindowButton}" Click="Maximize_Click" ToolTip="Развернуть">
+                        <c:Icon Data="{DynamicResource Ico.Max}" Size="11" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                    <Button Style="{StaticResource WindowCloseButton}" Click="Close_Click" ToolTip="Свернуть в трей">
+                        <c:Icon Data="{DynamicResource Ico.X}" Size="11" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== БОКОВАЯ КОЛОНКА ====================
+             Ширину можно тянуть за правый край. Ручка — прозрачная полоска поверх
+             границы, поэтому сама граница не дёргается. -->
+        <Grid Grid.Row="1">
+            <Border x:Name="Side" Width="208" Background="{DynamicResource CanvasBrush}"
+                    BorderBrush="{DynamicResource SepBrush}" BorderThickness="0,0,1,0">
+                <DockPanel x:Name="SideContent" Margin="10,12,10,12" LastChildFill="True">
+
+                    <!-- Низ колонки: обновление и место на диске -->
                     <StackPanel DockPanel.Dock="Bottom">
                         <Button x:Name="UpdateCard" Style="{StaticResource RowButton}" Visibility="Collapsed"
                                 Margin="0,0,0,8" Click="Update_Click">
-                            <Border x:Name="UpdateCardBox" Background="{DynamicResource CardBrush}" CornerRadius="11"
-                                    Padding="10,8,10,8" BorderBrush="{DynamicResource SepBrush}" BorderThickness="1">
+                            <Border x:Name="UpdateCardBox" Background="{DynamicResource AccentSoftBrush}" CornerRadius="8"
+                                    Padding="10,8,10,8">
                                 <StackPanel Orientation="Horizontal">
-                                    <c:IconTile Data="{DynamicResource Ico.Down}" TileSize="20" IconSize="12"
-                                                Background="{DynamicResource BlueBrush}"/>
+                                    <c:Icon Data="{DynamicResource Ico.Down}" Size="15" Foreground="{DynamicResource AccentTxBrush}"
+                                            VerticalAlignment="Center"/>
                                     <StackPanel Margin="9,0,0,0" VerticalAlignment="Center"
                                                 Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}">
                                         <TextBlock x:Name="UpdateTitle" FontSize="12" FontWeight="SemiBold" Text="Есть обновление"/>
@@ -76,20 +155,12 @@
                             </Border>
                         </Button>
 
-                        <Border x:Name="MasterCard" Background="{DynamicResource CardBrush}" CornerRadius="13"
-                                Padding="11,10,11,10" BorderBrush="{DynamicResource SepBrush}" BorderThickness="1">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center"
-                                            Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}">
-                                    <TextBlock Text="Мгновенный повтор" FontSize="11" Foreground="{DynamicResource Tx2Brush}"/>
-                                    <TextBlock x:Name="MasterState" Text="Выключен" FontSize="13" FontWeight="SemiBold"/>
-                                </StackPanel>
-                                <c:Switch x:Name="MasterSwitch" Grid.Column="1" Click="Master_Click"/>
-                            </Grid>
+                        <Border BorderBrush="{DynamicResource SepBrush}" BorderThickness="0,1,0,0" Padding="10,12,10,0"
+                                Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}">
+                            <StackPanel>
+                                <TextBlock x:Name="DiskFree" FontSize="12" Foreground="{DynamicResource Tx3Brush}" Text="Диск: считаю…"/>
+                                <TextBlock x:Name="DiskUsed" FontSize="12" Foreground="{DynamicResource Tx3Brush}" Margin="0,3,0,0"/>
+                            </StackPanel>
                         </Border>
                     </StackPanel>
 
@@ -100,89 +171,75 @@
                          (по одной на группу), и при переходе между группами обе могли
                          остаться видимыми: подсвечивались два раздела разом. -->
                     <Grid x:Name="NavArea" DockPanel.Dock="Top">
-                        <Border x:Name="Indicator" Height="34" CornerRadius="9" VerticalAlignment="Top"
+                        <Border x:Name="Indicator" Height="36" CornerRadius="8" VerticalAlignment="Top"
                                 Background="{DynamicResource PressBrush}" Opacity="0">
                             <Border.RenderTransform><TranslateTransform x:Name="IndicatorShift"/></Border.RenderTransform>
+                            <!-- Полоска акцента у левого края колонки -->
+                            <Border Width="3" Height="16" CornerRadius="0,2,2,0" Background="{DynamicResource AccentBrush}"
+                                    HorizontalAlignment="Left" Margin="-10,0,0,0"/>
                         </Border>
 
                         <StackPanel>
-                        <TextBlock Text="Главное" Style="{StaticResource Caption3}" Margin="8,11,8,5"
-                                   FontWeight="SemiBold"
-                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
-                        <Border Height="1" Background="{DynamicResource SepBrush}" Margin="8,10,8,9"
-                                Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Show}}"/>
-
-                        <Grid>
                             <StackPanel x:Name="Nav1">
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="overview" IsChecked="True" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="overview" IsChecked="True" Click="Nav_Click" ToolTip="Повтор">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Gauge}" Background="{DynamicResource AccentBrush}"/>
-                                        <TextBlock Text="Обзор" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Target}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Повтор"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="clips" Click="Nav_Click">
-                                    <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Film}" Background="{DynamicResource BlueBrush}"/>
-                                        <TextBlock Text="Клипы" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
-                                    </StackPanel>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="clips" Click="Nav_Click" ToolTip="Клипы">
+                                    <Grid>
+                                        <StackPanel Orientation="Horizontal">
+                                            <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Clips}"/>
+                                            <TextBlock Style="{StaticResource NavLabel}" Text="Клипы"/>
+                                        </StackPanel>
+                                    </Grid>
                                 </RadioButton>
                             </StackPanel>
-                        </Grid>
 
-                        <TextBlock Text="Настройка" Style="{StaticResource Caption3}" Margin="8,13,8,5"
-                                   FontWeight="SemiBold"
-                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
-                        <Border Height="1" Background="{DynamicResource SepBrush}" Margin="8,10,8,9"
-                                Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Show}}"/>
+                            <TextBlock Text="Настройка" FontSize="11" Foreground="{DynamicResource Tx3Brush}" Margin="10,14,10,6"
+                                       Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                            <Border Height="1" Background="{DynamicResource SepBrush}" Margin="8,10,8,9"
+                                    Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Show}}"/>
 
-                        <Grid>
                             <StackPanel x:Name="Nav2">
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="capture" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="capture" Click="Nav_Click" ToolTip="Видео">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Sliders}" Background="{DynamicResource PurpleBrush}"/>
-                                        <TextBlock Text="Захват" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Video}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Видео"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="keys" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="audio" Click="Nav_Click" ToolTip="Звук">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Keyboard}" Background="{DynamicResource TealBrush}"/>
-                                        <TextBlock Text="Клавиши" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Wave}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Звук"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="files" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="keys" Click="Nav_Click" ToolTip="Клавиши">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Folder}" Background="{DynamicResource OrangeBrush}"/>
-                                        <TextBlock Text="Файлы" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Keys}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Клавиши"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="app" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="files" Click="Nav_Click" ToolTip="Файлы">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.App}" Background="{DynamicResource GrayBrush}"/>
-                                        <TextBlock Text="Приложение" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Folder}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Файлы"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="system" Click="Nav_Click">
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="app" Click="Nav_Click" ToolTip="Приложение">
                                     <StackPanel Orientation="Horizontal">
-                                        <c:IconTile Data="{DynamicResource Ico.Cpu}" Background="{DynamicResource IndigoBrush}"/>
-                                        <TextBlock Text="Система" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13.5"
-                                                   FontWeight="Medium" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-                                                   Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Hide}}"/>
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Window}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Приложение"/>
+                                    </StackPanel>
+                                </RadioButton>
+                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="system" Click="Nav_Click" ToolTip="Система">
+                                    <StackPanel Orientation="Horizontal">
+                                        <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Chip}"/>
+                                        <TextBlock Style="{StaticResource NavLabel}" Text="Система"/>
                                     </StackPanel>
                                 </RadioButton>
                             </StackPanel>
-                        </Grid>
                         </StackPanel>
                     </Grid>
 
@@ -194,76 +251,37 @@
             <Thumb x:Name="SideGrip" Width="7" HorizontalAlignment="Right" Cursor="SizeWE"
                    Style="{StaticResource SideGrip}" DragDelta="SideGrip_Drag"
                    DragCompleted="SideGrip_Done"/>
-            </Grid>
+        </Grid>
 
-            <!-- ==================== ПРАВАЯ ЧАСТЬ ==================== -->
-            <Grid Grid.Column="1">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="50"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
+        <!-- ==================== СТРАНИЦА ==================== -->
+        <Grid Grid.Row="1" Grid.Column="1">
+            <ScrollViewer x:Name="Scroll" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" ScrollChanged="Scroll_Changed"
+                          Padding="0">
+                <ContentControl x:Name="PageHost" HorizontalAlignment="Stretch">
+                    <ContentControl.RenderTransform>
+                        <TranslateTransform x:Name="PageShift"/>
+                    </ContentControl.RenderTransform>
+                </ContentControl>
+            </ScrollViewer>
 
-                <!-- Шапка: заголовок появляется, когда крупный уехал за край -->
-                <Border x:Name="Toolbar" Background="{DynamicResource GlassBrush}"
-                        BorderBrush="Transparent" BorderThickness="0,0,0,1"
-                        MouseLeftButtonDown="Toolbar_Drag">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <TextBlock x:Name="ToolTitle" Margin="24,0,0,0" VerticalAlignment="Center"
-                                   FontFamily="{DynamicResource DispFont}" FontSize="14.5" FontWeight="SemiBold"
-                                   Opacity="0"/>
-
-                        <StackPanel x:Name="ToolActions" Grid.Column="1" Orientation="Horizontal"
-                                    VerticalAlignment="Center" Margin="0,0,8,0"/>
-
-                        <StackPanel Grid.Column="2" Orientation="Horizontal">
-                            <Button Style="{StaticResource WindowButton}" Click="Minimize_Click" ToolTip="Свернуть">
-                                <c:Icon Data="{DynamicResource Ico.Min}" Size="11" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
-                            </Button>
-                            <Button Style="{StaticResource WindowButton}" Click="Maximize_Click" ToolTip="Развернуть">
-                                <c:Icon Data="{DynamicResource Ico.Max}" Size="11" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
-                            </Button>
-                            <Button Style="{StaticResource WindowCloseButton}" Click="Close_Click" ToolTip="Свернуть в трей">
-                                <c:Icon Data="{DynamicResource Ico.X}" Size="11" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
-                            </Button>
-                        </StackPanel>
-                    </Grid>
-                </Border>
-
-                <!-- Страница -->
-                <ScrollViewer x:Name="Scroll" Grid.Row="1" VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled" ScrollChanged="Scroll_Changed"
-                              Padding="0">
-                    <ContentControl x:Name="PageHost" HorizontalAlignment="Stretch">
-                        <ContentControl.RenderTransform>
-                            <TranslateTransform x:Name="PageShift"/>
-                        </ContentControl.RenderTransform>
-                    </ContentControl>
-                </ScrollViewer>
-
-                <!-- Панель несохранённых изменений: висит над содержимым, а не в конце
-                     страницы — прокручивать до неё не нужно. -->
-                <Border x:Name="ApplyBar" Grid.Row="1" Height="46" CornerRadius="23"
-                        HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,20"
-                        Padding="18,0,6,0" Background="{DynamicResource GlassBrush}"
-                        BorderBrush="{DynamicResource HairBrush}" BorderThickness="1"
-                        Effect="{DynamicResource ToastShadow}" Opacity="0" Visibility="Collapsed">
-                    <Border.RenderTransform><TranslateTransform x:Name="ApplyShift" Y="90"/></Border.RenderTransform>
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock x:Name="ApplyText" VerticalAlignment="Center" FontSize="12.5"
-                                   Foreground="{DynamicResource Tx2Brush}"/>
-                        <Button x:Name="ApplyRevert" Content="Отменить" Height="34" Margin="16,0,8,0"
-                                Click="ApplyRevert_Click"/>
-                        <Button x:Name="ApplyOk" Content="Применить" Height="34"
-                                Style="{StaticResource BtnPri}" Click="ApplyOk_Click"/>
-                    </StackPanel>
-                </Border>
-            </Grid>
+            <!-- Панель несохранённых изменений: висит над содержимым, а не в конце
+                 страницы — прокручивать до неё не нужно. -->
+            <Border x:Name="ApplyBar" Height="48" CornerRadius="24"
+                    HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,18"
+                    Padding="18,0,6,0" Background="{DynamicResource PressBrush}"
+                    BorderBrush="{DynamicResource HairBrush}" BorderThickness="1"
+                    Effect="{DynamicResource ToastShadow}" Opacity="0" Visibility="Collapsed">
+                <Border.RenderTransform><TranslateTransform x:Name="ApplyShift" Y="90"/></Border.RenderTransform>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="ApplyText" VerticalAlignment="Center" FontSize="12.5"
+                               Foreground="{DynamicResource Tx2Brush}"/>
+                    <Button x:Name="ApplyRevert" Content="Отменить" Height="36" Margin="14,0,4,0"
+                            Style="{StaticResource BtnPlain}" Click="ApplyRevert_Click"/>
+                    <Button x:Name="ApplyOk" Content="Применить" Height="36"
+                            Style="{StaticResource BtnPri}" Click="ApplyOk_Click"/>
+                </StackPanel>
+            </Border>
         </Grid>
     </Grid>
 </Window>

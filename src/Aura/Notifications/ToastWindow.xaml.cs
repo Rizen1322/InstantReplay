@@ -88,7 +88,12 @@ public partial class ToastWindow : Window
         ApplyTitleLayout();
         HintText.Text = content.Hint ?? "";
         ArtIcon.Data = content.Icon;
-        Art.Background = content.Tint;
+        // Цвет события — на значке и полосе времени, а подложка значка того же
+        // цвета, но приглушённая: плотная цветная плитка кричала поверх игры.
+        var tint = (content.Tint as SolidColorBrush)?.Color ?? Colors.White;
+        Art.Background = new SolidColorBrush(Color.FromArgb(0x2E, tint.R, tint.G, tint.B));
+        ArtIcon.Foreground = new SolidColorBrush(tint);
+        Life.Background = new SolidColorBrush(tint);
         Shot.Source = null;
         Shot.Opacity = 0;
 
@@ -156,8 +161,8 @@ public partial class ToastWindow : Window
 
         Card.BeginAnimation(WidthProperty, new DoubleAnimation(WideWidth, grow) { EasingFunction = ease });
         Card.BeginAnimation(HeightProperty, new DoubleAnimation(WideHeight, grow) { EasingFunction = ease });
-        Art.BeginAnimation(WidthProperty, new DoubleAnimation(62, grow) { EasingFunction = ease });
-        Art.BeginAnimation(HeightProperty, new DoubleAnimation(42, grow) { EasingFunction = ease });
+        Art.BeginAnimation(WidthProperty, new DoubleAnimation(64, grow) { EasingFunction = ease });
+        Art.BeginAnimation(HeightProperty, new DoubleAnimation(40, grow) { EasingFunction = ease });
 
         ArtIcon.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.2)));
         SubText.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.3)) { BeginTime = TimeSpan.FromSeconds(0.1) });

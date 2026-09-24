@@ -15,9 +15,9 @@
          дёргается позиционирование поверх полноэкранной игры. -->
 
     <Grid>
-        <Border x:Name="Card" Width="250" Height="62" CornerRadius="19" Padding="10"
+        <Border x:Name="Card" Width="250" Height="62" CornerRadius="14" Padding="10"
                 HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,24,24"
-                Background="{DynamicResource GlassBrush}"
+                Background="{DynamicResource CardBrush}"
                 BorderBrush="{DynamicResource HairBrush}" BorderThickness="1"
                 Effect="{DynamicResource ToastShadow}"
                 RenderTransformOrigin="1,1">
@@ -36,8 +36,8 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Кадр или цветная плитка с иконкой -->
-                <Border x:Name="Art" Width="40" Height="40" CornerRadius="13"
-                        Background="{DynamicResource AccentBrush}" ClipToBounds="True">
+                <Border x:Name="Art" Width="40" Height="40" CornerRadius="10"
+                        Background="{DynamicResource AccentSoftBrush}" ClipToBounds="True">
                     <Grid>
                         <Image x:Name="Shot" Stretch="UniformToFill" Opacity="0"/>
                         <c:Icon x:Name="ArtIcon" Data="{DynamicResource Ico.Save}" Size="18" Foreground="White"
@@ -68,8 +68,8 @@
                 <!-- Полоска времени показа -->
                 <Border x:Name="LifeTrack" Grid.ColumnSpan="3" Height="2" CornerRadius="1"
                         VerticalAlignment="Bottom" Margin="2,0,2,-6" Opacity="0"
-                        Background="{DynamicResource TrackBrush}">
-                    <Border x:Name="Life" Background="{DynamicResource Tx3Brush}" CornerRadius="1"
+                        Background="Transparent">
+                    <Border x:Name="Life" Background="{DynamicResource AccentBrush}" CornerRadius="1"
                             HorizontalAlignment="Left" RenderTransformOrigin="0,0.5">
                         <Border.RenderTransform>
                             <ScaleTransform x:Name="LifeScale" ScaleX="1"/>

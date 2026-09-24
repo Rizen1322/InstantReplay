@@ -130,6 +130,7 @@ public partial class App : Application
         Services.Init();
         Views.ClipCommands.Register();
         WireEvents();
+        Views.ReplayFilmstrip.Start();
         GuardCodec();
 
         StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
@@ -158,6 +159,16 @@ public partial class App : Application
         // Значки под тему — здесь, а не в ApplyTheme выше: там окна ещё не было,
         // а кнопку на панели задач рисует именно иконка окна.
         ApplyThemeIcons(theme);
+
+        // --snapshot файл.png — снимок вёрстки без экрана: окно открывается за его
+        // пределами и без фокуса (не мешает игре или работе), рисуется в картинку,
+        // и приложение закрывается. Только вместе с --dev.
+        int snapArg = Array.IndexOf(e.Args, "--snapshot");
+        if (dev && snapArg >= 0 && snapArg + 1 < e.Args.Length)
+        {
+            SnapshotAndExit(_main, e.Args[snapArg + 1]);
+            return;
+        }
 
         if (!minimized) _main.Show();
         ShowChangelogIfUpdated();
@@ -304,6 +315,46 @@ public partial class App : Application
         // панели задач нужен крупный: 32 px при обычном масштабе и 64 при 200%.
         if (_tray is not null && ThemeIcon(theme, 32) is { } trayIcon) _tray.IconSource = trayIcon;
         if (_main is not null && ThemeIcon(theme, 64) is { } windowIcon) _main.Icon = windowIcon;
+    }
+
+    /// <summary>Нарисовать окно в PNG за пределами экрана и выйти (проверка вёрстки).</summary>
+    private static void SnapshotAndExit(Window window, string path)
+    {
+        window.ShowActivated = false;
+        window.ShowInTaskbar = false;
+        window.WindowStartupLocation = WindowStartupLocation.Manual;
+        window.Left = -32000;
+        window.Top = -32000;
+        window.Width = 1180;
+        window.Height = 760;
+        window.Show();
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            try
+            {
+                var root = (FrameworkElement)window.Content;
+                var bitmap = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96,
+                                                    System.Windows.Media.PixelFormats.Pbgra32);
+                var canvas = new System.Windows.Media.DrawingVisual();
+                using (var dc = canvas.RenderOpen())
+                {
+                    dc.DrawRectangle((System.Windows.Media.Brush)window.Background, null,
+                                     new Rect(0, 0, window.ActualWidth, window.ActualHeight));
+                    dc.DrawRectangle(new System.Windows.Media.VisualBrush(root), null,
+                                     new Rect(0, 0, root.ActualWidth, root.ActualHeight));
+                }
+                bitmap.Render(canvas);
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var file = File.Create(path);
+                encoder.Save(file);
+            }
+            catch (Exception ex) { Log.Error("App", $"Снимок вёрстки: {ex}"); }
+            Environment.Exit(0);
+        };
+        timer.Start();
     }
 
     private static AppTheme? ThemeArg(string[] args)
@@ -510,7 +561,7 @@ public partial class App : Application
         }
         catch (Core.Storage.InsufficientDiskSpaceException ex)
         {
-            Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске — повтор не включён", ex.Message);
+            Services.Notifications.Show(NotificationKind.Warning, "Повтор не включён: нет места на диске", ex.Message);
         }
         catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось включить повтор", ex.Message); }
     }
@@ -541,7 +592,7 @@ public partial class App : Application
         try { Services.Engine.StartRecordingToFile(); }
         catch (Core.Storage.InsufficientDiskSpaceException ex)
         {
-            Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске — запись не начата", ex.Message);
+            Services.Notifications.Show(NotificationKind.Warning, "Запись не начата: нет места на диске", ex.Message);
         }
         catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось начать запись", ex.Message); }
     }
@@ -637,7 +688,7 @@ public partial class App : Application
         var info = await Services.Updates.CheckAsync();
         if (info is null) return;
         Services.Notifications.Show(NotificationKind.Warning, $"Есть версия {info.Version}",
-                                    "Обновить — на вкладке «Приложение»");
+                                    "Обновить можно в разделе «Приложение»");
     }
 
     // ---------------- Трей ----------------
@@ -751,8 +802,8 @@ public partial class App : Application
         var engine = Services.Engine;
         bool running = engine.State != EngineState.Stopped;
 
-        _tray.ToolTipText = engine.IsRecordingToFile ? "Aura — идёт запись"
-                          : running ? "Aura — повтор пишется" : "Aura — выключено";
+        _tray.ToolTipText = engine.IsRecordingToFile ? "Aura: идёт запись"
+                          : running ? "Aura: повтор пишется" : "Aura: выключено";
         if (_trayToggle is not null) _trayToggle.Header = running ? "Выключить повтор" : "Включить повтор";
         if (_traySave is not null) _traySave.IsEnabled = engine.State == EngineState.Running;
     }

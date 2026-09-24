@@ -28,39 +28,40 @@
     <!-- Крупный заголовок страницы -->
     <Style x:Key="PageTitle" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
         <Setter Property="FontFamily" Value="{DynamicResource DispFont}"/>
-        <Setter Property="FontSize" Value="28"/>
+        <Setter Property="FontSize" Value="21"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="Margin" Value="0,0,0,5"/>
+        <Setter Property="Margin" Value="0,0,0,3"/>
     </Style>
 
     <!-- Подзаголовок под ним -->
     <Style x:Key="Lede" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
-        <Setter Property="FontSize" Value="13.5"/>
-        <Setter Property="Foreground" Value="{DynamicResource Tx2Brush}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{DynamicResource Tx3Brush}"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
-        <Setter Property="MaxWidth" Value="520"/>
+        <Setter Property="MaxWidth" Value="560"/>
         <Setter Property="HorizontalAlignment" Value="Left"/>
-        <Setter Property="Margin" Value="0,0,0,20"/>
+        <Setter Property="Margin" Value="0,0,0,14"/>
     </Style>
 
     <!-- Подпись группы над списком -->
     <Style x:Key="GroupLabel" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
         <Setter Property="FontSize" Value="12"/>
-        <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="Foreground" Value="{DynamicResource Tx2Brush}"/>
-        <Setter Property="Margin" Value="4,24,4,8"/>
+        <Setter Property="FontWeight" Value="Medium"/>
+        <Setter Property="Foreground" Value="{DynamicResource Tx3Brush}"/>
+        <Setter Property="Margin" Value="4,18,4,7"/>
     </Style>
 
     <Style x:Key="RowLabel" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
-        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontSize" Value="13.5"/>
+        <Setter Property="FontWeight" Value="Medium"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
 
     <Style x:Key="RowSub" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
         <Setter Property="FontSize" Value="12"/>
-        <Setter Property="Foreground" Value="{DynamicResource Tx2Brush}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Tx3Brush}"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
-        <Setter Property="Margin" Value="0,2,0,0"/>
+        <Setter Property="Margin" Value="0,3,0,0"/>
     </Style>
 
     <Style x:Key="RowValue" TargetType="TextBlock" BasedOn="{StaticResource TextBase}">
@@ -96,32 +97,34 @@
         <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource SepBrush}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="CornerRadius" Value="15"/>
+        <Setter Property="CornerRadius" Value="12"/>
         <Setter Property="SnapsToDevicePixels" Value="True"/>
     </Style>
 
     <Style x:Key="CardSoft" TargetType="Border" BasedOn="{StaticResource Card}">
-        <Setter Property="CornerRadius" Value="16"/>
+        <Setter Property="CornerRadius" Value="12"/>
     </Style>
 
-    <!-- Разделитель между строками списка: с отступом слева, как в iOS -->
+    <!-- Разделитель между строками списка. Линии под каждой строкой нет: строки
+         разделяет воздух, группы — карточки. Стиль оставлен, чтобы разметка
+         страниц не менялась. -->
     <Style x:Key="RowSeparator" TargetType="Border">
-        <Setter Property="Height" Value="1"/>
-        <Setter Property="Background" Value="{DynamicResource SepBrush}"/>
-        <Setter Property="Margin" Value="16,0,0,0"/>
+        <Setter Property="Height" Value="0"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Margin" Value="0"/>
         <Setter Property="SnapsToDevicePixels" Value="True"/>
     </Style>
 
     <!-- Строка списка: подпись слева, управление справа -->
     <Style x:Key="Row" TargetType="Grid">
-        <Setter Property="Margin" Value="16,12,16,12"/>
+        <Setter Property="Margin" Value="16,13,16,13"/>
     </Style>
 
     <!-- Плашка-статус: скругление как у всего остального, не овал -->
     <Style x:Key="Pill" TargetType="Border">
         <Setter Property="Background" Value="{DynamicResource TrackBrush}"/>
-        <Setter Property="CornerRadius" Value="8"/>
-        <Setter Property="Padding" Value="9,3,9,4"/>
+        <Setter Property="CornerRadius" Value="6"/>
+        <Setter Property="Padding" Value="8,3,8,4"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 

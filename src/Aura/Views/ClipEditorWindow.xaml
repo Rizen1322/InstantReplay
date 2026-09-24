@@ -64,7 +64,6 @@
     </Window.Resources>
 
     <Grid>
-        <Rectangle Fill="{DynamicResource AmbientBrush}" IsHitTestVisible="False"/>
         <Grid Margin="20,10,20,16">
             <Grid.RowDefinitions>
                 <RowDefinition Height="52"/><RowDefinition Height="*"/>
@@ -87,7 +86,7 @@
 
             <!-- ПРЕДПРОСМОТР. LibVLC и кодеки поставляются вместе с Aura. -->
             <Border Grid.Row="1" Background="#FF030607" BorderBrush="{DynamicResource HairBrush}"
-                    BorderThickness="1" CornerRadius="14" ClipToBounds="True">
+                    BorderThickness="1" CornerRadius="12" ClipToBounds="True">
                 <Grid>
                     <vlc:VideoView x:Name="Preview"/>
                     <StackPanel x:Name="PreviewLoading" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -210,7 +209,7 @@
                             </StackPanel>
                         </Border>
                         <Button Style="{StaticResource TransportButton}" Margin="4,0,0,0" Click="Reset_Click"
-                                ToolTip="Сбросить границы — весь клип">
+                                ToolTip="Сбросить границы: весь клип">
                             <c:Icon Data="{DynamicResource Ico.Undo}" Size="15"/>
                         </Button>
 

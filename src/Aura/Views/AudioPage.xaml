@@ -1,0 +1,184 @@
+<views:PageBase x:Class="Aura.Views.AudioPage"
+                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                xmlns:c="clr-namespace:Aura.Controls"
+                xmlns:views="clr-namespace:Aura.Views">
+
+    <!-- Звук. Выключенный источник прячет свои настройки, а не оставляет их серыми. -->
+    <Grid Margin="20,16,16,0">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition x:Name="AsideCol" Width="300"/>
+        </Grid.ColumnDefinitions>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
+            <StackPanel Margin="0,0,0,90">
+                <StackPanel Orientation="Horizontal" Margin="2,0,0,10">
+                    <TextBlock Text="Звук" Style="{StaticResource PageTitle}" Margin="0"/>
+                    <TextBlock Text="Что слышно в записи" Style="{StaticResource Lede}" Margin="12,0,0,5" VerticalAlignment="Bottom"/>
+                </StackPanel>
+
+                <!-- ==================== ИСТОЧНИКИ ==================== -->
+                <TextBlock Text="Источники" Style="{StaticResource GroupLabel}" Margin="4,4,4,7"/>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Звук игры" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Всё, что играет в наушниках или колонках" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Switch x:Name="GameAudio" Click="Audio_Changed"/>
+                        </c:AdaptiveRow>
+                        <c:AdaptiveRow x:Name="GameDeviceRow" Margin="32,4,16,12">
+                            <TextBlock Text="Откуда брать звук игры" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
+                            <ComboBox x:Name="RenderDevice" MinWidth="260" SelectionChanged="AudioSelection_Changed"/>
+                        </c:AdaptiveRow>
+
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Голос в записи" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Switch x:Name="MicAudio" Click="Audio_Changed"/>
+                        </c:AdaptiveRow>
+                        <c:AdaptiveRow x:Name="MicDeviceRow" Margin="32,4,16,12">
+                            <TextBlock Text="Какой микрофон писать" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
+                            <ComboBox x:Name="CaptureDevice" MinWidth="260" SelectionChanged="AudioSelection_Changed"/>
+                        </c:AdaptiveRow>
+                    </StackPanel>
+                </Border>
+
+                <!-- ==================== ДОРОЖКИ ==================== -->
+                <StackPanel x:Name="TracksGroup">
+                    <TextBlock Text="Дорожки в файле" Style="{StaticResource GroupLabel}"/>
+                    <Border Style="{StaticResource Card}">
+                        <c:AdaptiveRow Margin="16,12,16,12" MinTextWidth="200">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Как раскладывать звук" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Раздельные удобны для монтажа: голос можно убрать или свести заново"
+                                           Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Segmented x:Name="TrackMode" SelectionChanged="AudioSelection_Changed">
+                                <ListBoxItem Content="Одна дорожка" Tag="Mixed"/>
+                                <ListBoxItem Content="Две отдельные" Tag="Separate"/>
+                                <ListBoxItem Content="Только игра" Tag="GameOnly"/>
+                                <ListBoxItem Content="Только микрофон" Tag="MicOnly"/>
+                            </c:Segmented>
+                        </c:AdaptiveRow>
+                    </Border>
+                </StackPanel>
+
+                <!-- ==================== ГРОМКОСТЬ ==================== -->
+                <StackPanel x:Name="VolumeGroup">
+                    <TextBlock Text="Громкость в записи" Style="{StaticResource GroupLabel}"/>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <c:AdaptiveRow x:Name="GameVolumeRow" Margin="16,12,16,12">
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                    <TextBlock Text="Игра" Style="{StaticResource RowLabel}"/>
+                                    <TextBlock Text="Громкие пики не хрипят: их сглаживает лимитер" Style="{StaticResource RowSub}"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Slider x:Name="GameVolume" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True" Width="200"/>
+                                    <TextBlock x:Name="GameVolumeValue" Style="{StaticResource RowValue}" Width="56" TextAlignment="Right"
+                                               FontFamily="{DynamicResource DispFont}" FontWeight="SemiBold" Foreground="{DynamicResource TxBrush}"/>
+                                </StackPanel>
+                            </c:AdaptiveRow>
+                            <c:AdaptiveRow x:Name="MicVolumeRow" Margin="16,12,16,12">
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                    <TextBlock Text="Микрофон" Style="{StaticResource RowLabel}"/>
+                                    <TextBlock Text="Если голос тонет в игре или, наоборот, заглушает её" Style="{StaticResource RowSub}"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Slider x:Name="MicVolume" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True" Width="200"/>
+                                    <TextBlock x:Name="MicVolumeValue" Style="{StaticResource RowValue}" Width="56" TextAlignment="Right"
+                                               FontFamily="{DynamicResource DispFont}" FontWeight="SemiBold" Foreground="{DynamicResource TxBrush}"/>
+                                </StackPanel>
+                            </c:AdaptiveRow>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- ==================== ЧИСТЫЙ ГОЛОС ==================== -->
+                <StackPanel x:Name="VoiceGroup">
+                    <TextBlock Text="Чистый голос" Style="{StaticResource GroupLabel}"/>
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <c:AdaptiveRow Margin="16,12,16,12">
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                    <TextBlock Text="Шумоподавление нейросетью" Style="{StaticResource RowLabel}"/>
+                                    <TextBlock Text="Убирает гул, вентиляторы и клавиатуру прямо из голоса (RNNoise)" Style="{StaticResource RowSub}"/>
+                                </StackPanel>
+                                <c:Switch x:Name="NeuralDenoise" Click="NeuralDenoise_Changed"/>
+                            </c:AdaptiveRow>
+                            <c:AdaptiveRow Margin="16,12,16,12">
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                    <TextBlock Text="Шумовой гейт" Style="{StaticResource RowLabel}"/>
+                                    <TextBlock Text="Полная тишина в паузах между фразами" Style="{StaticResource RowSub}"/>
+                                </StackPanel>
+                                <c:Switch x:Name="NoiseGate" Click="NoiseGate_Changed"/>
+                            </c:AdaptiveRow>
+                            <c:AdaptiveRow x:Name="GateRow" Margin="32,4,16,12">
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                    <TextBlock Text="Порог" Style="{StaticResource RowLabel}"/>
+                                    <TextBlock Text="Тише этого уровня микрофон молчит" Style="{StaticResource RowSub}"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Slider x:Name="Gate" Minimum="-70" Maximum="-20" TickFrequency="1" IsSnapToTickEnabled="True" Width="200"/>
+                                    <TextBlock x:Name="GateValue" Style="{StaticResource RowValue}" Width="56" TextAlignment="Right"
+                                               FontFamily="{DynamicResource DispFont}" FontWeight="SemiBold" Foreground="{DynamicResource TxBrush}"/>
+                                </StackPanel>
+                            </c:AdaptiveRow>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ==================== СЛЫШНО СЕЙЧАС ==================== -->
+        <StackPanel x:Name="Aside" Grid.Column="1" Margin="2,0,0,0">
+            <Border Style="{StaticResource AsidePanel}">
+                <StackPanel>
+                    <TextBlock Text="Слышно прямо сейчас" Style="{StaticResource AsideTitle}"/>
+                    <Grid x:Name="GameMeterRow" Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="74"/><ColumnDefinition Width="*"/><ColumnDefinition Width="54"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Игра" Style="{StaticResource KvKey}" Margin="0"/>
+                        <c:LevelMeter x:Name="GameMeter" Grid.Column="1" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="GameDb" Grid.Column="2" Style="{StaticResource KvVal}" Margin="0"
+                                   FontWeight="Normal" Foreground="{DynamicResource Tx3Brush}"/>
+                    </Grid>
+                    <Grid x:Name="MicMeterRow">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="74"/><ColumnDefinition Width="*"/><ColumnDefinition Width="54"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Микрофон" Style="{StaticResource KvKey}" Margin="0"/>
+                        <c:LevelMeter x:Name="MicMeter" Grid.Column="1" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="MicDb" Grid.Column="2" Style="{StaticResource KvVal}" Margin="0"
+                                   FontWeight="Normal" Foreground="{DynamicResource Tx3Brush}"/>
+                    </Grid>
+                    <TextBlock x:Name="MeterIdle" Style="{StaticResource AsideNote}" Margin="0,10,0,0"
+                               Text="Уровни видны, пока включён мгновенный повтор."/>
+                    <TextBlock x:Name="GateNote" Style="{StaticResource AsideNote}" Margin="0,10,0,0"
+                               Text="Белая метка показывает порог гейта. Всё левее неё в запись не попадёт."/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource AsidePanel}">
+                <StackPanel>
+                    <TextBlock Text="Устройства" Style="{StaticResource AsideTitle}"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                        <TextBlock Text="Вывод" Style="{StaticResource KvKey}"/>
+                        <TextBlock x:Name="GameDeviceName" Grid.Column="1" Style="{StaticResource KvVal}"/>
+                        <TextBlock x:Name="MicKey" Grid.Row="1" Text="Микрофон" Style="{StaticResource KvKey}"/>
+                        <TextBlock x:Name="MicDeviceName" Grid.Row="1" Grid.Column="1" Style="{StaticResource KvVal}"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </Grid>
+</views:PageBase>

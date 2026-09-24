@@ -15,6 +15,26 @@ public abstract class PageBase : UserControl
     /// <summary>Кнопки, которые окно покажет в шапке рядом с кнопками окна.</summary>
     public virtual UIElement[] ToolbarActions => [];
 
+    /// <summary>
+    /// Страница занимает окно целиком и прокручивает свой список сама (страницы
+    /// настроек: список слева прокручивается, панель справа стоит на месте).
+    /// Иначе прокручивается вся страница, как раньше.
+    /// </summary>
+    public virtual bool FillsWindow => false;
+
+    /// <summary>
+    /// Панель справа уходит, когда окно узкое: список настроек важнее подсказок.
+    /// </summary>
+    protected void HideAsideWhenNarrow(ColumnDefinition column, FrameworkElement aside, double width = 300)
+    {
+        SizeChanged += (_, _) =>
+        {
+            bool wide = ActualWidth >= 820;
+            column.Width = new GridLength(wide ? width : 0);
+            aside.Visibility = wide ? Visibility.Visible : Visibility.Collapsed;
+        };
+    }
+
     public virtual void OnShown() { }
     public virtual void OnHidden() { }
 }

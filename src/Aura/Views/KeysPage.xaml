@@ -4,26 +4,62 @@
                 xmlns:c="clr-namespace:Aura.Controls"
                 xmlns:views="clr-namespace:Aura.Views">
 
-    <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
-        <StackPanel>
-            <TextBlock Text="Клавиши" Style="{StaticResource PageTitle}"/>
+    <Grid Margin="20,16,16,0">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition x:Name="AsideCol" Width="300"/>
+        </Grid.ColumnDefinitions>
 
-            <Border x:Name="ConflictBar" Style="{StaticResource Card}" Padding="14,12,14,12"
-                    Margin="0,0,0,12" Visibility="Collapsed"
-                    Background="{DynamicResource AccentSoftBrush}">
-                <StackPanel Orientation="Horizontal">
-                    <c:IconTile Data="{DynamicResource Ico.Alert}" Background="{DynamicResource OrangeBrush}"/>
-                    <TextBlock x:Name="ConflictText" Style="{StaticResource RowSub}" Margin="12,0,0,0"
-                               VerticalAlignment="Center" MaxWidth="620"/>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
+            <StackPanel Margin="0,0,0,40">
+                <Grid Margin="2,0,0,10">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Клавиши" Style="{StaticResource PageTitle}" Margin="0"/>
+                        <TextBlock Text="Работают поверх любой игры" Style="{StaticResource Lede}" Margin="12,0,0,5" VerticalAlignment="Bottom"/>
+                    </StackPanel>
+                    <Button Content="Вернуть стандартные" HorizontalAlignment="Right" Style="{StaticResource BtnPlain}"
+                            Height="30" Click="Reset_Click" c:Deco.Icon="{DynamicResource Ico.Undo}"/>
+                </Grid>
+
+                <Border x:Name="ConflictBar" CornerRadius="10" Padding="14,11,14,12" Margin="0,4,0,4"
+                        Visibility="Collapsed" Background="{DynamicResource WarnSoftBrush}">
+                    <StackPanel Orientation="Horizontal">
+                        <c:Icon Data="{DynamicResource Ico.Alert}" Size="16" Foreground="{DynamicResource OrangeBrush}"
+                                VerticalAlignment="Top" Margin="0,1,0,0"/>
+                        <TextBlock x:Name="ConflictText" FontSize="12.5" Margin="10,0,0,0" TextWrapping="Wrap"
+                                   VerticalAlignment="Center" MaxWidth="620" Foreground="{DynamicResource TxBrush}"/>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Text="Повтор" Style="{StaticResource GroupLabel}" Margin="4,10,4,7"/>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel x:Name="Rows"/>
+                </Border>
+
+                <TextBlock Text="Запись и скриншоты" Style="{StaticResource GroupLabel}"/>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel x:Name="Rows2"/>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel x:Name="Aside" Grid.Column="1" Margin="2,0,0,0">
+            <Border Style="{StaticResource AsidePanel}">
+                <StackPanel>
+                    <TextBlock Text="Как назначить" Style="{StaticResource AsideTitle}"/>
+                    <TextBlock Style="{StaticResource AsideNote}"
+                               Text="Нажми на сочетание, затем жми клавишу или кнопку мыши. Esc снимает назначение. Боковые кнопки мыши тоже подходят."/>
                 </StackPanel>
             </Border>
-
-            <Border Style="{StaticResource Card}">
-                <StackPanel x:Name="Rows"/>
+            <Border Style="{StaticResource AsidePanel}">
+                <StackPanel>
+                    <TextBlock Text="Проверка сочетаний" Style="{StaticResource AsideTitle}"/>
+                    <TextBlock x:Name="TakenSummary" Style="{StaticResource AsideNote}" Margin="0,0,0,6"/>
+                    <Grid x:Name="TakenList">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    </Grid>
+                </StackPanel>
             </Border>
-
-            <Button Content="Вернуть стандартные" HorizontalAlignment="Left" Margin="0,14,0,0" Click="Reset_Click"
-                    c:Deco.Icon="{DynamicResource Ico.Undo}"/>
         </StackPanel>
     </Grid>
 </views:PageBase>

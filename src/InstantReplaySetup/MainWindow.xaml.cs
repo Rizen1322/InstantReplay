@@ -62,6 +62,7 @@ public partial class MainWindow : Window
         long payload = GetPayloadSize();
         SizeText.Text = payload > 0 ? $"потребуется ~{payload * 2.2 / (1024 * 1024):0} МБ" : "";
 
+        if (App.SnapshotPath is { } snapshot) { Snapshot(snapshot); return; }
         if (App.UpdateMode) { StartUpdate(); return; }
 
         StartMusic();
@@ -83,7 +84,7 @@ public partial class MainWindow : Window
         SnapshotPaths();
 
         Title = "Обновление Aura";
-        TitleMode.Text = "· обновление";
+        TitleMode.Text = "обновление";
         ProgressTitle.Text = "Обновление…";
         PageOptions.Visibility = Visibility.Collapsed;
         PageProgress.Visibility = Visibility.Visible;
@@ -125,6 +126,28 @@ public partial class MainWindow : Window
     }
 
     // ---------------- Музыка ----------------
+
+    /// <summary>Снимок вёрстки: окно за пределами экрана, без фокуса, потом выход.</summary>
+    private void Snapshot(string path)
+    {
+        if (App.UninstallMode) SwitchToUninstall();
+        ShowActivated = false;
+        ShowInTaskbar = false;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Left = -32000;
+        Top = -32000;
+        ContentRendered += async (_, _) =>
+        {
+            await Task.Delay(800);
+            var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                (int)ActualWidth, (int)ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            bitmap.Render((System.Windows.Media.Visual)Content);
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+            using (var file = File.Create(path)) encoder.Save(file);
+            Environment.Exit(0);
+        };
+    }
 
     private void StartMusic()
     {
@@ -223,7 +246,7 @@ public partial class MainWindow : Window
         try
         {
             await Task.Run(() => DoInstall(desktop, autostart));
-            DoneText.Text = $"Instant Replay установлен в\n{_root}";
+            DoneText.Text = $"Aura установлена в\n{_root}";
             PageProgress.Visibility = Visibility.Collapsed;
             PageDone.Visibility = Visibility.Visible;
         }
@@ -533,7 +556,7 @@ public partial class MainWindow : Window
 
     private void SwitchToUninstall()
     {
-        TitleMode.Text = "· удаление";
+        TitleMode.Text = "удаление";
         Title = "Удаление Aura";
         SubTitle.Text = "Приложение будет удалено. Ваши записи останутся на месте.";
         PageOptions.Visibility = Visibility.Collapsed;
@@ -541,14 +564,15 @@ public partial class MainWindow : Window
         DoneTitle.Text = "Удалить Aura?";
         DoneText.Text = "Записи и настройки не удаляются.";
         DoneBtn.Content = "Удалить";
+        DoneBtn.Style = (Style)FindResource("DangerButton");
         // Зелёная галочка на вопросе «удалить?» читалась как «уже готово».
         // E74D — корзина; плашку перекрашиваем в нейтральный серый.
         DoneGlyph.Text = "";
         DoneGlyph.Foreground = (System.Windows.Media.Brush)FindResource("FgDim");
         DoneBadge.Background = new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromArgb(0x23, 0x98, 0xA1, 0xAE));
+            System.Windows.Media.Color.FromArgb(0x1C, 0xA3, 0xA8, 0xB2));
         DoneBadge.BorderBrush = new System.Windows.Media.SolidColorBrush(
-            System.Windows.Media.Color.FromArgb(0x50, 0x98, 0xA1, 0xAE));
+            System.Windows.Media.Color.FromArgb(0x40, 0xA3, 0xA8, 0xB2));
         DoneBtn.Click -= Done_Click;
         DoneBtn.Click += Uninstall_Click;
     }

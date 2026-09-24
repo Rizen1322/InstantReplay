@@ -24,7 +24,7 @@
     <!-- Карточка записи. Пока кадр не загрузился, на её месте лежит спокойная
          заглушка — сетка не «прыгает» и не мигает белым. -->
     <DataTemplate x:Key="ClipCard" DataType="{x:Type lib:ClipItem}">
-        <Button Style="{StaticResource ClipCardButton}" Width="196" Margin="0,0,14,16"
+        <Button Style="{StaticResource ClipCardButton}" Margin="0,0,12,14"
                 ToolTip="{Binding FileName}"
                 c:DragFile.Path="{Binding FullPath}">
             <Button.ContextMenu>
@@ -106,7 +106,8 @@
                 </ContextMenu>
             </Button.ContextMenu>
             <StackPanel>
-                <Border x:Name="Shot" Height="122" CornerRadius="14" ClipToBounds="True"
+                <c:Aspect>
+                <Border x:Name="Shot" CornerRadius="8" ClipToBounds="True"
                         RenderTransformOrigin="0.5,0.5">
                     <Border.RenderTransform>
                         <TransformGroup>
@@ -116,8 +117,8 @@
                     </Border.RenderTransform>
                     <Border.Background>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                            <GradientStop Color="#FF1E2A2E" Offset="0"/>
-                            <GradientStop Color="#FF11171A" Offset="1"/>
+                            <GradientStop Color="#FF16181C" Offset="0"/>
+                            <GradientStop Color="#FF0E0F12" Offset="1"/>
                         </LinearGradientBrush>
                     </Border.Background>
                     <Grid>
@@ -127,51 +128,36 @@
 
                         <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"/>
 
-                        <!-- затемнение снизу, чтобы плашки читались на любом кадре -->
-                        <Border VerticalAlignment="Bottom" Height="52" IsHitTestVisible="False">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                    <GradientStop Color="#00000000" Offset="0"/>
-                                    <GradientStop Color="#99000000" Offset="1"/>
-                                </LinearGradientBrush>
-                            </Border.Background>
-                        </Border>
-                        <Border BorderThickness="1" BorderBrush="#22FFFFFF" CornerRadius="14" IsHitTestVisible="False"/>
+                        <Border BorderThickness="1" BorderBrush="#1AFFFFFF" CornerRadius="8" IsHitTestVisible="False"/>
 
                         <!-- Рамка выделения: в том же Grid и с тем же скруглением, что
                              и превью, поэтому ложится ровно по краю кадра при любом
                              размере карточки и вместе с ним же масштабируется. -->
                         <Border x:Name="SelectionRing" Opacity="0" IsHitTestVisible="False"
-                                BorderThickness="2.5" BorderBrush="{DynamicResource AccentBrush}"
-                                CornerRadius="14"/>
+                                BorderThickness="2" BorderBrush="{DynamicResource AccentBrush}"
+                                CornerRadius="8"/>
 
                         <!-- Галочка выделения: рамки мало, когда карточек много -->
                         <Border x:Name="Check" Visibility="Collapsed" IsHitTestVisible="False"
                                 HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
-                                Width="24" Height="24" CornerRadius="12"
+                                Width="22" Height="22" CornerRadius="6"
                                 Background="{DynamicResource AccentBrush}">
-                            <c:Icon Data="{DynamicResource Ico.Check}" Size="13" Foreground="White"
+                            <c:Icon Data="{DynamicResource Ico.Check}" Size="13" Foreground="{DynamicResource AccentInkBrush}"
                                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
 
-                        <!-- «Новое» у только что сохранённых -->
-                        <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8"
-                                Background="{DynamicResource AccentBrush}" CornerRadius="7" Padding="7,2,7,3"
-                                Visibility="{Binding NewVisibility}">
-                            <TextBlock Text="НОВОЕ" FontSize="10" FontWeight="Bold"
-                                       Foreground="{DynamicResource AccentInkBrush}"/>
-                        </Border>
-
-                        <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8"
-                                Background="#9E000000" CornerRadius="7" Padding="7,2,7,3"
+                        <!-- Длительность: единственная метка поверх кадра, она функциональная -->
+                        <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="6"
+                                Background="#CC08090B" CornerRadius="4" Padding="5,1,5,2"
                                 Visibility="{Binding DurationVisibility}">
-                            <TextBlock Text="{Binding DurationText}" FontSize="11" FontWeight="SemiBold" Foreground="White"/>
+                            <TextBlock Text="{Binding DurationText}" FontSize="11" FontWeight="SemiBold" Foreground="#FFF2F3F5"
+                                       FontFamily="{DynamicResource DispFont}"/>
                         </Border>
 
                         <!-- кружок Play при наведении (у скриншотов скрыт) -->
-                        <Border x:Name="Play" Width="46" Height="46" CornerRadius="23" Opacity="0"
+                        <Border x:Name="Play" Width="40" Height="40" CornerRadius="20" Opacity="0"
                                 Visibility="{Binding PlayVisibility}"
-                                Background="#38FFFFFF" BorderBrush="#66FFFFFF" BorderThickness="1"
+                                Background="#B308090B" BorderBrush="#33FFFFFF" BorderThickness="1"
                                 HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"
                                 RenderTransformOrigin="0.5,0.5">
                             <Border.RenderTransform><ScaleTransform x:Name="PlayScale" ScaleX="0.82" ScaleY="0.82"/></Border.RenderTransform>
@@ -180,11 +166,27 @@
                         </Border>
                     </Grid>
                 </Border>
+                </c:Aspect>
 
-                <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" Margin="2,9,2,0"
-                           TextTrimming="CharacterEllipsis"/>
-                <TextBlock Text="{Binding Subtitle}" FontSize="11.5" Margin="2,1,2,0"
-                           Foreground="{DynamicResource Tx2Brush}" TextTrimming="CharacterEllipsis"/>
+                <Grid Margin="1,8,1,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding Game}" FontSize="12.5" FontWeight="Medium" TextTrimming="CharacterEllipsis"
+                               MaxWidth="150"/>
+                    <!-- «новый» у только что сохранённых: рядом с названием, а не поверх кадра -->
+                    <Border Grid.Column="1" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="6,0,0,0"
+                            Background="{DynamicResource AccentSoftBrush}" CornerRadius="4" Padding="5,0,5,1"
+                            Visibility="{Binding NewVisibility}">
+                        <TextBlock Text="новый" FontSize="10.5" FontWeight="SemiBold" Foreground="{DynamicResource AccentTxBrush}"/>
+                    </Border>
+                    <TextBlock Grid.Column="2" Text="{Binding CardTime}" FontSize="12" Margin="8,0,0,0"
+                               Foreground="{DynamicResource Tx3Brush}" FontFamily="{DynamicResource DispFont}"/>
+                </Grid>
+                <TextBlock Text="{Binding CardDetail}" FontSize="12" Margin="1,2,1,0"
+                           Foreground="{DynamicResource Tx3Brush}" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
         </Button>
 
@@ -198,7 +200,7 @@
                     <BeginStoryboard>
                         <Storyboard>
                             <DoubleAnimation Storyboard.TargetName="ShotShift" Storyboard.TargetProperty="Y"
-                                             To="-5" Duration="0:0:0.28" EasingFunction="{StaticResource Spring}"/>
+                                             To="-2" Duration="0:0:0.28" EasingFunction="{StaticResource Spring}"/>
                             <DoubleAnimation Storyboard.TargetName="ShotScale" Storyboard.TargetProperty="ScaleX"
                                              To="1.02" Duration="0:0:0.28" EasingFunction="{StaticResource Spring}"/>
                             <DoubleAnimation Storyboard.TargetName="ShotScale" Storyboard.TargetProperty="ScaleY"
@@ -236,7 +238,7 @@
 
     <!-- Сетка карточек с переносом -->
     <ItemsPanelTemplate x:Key="ClipGridPanel">
-        <WrapPanel Orientation="Horizontal"/>
+        <WrapPanel Orientation="Horizontal" ItemWidth="222"/>
     </ItemsPanelTemplate>
 
 </ResourceDictionary>

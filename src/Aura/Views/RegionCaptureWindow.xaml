@@ -5,7 +5,7 @@
         xmlns:c="clr-namespace:Aura.Controls"
         WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False"
         Topmost="True" AllowsTransparency="False" Background="Black"
-        WindowStartupLocation="Manual" Cursor="Cross" Title="Aura — снимок области">
+        WindowStartupLocation="Manual" Cursor="Cross" Title="Aura: снимок области">
 
     <Window.Resources>
         <!-- Стрелки, капли и буквы в наборе приложения нет — рисуем свои в сетке 24×24 -->
@@ -101,14 +101,14 @@
                     <ToggleButton x:Name="RectBtn" Style="{StaticResource ToolButton}" ToolTip="Прямоугольник (U)">
                         <c:Icon Data="{DynamicResource Ico.Box}" Size="17"/>
                     </ToggleButton>
-                    <ToggleButton x:Name="BlurBtn" Style="{StaticResource ToolButton}" ToolTip="Скрыть — крупные пиксели поверх ника, почты, ключа (R)">
+                    <ToggleButton x:Name="BlurBtn" Style="{StaticResource ToolButton}" ToolTip="Скрыть ник, почту или ключ крупными пикселями (R)">
                         <c:Icon Data="{StaticResource Ico.BlurTool}" Size="17"/>
                     </ToggleButton>
                     <ToggleButton x:Name="TextBtn" Style="{StaticResource ToolButton}" ToolTip="Подпись (T)">
                         <c:Icon Data="{StaticResource Ico.TextTool}" Size="17"/>
                     </ToggleButton>
                     <ToggleButton x:Name="EraserBtn" Style="{StaticResource ToolButton}"
-                                  ToolTip="Стирка — убрать пометку под курсором (E)">
+                                  ToolTip="Стирка: убрать пометку под курсором (E)">
                         <c:Icon Data="{DynamicResource Ico.Eraser}" Size="17"/>
                     </ToggleButton>
                     <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
@@ -174,7 +174,7 @@
                     <Border Width="1" Background="#33FFFFFF" Margin="5,2"/>
                     <!-- Пипетка живёт здесь же: она про цвет, а не про рисование -->
                     <ToggleButton x:Name="EyedropperBtn" Style="{StaticResource ToolButton}"
-                                  ToolTip="Пипетка — взять цвет с кадра (I)">
+                                  ToolTip="Пипетка: взять цвет с кадра (I)">
                         <c:Icon x:Name="EyedropperIcon" Data="{StaticResource Ico.Eyedropper}" Size="17"/>
                     </ToggleButton>
                 </StackPanel>
@@ -196,7 +196,7 @@
 
         <TextBlock x:Name="Hint" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,28,0,0"
                    Foreground="#D8D8E0" FontSize="14" IsHitTestVisible="False"
-                   Text="Протяните область мышью · Ctrl — выделить окно целиком · Esc — отмена">
+                   Text="Протяни область мышью. Ctrl выделяет окно целиком, Esc отменяет">
             <TextBlock.Effect>
                 <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.8" Color="Black"/>
             </TextBlock.Effect>

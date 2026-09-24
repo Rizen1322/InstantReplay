@@ -45,7 +45,7 @@ public static class Dialogs
         {
             Text = entries.Count == 1
                 ? $"Версия {entries[0].Version}"
-                : $"Версии {entries[^1].Version} — {entries[0].Version}",
+                : $"Версии {entries[^1].Version}-{entries[0].Version}",
             Style = (Style)app.FindResource("RowSub"),
             Margin = new Thickness(0, 3, 0, 0)
         });

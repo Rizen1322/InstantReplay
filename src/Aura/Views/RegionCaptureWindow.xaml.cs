@@ -547,8 +547,8 @@ public partial class RegionCaptureWindow : Window
         if (_hasSelection) return;
 
         Hint.Text = SnapArmed
-            ? "Наведите на окно и щёлкните · Ctrl+A — весь экран · Esc — отмена"
-            : "Протяните область мышью · Ctrl — выделить окно целиком · Esc — отмена";
+            ? "Наведи на окно и щёлкни. Ctrl+A выделяет весь экран, Esc отменяет"
+            : "Протяни область мышью. Ctrl выделяет окно целиком, Esc отменяет";
     }
 
     /// <summary>Самое верхнее окно под точкой; null — там ничего нет.</summary>
@@ -880,7 +880,7 @@ public partial class RegionCaptureWindow : Window
             var picked = ColorSampling.At(_shot, at, Root.ActualWidth);
             _color = picked;
             HighlightSwatch();
-            EyedropperBtn.ToolTip = $"Пипетка — взят #{picked.R:X2}{picked.G:X2}{picked.B:X2}";
+            EyedropperBtn.ToolTip = $"Пипетка: взят цвет #{picked.R:X2}{picked.G:X2}{picked.B:X2}";
             SetTool(InkTool.Pencil);
         }
         catch (Exception ex) { Log.Warn("Screenshot", $"Пипетка: {ex.Message}"); }

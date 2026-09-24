@@ -10,7 +10,9 @@
     <!-- Сжатие содержимого single-file: и рантайм, и payload.zip, и музыка -->
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <!-- Установщику не нужны ICU-данные (~28 МБ) и чужие языковые ресурсы -->
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Не invariant: со шрифтами Aura (Golos, Onest) WPF читает языковые таблицы
+         OpenType и в invariant-режиме падает на культуре "en". -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
@@ -27,6 +29,12 @@
     <!-- Значок приложения показывается и в установщике: один файл на оба,
          чтобы установщик не расходился с иконкой в меню «Пуск». -->
     <Resource Include="..\Aura\Assets\logo.png" Link="Assets\logo.png" />
+    <!-- Шрифты самой Aura: установщик выглядит как приложение -->
+    <Resource Include="..\Aura\Fonts\GolosText-Regular.ttf" Link="Fonts\GolosText-Regular.ttf" />
+    <Resource Include="..\Aura\Fonts\GolosText-Medium.ttf" Link="Fonts\GolosText-Medium.ttf" />
+    <Resource Include="..\Aura\Fonts\GolosText-SemiBold.ttf" Link="Fonts\GolosText-SemiBold.ttf" />
+    <Resource Include="..\Aura\Fonts\Onest-SemiBold.ttf" Link="Fonts\Onest-SemiBold.ttf" />
+    <Resource Include="..\Aura\Fonts\Onest-Bold.ttf" Link="Fonts\Onest-Bold.ttf" />
   </ItemGroup>
 
   <ItemGroup>

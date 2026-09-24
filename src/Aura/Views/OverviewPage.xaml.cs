@@ -1,69 +1,82 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using Aura.Controls;
 using Aura.Core.Engine;
 using Aura.Core.Library;
-using Aura.Core.Storage;
 
 namespace Aura.Views;
 
 /// <summary>
-/// Главный экран: что происходит прямо сейчас, два частых действия,
-/// три цифры о состоянии и последние записи.
+/// Главный экран: живой кадр того, что пишет повтор, лента буфера, управление
+/// повтором и последние клипы.
+///
+/// Живой кадр берётся у работающего конвейера раз в две секунды и только пока
+/// этот экран открыт: своя сессия захвата ради картинки не поднимается, а на
+/// свёрнутом окне и в других разделах кадр не вычитывается вовсе.
 /// </summary>
 public partial class OverviewPage : PageBase
 {
-    private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _frameTick = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool _loadedClips;
+    private bool _grabbing;
+    private double _gameDb = LevelMeter.FloorDb, _micDb = LevelMeter.FloorDb;
+    private int _recentColumns = 5;
 
-    public override string Title => "Обзор";
+    /// <summary>Выделение на ленте: доля от левого края, с которой оно начинается (1 — нет выделения).</summary>
+    private double _pickStart = 1;
+    private bool _picking;
 
-    public override UIElement[] ToolbarActions
-    {
-        get
-        {
-            var button = new Button { Style = (Style)FindResource("BtnPri"), Content = "Сохранить повтор" };
-            button.Click += SaveReplay_Click;
-            return [button];
-        }
-    }
+    public override string Title => "Повтор";
+
+    public override bool FillsWindow => true;
 
     public OverviewPage()
     {
         InitializeComponent();
 
         _tick.Tick += (_, _) => Refresh();
-        Services.Storage.StatsChanged += stats => Dispatcher.BeginInvoke(() => ShowStats(stats));
+        _frameTick.Tick += async (_, _) => await GrabFrameAsync();
         ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = LoadRecentAsync());
-        // Один новый файл — тоже повод обновить «последние записи», но здесь список
-        // всего из четырёх карточек, и перечитать его дешевле, чем городить вставку.
         ClipCommands.ClipAdded += path => Dispatcher.BeginInvoke(() => { _ = path; _ = LoadRecentAsync(); });
+        ReplayFilmstrip.Changed += () => Dispatcher.BeginInvoke(BuildStrip);
 
-        SizeChanged += (_, _) =>
-        {
-            // Узкое окно — цифры в две колонки, совсем узкое — в одну.
-            // Rows остаётся нулём: строки UniformGrid считает сам по числу колонок.
-            double width = ActualWidth;
-            Stats.Columns = width < 560 ? 1 : width < 760 ? 2 : 3;
-        };
+        SizeChanged += (_, _) => Relayout();
 
-        // Клик по карточке в «Последних записях» открывает файл — как в «Клипах»
-        Recent.AddHandler(System.Windows.Controls.Primitives.ButtonBase.ClickEvent,
-                          new RoutedEventHandler(Card_Click));
+        // Клик по карточке в «Последних» открывает файл, как в «Клипах»
+        Recent.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler(Card_Click));
     }
 
     public override void OnShown()
     {
-        SyncHotkeys();
         Refresh();
-        ShowStats(Services.Storage.GetStats());
+        BuildStrip();
         _tick.Start();
+        _frameTick.Start();
+        _ = GrabFrameAsync();
         if (!_loadedClips) _ = LoadRecentAsync();
     }
 
-    public override void OnHidden() => _tick.Stop();
+    public override void OnHidden()
+    {
+        _tick.Stop();
+        _frameTick.Stop();
+    }
+
+    /// <summary>Узкое окно: панель управления уже, клипов в ряду меньше.</summary>
+    private void Relayout()
+    {
+        double width = ActualWidth;
+        ControlCol.Width = new GridLength(width < 760 ? 260 : 300);
+        int columns = width < 700 ? 3 : width < 940 ? 4 : 5;
+        if (columns == _recentColumns) return;
+        _recentColumns = columns;
+        _ = LoadRecentAsync();
+    }
 
     // ---------------- Состояние ----------------
 
@@ -71,132 +84,184 @@ public partial class OverviewPage : PageBase
     {
         var engine = Services.Engine;
         bool on = engine.State != EngineState.Stopped;
-        var settings = Services.Settings.Current;
+        var s = Services.Settings.Current;
 
         Master.IsChecked = on;
-        MasterState.Text = on ? "Включён" : "Выключен";
-        Tally.Fill = (Brush)FindResource(on ? "RecBrush" : "HeroTx3Brush");
-
-        // Названия активного окна здесь нет намеренно: определяется оно по процессу
-        // на переднем плане, а когда игра свёрнута или человек листает браузер, там
-        // оказывается «Рабочий стол» — и выглядело это как «пишется не то».
-        // На что именно смотрит захват, показывает строка «Экран N» ниже.
-        Eyebrow.Text = on ? "Запись идёт" : "Повтор выключен";
-
         var buffered = engine.BufferedDuration;
         BufferTime.Text = Format(buffered);
-        TickLeft.Text = "−" + Format(buffered);
+        BufferOf.Text = $"из {Format(TimeSpan.FromSeconds(s.ReplayLengthSeconds))}";
+        BufferTime.Foreground = (Brush)FindResource(on ? "TxBrush" : "Tx3Brush");
 
-        BufferHint.Text = on ? "сохранится по" : "включи, чтобы не упустить момент";
-        SaveCombo.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        LengthText.Text = LengthWords(s.ReplayLengthSeconds);
+        QualityText.Text = $"{Resolution(s.VerticalResolution)}{s.Fps}, {s.BitrateMbps} Мбит/с";
+        SoundText.Text = Sound(s);
+        SourceText.Text = $"Экран {s.MonitorIndex + 1}";
 
-        double target = settings.ReplayLengthSeconds;
-        double part = target > 0 ? Math.Min(1, buffered.TotalSeconds / target) : 0;
-        AnimateWidth(BufferFill, part, BufferFill.ActualWidth);
+        SaveKey.Text = s.HotkeySaveReplay;
+        SaveKeyBox.Visibility = string.IsNullOrEmpty(s.HotkeySaveReplay) ? Visibility.Collapsed : Visibility.Visible;
+        Save30Key.Text = s.HotkeySaveLast30;
+        SaveButton.IsEnabled = on;
+        Save30.IsEnabled = on;
 
-        QualityText.Text = $"{settings.VerticalResolution}p · {settings.Fps}";
-        QualitySub.Text = $"{Codec(settings.Codec)} · {settings.BitrateMbps} Мбит/с";
+        bool recording = engine.IsRecordingToFile;
+        RecordLabel.Text = recording ? "Стоп" : "Запись";
+        RecordDot.Fill = (Brush)FindResource(recording ? "TxBrush" : "RecBrush");
+        RecordButton.IsEnabled = on || recording;
 
-        BuildPills();
+        FrameIdle.Visibility = on && FrameImage.Background is ImageBrush ? Visibility.Collapsed : Visibility.Visible;
+        IdleTitle.Text = on ? "Жду кадр" : "Повтор выключен";
+        IdleSub.Text = on ? "Картинка появится через пару секунд" : "Включи, чтобы не упустить момент";
+        if (!on) FrameImage.Background = null;
+
+        // Шкала ленты: слева самое старое, что лежит в буфере
+        double total = Math.Max(1, buffered.TotalSeconds);
+        Scale.Visibility = on && buffered.TotalSeconds >= 3 ? Visibility.Visible : Visibility.Hidden;
+        Scale0.Text = "−" + Format(TimeSpan.FromSeconds(total));
+        Scale1.Text = "−" + Format(TimeSpan.FromSeconds(total * 2 / 3));
+        Scale2.Text = "−" + Format(TimeSpan.FromSeconds(total / 3));
+        UpdatePick();
+
+        ShowLevels(on, s);
     }
 
-    /// <summary>Ширина шкалы задаётся анимацией, чтобы буфер «наливался», а не прыгал.</summary>
-    private void AnimateWidth(FrameworkElement element, double part, double current)
+    private void ShowLevels(bool on, Core.Settings.AppSettings s)
     {
-        double full = ((FrameworkElement)element.Parent).ActualWidth;
-        double to = Math.Max(0, full * part);
-        if (Math.Abs(to - current) < 0.5) return;
-        element.BeginAnimation(WidthProperty, new DoubleAnimation(to, TimeSpan.FromSeconds(0.45))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        });
+        GameMeterRow.Visibility = s.CaptureGameAudio ? Visibility.Visible : Visibility.Collapsed;
+        MicMeterRow.Visibility = s.CaptureMicrophone ? Visibility.Visible : Visibility.Collapsed;
+        var (game, mic) = on ? Services.Engine.AudioLevels : (0f, 0f);
+        _gameDb = Smooth(_gameDb, LevelMeter.ToDb(game));
+        _micDb = Smooth(_micDb, LevelMeter.ToDb(mic));
+        GameMeter.LevelDb = _gameDb;
+        MicMeter.LevelDb = _micDb;
+        GameDb.Text = DbText(_gameDb);
+        MicDb.Text = DbText(_micDb);
     }
 
-    private void BuildPills()
+    private static double Smooth(double shown, double now) => now > shown ? now : Math.Max(now, shown - 2);
+
+    private static string DbText(double db) =>
+        db <= LevelMeter.FloorDb + 0.5 ? "тихо" : $"−{Math.Abs(Math.Round(db)):0} дБ";
+
+    // ---------------- Живой кадр и лента ----------------
+
+    private async Task GrabFrameAsync()
     {
-        var settings = Services.Settings.Current;
-        var items = new List<(string Icon, string Text)>
+        if (_grabbing || Services.Engine.State == EngineState.Stopped) return;
+        if (Window.GetWindow(this) is not { IsVisible: true, WindowState: not WindowState.Minimized }) return;
+        _grabbing = true;
+        try
         {
-            ("Ico.Monitor", $"Экран {settings.MonitorIndex + 1}"),
-            ("", $"{settings.VerticalResolution}p · {settings.Fps} кадров"),
-            ("Ico.Speaker", Sound(settings))
-        };
-
-        // Перестраиваем только при изменении состава — иначе мигало бы каждые 400 мс
-        string signature = string.Join("|", items.Select(i => i.Text));
-        if ((string?)Pills.Tag == signature) return;
-        Pills.Tag = signature;
-
-        Pills.Children.Clear();
-        foreach (var (icon, text) in items)
-        {
-            var content = new StackPanel { Orientation = Orientation.Horizontal };
-            if (icon.Length > 0)
-                content.Children.Add(new Controls.Icon
-                {
-                    Data = (Geometry)FindResource(icon),
-                    Size = 12,
-                    Foreground = (Brush)FindResource("HeroTx2Brush"),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(0, 0, 6, 0)
-                });
-            // Плашки лежат на градиенте, поэтому цвета берутся из «геройского»
-            // набора палитры, а не общие: обычные Tx2/Track на нём проваливаются.
-            content.Children.Add(new TextBlock
-            {
-                Text = text,
-                Style = (Style)FindResource("PillText"),
-                Foreground = (Brush)FindResource("HeroTx2Brush")
-            });
-
-            Pills.Children.Add(new Border
-            {
-                Style = (Style)FindResource("Pill"),
-                Background = (Brush)FindResource("HeroTrackBrush"),
-                Margin = new Thickness(0, 0, 7, 7),
-                Child = content
-            });
+            var image = await LivePreview.GrabAsync(960);
+            if (image is null) return;
+            FrameImage.Background = new ImageBrush(image) { Stretch = Stretch.UniformToFill };
+            FrameIdle.Visibility = Visibility.Collapsed;
         }
+        finally { _grabbing = false; }
     }
 
-    private static string Sound(Core.Settings.AppSettings s) =>
-        s.CaptureGameAudio && s.CaptureMicrophone ? "Игра и микрофон"
-        : s.CaptureGameAudio ? "Только игра"
-        : s.CaptureMicrophone ? "Только микрофон" : "Без звука";
-
-    private static string Codec(Core.Settings.VideoCodec codec) => codec switch
+    private void BuildStrip()
     {
-        Core.Settings.VideoCodec.HEVC => "HEVC",
-        Core.Settings.VideoCodec.AV1 => "AV1",
-        _ => "H.264"
-    };
-
-    private static string Format(TimeSpan span) =>
-        span.TotalHours >= 1 ? span.ToString(@"h\:mm\:ss") : $"{(int)span.TotalMinutes}:{span.Seconds:00}";
-
-    private void SyncHotkeys() => SaveCombo.Combo = Services.Settings.Current.HotkeySaveReplay;
-
-    private void ShowStats(StorageStats stats)
-    {
-        UsedText.Text = ByteSize.Format(stats.FolderBytes);
-        FreeText.Text = $"свободно на диске {ByteSize.Format(stats.FreeDiskBytes)}";
-        ClipCountText.Text = stats.ClipCount.ToString();
-        ClipCountSub.Text = "в папке с записями";
+        var frames = ReplayFilmstrip.Snapshot();
+        // Не больше восьми: на ленте шириной 600 px кадр уже меньше спички
+        if (frames.Count > 8) frames = frames.Skip(frames.Count - 8).ToList();
+        StripFrames.Children.Clear();
+        StripFrames.Columns = Math.Max(1, frames.Count);
+        foreach (var frame in frames)
+            StripFrames.Children.Add(new Border
+            {
+                Margin = new Thickness(0, 0, 2, 0),
+                Opacity = 0.6,
+                Background = new ImageBrush(frame.Image) { Stretch = Stretch.UniformToFill }
+            });
+        StripEmpty.Visibility = frames.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    // ---------------- Последние записи ----------------
+    private void Strip_Down(object sender, MouseButtonEventArgs e)
+    {
+        if (Services.Engine.State == EngineState.Stopped) return;
+        _picking = true;
+        Strip.CaptureMouse();
+        SetPick(e.GetPosition(Strip).X);
+    }
+
+    private void Strip_Move(object sender, MouseEventArgs e)
+    {
+        if (_picking) SetPick(e.GetPosition(Strip).X);
+    }
+
+    private void Strip_Up(object sender, MouseButtonEventArgs e)
+    {
+        _picking = false;
+        Strip.ReleaseMouseCapture();
+    }
+
+    private void SetPick(double x)
+    {
+        _pickStart = Math.Clamp(x / Math.Max(1, Strip.ActualWidth), 0, 1);
+        UpdatePick();
+    }
+
+    /// <summary>Сколько секунд выделено на ленте (от начала выделения до «сейчас»).</summary>
+    private int PickSeconds()
+    {
+        double total = Services.Engine.BufferedDuration.TotalSeconds;
+        return (int)Math.Round(total * (1 - _pickStart));
+    }
+
+    private void UpdatePick()
+    {
+        int seconds = PickSeconds();
+        bool has = seconds >= 2 && _pickStart < 0.995;
+        Pick.Width = has ? Strip.ActualWidth * (1 - _pickStart) : 0;
+        SavePick.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        SavePick.Content = $"Сохранить {Format(TimeSpan.FromSeconds(seconds))}";
+        PickInfo.Text = has
+            ? $"Выделено {Format(TimeSpan.FromSeconds(seconds))} до текущего момента"
+            : "Потяни по ленте, чтобы сохранить только последние секунды";
+    }
+
+    private void SavePick_Click(object sender, RoutedEventArgs e)
+    {
+        int seconds = PickSeconds();
+        if (seconds < 2) return;
+        Services.Engine.SaveReplay(seconds);
+        _pickStart = 1;
+        UpdatePick();
+    }
+
+    // ---------------- Последние клипы ----------------
 
     private async Task LoadRecentAsync()
     {
         var s = Services.Settings.Current;
         string root = s.SaveRootPath, shots = s.ScreenshotFolder;
-        var items = await Task.Run(() => ClipLibrary.ScanAll(root, shots).Take(4).ToList());
+        int take = _recentColumns;
+        var all = await Task.Run(() => ClipLibrary.ScanAll(root, shots));
+        var items = all.Take(take).ToList();
 
         _loadedClips = true;
         Recent.ItemsSource = items;
+        if (Recent.ItemsPanel is not null)
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (FindPanel(Recent) is UniformGrid grid) grid.Columns = take;
+            }, DispatcherPriority.Loaded);
         RecentEmpty.Visibility = items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        int today = all.Count(i => i.Created.Date == DateTime.Today);
+        RecentCount.Text = today > 0 ? $"сегодня {today}" : "";
 
         foreach (var item in items) _ = ClipThumbnails.LoadAsync(item);
+    }
+
+    private static Panel? FindPanel(DependencyObject parent)
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is UniformGrid grid) return grid;
+            if (FindPanel(child) is { } found) return found;
+        }
+        return null;
     }
 
     /// <summary>Перечитать список после сохранения нового клипа.</summary>
@@ -211,6 +276,21 @@ public partial class OverviewPage : PageBase
     }
 
     private void SaveReplay_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay();
+
+    private void Save30_Click(object sender, RoutedEventArgs e) => Services.Engine.SaveReplay(30);
+
+    private void Record_Click(object sender, RoutedEventArgs e)
+    {
+        if (Services.Engine.IsRecordingToFile) Services.Engine.StopRecordingToFile();
+        else App.SafeStartRecording();
+        Refresh();
+    }
+
+    private void Go_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: string page })
+            (Window.GetWindow(this) as MainWindow)?.Navigate(page);
+    }
 
     private void AllClips_Click(object sender, RoutedEventArgs e) =>
         (Window.GetWindow(this) as MainWindow)?.Navigate("clips");
@@ -231,4 +311,19 @@ public partial class OverviewPage : PageBase
         }
         catch { }
     }
+
+    // ---------------- Текст ----------------
+
+    private static string Resolution(int height) => height >= 2160 ? "4K" : $"{height}p";
+
+    private static string Sound(Core.Settings.AppSettings s) =>
+        s.CaptureGameAudio && s.CaptureMicrophone ? "Игра и микрофон"
+        : s.CaptureGameAudio ? "Только игра"
+        : s.CaptureMicrophone ? "Только микрофон" : "Без звука";
+
+    private static string LengthWords(int seconds) =>
+        seconds < 60 ? $"{seconds} с" : seconds % 60 == 0 ? $"{seconds / 60} мин" : $"{seconds / 60} мин {seconds % 60} с";
+
+    private static string Format(TimeSpan span) =>
+        span.TotalHours >= 1 ? span.ToString(@"h\:mm\:ss") : $"{(int)span.TotalMinutes}:{span.Seconds:00}";
 }

@@ -10,19 +10,20 @@
     <FontFamily x:Key="UiFont">pack://application:,,,/Fonts/#Golos Text</FontFamily>
     <FontFamily x:Key="DispFont">pack://application:,,,/Fonts/#Onest</FontFamily>
 
-    <Color x:Key="CanvasColor">#FF0B0B0E</Color>
-    <Color x:Key="GlassColor">#F21C1D22</Color>
-    <Color x:Key="CardColor">#0EFFFFFF</Color>
-    <Color x:Key="Card2Color">#16FFFFFF</Color>
-    <Color x:Key="SepColor">#17FFFFFF</Color>
+    <Color x:Key="CanvasColor">#FF0C0D0F</Color>
+    <Color x:Key="GlassColor">#FF0C0D0F</Color>
+    <Color x:Key="CardColor">#FF131418</Color>
+    <Color x:Key="Card2Color">#FF1A1C21</Color>
+    <Color x:Key="SepColor">#12FFFFFF</Color>
     <Color x:Key="HairColor">#1FFFFFFF</Color>
-    <Color x:Key="HoverColor">#14FFFFFF</Color>
-    <Color x:Key="PressColor">#22FFFFFF</Color>
-    <Color x:Key="TrackColor">#3A8E939C</Color>
+    <Color x:Key="HoverColor">#0CFFFFFF</Color>
+    <Color x:Key="PressColor">#FF22252B</Color>
+    <Color x:Key="TrackColor">#FF2C2F35</Color>
+    <Color x:Key="WellColor">#FF08090B</Color>
 
     <Color x:Key="TxColor">#FFF3F4F6</Color>
-    <Color x:Key="Tx2Color">#FF9DA2AC</Color>
-    <Color x:Key="Tx3Color">#FF6E737D</Color>
+    <Color x:Key="Tx2Color">#FFA3A8B2</Color>
+    <Color x:Key="Tx3Color">#FF8A8F99</Color>
 
     <Color x:Key="AccentColor">#FF32D74B</Color>
     <Color x:Key="AccentTxColor">#FF3DDC5C</Color>
@@ -56,6 +57,7 @@
     <SolidColorBrush x:Key="HoverBrush" Color="{DynamicResource HoverColor}"/>
     <SolidColorBrush x:Key="PressBrush" Color="{DynamicResource PressColor}"/>
     <SolidColorBrush x:Key="TrackBrush" Color="{DynamicResource TrackColor}"/>
+    <SolidColorBrush x:Key="WellBrush" Color="{DynamicResource WellColor}"/>
 
     <SolidColorBrush x:Key="TxBrush" Color="{DynamicResource TxColor}"/>
     <SolidColorBrush x:Key="Tx2Brush" Color="{DynamicResource Tx2Color}"/>

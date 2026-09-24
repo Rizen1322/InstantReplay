@@ -53,6 +53,13 @@ public partial class MainWindow : Window
         ApplyUiScale(Services.Settings.Current.UiScale);
 
         Services.Engine.StateChanged += _ => Services.Ui.Enqueue(SyncMaster);
+        Services.Engine.RecordingChanged += recording => Services.Ui.Enqueue(() =>
+        {
+            _recordingSince = recording ? DateTime.UtcNow : null;
+            SyncMaster();
+        });
+        Services.Storage.StatsChanged += stats => Dispatcher.BeginInvoke(() => ShowDisk(stats));
+        _statusTick.Tick += (_, _) => SyncMaster();
         Services.Settings.Changed += group => Services.Ui.Enqueue(() =>
         {
             if (group is "" or "ui") ApplyUiScale(Services.Settings.Current.UiScale);
@@ -63,6 +70,8 @@ public partial class MainWindow : Window
             if (!IsCompact) Side.Width = WantedSideWidth;
             Navigate(StartPage);
             SyncMaster();
+            ShowDisk(Services.Storage.GetStats());
+            _statusTick.Start();
             _ = CheckUpdateAsync();
         };
     }
@@ -107,11 +116,22 @@ public partial class MainWindow : Window
     public bool IsCompact { get => (bool)GetValue(IsCompactProperty); set => SetValue(IsCompactProperty, value); }
 
     /// <summary>Границы ширины колонки: уже — не помещаются подписи, шире — отъедает страницу.</summary>
-    private const double MinSideWidth = 190, MaxSideWidth = 420;
+    private const double MinSideWidth = 180, MaxSideWidth = 360;
 
-    /// <summary>Ширина развёрнутой колонки из настроек, приведённая к допустимой.</summary>
-    private static double WantedSideWidth =>
-        Math.Clamp(Services.Settings.Current.SidebarWidth, MinSideWidth, MaxSideWidth);
+    /// <summary>
+    /// Ширина развёрнутой колонки из настроек, приведённая к допустимой. 236 —
+    /// ширина прежнего оформления по умолчанию: её не трогали руками, значит
+    /// берём ширину нового (208).
+    /// </summary>
+    private static double WantedSideWidth
+    {
+        get
+        {
+            double width = Services.Settings.Current.SidebarWidth;
+            if (Math.Abs(width - 236) < 0.5) width = 208;
+            return Math.Clamp(width, MinSideWidth, MaxSideWidth);
+        }
+    }
 
     private void UpdateCompact()
     {
@@ -128,8 +148,7 @@ public partial class MainWindow : Window
 
         // В свёрнутой колонке поля ужимаются: иначе переключатель шириной 44 px
         // не помещался в 64 px колонки и обрезался краем окна.
-        SideContent.Margin = compact ? new Thickness(8, 14, 8, 10) : new Thickness(12, 14, 12, 12);
-        MasterCard.Padding = compact ? new Thickness(2) : new Thickness(11, 10, 11, 10);
+        SideContent.Margin = compact ? new Thickness(8, 12, 8, 10) : new Thickness(10, 12, 10, 12);
         UpdateCardBox.Padding = compact ? new Thickness(6) : new Thickness(10, 8, 10, 8);
         Dispatcher.BeginInvoke(MoveIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
     }
@@ -201,6 +220,7 @@ public partial class MainWindow : Window
                     "overview" => new OverviewPage(),
                     "clips" => new ClipsPage(),
                     "capture" => new CapturePage(),
+                    "audio" => new AudioPage(),
                     "keys" => new KeysPage(),
                     "files" => new FilesPage(),
                     "app" => new AppSettingsPage(),
@@ -222,6 +242,7 @@ public partial class MainWindow : Window
         _current = page;
         _currentKey = key;
 
+        Scroll.VerticalScrollBarVisibility = page.FillsWindow ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
         PageHost.Content = page;
         ToolTitle.Text = page.Title;
         ToolActions.Children.Clear();
@@ -321,7 +342,7 @@ public partial class MainWindow : Window
 
     private void Scroll_Changed(object sender, ScrollChangedEventArgs e) => UpdateToolbarTitle();
 
-    /// <summary>Заголовок в шапке проявляется, когда крупный ушёл за верхний край.</summary>
+    /// <summary>Название раздела в шапке проявляется, когда заголовок страницы ушёл за край.</summary>
     private void UpdateToolbarTitle()
     {
         bool show = Scroll.VerticalOffset > 40;
@@ -329,23 +350,62 @@ public partial class MainWindow : Window
         if (Math.Abs(ToolTitle.Opacity - target) < 0.01) return;
 
         ToolTitle.BeginAnimation(OpacityProperty, new DoubleAnimation(target, TimeSpan.FromSeconds(0.25)));
-        Toolbar.BorderBrush = show ? (Brush)FindResource("SepBrush") : Brushes.Transparent;
     }
 
     // ---------------- Главный переключатель ----------------
 
+    private readonly System.Windows.Threading.DispatcherTimer _statusTick =
+        new() { Interval = TimeSpan.FromMilliseconds(500) };
+
+    /// <summary>Когда началась запись в файл (для плашки в шапке); null — не пишется.</summary>
+    private DateTime? _recordingSince;
+
     private void Master_Click(object sender, RoutedEventArgs e)
     {
-        if (Services.Engine.State == EngineState.Stopped) App.SafeStartEngine();
-        else Services.Engine.Stop();
+        App.ToggleEngine();
         SyncMaster();
     }
 
+    /// <summary>
+    /// Плашка состояния в шапке: красная точка и накопленное время, пока повтор
+    /// пишется; серая «Повтор выключен», когда нет. Время буфера здесь, а не на
+    /// одной странице: оно нужно из любого раздела.
+    /// </summary>
     private void SyncMaster()
     {
-        bool on = Services.Engine.State != EngineState.Stopped;
-        MasterSwitch.IsChecked = on;
-        MasterState.Text = on ? "Включён" : "Выключен";
+        var engine = Services.Engine;
+        bool on = engine.State != EngineState.Stopped;
+        StatusText.Text = on ? "Повтор" : "Повтор выключен";
+        StatusTime.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        StatusTime.Text = FormatSpan(engine.BufferedDuration);
+        StatusDot.Fill = (Brush)FindResource(on ? "RecBrush" : "Tx3Brush");
+        StatusHalo.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        StatusText.Foreground = (Brush)FindResource(on ? "TxBrush" : "Tx2Brush");
+
+        bool recording = engine.IsRecordingToFile;
+        if (recording && _recordingSince is null) _recordingSince = DateTime.UtcNow;
+        if (!recording) _recordingSince = null;
+        RecChip.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
+        if (_recordingSince is DateTime since) RecTime.Text = FormatSpan(DateTime.UtcNow - since);
+    }
+
+    private static string FormatSpan(TimeSpan span) =>
+        span.TotalHours >= 1 ? span.ToString(@"h\:mm\:ss") : $"{(int)span.TotalMinutes}:{span.Seconds:00}";
+
+    /// <summary>Место на диске внизу боковой колонки.</summary>
+    private void ShowDisk(Core.Storage.StorageStats stats)
+    {
+        string drive = System.IO.Path.GetPathRoot(stats.RootPath)?.TrimEnd('\\') ?? "";
+        DiskFree.Text = $"Диск {(drive.Length > 0 ? drive + " " : "")}свободно {Core.Storage.ByteSize.Format(stats.FreeDiskBytes)}";
+        DiskUsed.Text = $"{stats.ClipCount} {Plural(stats.ClipCount)}, {Core.Storage.ByteSize.Format(stats.FolderBytes)}";
+    }
+
+    private static string Plural(int n)
+    {
+        int m10 = n % 10, m100 = n % 100;
+        return m10 == 1 && m100 != 11 ? "запись"
+            : m10 is >= 2 and <= 4 && m100 is < 12 or > 14 ? "записи"
+            : "записей";
     }
 
     // ---------------- Обновление ----------------

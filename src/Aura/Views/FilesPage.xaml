@@ -4,77 +4,123 @@
                 xmlns:c="clr-namespace:Aura.Controls"
                 xmlns:views="clr-namespace:Aura.Views">
 
-    <Grid MaxWidth="840" Margin="28,24,28,42" HorizontalAlignment="Stretch">
-        <StackPanel>
-            <TextBlock Text="Файлы" Style="{StaticResource PageTitle}"/>
+    <Grid Margin="20,16,16,0">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition x:Name="AsideCol" Width="300"/>
+        </Grid.ColumnDefinitions>
 
-            <!-- Сколько занято -->
-            <Border Style="{StaticResource CardSoft}" Padding="18">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,14,0">
+            <StackPanel Margin="0,0,0,40">
+                <StackPanel Orientation="Horizontal" Margin="2,0,0,10">
+                    <TextBlock Text="Файлы" Style="{StaticResource PageTitle}" Margin="0"/>
+                    <TextBlock Text="Куда и как складывать записи" Style="{StaticResource Lede}" Margin="12,0,0,5" VerticalAlignment="Bottom"/>
+                </StackPanel>
+
+                <!-- ==================== ПАПКИ ==================== -->
+                <TextBlock Text="Папки" Style="{StaticResource GroupLabel}" Margin="4,4,4,7"/>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid Margin="16,12,16,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="104"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Видео" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
+                            <Border Grid.Column="1" Height="32" CornerRadius="8" Background="{DynamicResource WellBrush}"
+                                    BorderBrush="{DynamicResource SepBrush}" BorderThickness="1" Padding="10,0,10,0">
+                                <TextBlock x:Name="PathText" VerticalAlignment="Center" FontSize="12.5"
+                                           Foreground="{DynamicResource Tx2Brush}" TextTrimming="CharacterEllipsis"/>
+                            </Border>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0">
+                                <Button Content="Открыть" Click="OpenFolder_Click" Margin="0,0,6,0" Height="32"/>
+                                <Button Content="Выбрать…" Click="Browse_Click" Height="32" Style="{StaticResource BtnPlain}"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- Скриншоты отдельно от видео: картинки не должны попадать в
+                             подсчёт занятого места записями. В «Клипах» показываются вместе. -->
+                        <Grid Margin="16,4,16,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="104"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Скриншоты" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
+                            <Border Grid.Column="1" Height="32" CornerRadius="8" Background="{DynamicResource WellBrush}"
+                                    BorderBrush="{DynamicResource SepBrush}" BorderThickness="1" Padding="10,0,10,0">
+                                <TextBlock x:Name="ShotsPathText" VerticalAlignment="Center" FontSize="12.5"
+                                           Foreground="{DynamicResource Tx2Brush}" TextTrimming="CharacterEllipsis"/>
+                            </Border>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="10,0,0,0">
+                                <Button Content="Открыть" Click="OpenShotsFolder_Click" Margin="0,0,6,0" Height="32"/>
+                                <Button Content="Выбрать…" Click="BrowseShots_Click" Height="32" Style="{StaticResource BtnPlain}"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <c:AdaptiveRow Margin="16,10,16,13">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Раскладывать по папкам игр" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="GroupSub" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Switch x:Name="GroupByGame" Click="Setting_Changed"/>
+                        </c:AdaptiveRow>
+                    </StackPanel>
+                </Border>
+
+                <!-- ==================== ОТПРАВКА В ЧАТЫ ==================== -->
+                <TextBlock Text="Отправка в чаты" Style="{StaticResource GroupLabel}"/>
+                <Border Style="{StaticResource Card}">
+                    <c:AdaptiveRow Margin="16,12,16,12">
+                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Text="Сжимать для отправки до" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Text="Пункт «Сжать для Discord» в меню клипа подгонит файл под этот размер. Без Nitro в Discord можно до 10 МБ."
+                                       Style="{StaticResource RowSub}"/>
+                        </StackPanel>
+                        <Grid Width="112" Height="34">
+                            <TextBox x:Name="LimitBox" Padding="8,0,36,0" VerticalContentAlignment="Center"
+                                     HorizontalContentAlignment="Right" FontFamily="{DynamicResource DispFont}" FontWeight="SemiBold"
+                                     FontSize="14" PreviewTextInput="Digits_Only" LostFocus="Limit_Commit" KeyDown="Limit_Key"
+                                     ToolTip="Размер в мегабайтах, от 2 до 2048"/>
+                            <TextBlock Text="МБ" FontSize="12" Foreground="{DynamicResource Tx3Brush}" IsHitTestVisible="False"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,1"/>
+                        </Grid>
+                    </c:AdaptiveRow>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ==================== МЕСТО ==================== -->
+        <StackPanel x:Name="Aside" Grid.Column="1" Margin="2,0,0,0">
+            <Border Style="{StaticResource AsidePanel}">
                 <StackPanel>
-                    <UniformGrid Rows="1" Columns="3">
-                        <StackPanel>
-                            <TextBlock x:Name="CountText" Text="—" Style="{StaticResource Numeral}"/>
-                            <TextBlock Text="записей сохранено" Style="{StaticResource Caption}" Margin="0,4,0,0"/>
-                        </StackPanel>
-                        <StackPanel>
-                            <TextBlock x:Name="UsedText" Text="—" Style="{StaticResource Numeral}"/>
-                            <TextBlock Text="занято" Style="{StaticResource Caption}" Margin="0,4,0,0"/>
-                        </StackPanel>
-                        <StackPanel>
-                            <TextBlock x:Name="FreeText" Text="—" Style="{StaticResource Numeral}"/>
-                            <TextBlock Text="свободно на диске" Style="{StaticResource Caption}" Margin="0,4,0,0"/>
-                        </StackPanel>
-                    </UniformGrid>
-
-                    <TextBlock x:Name="UsageText" Style="{StaticResource RowSub}" Margin="0,14,0,0"/>
+                    <TextBlock Text="Место" Style="{StaticResource AsideTitle}"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="UsedText" Style="{StaticResource BigNum}" Text="…"/>
+                        <TextBlock Text="занято" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource Tx3Brush}"
+                                   VerticalAlignment="Bottom" Margin="8,0,0,6"/>
+                    </StackPanel>
+                    <!-- Доля записей на диске: без дорожки-подложки, только сама полоса -->
+                    <Grid Height="8" Margin="0,10,0,10">
+                        <Border CornerRadius="4" Background="{DynamicResource TrackBrush}"/>
+                        <Border x:Name="UsedBar" CornerRadius="4" Background="{DynamicResource AccentBrush}"
+                                HorizontalAlignment="Left" Width="0"/>
+                    </Grid>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                        <TextBlock Text="Записей" Style="{StaticResource KvKey}"/>
+                        <TextBlock x:Name="CountText" Grid.Column="1" Style="{StaticResource KvVal}"/>
+                        <TextBlock Grid.Row="1" Text="Свободно на диске" Style="{StaticResource KvKey}"/>
+                        <TextBlock x:Name="FreeText" Grid.Row="1" Grid.Column="1" Style="{StaticResource KvVal}"/>
+                    </Grid>
                 </StackPanel>
             </Border>
-
-            <!-- Папка -->
-            <TextBlock Text="Папки" Style="{StaticResource GroupLabel}"/>
-            <Border Style="{StaticResource Card}">
+            <Border x:Name="TopGamesPanel" Style="{StaticResource AsidePanel}" Visibility="Collapsed">
                 <StackPanel>
-                    <c:AdaptiveRow Margin="16,12,16,12">
-                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                            <TextBlock Text="Видео" Style="{StaticResource RowLabel}"/>
-                            <TextBlock x:Name="PathText" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="Открыть" Click="OpenFolder_Click" Margin="0,0,8,0"
-                                    c:Deco.Icon="{DynamicResource Ico.FolderOpen}"/>
-                            <Button Content="Выбрать…" Click="Browse_Click"
-                                    c:Deco.Icon="{DynamicResource Ico.Folder}"/>
-                        </StackPanel>
-                    </c:AdaptiveRow>
-
-                    <Border Style="{StaticResource RowSeparator}"/>
-                    <!-- Скриншоты отдельно от видео: картинки не должны попадать в
-                         подсчёт занятого места записями, а держать их удобнее там,
-                         где система хранит изображения. В «Клипах» показываются вместе. -->
-                    <c:AdaptiveRow Margin="16,12,16,12">
-                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                            <TextBlock Text="Скриншоты" Style="{StaticResource RowLabel}"/>
-                            <TextBlock x:Name="ShotsPathText" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="Открыть" Click="OpenShotsFolder_Click" Margin="0,0,8,0"
-                                    c:Deco.Icon="{DynamicResource Ico.FolderOpen}"/>
-                            <Button Content="Выбрать…" Click="BrowseShots_Click"
-                                    c:Deco.Icon="{DynamicResource Ico.Folder}"/>
-                        </StackPanel>
-                    </c:AdaptiveRow>
-
-                    <Border Style="{StaticResource RowSeparator}"/>
-                    <c:AdaptiveRow Margin="16,12,16,12">
-                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                            <TextBlock Text="Раскладывать по папкам игр" Style="{StaticResource RowLabel}"/>
-                            <TextBlock x:Name="GroupSub" Style="{StaticResource RowSub}"/>
-                        </StackPanel>
-                        <c:Switch x:Name="GroupByGame" Click="Setting_Changed"/>
-                    </c:AdaptiveRow>
+                    <TextBlock Text="Больше всех занимает" Style="{StaticResource AsideTitle}"/>
+                    <Grid x:Name="TopGames">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    </Grid>
                 </StackPanel>
             </Border>
-
         </StackPanel>
     </Grid>
 </views:PageBase>

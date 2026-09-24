@@ -17,9 +17,12 @@ public partial class KeysPage : PageBase
 
     public override string Title => "Клавиши";
 
+    public override bool FillsWindow => true;
+
     public KeysPage()
     {
         InitializeComponent();
+        HideAsideWhenNarrow(AsideCol, Aside);
         Loaded += (_, _) => Build();
     }
 
@@ -28,16 +31,16 @@ public partial class KeysPage : PageBase
     private void Build()
     {
         Rows.Children.Clear();
+        Rows2.Children.Clear();
         var settings = Services.Settings.Current;
         var bindings = HotkeyConflicts.Bindings(settings);
         var duplicates = HotkeyConflicts.FindDuplicates(bindings);
 
-        bool first = true;
+        // Первые три действия про повтор, остальные про запись, скриншоты и папку
+        int index = 0;
         foreach (var binding in bindings)
         {
-            if (!first) Rows.Children.Add(new Border { Style = (Style)FindResource("RowSeparator") });
-            first = false;
-
+            var target = index++ < 3 ? Rows : Rows2;
             var row = new AdaptiveRow { Margin = new Thickness(16, 11, 16, 11) };
             row.Children.Add(new TextBlock { Text = binding.Title, Style = (Style)FindResource("RowLabel") });
 
@@ -56,7 +59,7 @@ public partial class KeysPage : PageBase
             if (duplicates.ContainsKey(binding.Action))
                 field.BorderBrush = (System.Windows.Media.Brush)FindResource("RecBrush");
 
-            Rows.Children.Add(row);
+            target.Children.Add(row);
         }
 
         if (duplicates.Count > 0)
@@ -66,6 +69,54 @@ public partial class KeysPage : PageBase
             ConflictBar.Visibility = Visibility.Visible;
         }
         else ConflictBar.Visibility = Visibility.Collapsed;
+
+        ShowTaken(bindings);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    /// <summary>
+    /// Какие сочетания Aura уже держит другая программа. Проверка настоящая:
+    /// сочетание пробуем зарегистрировать в системе и сразу снимаем. Сама Aura
+    /// ловит клавиши хуком, а не регистрацией, поэтому отказ «уже занято» значит,
+    /// что сочетание забрал кто-то ещё (Discord, оверлей видеокарты, другой рекордер).
+    /// </summary>
+    private void ShowTaken(List<HotkeyBinding> bindings)
+    {
+        TakenList.Children.Clear();
+        TakenList.RowDefinitions.Clear();
+        int checkedCount = 0, row = 0;
+        foreach (var binding in bindings)
+        {
+            if (!HotkeyParser.TryParse(binding.Combo, out var key) || HotkeyParser.IsMouseButton(key.vk)) continue;
+            checkedCount++;
+            uint mods = (key.alt ? 1u : 0) | (key.ctrl ? 2u : 0) | (key.shift ? 4u : 0) | (key.win ? 8u : 0) | 0x4000;
+            const int probeId = 0xB10C;
+            bool free = RegisterHotKey(IntPtr.Zero, probeId, mods, key.vk);
+            int error = free ? 0 : System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            if (free) { UnregisterHotKey(IntPtr.Zero, probeId); continue; }
+            if (error != 1409) continue;   // ERROR_HOTKEY_ALREADY_REGISTERED
+
+            TakenList.RowDefinitions.Add(new RowDefinition());
+            var name = new TextBlock { Text = binding.Title, Style = (Style)FindResource("KvKey"), TextTrimming = TextTrimming.CharacterEllipsis };
+            var combo = new TextBlock
+            {
+                Text = binding.Combo,
+                Style = (Style)FindResource("KvVal"),
+                Foreground = (System.Windows.Media.Brush)FindResource("OrangeBrush")
+            };
+            Grid.SetRow(name, row); Grid.SetRow(combo, row); Grid.SetColumn(combo, 1);
+            TakenList.Children.Add(name);
+            TakenList.Children.Add(combo);
+            row++;
+        }
+        TakenSummary.Text = checkedCount == 0 ? "Клавиатурных сочетаний не задано."
+            : row == 0 ? "Все сочетания свободны: их не держит ни одна другая программа."
+            : "Эти сочетания уже держит другая программа. Нажатие может уйти ей, а не Aura:";
     }
 
     private void Field_Click(object sender, RoutedEventArgs e)
@@ -74,11 +125,11 @@ public partial class KeysPage : PageBase
         _capturing = field;
         field.Content = new TextBlock
         {
-            Text = "Жми клавишу или кнопку мыши · Esc — снять",
+            Text = "Жми клавишу или кнопку мыши, Esc снимает",
             FontSize = 12.5,
-            Foreground = (System.Windows.Media.Brush)FindResource("BlueBrush")
+            Foreground = (System.Windows.Media.Brush)FindResource("AccentTxBrush")
         };
-        field.BorderBrush = (System.Windows.Media.Brush)FindResource("BlueBrush");
+        field.BorderBrush = (System.Windows.Media.Brush)FindResource("AccentBrush");
         field.Focus();
     }
 
@@ -184,7 +235,7 @@ public partial class KeysPage : PageBase
         if (!ReferenceEquals(_capturing, field)) return;
         _capturing = null;
         field.Content = Caps(combo);
-        field.BorderBrush = (System.Windows.Media.Brush)FindResource("HairBrush");
+        field.BorderBrush = System.Windows.Media.Brushes.Transparent;
     }
 
     private static string Current(HotkeyAction action)

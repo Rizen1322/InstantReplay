@@ -22,9 +22,12 @@ public partial class AppSettingsPage : PageBase
 
     public override string Title => "Приложение";
 
+    public override bool FillsWindow => true;
+
     public AppSettingsPage()
     {
         InitializeComponent();
+        HideAsideWhenNarrow(AsideCol, Aside);
         Duration.ValueChanged += Duration_Changed;
         BuildPositions();
         Loaded += (_, _) => Load();
@@ -36,12 +39,19 @@ public partial class AppSettingsPage : PageBase
     {
         for (int i = 0; i < PositionOrder.Length; i++)
         {
+            // Каждое место — плашка размером с уведомление у своего края экрана,
+            // а не заливка всей клетки: так схема похожа на настоящий экран.
             var button = new Button
             {
                 Style = (Style)FindResource("PositionCell"),
                 Tag = PositionOrder[i],
                 IsEnabled = PositionOrder[i] is not null,
-                Margin = new Thickness(2)
+                Visibility = PositionOrder[i] is null ? Visibility.Hidden : Visibility.Visible,
+                Width = 58,
+                Height = 16,
+                HorizontalAlignment = (i % 3) switch { 0 => HorizontalAlignment.Left, 1 => HorizontalAlignment.Center, _ => HorizontalAlignment.Right },
+                VerticalAlignment = i < 3 ? VerticalAlignment.Top : VerticalAlignment.Bottom,
+                ToolTip = PositionName(PositionOrder[i])
             };
             button.Click += Position_Click;
             _positions[i] = button;
@@ -101,7 +111,7 @@ public partial class AppSettingsPage : PageBase
             long bytes = Core.Library.ClipThumbnails.CacheBytes();
             Dispatcher.BeginInvoke(() => ThumbCacheSize.Text = bytes == 0
                 ? "кэш пуст"
-                : $"{Core.Storage.ByteSize.Format(bytes)} — кадры карточек, соберутся заново");
+                : $"{Core.Storage.ByteSize.Format(bytes)}: кадры карточек, соберутся заново");
         });
     }
 
@@ -150,9 +160,23 @@ public partial class AppSettingsPage : PageBase
         System_Changed(sender, e);
     }
 
-    private void UpdateNotificationOptions() =>
-        NotificationOptions.Visibility =
-            ShowNotifications.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+    private void UpdateNotificationOptions()
+    {
+        var visible = ShowNotifications.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        NotificationOptions.Visibility = visible;
+        PositionPanel.Visibility = visible;
+        PreviewPanel.Visibility = visible;
+    }
+
+    private static string PositionName(NotificationPosition? position) => position switch
+    {
+        NotificationPosition.TopLeft => "слева вверху",
+        NotificationPosition.TopCenter => "сверху по центру",
+        NotificationPosition.TopRight => "справа вверху",
+        NotificationPosition.BottomLeft => "слева внизу",
+        NotificationPosition.BottomRight => "справа внизу",
+        _ => ""
+    };
 
     private void Duration_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -178,6 +202,7 @@ public partial class AppSettingsPage : PageBase
                 ? (Brush)FindResource("AccentBrush")
                 : (Brush)FindResource("TrackBrush");
         }
+        PositionNote.Text = $"Нажми на место на экране. Сейчас: {PositionName(current)}.";
     }
 
     private void Sound_Changed(object sender, SelectionChangedEventArgs e)

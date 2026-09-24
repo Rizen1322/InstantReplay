@@ -32,6 +32,8 @@ public partial class ClipsPage : PageBase
 
     public override string Title => "Клипы";
 
+    public override bool FillsWindow => true;
+
     public override UIElement[] ToolbarActions
     {
         get
@@ -127,25 +129,11 @@ public partial class ClipsPage : PageBase
     /// <summary>Зазор между верхом окна и «прилипшей» панелью — иначе она выглядит приклеенной.</summary>
     private const double StickyGap = 12;
 
-    private void UpdateSelectionBarOffset()
-    {
-        if (_scroll is null || SelectionBar.Visibility != Visibility.Visible) return;
-        try
-        {
-            // Собственное место панели на странице — то, где она была бы без сдвига.
-            double barTop = SelectionBar.TranslatePoint(new Point(0, 0), this).Y - SelectionBarShift.Y;
-
-            // Ниже последней карточки панели делать нечего: там она висела бы
-            // над пустотой, оторванная от того, к чему относится.
-            double listBottom = Groups.TranslatePoint(new Point(0, 0), this).Y + Groups.ActualHeight;
-            double room = Math.Max(0, listBottom - barTop - SelectionBar.ActualHeight);
-
-            double shift = Math.Clamp(_scroll.VerticalOffset - barTop + StickyGap, 0, room);
-            SelectionBarShift.Y = shift;
-            SelectionBar.Effect = shift > 0.5 ? (System.Windows.Media.Effects.Effect)FindResource("ToastShadow") : null;
-        }
-        catch { }
-    }
+    /// <summary>
+    /// Панель выделения теперь плавает внизу страницы поверх карточек и всегда на
+    /// виду: сдвигать её вслед за прокруткой больше не нужно.
+    /// </summary>
+    private void UpdateSelectionBarOffset() { }
 
     public override void OnHidden()
     {
@@ -261,18 +249,18 @@ public partial class ClipsPage : PageBase
             EmptyTitle.Text = filtered ? "Ничего не найдено" : "Здесь пока пусто";
             EmptyHint.Text = filtered
                 ? "Попробуй убрать фильтры."
-                : "Включи мгновенный повтор и сохрани момент — запись появится здесь.";
+                : "Включи мгновенный повтор и сохрани момент: запись появится здесь.";
             return;
         }
 
         foreach (var group in ClipLibrary.GroupByDate(items))
         {
-            var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 10, 0, 12) };
+            var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 6, 0, 10) };
             header.Children.Add(new TextBlock
             {
                 Text = group.Title,
                 FontFamily = (FontFamily)FindResource("DispFont"),
-                FontSize = 16,
+                FontSize = 14.5,
                 FontWeight = FontWeights.SemiBold
             });
             header.Children.Add(new TextBlock
@@ -325,6 +313,11 @@ public partial class ClipsPage : PageBase
         if (GameFilter.SelectedIndex > 0 && GameFilter.SelectedItem is ComboBoxItem game)
             items = items.Where(i => i.Game == (string?)game.Content);
 
+        string query = SearchBox.Text.Trim();
+        if (query.Length > 0)
+            items = items.Where(i => i.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
+                                     i.Game.Contains(query, StringComparison.CurrentCultureIgnoreCase));
+
         items = SortOrder.SelectedIndex switch
         {
             1 => items.OrderBy(i => i.Created),
@@ -340,6 +333,13 @@ public partial class ClipsPage : PageBase
 
     private void Filter_Changed(object sender, SelectionChangedEventArgs e)
     {
+        if (!_loaded) return;
+        Render();
+    }
+
+    private void Search_Changed(object sender, TextChangedEventArgs e)
+    {
+        SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (!_loaded) return;
         Render();
     }
@@ -444,7 +444,7 @@ public partial class ClipsPage : PageBase
         // известно лишь после раскладки, поэтому сдвиг считаем следующим заходом.
         Dispatcher.BeginInvoke(UpdateSelectionBarOffset, System.Windows.Threading.DispatcherPriority.Loaded);
 
-        SelectionText.Text = $"Выбрано {selected.Count} · {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
+        SelectionText.Text = $"Выбрано {selected.Count}, {ByteSize.Format(selected.Sum(i => i.SizeBytes))}";
     }
 
     // ---------------- Действия над выделением ----------------

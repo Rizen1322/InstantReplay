@@ -16,6 +16,12 @@ public partial class App : Application
     /// <summary>Куда ставить в режиме обновления (корень установки, не подпапка app).</summary>
     public static string? UpdateTarget { get; private set; }
 
+    /// <summary>
+    /// «--snapshot файл.png»: нарисовать окно в картинку за пределами экрана и
+    /// выйти, ничего не устанавливая и без музыки. Для проверки вёрстки.
+    /// </summary>
+    public static string? SnapshotPath { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         UninstallMode = e.Args.Any(a =>
@@ -33,6 +39,9 @@ public partial class App : Application
                 UpdateTarget = e.Args[i + 1];
             break;
         }
+
+        int snap = Array.FindIndex(e.Args, a => a.Equals("--snapshot", StringComparison.OrdinalIgnoreCase));
+        if (snap >= 0 && snap + 1 < e.Args.Length) SnapshotPath = e.Args[snap + 1];
 
         base.OnStartup(e);
     }

@@ -15,19 +15,22 @@ using Aura.Core.Settings;
 namespace Aura.Views;
 
 /// <summary>
-/// Настройки захвата. Параметры кодировщика копятся до «Применить»: менять их
-/// на ходу нельзя — конвейер пересобирается, и запись прервалась бы посреди игры.
-/// Звук и шумодав применяются сразу.
+/// Настройки видео. Параметры кодировщика копятся до «Применить»: менять их
+/// на ходу нельзя, конвейер пересобирается, и запись прервалась бы посреди игры.
+/// Звук вынесен на свою страницу (AudioPage).
 /// </summary>
 public partial class CapturePage : PageBase
 {
-    private readonly DispatcherTimer _levels = new() { Interval = TimeSpan.FromMilliseconds(90) };
     private bool _loading;
     private bool _dirty;
     private List<VideoCodec> _supported = [VideoCodec.H264, VideoCodec.HEVC];
     private VideoCodec _selectedCodec;
 
-    public override string Title => "Захват";
+    public override string Title => "Видео";
+
+    public override bool FillsWindow => true;
+
+    private string _vendor = "";
 
     /// <summary>
     /// Готовый набор: одним нажатием ставит разрешение, кадры и битрейт.
@@ -41,10 +44,10 @@ public partial class CapturePage : PageBase
 
     private static readonly Preset[] AllPresets =
     [
-        new("Экономный", "720p · 30 · меньше всего места", 720, 30),
-        new("Обычный", "1080p · 60 · для стримов и клипов", 1080, 60),
-        new("Высокий", "1440p · 60 · чёткая картинка", 1440, 60),
-        new("Максимум", "4K · 60 · для монтажа", 2160, 60)
+        new("Экономный", "720p, 30 кадров", 720, 30),
+        new("Обычный", "1080p, 60 кадров", 1080, 60),
+        new("Высокий", "1440p, 60 кадров", 1440, 60),
+        new("Максимум", "4K, 60 кадров", 2160, 60)
     ];
 
     public CapturePage()
@@ -54,30 +57,25 @@ public partial class CapturePage : PageBase
         // Подписка ПОСЛЕ разбора разметки: присвоение Minimum само поднимает
         // ValueChanged, а обработчик читает поля, которых в тот момент ещё нет.
         Bitrate.ValueChanged += Bitrate_Changed;
-        Gate.ValueChanged += Gate_Changed;
-        GameVolume.ValueChanged += Volume_Changed;
-        MicVolume.ValueChanged += Volume_Changed;
 
         BuildPresets();
         BuildLengths();
         // Курсор пишется на любой версии Windows: на «десятке» кадры берутся через
         // Desktop Duplication, и раньше переключатель там был неактивен с подписью
         // «не работает» — теперь приложение дорисовывает курсор само.
-        _levels.Tick += (_, _) => ShowLevels();
         Loaded += (_, _) => LoadFromSettings();
+        // Узкое окно: панель справа уходит, список занимает всю ширину
+        SizeChanged += (_, _) =>
+        {
+            bool wide = ActualWidth >= 820;
+            AsideCol.Width = new GridLength(wide ? 300 : 0);
+            Aside.Visibility = wide ? Visibility.Visible : Visibility.Collapsed;
+        };
     }
 
-    public override void OnShown()
-    {
-        LoadFromSettings();
-        _levels.Start();
-    }
+    public override void OnShown() => LoadFromSettings();
 
-    public override void OnHidden()
-    {
-        _levels.Stop();
-        (Window.GetWindow(this) as MainWindow)?.HideApplyBar();
-    }
+    public override void OnHidden() => (Window.GetWindow(this) as MainWindow)?.HideApplyBar();
 
     // ---------------- Сборка ----------------
 
@@ -87,8 +85,8 @@ public partial class CapturePage : PageBase
         {
             var button = new Button
             {
-                Style = (Style)FindResource("ActionTile"),
-                Tag = preset,
+                Style = (Style)FindResource("TileBtn"),
+                DataContext = preset,
                 Content = new StackPanel
                 {
                     Children =
@@ -96,9 +94,18 @@ public partial class CapturePage : PageBase
                         new TextBlock { Text = preset.Name, FontSize = 13.5, FontWeight = FontWeights.SemiBold },
                         new TextBlock
                         {
+                            Text = preset.Detail,
+                            Style = (Style)FindResource("RowSub"),
+                            TextWrapping = TextWrapping.NoWrap,
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                            Margin = new Thickness(0, 3, 0, 0)
+                        },
+                        new TextBlock
+                        {
                             Text = PresetDetail(preset),
                             Style = (Style)FindResource("RowSub"),
-                            Margin = new Thickness(0, 4, 0, 0)
+                            TextWrapping = TextWrapping.NoWrap,
+                            Margin = new Thickness(0, 1, 0, 0)
                         }
                     }
                 }
@@ -109,14 +116,14 @@ public partial class CapturePage : PageBase
     }
 
     private string PresetDetail(Preset preset) =>
-        $"{preset.Detail} · {BitrateFor(RecordingQualityTier.Normal, preset.Height, preset.Fps, CurrentCodec())} Мбит/с";
+        $"{BitrateFor(RecordingQualityTier.Normal, preset.Height, preset.Fps, CurrentCodec())} Мбит/с";
 
     private void UpdatePresetDetails()
     {
         foreach (Button button in Presets.Children)
-            if (button.Tag is Preset preset &&
+            if (button.DataContext is Preset preset &&
                 button.Content is StackPanel panel &&
-                panel.Children[1] is TextBlock detail)
+                panel.Children[2] is TextBlock detail)
                 detail.Text = PresetDetail(preset);
     }
 
@@ -126,11 +133,9 @@ public partial class CapturePage : PageBase
         {
             var button = new Button
             {
-                Style = (Style)FindResource("Btn"),
+                Style = (Style)FindResource("ChipBtn"),
                 Content = LengthText(seconds),
-                Tag = seconds,
-                Margin = new Thickness(0, 0, 7, 7),
-                Height = 30
+                DataContext = seconds
             };
             button.Click += Length_Click;
             Lengths.Children.Add(button);
@@ -138,7 +143,7 @@ public partial class CapturePage : PageBase
     }
 
     private static string LengthText(int seconds) =>
-        seconds < 60 ? $"{seconds} сек" : $"{seconds / 60} мин";
+        seconds < 60 ? $"{seconds} с" : $"{seconds / 60} мин";
 
     /// <summary>
     /// Подпись под переключателем десяти бит. Он полезен только с HEVC: у H.264
@@ -164,54 +169,31 @@ public partial class CapturePage : PageBase
             (VideoCodec.AV1, "AV1", "Самые лёгкие файлы, нужна новая видеокарта", "Ico.Cpu", "GrayBrush")
         ];
 
-        bool first = true;
-        foreach (var (codec, name, detail, tile, color) in all)
+        foreach (var (codec, name, detail, _, _) in all)
         {
-            // Разделитель без отступа под иконку: в остальных карточках он идёт
-            // от края до края, и «ступенька» только у кодеков выглядела ошибкой.
-            if (!first) Codecs.Children.Add(new Border { Style = (Style)FindResource("RowSeparator") });
-            first = false;
-
             // Мало уметь кодировать — файл ещё должен собраться: AV1 на Windows 10
             // кодируется, но в MP4 не пакуется, и сохранение падает уже после записи.
             bool hasEncoder = _supported.Contains(codec);
             bool canSave = HardwareEncoders.CanSaveToMp4(codec);
             bool available = hasEncoder && canSave;
-            var row = new AdaptiveRow { Margin = new Thickness(16, 12, 16, 12) };
-            row.Children.Add(new IconTile
-            {
-                Data = (Geometry)FindResource(tile),
-                Background = (Brush)FindResource(color)
-            });
-
-            var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            text.Children.Add(new TextBlock { Text = name, Style = (Style)FindResource("RowLabel") });
+            var text = new StackPanel();
+            text.Children.Add(new TextBlock { Text = name, FontSize = 13.5, FontWeight = FontWeights.SemiBold });
             text.Children.Add(new TextBlock
             {
                 Text = available ? detail
-                     : !hasEncoder ? "Видеокарта не поддерживается"
-                     : "Данная Windows не поддерживает AV1",
-                Style = (Style)FindResource("RowSub")
+                     : !hasEncoder ? "Видеокарта не поддерживает"
+                     : "Эта Windows не сохраняет AV1",
+                Style = (Style)FindResource("RowSub"),
+                Margin = new Thickness(0, 3, 0, 0)
             });
-            row.Children.Add(text);
-
-            var check = new Icon
-            {
-                Data = (Geometry)FindResource("Ico.Check"),
-                Size = 16,
-                Foreground = (Brush)FindResource("AccentTxBrush"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Visibility = _selectedCodec == codec ? Visibility.Visible : Visibility.Hidden
-            };
-            row.Children.Add(check);
 
             var button = new Button
             {
-                Style = (Style)FindResource("RowButton"),
-                Content = row,
-                Tag = codec,
-                IsEnabled = available,
-                Opacity = available ? 1 : 0.45
+                Style = (Style)FindResource("TileBtn"),
+                Content = text,
+                DataContext = codec,
+                Tag = _selectedCodec == codec ? "on" : null,
+                IsEnabled = available
             };
             button.Click += Codec_Click;
             Codecs.Children.Add(button);
@@ -232,7 +214,7 @@ public partial class CapturePage : PageBase
         Bitrate.Value = s.BitrateMbps;
         ShowBitrate();
 
-        try { (_, _supported) = HardwareEncoders.ProbeSupport(); } catch { }
+        try { (_vendor, _supported) = HardwareEncoders.ProbeSupport(); } catch { }
         if (_supported.Count == 0) _supported = [VideoCodec.H264, VideoCodec.HEVC];
         BuildCodecs();
 
@@ -241,21 +223,8 @@ public partial class CapturePage : PageBase
         ShowRam();
         ShowBitrate();   // вес повтора считается от длины буфера — она задана только сейчас
 
-
-        GameAudio.IsChecked = s.CaptureGameAudio;
-        MicAudio.IsChecked = s.CaptureMicrophone;
-        NoiseGate.IsChecked = s.MicNoiseSuppression;
-        NeuralDenoise.IsChecked = s.MicNeuralNoiseSuppression;
-        Gate.Value = s.MicNoiseGateDb;
-        GameVolume.Value = s.GameVolumePercent;
-        MicVolume.Value = s.MicVolumePercent;
-        ShowVolumes();
         DiskBufferSwitch.IsChecked = s.ReplayBufferOnDisk;
-        GateValue.Text = $"−{Math.Abs((int)s.MicNoiseGateDb)} дБ";
-        UpdateGateRow();
-        SelectTag(TrackMode, s.TrackMode.ToString());
-
-        FillAudioDevices(s);
+        ShowRam();
         FillMonitors(s);
         CursorSwitch.IsChecked = s.RecordCursor;
         TenBitSwitch.IsChecked = s.BitDepth != VideoBitDepth.Eight;
@@ -266,31 +235,6 @@ public partial class CapturePage : PageBase
         SetDirty(false);
     }
 
-    private void FillAudioDevices(AppSettings s)
-    {
-        RenderDevice.Items.Clear();
-        CaptureDevice.Items.Clear();
-        RenderDevice.Items.Add(new ComboBoxItem { Content = "Устройство по умолчанию", Tag = null });
-        CaptureDevice.Items.Add(new ComboBoxItem { Content = "Устройство по умолчанию", Tag = null });
-
-        try
-        {
-            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
-            foreach (var device in enumerator.EnumerateAudioEndPoints(
-                         NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.DeviceState.Active))
-                RenderDevice.Items.Add(new ComboBoxItem { Content = device.FriendlyName, Tag = device.ID });
-            foreach (var device in enumerator.EnumerateAudioEndPoints(
-                         NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.DeviceState.Active))
-                CaptureDevice.Items.Add(new ComboBoxItem { Content = device.FriendlyName, Tag = device.ID });
-        }
-        catch { }
-
-        SelectTag(RenderDevice, s.RenderDeviceId);
-        SelectTag(CaptureDevice, s.CaptureDeviceId);
-        GameDeviceName.Text = (RenderDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
-        MicDeviceName.Text = (CaptureDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
-    }
-
     private void FillMonitors(AppSettings s)
     {
         Monitor.Items.Clear();
@@ -299,7 +243,7 @@ public partial class CapturePage : PageBase
             foreach (var monitor in MonitorEnumerator.Enumerate())
                 Monitor.Items.Add(new ComboBoxItem
                 {
-                    Content = $"{monitor.Label} · {monitor.Width}×{monitor.Height}",
+                    Content = monitor.Label,
                     Tag = monitor.Index
                 });
         }
@@ -318,19 +262,11 @@ public partial class CapturePage : PageBase
             s.BitrateMbps = (int)Bitrate.Value;
             s.Codec = _selectedCodec;
             s.ReplayLengthSeconds = replayLength;
-            s.CaptureGameAudio = GameAudio.IsChecked == true;
-            s.CaptureMicrophone = MicAudio.IsChecked == true;
-            s.MicNoiseSuppression = NoiseGate.IsChecked == true;
-            s.MicNeuralNoiseSuppression = NeuralDenoise.IsChecked == true;
             s.ReplayBufferOnDisk = DiskBufferSwitch.IsChecked == true;
-            s.MicNoiseGateDb = (float)Gate.Value;
             s.RecordCursor = CursorSwitch.IsChecked == true;
             // Auto, а не Ten: там, где десять бит не поддержаны, запись обязана
             // молча остаться восьмибитной, а не падать в ошибку.
             s.BitDepth = TenBitSwitch.IsChecked == true ? VideoBitDepth.Auto : VideoBitDepth.Eight;
-            s.TrackMode = Enum.Parse<AudioTrackMode>((string)((ComboBoxItem)TrackMode.SelectedItem).Tag);
-            s.RenderDeviceId = (string?)((ComboBoxItem)RenderDevice.SelectedItem)?.Tag;
-            s.CaptureDeviceId = (string?)((ComboBoxItem)CaptureDevice.SelectedItem)?.Tag;
             s.MonitorIndex = (int)((ComboBoxItem)Monitor.SelectedItem).Tag;
         }, "video");
         CustomLength.Text = Services.Settings.Current.ReplayLengthSeconds.ToString();
@@ -344,7 +280,6 @@ public partial class CapturePage : PageBase
 
     // У Click и SelectionChanged разные делегаты, поэтому две обёртки на одну логику
     private void VideoSelection_Changed(object sender, SelectionChangedEventArgs e) => Video_Changed(sender, e);
-    private void AudioSelection_Changed(object sender, SelectionChangedEventArgs e) => Audio_Changed(sender, e);
 
     private void Video_Changed(object sender, RoutedEventArgs e)
     {
@@ -358,14 +293,6 @@ public partial class CapturePage : PageBase
         SetDirty(true);
     }
 
-    private void Audio_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        GameDeviceName.Text = (RenderDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
-        MicDeviceName.Text = (CaptureDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
-        SetDirty(true);
-    }
-
     private void Bitrate_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         ShowBitrate();
@@ -373,46 +300,6 @@ public partial class CapturePage : PageBase
         HighlightPreset();
         ShowRam();
         SetDirty(true);
-    }
-
-    /// <summary>Шумодав и порог применяются сразу: значение подбирают на слух.</summary>
-    private void NoiseGate_Changed(object sender, RoutedEventArgs e)
-    {
-        UpdateGateRow();
-        if (_loading) return;
-        Services.Settings.Update(s => s.MicNoiseSuppression = NoiseGate.IsChecked == true, "audio-live");
-    }
-
-    private void Gate_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        GateValue.Text = $"−{Math.Abs((int)Gate.Value)} дБ";
-        if (_loading) return;
-        Services.Settings.Update(s => s.MicNoiseGateDb = (float)Gate.Value, "audio-live");
-    }
-
-    private void NeuralDenoise_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_loading) return;
-        Services.Settings.Update(s => s.MicNeuralNoiseSuppression = NeuralDenoise.IsChecked == true, "audio-live");
-    }
-
-    /// <summary>Громкость, как и шумодав, применяется сразу: её подбирают на слух.</summary>
-    private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        ShowVolumes();
-        if (_loading) return;
-        int game = (int)GameVolume.Value, mic = (int)MicVolume.Value;
-        Services.Settings.Update(s =>
-        {
-            s.GameVolumePercent = game;
-            s.MicVolumePercent = mic;
-        }, "audio-live");
-    }
-
-    private void ShowVolumes()
-    {
-        GameVolumeValue.Text = $"{(int)GameVolume.Value}%";
-        MicVolumeValue.Text = $"{(int)MicVolume.Value}%";
     }
 
     private void DiskBuffer_Changed(object sender, RoutedEventArgs e)
@@ -424,16 +311,9 @@ public partial class CapturePage : PageBase
 
     private bool DiskBuffer => DiskBufferSwitch.IsChecked == true;
 
-    private void UpdateGateRow()
-    {
-        var visible = NoiseGate.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
-        GateRow.Visibility = visible;
-        GateRowSeparator.Visibility = visible;
-    }
-
     private void Preset_Click(object sender, RoutedEventArgs e)
     {
-        if (((Button)sender).Tag is not Preset preset) return;
+        if (((Button)sender).DataContext is not Preset preset) return;
         _loading = true;
         Select(ResolutionSeg, preset.Height.ToString());
         Select(FpsSeg, preset.Fps.ToString());
@@ -453,7 +333,7 @@ public partial class CapturePage : PageBase
 
     private void Codec_Click(object sender, RoutedEventArgs e)
     {
-        if (((Button)sender).Tag is not VideoCodec codec) return;
+        if (((Button)sender).DataContext is not VideoCodec codec) return;
         _selectedCodec = codec;
         BuildCodecs();
         UpdateTenBitRow();
@@ -465,7 +345,7 @@ public partial class CapturePage : PageBase
 
     private void Length_Click(object sender, RoutedEventArgs e)
     {
-        if (((Button)sender).Tag is not int seconds) return;
+        if (((Button)sender).DataContext is not int seconds) return;
         CustomLength.Text = seconds.ToString();
         HighlightLength(seconds);
         ShowRam();
@@ -508,20 +388,23 @@ public partial class CapturePage : PageBase
         segmented.SelectedIndex = 1;
     }
 
-    private static void SelectTag(ComboBox box, string? tag)
+    /// <summary>Чем кодируется видео: прямой NVENC или энкодер Windows от производителя.</summary>
+    private string EncoderName()
     {
-        foreach (ComboBoxItem item in box.Items)
-            if ((string?)item.Tag == tag) { box.SelectedItem = item; return; }
-        box.SelectedIndex = 0;
+        string codec = _selectedCodec switch { VideoCodec.HEVC => "HEVC", VideoCodec.AV1 => "AV1", _ => "H.264" };
+        string vendor = _vendor switch
+        {
+            "" => "видеокарта",
+            _ when _vendor.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) => "NVENC",
+            _ => _vendor
+        };
+        return $"{codec} на {vendor}";
     }
 
     private void HighlightLength(int seconds)
     {
         foreach (Button button in Lengths.Children)
-        {
-            bool active = (int)button.Tag == seconds;
-            button.Style = (Style)FindResource(active ? "BtnPri" : "Btn");
-        }
+            button.Tag = (int)button.DataContext == seconds ? "on" : null;
     }
 
     /// <summary>Подсветка набора, если текущие значения точно совпали с ним.</summary>
@@ -533,16 +416,14 @@ public partial class CapturePage : PageBase
 
         foreach (Button button in Presets.Children)
         {
-            var preset = (Preset)button.Tag;
+            var preset = (Preset)button.DataContext;
             int presetBitrate = BitrateFor(
                 RecordingQualityTier.Normal,
                 preset.Height,
                 preset.Fps,
                 CurrentCodec());
             bool active = preset.Height == height && preset.Fps == fps && presetBitrate == bitrate;
-            button.BorderBrush = active ? (Brush)FindResource("AccentBrush") : null;
-            if (button.Content is StackPanel panel && panel.Children[0] is TextBlock title)
-                title.Foreground = (Brush)FindResource(active ? "AccentTxBrush" : "TxBrush");
+            button.Tag = active ? "on" : null;
         }
     }
 
@@ -580,16 +461,13 @@ public partial class CapturePage : PageBase
         int value = (int)Bitrate.Value;
         BitrateValue.Text = $"{value} Мбит/с";
 
-        // Показываем вес именно ВАШЕГО повтора, а не абстрактной минуты: длина
-        // буфера задаётся рядом, и человек хочет знать, во что обойдётся файл,
-        // который он сохранит хоткеем. Плюс, для ориентира, вес часа обычной записи.
+        // Вес именно ВАШЕГО повтора, а не абстрактной минуты: длина буфера задана
+        // рядом, и человек хочет знать, во что обойдётся файл, который он сохранит.
         int seconds = ParseLength();
         double clipMb = value * 0.125 * seconds;
-        double hourGb = value * 0.125 * 3600 / 1024;
-        // Явно пишем, что за мегабайты: рядом в интерфейсе есть оценка памяти,
-        // и два числа без пометок читаются как одно и то же.
-        BitrateSub.Text = $"{value} Мбит/с · файл повтора ≈ {clipMb:0} МБ · " +
-                          $"час записи ≈ {hourGb:0.0} ГБ";
+        KvMinute.Text = $"≈ {value * 0.125 * 60:0} МБ";
+        KvClip.Text = clipMb >= 1024 ? $"≈ {clipMb / 1024:0.#} ГБ" : $"≈ {clipMb:0} МБ";
+        KvEncoder.Text = EncoderName();
 
     }
 
@@ -618,24 +496,15 @@ public partial class CapturePage : PageBase
         bool disk = DiskBuffer;
         long bytes = ReplayVideoBuffer.AllocatedCapacityBytes(bitrate, seconds, disk);
         int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate, disk));
-        string where = disk ? "на диске" : "RAM";
         string size = bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):0.#} ГБ" : $"{bytes / (1024 * 1024)} МБ";
+        EstBig.Text = size;
+        EstWhere.Text = disk ? "на диске" : "в памяти";
+        string held = disk
+            ? $"Столько займёт файл буфера на {LengthWords(seconds)}. Память почти не тратится."
+            : $"Столько держит в памяти буфер на {LengthWords(seconds)}.";
         RamEstimate.Text = seconds >= supported
-            ? $"≈ {size} {where} · максимум {LengthWords(supported)}"
-            : $"≈ {size} {where}";
-    }
-
-    private void ShowLevels()
-    {
-        var (game, mic) = Services.Engine.AudioLevels;
-        SetLevel(GameLevel, GameAudio.IsChecked == true ? game : 0);
-        SetLevel(MicLevel, MicAudio.IsChecked == true ? mic : 0);
-    }
-
-    private static void SetLevel(FrameworkElement bar, double level)
-    {
-        double full = ((FrameworkElement)bar.Parent).ActualWidth;
-        bar.Width = Math.Clamp(level, 0, 1) * full;
+            ? $"{held} Это предел для такого битрейта: {LengthWords(supported)}."
+            : $"{held} Клип такой же длины займёт на диске примерно столько же.";
     }
 
     /// <summary>

@@ -197,7 +197,7 @@ public static class ClipCommands
         if (ffmpeg is null)
         {
             bool ok = Dialogs.Ask("Нужен ffmpeg",
-                "Сжатие делает ffmpeg. Покажи ffmpeg.exe — Aura запомнит путь и сможет также резать клипы без потери качества.",
+                "Сжатие делает ffmpeg. Покажи ffmpeg.exe, и Aura запомнит путь и сможет также резать клипы без потери качества.",
                 "Выбрать");
             if (!ok) return;
 
@@ -249,7 +249,7 @@ public static class ClipCommands
     private static async void DeleteAsync(ClipItem item)
     {
         bool ok = Dialogs.Ask("Удалить запись?",
-            $"«{item.FileName}» ({item.SizeText}) уедет в корзину — оттуда её можно вернуть.", "Удалить");
+            $"«{item.FileName}» ({item.SizeText}) уедет в корзину. Оттуда её можно вернуть.", "Удалить");
         if (!ok) return;
 
         try
@@ -276,7 +276,7 @@ public static class ClipCommands
     {
         long bytes = items.Sum(i => i.SizeBytes);
         bool ok = Dialogs.Ask($"Удалить {Plural(items.Count)}?",
-            $"{Core.Storage.ByteSize.Format(bytes)} уедут в корзину — оттуда их можно вернуть.", "Удалить");
+            $"{Core.Storage.ByteSize.Format(bytes)} уедут в корзину. Оттуда их можно вернуть.", "Удалить");
         if (!ok) return;
 
         string root = Services.Settings.Current.SaveRootPath;

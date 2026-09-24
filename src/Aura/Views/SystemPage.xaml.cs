@@ -63,10 +63,18 @@ public partial class SystemPage : PageBase
 
         var gpu = MainGpu(_info);
         GpuName.Text = gpu?.Name ?? "Видеокарта не определена";
-        GpuSub.Text = gpu is null ? "" : $"{gpu.Vram} · драйвер {gpu.DriverVersion}";
+        GpuSub.Text = gpu is null ? "" : $"{gpu.Vram}, драйвер {gpu.DriverVersion}";
+        // У NVIDIA — её логотип: приложение кодирует прямо через NVENC, и это
+        // главная карта в системе. У остальных — нейтральный значок чипа.
+        bool nvidia = gpu?.Name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) == true;
+        GpuIcon.Data = (Geometry)FindResource(nvidia ? "Ico.Nvidia" : "Ico.Chip");
+        GpuIcon.Filled = nvidia;
+        GpuIcon.Foreground = nvidia
+            ? new SolidColorBrush(Color.FromRgb(0x76, 0xB9, 0x00))
+            : (Brush)FindResource("Tx2Brush");
 
         Specs.Children.Clear();
-        AddSpec("Процессор", $"{_info.Cpu} · {_info.CpuCores} ядер, {_info.CpuThreads} потоков");
+        AddSpec("Процессор", $"{_info.Cpu}, {_info.CpuCores} ядер и {_info.CpuThreads} потоков");
         AddSpec("Оперативная память", _info.RamTotal);
         AddSpec("Материнская плата", _info.Motherboard);
         AddSpec("Система", _info.Os);
@@ -121,11 +129,12 @@ public partial class SystemPage : PageBase
 
     private static readonly (string Name, string Icon, string Color)[] LoadTiles =
     [
-        ("Захват",      "Ico.Monitor", "BlueBrush"),
-        ("Кодирование", "Ico.Bolt",    "PurpleBrush"),
-        ("Оперативка",  "Ico.Ram",     "IndigoBrush"),
+        // Полосы одного цвета: здесь цвет значит «в норме», а тревогу рисует красный
+        ("Захват",      "Ico.Monitor", "AccentBrush"),
+        ("Кодирование", "Ico.Bolt",    "AccentBrush"),
+        ("Оперативка",  "Ico.Ram",     "AccentBrush"),
         ("Буфер",       "Ico.Clock",   "AccentBrush"),
-        ("Процессор",   "Ico.Gauge",   "TealBrush")
+        ("Процессор",   "Ico.Gauge",   "AccentBrush")
     ];
 
     private void BuildLoadRows()
@@ -154,7 +163,7 @@ public partial class SystemPage : PageBase
             // читается как одно длинное число и плитка теряет главное.
             var value = new TextBlock
             {
-                Text = "—",
+                Text = "…",
                 Style = (Style)FindResource("Numeral"),
                 FontSize = 21
             };
@@ -203,7 +212,7 @@ public partial class SystemPage : PageBase
 
             Load.Children.Add(new Border
             {
-                Style = (Style)FindResource("CardSoft"),
+                Style = (Style)FindResource("Card"),
                 Padding = new Thickness(14, 12, 14, 13),
                 Margin = new Thickness(0, 0, 10, 10),
                 Child = panel
@@ -250,7 +259,7 @@ public partial class SystemPage : PageBase
 
         if (!running)
         {
-            foreach (var name in _tiles.Keys) Show(name, "—", "", "", 0);
+            foreach (var name in _tiles.Keys) Show(name, "…", "", "", 0);
             ResetLoadBaseline();
             return;
         }
@@ -287,7 +296,7 @@ public partial class SystemPage : PageBase
              capture / target);
 
         Show("Кодирование", $"{encoded:0.#}", "кадр/с",
-             dropped > 0 ? $"дропнуто {dropped} — не успевает" : "дропов нет",
+             dropped > 0 ? $"дропнуто {dropped}, не успевает" : "дропов нет",
              encoded / target, alarm: dropped > 0);
 
         // Рабочий набор — то же число, что показывает диспетчер задач в столбце
@@ -358,7 +367,7 @@ public partial class SystemPage : PageBase
         if (!TrustedUrl.IsNvidiaDriver(_driver.DownloadUrl))
         {
             Log.Warn("Driver", $"Ссылка на драйвер ведёт не на nvidia.com — открытие отменено: {_driver.DownloadUrl}");
-            DriverStatus.Text = "Ссылка на драйвер выглядит подозрительно — откройте страницу NVIDIA вручную";
+            DriverStatus.Text = "Ссылка на драйвер выглядит подозрительно. Откройте страницу NVIDIA вручную";
             return;
         }
 

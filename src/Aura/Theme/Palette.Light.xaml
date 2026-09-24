@@ -9,18 +9,19 @@
     <FontFamily x:Key="DispFont">pack://application:,,,/Fonts/#Onest</FontFamily>
 
     <Color x:Key="CanvasColor">#FFF4F4F6</Color>
-    <Color x:Key="GlassColor">#F5FAFAFC</Color>
+    <Color x:Key="GlassColor">#FFF3F4F6</Color>
     <Color x:Key="CardColor">#FFFFFFFF</Color>
-    <Color x:Key="Card2Color">#FFFFFFFF</Color>
+    <Color x:Key="Card2Color">#FFF4F5F7</Color>
     <Color x:Key="SepColor">#14000000</Color>
     <Color x:Key="HairColor">#1A000000</Color>
     <Color x:Key="HoverColor">#0D000000</Color>
-    <Color x:Key="PressColor">#18000000</Color>
-    <Color x:Key="TrackColor">#4A8E939C</Color>
+    <Color x:Key="PressColor">#FFE9EBEF</Color>
+    <Color x:Key="TrackColor">#FFDFE2E7</Color>
+    <Color x:Key="WellColor">#FFE4E6EA</Color>
 
-    <Color x:Key="TxColor">#FF1A1A1E</Color>
-    <Color x:Key="Tx2Color">#FF6B6F76</Color>
-    <Color x:Key="Tx3Color">#FF93979E</Color>
+    <Color x:Key="TxColor">#FF111317</Color>
+    <Color x:Key="Tx2Color">#FF474C55</Color>
+    <Color x:Key="Tx3Color">#FF646973</Color>
 
     <Color x:Key="AccentColor">#FF34C759</Color>
     <Color x:Key="AccentTxColor">#FF1C8F3A</Color>
@@ -54,6 +55,7 @@
     <SolidColorBrush x:Key="HoverBrush" Color="{DynamicResource HoverColor}"/>
     <SolidColorBrush x:Key="PressBrush" Color="{DynamicResource PressColor}"/>
     <SolidColorBrush x:Key="TrackBrush" Color="{DynamicResource TrackColor}"/>
+    <SolidColorBrush x:Key="WellBrush" Color="{DynamicResource WellColor}"/>
 
     <SolidColorBrush x:Key="TxBrush" Color="{DynamicResource TxColor}"/>
     <SolidColorBrush x:Key="Tx2Brush" Color="{DynamicResource Tx2Color}"/>

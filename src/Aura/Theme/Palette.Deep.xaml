@@ -30,6 +30,7 @@
     <Color x:Key="HoverColor">#18A78BFA</Color>
     <Color x:Key="PressColor">#2AA78BFA</Color>
     <Color x:Key="TrackColor">#407C63B8</Color>
+    <Color x:Key="WellColor">#FF07060C</Color>
 
     <Color x:Key="TxColor">#FFF4EFFF</Color>
     <Color x:Key="Tx2Color">#FFA89CC8</Color>
@@ -72,6 +73,7 @@
     <SolidColorBrush x:Key="HoverBrush" Color="{DynamicResource HoverColor}"/>
     <SolidColorBrush x:Key="PressBrush" Color="{DynamicResource PressColor}"/>
     <SolidColorBrush x:Key="TrackBrush" Color="{DynamicResource TrackColor}"/>
+    <SolidColorBrush x:Key="WellBrush" Color="{DynamicResource WellColor}"/>
 
     <SolidColorBrush x:Key="TxBrush" Color="{DynamicResource TxColor}"/>
     <SolidColorBrush x:Key="Tx2Brush" Color="{DynamicResource Tx2Color}"/>

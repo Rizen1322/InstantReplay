@@ -26,7 +26,7 @@ public static class MonitorEnumerator
                             int idx = result.Count;
                             result.Add(new MonitorDescription(
                                 idx,
-                                $"Монитор {idx + 1} ({w}×{h}){(primary ? " — основной" : "")}",
+                                $"Монитор {idx + 1} ({w}×{h}){(primary ? ", основной" : "")}",
                                 w, h, primary));
                         }
             }
@@ -39,7 +39,7 @@ public static class MonitorEnumerator
                 $"Перечисление мониторов оборвалось на {result.Count}-м: {ex.Message}");
         }
         if (result.Count == 0)
-            result.Add(new MonitorDescription(0, "Монитор 1 — основной", 0, 0, true));
+            result.Add(new MonitorDescription(0, "Монитор 1, основной", 0, 0, true));
         return result;
     }
 }

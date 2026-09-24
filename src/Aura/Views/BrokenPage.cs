@@ -24,7 +24,7 @@ public sealed class BrokenPage : PageBase
         });
         panel.Children.Add(new TextBlock
         {
-            Text = $"Раздел «{key}» не собрался. Подробности записаны в лог — вкладка «Приложение», «Открыть папку с логами».",
+            Text = $"Раздел «{key}» не собрался. Подробности записаны в лог, вкладка «Приложение», «Открыть папку с логами».",
             Style = (Style)Application.Current.FindResource("Lede")
         });
 

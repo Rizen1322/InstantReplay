@@ -48,6 +48,16 @@ public sealed class ClipItem : INotifyPropertyChanged
 
     public string SizeText => ByteSize.Format(SizeBytes);
     public string Subtitle => $"{Game} · {Created:HH:mm} · {SizeText}";
+
+    /// <summary>Время на карточке: сегодняшние — часы, остальные — дата.</summary>
+    public string CardTime => Created.Date == DateTime.Today ? Created.ToString("HH:mm")
+        : Created.Date == DateTime.Today.AddDays(-1) ? "вчера"
+        : Created.ToString("d MMM", System.Globalization.CultureInfo.GetCultureInfo("ru-RU")).TrimEnd('.');
+
+    /// <summary>Вторая строка карточки: размер и разрешение, у скриншота — пометка.</summary>
+    public string CardDetail => IsScreenshot
+        ? $"Скриншот, {SizeText}"
+        : Resolution is { Length: > 0 } res ? $"{SizeText}, {res}" : SizeText;
     public string PlaceholderGlyph => IsScreenshot ? "\uE722" : "\uE714";
 
     /// <summary>Строка для шапки просмотра: всё, что известно о файле.</summary>
@@ -100,7 +110,7 @@ public sealed class ClipItem : INotifyPropertyChanged
     public string? Resolution
     {
         get => _resolution;
-        set { _resolution = value; Raise(nameof(Resolution)); Raise(nameof(FullInfo)); }
+        set { _resolution = value; Raise(nameof(Resolution)); Raise(nameof(FullInfo)); Raise(nameof(CardDetail)); }
     }
 
     /// <summary>Миниатюру запрашиваем один раз на файл, даже если карточка переиспользована.</summary>

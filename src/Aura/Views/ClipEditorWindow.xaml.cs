@@ -521,10 +521,10 @@ public partial class ClipEditorWindow : Window
     }
 
     private string DefaultHint() => _ffmpeg is null
-        ? "Точное сохранение кадр в кадр — встроенными средствами, без внешних программ."
+        ? "Точное сохранение кадр в кадр встроенными средствами, без внешних программ."
         : _audioSelection < 0 && _audioTrackIds.Length > 1
             ? "Видео копируется без потери качества, игра и микрофон сводятся в одну дорожку."
-            : "Видео и звук копируются без потери качества — это быстро.";
+            : "Видео и звук копируются без потери качества, это быстро.";
 
     private void SetStatus(string status, string hint)
     {
@@ -733,7 +733,7 @@ public partial class ClipEditorWindow : Window
             catch (Exception ex)
             {
                 Log.Warn("Editor", $"Быстрый экспорт не удался, перехожу на точный: {ex.Message}");
-                ExportStatus.Text = "Быстрый режим не подошёл — точный экспорт…";
+                ExportStatus.Text = "Быстрый режим не подошёл, делаю точный экспорт…";
             }
 
         return await VideoEditor.TrimPreciseAsync(
