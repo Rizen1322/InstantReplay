@@ -317,11 +317,21 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     if (waitTicks > 5_000) timer.Wait(waitTicks);
                 }
 
-                // 100 мс: на статичном экране система просто не отдаёт кадры — это норма,
-                // ровный CFR добивает пейсер энкодера дубликатами.
-                SharpGen.Runtime.Result result = dup.AcquireNextFrame(100, out var frameInfo, out resource);
+                // БЕЗ ожидания внутри системы. AcquireNextFrame с таймаутом ждёт новый
+                // кадр рабочего стола, ДЕРЖА замок устройства D3D11 (устройство общее и
+                // защищено для многопоточности). На статичном экране это 100 мс из
+                // каждых 100: энкодер, пейсер и копии кадров не могли взять устройство,
+                // и кодировалось 0-2 кадра в секунду вместо 60 (снято стеками: поток
+                // подачи NVENC ждёт замок, поток захвата сидит в AcquireKeyedMutex).
+                // Поэтому спрашиваем без ожидания, а ждём сами — уже без замка.
+                SharpGen.Runtime.Result result = dup.AcquireNextFrame(0, out var frameInfo, out resource);
 
-                if (result == Vortice.DXGI.ResultCode.WaitTimeout) continue;
+                if (result == Vortice.DXGI.ResultCode.WaitTimeout)
+                {
+                    // Статичный экран — норма, ровный CFR добивает пейсер дубликатами
+                    timer.Wait(20_000); // 2 мс
+                    continue;
+                }
                 if (DdaDuplicationPolicy.ShouldRecreateFrameSession(result.Code))
                 {
                     // ACCESS_LOST — штатная смена fullscreen/desktop mode.

@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Aura.Core.Logging;
 using Aura.Core.Settings;
 
@@ -97,7 +97,7 @@ internal sealed partial class NvencSession : IDisposable
         bool heavy = pixelRate > 2560.0 * 1440 * 60 * 1.05;        // больше 1440p60
         bool veryHeavy = pixelRate > 3840.0 * 2160 * 60 * 1.05;    // больше 4K60
 
-        return new Config
+        return WithOverrides(new Config
         {
             Codec = codec switch { VideoCodec.HEVC => 1, VideoCodec.AV1 => 2, _ => 0 },
             Width = width,
@@ -109,14 +109,31 @@ internal sealed partial class NvencSession : IDisposable
             TenBit = tenBit ? 1 : 0,
             GopLength = fps * 2,
             Preset = veryHeavy ? 3 : heavy ? 4 : 5,
-            Lookahead = veryHeavy ? 0 : heavy ? 8 : 16,
+            // Просмотр вперёд ВЫКЛЮЧЕН. С ним NVENC в асинхронном режиме на общем с
+            // захватом устройстве D3D11 вешал конвейер намертво через 1-4 минуты:
+            // nvEncLockBitstream держит замок устройства и ждёт работу, которой для
+            // продолжения нужен тот же замок (копии кадров пейсера и захвата).
+            // Воспроизведено 4 раза из 4 и снято нативными стеками; без просмотра
+            // вперёд — ни одного зависания. Временной AQ без него не работает.
+            Lookahead = 0,
             BFrames = veryHeavy ? 0 : 2,
             SpatialAq = 1,
-            TemporalAq = veryHeavy ? 0 : 1,
+            TemporalAq = 0,
             AqStrength = 8,
             Multipass = heavy ? 0 : 1,
             BufferCount = 0,                                         // прослойка посчитает сама
-        };
+        });
+    }
+
+    /// <summary>Переопределения для проверочных прогонов: AURA_NVENC_LOOKAHEAD, _BFRAMES, _MULTIPASS.</summary>
+    private static Config WithOverrides(Config c)
+    {
+        static int? Env(string name) =>
+            int.TryParse(Environment.GetEnvironmentVariable(name), out int v) ? v : null;
+        if (Env("AURA_NVENC_LOOKAHEAD") is int lookahead) { c.Lookahead = lookahead; if (lookahead == 0) c.TemporalAq = 0; }
+        if (Env("AURA_NVENC_BFRAMES") is int bFrames) c.BFrames = bFrames;
+        if (Env("AURA_NVENC_MULTIPASS") is int multipass) c.Multipass = multipass;
+        return c;
     }
 
     public static unsafe NvencSession? TryCreate(IntPtr device, Config config, out string error)

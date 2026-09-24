@@ -1017,6 +1017,7 @@ public sealed partial class ReplayEngine : IDisposable
             _gameCaptureRecovery.Stop();
             Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
         }
+        bool wedged = false;
         var restartActions = PipelineRestartPolicy.For(
             intent, continuousRecordingActive: _recorder is not null, formatCompatible: true);
         Interlocked.Increment(ref _captureGeneration); // все колбэки старого источника больше не действуют
@@ -1044,7 +1045,7 @@ public sealed partial class ReplayEngine : IDisposable
                 _capture.Failed -= _captureFailureHandler;
             // Останавливаем поток захвата, но УСТРОЙСТВО НЕ ТРОГАЕМ: им ещё
             // пользуется пейсер энкодера, см. порядок разрушения ниже
-            _capture.Stop();
+            wedged = !StopCaptureBounded(_capture);
         }
         _captureFrameHandler = null;
         _captureFailureHandler = null;
@@ -1074,12 +1075,22 @@ public sealed partial class ReplayEngine : IDisposable
         // теперь уничтожить устройство захвата. Освобождение устройства первым
         // роняло процесс в CopyResource с NullReferenceException: обёртка Vortice
         // оставалась живой, а нативный указатель внутри неё уже обнулён.
-        _encoder?.Dispose(); _encoder = null;
-        _gpuTimer?.Dispose(); _gpuTimer = null;
-        _scaler?.Dispose(); _scaler = null;
-        _processor?.Dispose(); _processor = null;
-        _frameBroker?.Dispose(); _frameBroker = null;
-        _capture?.Dispose(); _capture = null;
+        if (wedged)
+        {
+            // Видеокарта не отвечает на этом устройстве: любое освобождение его
+            // объектов повисло бы так же. Бросаем конвейер целиком, новый поднимется
+            // на новом устройстве.
+            AbandonWedgedPipeline();
+        }
+        else
+        {
+            _encoder?.Dispose(); _encoder = null;
+            _gpuTimer?.Dispose(); _gpuTimer = null;
+            _scaler?.Dispose(); _scaler = null;
+            _processor?.Dispose(); _processor = null;
+            _frameBroker?.Dispose(); _frameBroker = null;
+            _capture?.Dispose(); _capture = null;
+        }
         lock (_captureTargetSync) _activeCaptureTarget = null;
 
         // Выключили совсем — арену отдаём системе целиком. Пересборка захвата с
@@ -1096,6 +1107,40 @@ public sealed partial class ReplayEngine : IDisposable
             ? "Instant Replay выключен"
             : "Видеоконвейер остановлен для автовосстановления; replay остался в RAM");
         if (intent == PipelineStopIntent.UserStop) ReleaseMemory();
+    }
+
+    /// <summary>
+    /// Остановить захват, но не ждать дольше трёх секунд. false — остановка
+    /// повисла: поток захвата стоит внутри видеокарты (так бывает, когда драйвер
+    /// заблокировал очередь устройства), и WGC ждёт его при отписке без
+    /// ограничения. Раньше в этот момент вставал весь снос конвейера под замком
+    /// жизненного цикла, а с ним и приложение.
+    /// </summary>
+    private static bool StopCaptureBounded(IScreenCapture capture)
+    {
+        var stop = Task.Run(capture.Stop);
+        if (stop.Wait(TimeSpan.FromSeconds(3))) return true;
+        Log.Error("Engine", "Захват не остановился за 3 секунды — видеокарта не отвечает на этом устройстве, " +
+                            "конвейер будет брошен и собран заново");
+        return false;
+    }
+
+    /// <summary>
+    /// Объекты брошенного конвейера. Держим ссылки до конца процесса: иначе их
+    /// освободил бы сборщик мусора, и поток финализаторов повис бы на том же
+    /// устройстве, остановив сборку мусора во всём приложении.
+    /// </summary>
+    private static readonly List<object> s_abandoned = [];
+
+    private void AbandonWedgedPipeline()
+    {
+        lock (s_abandoned)
+        {
+            foreach (object? o in new object?[] { _encoder, _gpuTimer, _scaler, _processor, _frameBroker, _capture })
+                if (o is not null) s_abandoned.Add(o);
+        }
+        _encoder = null; _gpuTimer = null; _scaler = null;
+        _processor = null; _frameBroker = null; _capture = null;
     }
 
     /// <summary>

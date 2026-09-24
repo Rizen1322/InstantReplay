@@ -116,11 +116,53 @@ internal sealed class EncoderTexturePool : IDisposable
                 _slotOf[created.NativePointer] = slot;
             }
         }
-        lock (_device) context.CopyResource(destination, source);
+        lock (_device)
+        {
+            context.CopyResource(destination, source);
+            // Сразу отправить копию видеокарте. Иначе она остаётся в буфере команд
+            // контекста, а NVENC (просмотр вперёд) ждёт этот кадр внутри своего
+            // вызова, ДЕРЖА замок устройства: отправить буфер уже некому. Пока идут
+            // настоящие кадры, буфер попутно отправляет захват, а на статичном
+            // экране WGC молчит — и конвейер вставал намертво. Снято нативными
+            // стеками: поток выдачи NVENC крутится в драйвере с замком устройства,
+            // пейсер ждёт этот замок.
+            context.Flush();
+        }
         return destination;
     }
 
-    /// <summary>Ещё одна ссылка на занятую текстуру пула (пейсер держит последний кадр).</summary>
+    private ID3D11Texture2D? _latest;
+
+    /// <summary>
+    /// Копия последнего настоящего кадра вне кольца — источник дубликатов.
+    ///
+    /// ПОЧЕМУ ОТДЕЛЬНО. Раньше дубликат копировался с текстуры, которую только что
+    /// отдали в NVENC. NVENC держит вход отображённым до выдачи кадра, а с
+    /// просмотром вперёд выдаёт его только через 16+ кадров. Копия С отображённой
+    /// текстуры ждала NVENC прямо в очереди видеокарты, NVENC ждал новых кадров, а
+    /// новые кадры стояли в той же очереди за этой копией. На статичном экране
+    /// (дубликатов много) конвейер вставал намертво через пару минут; это
+    /// воспроизведено и снято стеками потоков. Эта текстура в энкодер не уходит
+    /// никогда, поэтому копировать с неё можно всегда.
+    /// </summary>
+    public ID3D11Texture2D? Latest => _latest;
+
+    /// <summary>Запомнить настоящий кадр как источник будущих дубликатов.</summary>
+    public void KeepLatest(ID3D11Texture2D source, ID3D11DeviceContext context)
+    {
+        var desc = source.Description;
+        if (_latest is null || _latest.Description.Width != desc.Width
+                            || _latest.Description.Height != desc.Height)
+        {
+            desc.BindFlags = BindFlags.None;
+            desc.MiscFlags = ResourceOptionFlags.None;
+            _latest?.Dispose();
+            _latest = _device.CreateTexture2D(desc);
+        }
+        lock (_device) context.CopyResource(_latest, source);
+    }
+
+    /// <summary>Ещё одна ссылка на занятую текстуру пула.</summary>
     public void AddRef(ID3D11Texture2D texture)
     {
         int slot;
@@ -148,6 +190,8 @@ internal sealed class EncoderTexturePool : IDisposable
             }
             _slotOf.Clear();
             _ledger.Reset();
+            _latest?.Dispose();
+            _latest = null;
         }
     }
 }

@@ -133,7 +133,6 @@ public sealed class VideoEncoder : IDisposable
     // подаёт ДУБЛИКАТ предыдущего кадра. В файле нет ни одной дыры: ровно fps
     // кадров в секунду всегда; дубликаты статики энкодер сжимает почти в ноль.
     private readonly object _cfrLock = new();
-    private ID3D11Texture2D? _lastSubmittedTex;
     private Thread? _pacerThread;
 
     // Для пейсера: pts последнего РЕАЛЬНОГО кадра и наше wall-время его прихода.
@@ -969,18 +968,6 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     private ID3D11Texture2D? CopyIntoPool(ID3D11Texture2D src) => _copyPool!.TryCopy(src, _context!);
 
-    /// <summary>
-    /// Последний поданный кадр держит свой слот: с него пейсер делает дубликаты.
-    /// Зовётся, пока кадр ещё у вызывающего (до очереди), — иначе энкодер мог бы
-    /// успеть отпустить слот, и ссылка легла бы на уже свободный.
-    /// </summary>
-    private void SetLastSubmitted(ID3D11Texture2D texture)
-    {
-        _copyPool!.AddRef(texture);
-        _copyPool.Release(_lastSubmittedTex);
-        _lastSubmittedTex = texture;
-    }
-
     /// <summary>Кадр вышел из энкодера: слот его входа свободен.</summary>
     private void ReleaseSubmitted()
     {
@@ -1028,7 +1015,7 @@ public sealed class VideoEncoder : IDisposable
                 pts = EncoderCfrPolicy.QuantizePts(ticks, _cfrBase, _lastCfrPts, _frameDurationTicks);
 
                 // Пропущенные слоты между прошлым кадром и этим — дубликаты задним числом
-                if (_lastSubmittedTex is not null &&
+                if (_copyPool!.Latest is not null &&
                     EncoderCfrPolicy.BackfillSlots(_lastCfrPts, pts, _frameDurationTicks, MaxBackfillSlots) > 0)
                 {
                     while (_lastCfrPts + _frameDurationTicks < pts)
@@ -1041,13 +1028,12 @@ public sealed class VideoEncoder : IDisposable
                             Interlocked.Increment(ref PacerBlocked);
                             break;
                         }
-                        var dup = CopyIntoPool(_lastSubmittedTex);
+                        var dup = CopyIntoPool(_copyPool.Latest);
                         if (dup is null)
                         {
                             Interlocked.Increment(ref PacerBlocked);
                             break;
                         }
-                        SetLastSubmitted(dup);   // до очереди: см. SetLastSubmitted
                         if (!Enqueue(dup, duplicatePts, isDuplicate: true, encoderBehind))
                         {
                             _copyPool!.Release(dup);
@@ -1060,7 +1046,9 @@ public sealed class VideoEncoder : IDisposable
                 }
                 _lastCfrPts = pts;
             }
-            SetLastSubmitted(copy);
+            // Источник дубликатов — отдельная копия, НЕ текстура, ушедшая в энкодер
+            // (см. EncoderTexturePool.Latest). После досыпки: та брала прошлый кадр.
+            _copyPool!.KeepLatest(nv12PoolTexture, _context!);
             _lastRealPts = pts;
             _lastRealArrivalWall = NowQpcTicks();
             Interlocked.Increment(ref FramesSubmitted);
@@ -1223,7 +1211,7 @@ public sealed class VideoEncoder : IDisposable
                            Interlocked.Read(ref FramesDroppedRealQueue));
             lock (_cfrLock)
             {
-                if (_lastSubmittedTex is null || _cfrBase < 0 || _context is null) continue;
+                if (_copyPool?.Latest is null || _cfrBase < 0 || _context is null) continue;
                 // Пауза = сколько НАШЕГО времени прошло без реальных кадров; цель
                 // заполнения отсчитывается от pts последнего кадра (часы WGC).
                 // Отступ 5 кадров от «сейчас»: реальный кадр, идущий с задержкой
@@ -1244,13 +1232,12 @@ public sealed class VideoEncoder : IDisposable
                     }
 
                     long pts = _lastCfrPts + _frameDurationTicks;
-                    var dup = CopyIntoPool(_lastSubmittedTex);
+                    var dup = CopyIntoPool(_copyPool.Latest);
                     if (dup is null)
                     {
                         Interlocked.Increment(ref PacerBlocked);
                         break;
                     }
-                    SetLastSubmitted(dup);   // до очереди: см. SetLastSubmitted
                     if (!Enqueue(dup, pts, isDuplicate: true, encoderBehind))
                     {
                         _copyPool!.Release(dup);
