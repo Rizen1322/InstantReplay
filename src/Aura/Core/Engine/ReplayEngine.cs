@@ -1055,7 +1055,15 @@ public sealed partial class ReplayEngine : IDisposable
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
         // а записи нет».
-        if (_recorder is not null) StopRecordingLocked(wait: true);
+        // Пересборка конвейера запись не прерывает: она отцепляется от старого
+        // энкодера и продолжит тот же файл с новым (ReattachRecorderLocked).
+        if (_recorder is not null)
+        {
+            if (intent == PipelineStopIntent.CaptureRestart && _continuousRecordingRequested)
+                DetachRecorderLocked();
+            else
+                StopRecordingLocked(wait: true);
+        }
         if (intent == PipelineStopIntent.UserStop) _audio.Stop();
 
         // ПОРЯДОК ВАЖЕН, и требований тут ДВА, встречных.

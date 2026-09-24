@@ -393,6 +393,32 @@ public sealed partial class ReplayEngine
         catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
     }
 
+    private bool _wdStaticLogged;
+    private DateTime? _wdEvidenceSince;
+    private (int X, int Y) _wdCursor;
+    private uint _wdInputTick;
+
+    private static (int X, int Y) CursorPosition() =>
+        GetCursorPos(out var p) ? (p.X, p.Y) : (int.MinValue, int.MinValue);
+
+    private static uint LastInputTick()
+    {
+        var info = new LastInputInfo { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<LastInputInfo>() };
+        return GetLastInputInfo(ref info) ? info.Time : 0;
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct CursorPoint { public int X, Y; }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct LastInputInfo { public uint Size, Time; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out CursorPoint point);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LastInputInfo info);
+
     private void StartCaptureWatchdog()
     {
         _watchdog?.Dispose();
@@ -410,6 +436,10 @@ public sealed partial class ReplayEngine
         _wdLastReceived = -1;
         _wdLastRate = 0;
         _wdLastActivity = DateTime.UtcNow;
+        _wdEvidenceSince = null;
+        _wdStaticLogged = false;
+        _wdCursor = CursorPosition();
+        _wdInputTick = LastInputTick();
         _watchdog = new System.Threading.Timer(_ =>
         {
             var cap = _capture;
@@ -429,6 +459,10 @@ public sealed partial class ReplayEngine
                 _wdLastActivity = now;
                 _wdEpisodeLogged = false;
                 _wdSilenceLogged = false;
+                _wdStaticLogged = false;
+                _wdEvidenceSince = null;
+                _wdCursor = CursorPosition();
+                _wdInputTick = LastInputTick();
                 return;
             }
             double silent = (DateTime.UtcNow - _wdLastActivity).TotalSeconds;
@@ -455,8 +489,36 @@ public sealed partial class ReplayEngine
             // этом не приходит вовсе: для Windows это отключение дисплея от шины,
             // а не погашенный экран. В логе такой эпизод выглядел как ровные 60 fps
             // и сразу за ними тишина.
-            bool wasLive = _wdLastRate >= 20 || target is not null;
-            double rebuildAfter = wasLive ? 3 : 15;
+            // Окно игры рисует кадры непрерывно: его молчание — уже поломка.
+            const double rebuildAfter = 3;
+            if (target is null)
+            {
+                // РАБОЧИЙ СТОЛ. WGC присылает кадры только когда экран меняется, и
+                // молчание статичного экрана — норма, а не поломка. Раньше тишина
+                // после живого потока через 3 секунды пересобирала конвейер и
+                // переводила захват на Desktop Duplication: на каждой паузе у экрана.
+                // Теперь поломкой считается только молчание, когда экран ТОЧНО
+                // должен был измениться: WGC рисует курсор в кадр, и сдвиг мыши
+                // обязан дать кадр. Если курсор не записывается, признак — ввод с
+                // клавиатуры. Выключенный монитор без ввода тоже молчит законно;
+                // вернётся человек, сдвинет мышь — и если WGC не ожил, пересоберём.
+                bool cursorComposed = _settings.Current.RecordCursor;
+                bool cursorMoved = CursorPosition() != _wdCursor;
+                bool inputHappened = LastInputTick() != _wdInputTick;
+                bool evidence = cursorComposed ? cursorMoved : inputHappened && !cursorMoved;
+                if (!evidence)
+                {
+                    _wdEvidenceSince = null;
+                    if (silent >= 3 && !_wdStaticLogged)
+                    {
+                        _wdStaticLogged = true;
+                        Log.Info("Engine", "WGC молчит: экран не меняется — это норма, пейсер держит частоту дубликатами");
+                    }
+                    return;
+                }
+                _wdEvidenceSince ??= DateTime.UtcNow;
+                silent = (DateTime.UtcNow - _wdEvidenceSince.Value).TotalSeconds;
+            }
 
             // Ранняя запись в лог: она не чинит захват, но без неё причина эпизода
             // терялась. Пересборка стирает и очередь, и состояние источника, то есть
@@ -479,6 +541,7 @@ public sealed partial class ReplayEngine
 
             _wdLastActivity = DateTime.UtcNow;
             _wdSilenceLogged = false;
+            _wdEvidenceSince = null;
             if (!_wdEpisodeLogged)
             {
                 _wdEpisodeLogged = true;

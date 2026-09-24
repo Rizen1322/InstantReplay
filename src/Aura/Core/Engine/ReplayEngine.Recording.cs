@@ -68,9 +68,100 @@ public sealed partial class ReplayEngine
         }
     }
 
+    /// <summary>Обработчик кадров энкодера, через который пишет текущая запись.</summary>
+    private Action<EncodedFrame>? _recorderFrameHandler;
+
+    /// <summary>Запись отцеплена от энкодера на время пересборки конвейера.</summary>
+    private bool _recorderDetached;
+
+    /// <summary>Заголовок кодека, с которым открыта запись: по нему решаем, продолжать ли файл.</summary>
+    private byte[]? _recorderSequenceHeader;
+    private (VideoCodec Codec, int Width, int Height, int Fps) _recorderStream;
+
+    /// <summary>
+    /// Пересборка конвейера: запись отцепляется только от старого энкодера. Файл
+    /// остаётся открытым, звук продолжает в него писаться.
+    /// </summary>
+    private void DetachRecorderLocked()
+    {
+        if (_recorder is null || _recorderDetached) return;
+        if (_encoder is { } encoder && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
+        _recorderFrameHandler = null;
+        _recorderDetached = true;
+    }
+
+    /// <summary>
+    /// Прицепить открытую запись к новому энкодеру. Файл один на всю запись:
+    /// раньше каждая пересборка (например, WGC замолчал и захват перешёл на
+    /// Desktop Duplication) начинала новый файл. Продолжать можно, только если
+    /// поток тот же: кодек, размер, частота и заголовок кодека. Иначе файл
+    /// закрывается и начинается следующая часть, как раньше.
+    /// </summary>
+    private void ReattachRecorderLocked()
+    {
+        var recorder = _recorder!;
+        var encoder = _encoder;
+        if (encoder is not { StreamReady: true }) return;   // энкодер ещё не готов — попробуем при следующем старте
+
+        if (_recorderStream != (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps))
+        {
+            Log.Info("Recorder", "Формат видео после пересборки другой — запись продолжится новым файлом");
+            SplitRecordingLocked();
+            return;
+        }
+
+        recorder.ResumeAfterGap();
+        byte[]? expected = _recorderSequenceHeader;
+        bool checkedHeader = false;
+        Action<EncodedFrame> handler = null!;
+        handler = frame =>
+        {
+            if (!checkedHeader)
+            {
+                if (!frame.IsKeyframe) return;
+                checkedHeader = true;
+                byte[]? header = encoder.TryGetSequenceHeader();
+                if (expected is not null && header is not null &&
+                    !EncodedStreamCompatibility.SameSequenceHeader(expected, header))
+                {
+                    // Поток кодека другой — в тот же файл его не положить. Решаем
+                    // вне потока энкодера: разделение берёт замок жизненного цикла.
+                    encoder.FrameEncoded -= handler;
+                    _ = Task.Run(() =>
+                    {
+                        lock (_lifecycle)
+                        {
+                            if (!ReferenceEquals(_recorder, recorder)) return;
+                            Log.Info("Recorder", "Параметры кодека после пересборки другие — запись продолжится новым файлом");
+                            SplitRecordingLocked();
+                        }
+                    });
+                    return;
+                }
+                _recorderSequenceHeader ??= header;
+            }
+            recorder.OnFrame(frame);
+        };
+        encoder.FrameEncoded += handler;
+        _recorderFrameHandler = handler;
+        _recorderDetached = false;
+        Log.Info("Recorder", "Запись продолжается в тот же файл после пересборки конвейера");
+    }
+
+    /// <summary>Закрыть текущий файл записи и сразу начать следующий.</summary>
+    private void SplitRecordingLocked()
+    {
+        StopRecordingLocked(wait: false);
+        if (_continuousRecordingRequested) StartRecordingLocked();
+    }
+
     private void StartRecordingLocked()
     {
-        if (_recorder is not null) return;
+        if (_recorder is not null)
+        {
+            if (_recorderDetached) ReattachRecorderLocked();
+            return;
+        }
         if (_state == EngineState.Stopped) StartWithFallbackLocked(preserveBuffers: false); // может бросить — наружу, UI покажет
         if (_encoder is not { StreamReady: true }) return;
 
@@ -116,9 +207,13 @@ public sealed partial class ReplayEngine
                 StopRecordingLocked(wait: false);   // причину покажет обработчик завершения
             }
         };
-        _encoder.FrameEncoded += recorder.OnFrame;
+        _recorderFrameHandler = recorder.OnFrame;
+        _encoder.FrameEncoded += _recorderFrameHandler;
         _audio.FrameEncoded += recorder.OnAudio;
         _recorder = recorder;
+        _recorderDetached = false;
+        _recorderSequenceHeader = _bufferSequenceHeader;
+        _recorderStream = (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps);
         RecordingChanged?.Invoke(true);
     }
 
@@ -147,7 +242,9 @@ public sealed partial class ReplayEngine
         // Одно чтение поля вместо двух: параллельный снос обнулял _encoder ровно
         // между проверкой и использованием
         var encoder = _encoder;
-        if (encoder is not null) encoder.FrameEncoded -= recorder.OnFrame;
+        if (encoder is not null && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
+        _recorderFrameHandler = null;
+        _recorderDetached = false;
         _audio.FrameEncoded -= recorder.OnAudio;
         RecordingChanged?.Invoke(false);
 
