@@ -25,6 +25,13 @@ public sealed class VideoEncoder : IDisposable
 {
     public event Action<EncodedFrame>? FrameEncoded;
 
+    /// <summary>
+    /// Энкодер сломался и сам уже не оправится (неисправимая ошибка NVENC). Движок
+    /// пересобирает конвейер; прямой NVENC к этому моменту выключен до перезапуска,
+    /// так что новый энкодер будет MFT.
+    /// </summary>
+    public event Action<string>? Failed;
+
     public IMFMediaType? OutputMediaType { get; private set; }
 
     /// <summary>
@@ -497,6 +504,13 @@ public sealed class VideoEncoder : IDisposable
         {
             try
             {
+                if (_nvencFailed)
+                {
+                    // Сессия сломана: кадры очереди только возвращаем в пул, пока
+                    // движок пересобирает конвейер на MFT
+                    if (TakeInput(20, out var dropped)) _copyPool?.Release(dropped.Texture);
+                    continue;
+                }
                 bool worked = false;
                 while (session.PendingCount > 0 && session.TryGet(0) is { } done)
                 {
@@ -578,16 +592,25 @@ public sealed class VideoEncoder : IDisposable
         while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
             if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
 
-        bool accepted;
-        try { accepted = session.Encode(input.NativePointer, item.Ticks, forceIdr); }
-        catch
+        int result = session.Encode(input.NativePointer, item.Ticks, forceIdr);
+        if (result < 0)
         {
-            // Ошибка NVENC: кадр не ушёл, его метка не должна остаться в очереди
+            // Кадр не ушёл: прослойка уже сняла отображение входа, выходной буфер не
+            // занят. Снимаем его метку, чтобы очередь меток совпадала с выходами.
             lock (_nvencInputPts) RemoveLast(_nvencInputPts);
             Interlocked.Decrement(ref _inFlight);
-            throw;
+            Interlocked.Increment(ref FramesDroppedRealQueue);
+            if (forceIdr) _keyframeRequested = true;         // просьба ключевого кадра не теряется
+            int status = -result;
+            if (NvencSession.IsTransient(status))
+            {
+                if (Interlocked.Increment(ref _nvencTransientDrops) is 1 or 100 or 1000)
+                    Log.Warn("Encoder", $"NVENC: {NvencSession.StatusName(status)} — кадр пропущен ({_nvencTransientDrops} раз)");
+            }
+            else FailNvenc($"отправка кадра → {NvencSession.StatusName(status)}");
+            return;
         }
-        if (!accepted)
+        if (result == 0)
         {
             // Буфер занят — так быть не должно (поток сам считает свободные). Кадр теряем честно.
             lock (_nvencInputPts) RemoveLast(_nvencInputPts);
@@ -600,6 +623,27 @@ public sealed class VideoEncoder : IDisposable
     }
 
     private long _nvencAcquireFailures;
+    private long _nvencTransientDrops;
+
+    /// <summary>Сессия NVENC сломана: дальше в неё ничего не отправляем.</summary>
+    private volatile bool _nvencFailed;
+
+    /// <summary>
+    /// Выход был пропущен: следующие кадры могут ссылаться на пропавший опорный,
+    /// поэтому до ближайшего ключевого кадра ничего не отдаём (и просим его).
+    /// </summary>
+    private bool _nvencResync;
+
+    private void FailNvenc(string reason)
+    {
+        if (_nvencFailed) return;
+        _nvencFailed = true;
+        DirectNvencDisabled = true;
+        Log.Error("Encoder", $"NVENC: {reason} — сессия непригодна, дальше кодирую через MFT. " +
+                             $"Состояние NVENC:\n{_nvenc?.Trace()}");
+        var handler = Failed;
+        if (handler is not null) _ = Task.Run(() => handler(reason));
+    }
 
     private static void RemoveLast<T>(Queue<T> queue)
     {
@@ -620,6 +664,14 @@ public sealed class VideoEncoder : IDisposable
         {
             // Выход пропущен: метку сняли, чтобы следующие кадры не съехали на один
             Interlocked.Increment(ref FramesDroppedRealQueue);
+            var session = _nvenc;
+            if (session is { LastSkipFatal: true }) FailNvenc(session.LastSkipReason);
+            else
+            {
+                Log.Warn("Encoder", $"NVENC: {session?.LastSkipReason} — кадр пропущен, жду ключевой");
+                _nvencResync = true;
+                _keyframeRequested = true;
+            }
             return;
         }
 
@@ -633,6 +685,15 @@ public sealed class VideoEncoder : IDisposable
         // кадр драйвер может помечать как I — там это и есть точка входа.
         bool keyframe = pictureType == NvencSession.PictureIdr ||
                         (pictureType == NvencSession.PictureI && _nvencCodec == VideoCodec.AV1);
+        if (_nvencResync)
+        {
+            if (!keyframe)
+            {
+                Interlocked.Increment(ref FramesDroppedRealQueue);
+                return;
+            }
+            _nvencResync = false;
+        }
         if (keyframe)
         {
             _lastKeyframeTicks = pts;

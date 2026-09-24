@@ -517,8 +517,9 @@ public sealed partial class ReplayEngine
                 Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом конвейере — " +
                                     "взаимная блокировка на видеокарте, пересобираю конвейер");
                 long wedgedGeneration = Interlocked.Read(ref _captureGeneration);
+                // Встал энкодер, а не захват: пересобираем на том же захвате
                 OnCaptureFailed(new CaptureFailure(
-                    CaptureFailureKind.BackendStalled,
+                    CaptureFailureKind.DeviceLost,
                     new InvalidOperationException($"энкодер молчит {stuck:F0} с"),
                     "конвейер встал",
                     wedgedGeneration,

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Aura.Core.Logging;
 using Aura.Core.Storage;
 
@@ -179,7 +179,7 @@ public static class Ffmpeg
         {
             string inputs = string.Concat(Enumerable.Range(0, audioTrackCount).Select(i => $"[0:a:{i}]"));
             psi.ArgumentList.Add("-filter_complex");
-            psi.ArgumentList.Add($"{inputs}amix=inputs={audioTrackCount}:duration=longest:normalize=0[aout]");
+            psi.ArgumentList.Add(MixFilter(inputs, audioTrackCount));
             psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("0:v:0");
             psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[aout]");
             psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add("copy");
@@ -264,7 +264,7 @@ public static class Ffmpeg
         psi.ArgumentList.Add("-nostdin");
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         psi.ArgumentList.Add("-filter_complex");
-        psi.ArgumentList.Add($"{inputs}amix=inputs={audioTrackCount}:duration=longest:normalize=0[aout]");
+        psi.ArgumentList.Add(MixFilter(inputs, audioTrackCount));
         psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[aout]");
         psi.ArgumentList.Add("-vn");
         psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
@@ -313,6 +313,19 @@ public static class Ffmpeg
             throw;
         }
     }
+
+    /// <summary>
+    /// Сведение дорожек в одну без потери громкости, но и без перегруза.
+    ///
+    /// amix с normalize=0 просто складывает дорожки. Запись Aura держит каждую
+    /// дорожку у самого потолка (лимитер при захвате), поэтому громкий момент игры
+    /// плюс голос в микрофон давали в сумме до +3 дБ сверх нуля: при воспроизведении
+    /// всё выше срезалось, и в редакторе хрипели и игра, и голос, хотя в самом файле
+    /// дорожки чистые. Лимитер после сведения мягко прижимает только такие пики.
+    /// </summary>
+    internal static string MixFilter(string inputs, int trackCount) =>
+        $"{inputs}amix=inputs={trackCount}:duration=longest:normalize=0," +
+        "alimiter=limit=0.97:attack=5:release=50:level=disabled[aout]";
 
     private static string Seconds(TimeSpan value) =>
         value.TotalSeconds.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);

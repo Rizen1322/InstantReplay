@@ -81,10 +81,7 @@ internal sealed partial class NvencSession : IDisposable
         Settings = applied;
     }
 
-    /// <summary>
-    /// Есть ли смысл пробовать NVENC: видеокарта NVIDIA и прослойка на месте.
-    /// AURA_NO_NVENC=1 выключает прямой путь для проверки на MFT.
-    /// </summary>
+    /// <summary>Есть ли смысл пробовать NVENC: видеокарта NVIDIA и прослойка на месте.</summary>
     /// <remarks>
     /// AURA_NO_NVENC=1 (или AURA_DIRECT_NVENC=0) — сразу MFT. Если прямой NVENC всё же
     /// встанет, сторож движка переключит программу на MFT до её перезапуска
@@ -120,12 +117,11 @@ internal sealed partial class NvencSession : IDisposable
             TenBit = tenBit ? 1 : 0,
             GopLength = fps * 2,
             Preset = veryHeavy ? 3 : heavy ? 4 : 5,
-            // Просмотр вперёд ВЫКЛЮЧЕН. С ним NVENC в асинхронном режиме на общем с
-            // захватом устройстве D3D11 вешал конвейер намертво через 1-4 минуты:
-            // nvEncLockBitstream держит замок устройства и ждёт работу, которой для
-            // продолжения нужен тот же замок (копии кадров пейсера и захвата).
-            // Воспроизведено 4 раза из 4 и снято нативными стеками; без просмотра
-            // вперёд — ни одного зависания. Временной AQ без него не работает.
+            // Просмотр вперёд пока выключен. Зависания, которые на него списывали,
+            // оказались повторной блокировкой выхода в прослойке (см. aura_nvenc_get);
+            // после её исправления просмотр вперёд 16 с B-кадрами прошёл 10 минут без
+            // единого эпизода. Включим по умолчанию после проверки в настоящей игре;
+            // до тех пор — AURA_NVENC_LOOKAHEAD. Временной AQ без него не работает.
             Lookahead = 0,
             // Без B-кадров и многопроходности: так NVIDIA советует кодировать в
             // реальном времени, и так меньше кадров живёт внутри энкодера. Включаются
@@ -193,12 +189,47 @@ internal sealed partial class NvencSession : IDisposable
     }
 
     /// <summary>1 — принят, 0 — нет свободного буфера, иначе исключение.</summary>
-    public bool Encode(IntPtr texture, long pts, bool forceIdr)
+    /// <summary>
+    /// Отправить кадр. 1 — принят (в том числе NV_ENC_ERR_NEED_MORE_INPUT: это не
+    /// ошибка, выход придёт позже), 0 — нет свободного выходного буфера, иначе минус
+    /// код NVENCSTATUS (-1000 — текстуру не удалось зарегистрировать).
+    /// </summary>
+    public int Encode(IntPtr texture, long pts, bool forceIdr) =>
+        EncodeNative(_session, texture, pts, forceIdr ? 1 : 0);
+
+    // NVENCSTATUS из nvEncodeAPI.h (порядковые значения перечисления)
+    public const int StatusLockBusy = 13;
+    public const int StatusNeedMoreInput = 17;
+    public const int StatusEncoderBusy = 18;
+
+    /// <summary>
+    /// Временное состояние: этот кадр пропускаем, сессия цела. Всё остальное —
+    /// неверный вызов, нехватка памяти, пропавшее устройство, общий сбой — считается
+    /// поломкой сессии: пропускать кадры дальше бессмысленно, нужен MFT.
+    /// </summary>
+    public static bool IsTransient(int status) => status is StatusEncoderBusy or StatusLockBusy;
+
+    public static string StatusName(int status) => status switch
     {
-        int result = EncodeNative(_session, texture, pts, forceIdr ? 1 : 0);
-        if (result < 0) throw new InvalidOperationException($"NVENC: ошибка кодирования {-result}");
-        return result == 1;
-    }
+        0 => "SUCCESS", 1 => "NO_ENCODE_DEVICE", 2 => "UNSUPPORTED_DEVICE", 3 => "INVALID_ENCODERDEVICE",
+        4 => "INVALID_DEVICE", 5 => "DEVICE_NOT_EXIST", 6 => "INVALID_PTR", 7 => "INVALID_EVENT",
+        8 => "INVALID_PARAM", 9 => "INVALID_CALL", 10 => "OUT_OF_MEMORY", 11 => "ENCODER_NOT_INITIALIZED",
+        12 => "UNSUPPORTED_PARAM", 13 => "LOCK_BUSY", 14 => "NOT_ENOUGH_BUFFER", 15 => "INVALID_VERSION",
+        16 => "MAP_FAILED", 17 => "NEED_MORE_INPUT", 18 => "ENCODER_BUSY", 19 => "EVENT_NOT_REGISTERD",
+        20 => "GENERIC", 21 => "INCOMPATIBLE_CLIENT_KEY", 22 => "UNIMPLEMENTED", 23 => "RESOURCE_REGISTER_FAILED",
+        24 => "RESOURCE_NOT_REGISTERED", 25 => "RESOURCE_NOT_MAPPED", 26 => "NEED_MORE_OUTPUT",
+        1000 => "регистрация текстуры не удалась",
+        _ => status.ToString()
+    };
+
+    /// <summary>
+    /// Последний пропущенный выход был поломкой сессии, а не временным состоянием
+    /// (см. <see cref="IsTransient"/>). Читается сразу после TryGet в том же потоке.
+    /// </summary>
+    public bool LastSkipFatal { get; private set; }
+
+    /// <summary>Причина последнего пропуска — для лога.</summary>
+    public string LastSkipReason { get; private set; } = "";
 
     public void EndOfStream()
     {
@@ -221,10 +252,20 @@ internal sealed partial class NvencSession : IDisposable
             return (new ArraySegment<byte>(_output, 0, size), pts, type);
         }
         if (result == 0 || result == -2) return null;
-        // Выход пропущен (нет памяти под кадр или ошибка NVENC). Прослойка уже
-        // перешла к следующему; вызывающему нужно снять метку времени этого кадра.
-        if (result == -1) Log.Warn("Encoder", "NVENC: кадр не поместился в память и пропущен");
-        else Log.Error("Encoder", $"NVENC: ошибка выдачи {-(result + 3)} — кадр пропущен. {Trace().Split('\n')[0]}");
+        // Выход пропущен (нет памяти под кадр или ошибка блокировки). Прослойка уже
+        // сняла отображение входа и перешла к следующему; вызывающему нужно снять
+        // метку времени этого кадра и решить, жива ли сессия.
+        if (result == -1)
+        {
+            LastSkipFatal = true;
+            LastSkipReason = "кадр не поместился в память";
+        }
+        else
+        {
+            int status = -(result + 3);
+            LastSkipFatal = !IsTransient(status);
+            LastSkipReason = $"nvEncLockBitstream → {StatusName(status)}";
+        }
         return (default, pts, SkippedPicture);
     }
 

@@ -521,6 +521,14 @@ public sealed partial class ReplayEngine : IDisposable
             }
 
             var encoder = _encoder = new VideoEncoder();
+            // Неисправимая ошибка энкодера: захват ни при чём, поэтому вид сбоя
+            // DeviceLost — пересборка на том же захвате, энкодер будет уже MFT.
+            encoder.Failed += reason => OnCaptureFailed(new CaptureFailure(
+                CaptureFailureKind.DeviceLost,
+                new InvalidOperationException(reason),
+                $"энкодер: {reason}",
+                generation,
+                ActiveCaptureTarget()?.Revision ?? 0), generation);
             encoder.Initialize(_capture.D3DDevice, _processor.OutWidth, _processor.OutHeight,
                                s.Fps, s.BitrateBps, s.Codec, _processor.TenBit);
 
