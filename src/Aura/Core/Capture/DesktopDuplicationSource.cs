@@ -283,6 +283,10 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     private void CaptureLoop(RunToken token)
     {
+        // Свой высокоточный таймер на поток захвата: ожидание слота сетки кадров
+        // должно быть точнее системных 15.6 мс, а глобального timeBeginPeriod больше нет.
+        using var timer = new Interop.PreciseTimer();
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "DDA");
         while (token.Running)
         {
             IDXGIResource? resource = null;
@@ -310,7 +314,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 if (_minFrameIntervalTicks > 0 && _nextFrameDeadline > 0)
                 {
                     long waitTicks = _nextFrameDeadline - QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
-                    if (waitTicks > 15_000) Thread.Sleep((int)(waitTicks / 10_000));
+                    if (waitTicks > 5_000) timer.Wait(waitTicks);
                 }
 
                 // 100 мс: на статичном экране система просто не отдаёт кадры — это норма,

@@ -50,7 +50,7 @@
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <TextBlock x:Name="BitrateValue" Style="{StaticResource RowValue}" Width="76"
                                            TextAlignment="Right" Margin="0,0,10,0"/>
-                                <Slider x:Name="Bitrate" Minimum="4" Maximum="80" TickFrequency="1"
+                                <Slider x:Name="Bitrate" Minimum="4" Maximum="150" TickFrequency="1"
                                         IsSnapToTickEnabled="True"/>
                             </StackPanel>
                         </c:AdaptiveRow>
@@ -60,7 +60,7 @@
                 <!-- ==================== ДЛИНА ПОВТОРА ==================== -->
                 <Grid>
                     <TextBlock Text="Длина повтора" Style="{StaticResource GroupLabel}"/>
-                    <TextBlock Text="длинный повтор занимает больше памяти" Style="{StaticResource Caption3}"
+                    <TextBlock Text="длинный повтор занимает больше памяти или места на диске" Style="{StaticResource Caption3}"
                                HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,4,10"/>
                 </Grid>
                 <Border Style="{StaticResource Card}">
@@ -76,6 +76,15 @@
                                 <TextBlock x:Name="RamEstimate" Style="{StaticResource PillText}"/>
                             </Border>
                         </StackPanel>
+                        <Border Style="{StaticResource RowSeparator}" Margin="0,12,0,0"/>
+                        <c:AdaptiveRow Margin="0,12,0,0">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Буфер на диске" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Для длинного повтора: память почти не занимает, но диск пишется постоянно"
+                                           Style="{StaticResource RowSub}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <c:Switch x:Name="DiskBufferSwitch" Click="DiskBuffer_Changed"/>
+                        </c:AdaptiveRow>
                     </StackPanel>
                 </Border>
 
@@ -134,8 +143,43 @@
                         <Border Style="{StaticResource RowSeparator}"/>
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="Шумоподавление микрофона" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Убирает фоновый гул в паузах между фразами" Style="{StaticResource RowSub}"/>
+                                <TextBlock Text="Громкость игры в записи" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Громкие пики не хрипят: их сглаживает лимитер" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock x:Name="GameVolumeValue" Style="{StaticResource RowValue}" Width="60"
+                                           TextAlignment="Right" Margin="0,0,10,0"/>
+                                <Slider x:Name="GameVolume" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True"/>
+                            </StackPanel>
+                        </c:AdaptiveRow>
+
+                        <Border Style="{StaticResource RowSeparator}"/>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Громкость микрофона в записи" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Если голос тонет в игре или, наоборот, заглушает её" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock x:Name="MicVolumeValue" Style="{StaticResource RowValue}" Width="60"
+                                           TextAlignment="Right" Margin="0,0,10,0"/>
+                                <Slider x:Name="MicVolume" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True"/>
+                            </StackPanel>
+                        </c:AdaptiveRow>
+
+                        <Border Style="{StaticResource RowSeparator}"/>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Шумоподавление нейросетью" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Убирает гул, вентиляторы и клавиатуру прямо из голоса (RNNoise)" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Switch x:Name="NeuralDenoise" Click="NeuralDenoise_Changed"/>
+                        </c:AdaptiveRow>
+
+                        <Border Style="{StaticResource RowSeparator}"/>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Шумовой гейт микрофона" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Полная тишина в паузах между фразами" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <c:Switch x:Name="NoiseGate" Click="NoiseGate_Changed"/>
                         </c:AdaptiveRow>

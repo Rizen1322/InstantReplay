@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Aura.Core.Interop;
 using Aura.Core.Logging;
 using Aura.Core.Settings;
@@ -77,20 +77,20 @@ public sealed class HotkeyService : IDisposable
             return;
         }
 
-        // Хук мыши живёт на ТОМ ЖЕ потоке и обслуживается тем же циклом сообщений:
-        // ставить под него отдельный поток незачем, а лишний поток с очередью — это
-        // ещё одно место, где можно потерять сообщение при выключении.
-        _mouseHookProc = MouseHookCallback;
-        _mouseHook = SetWindowsHookExW(WH_MOUSE_LL, _mouseHookProc, IntPtr.Zero, 0);
-        if (_mouseHook == IntPtr.Zero)
-            Log.Warn("Hotkeys", $"Хук мыши не установлен ({Marshal.GetLastWin32Error()}) — " +
-                                "кнопки мыши назначить не получится");
+        // Хук мыши живёт на ТОМ ЖЕ потоке и обслуживается тем же циклом сообщений.
+        // Ставим его ТОЛЬКО когда на кнопку мыши назначено действие: низкоуровневый
+        // хук мыши получает каждое её движение (игровые мыши — до 8000 событий в
+        // секунду), и каждое проходит через управляемый колбэк. Пауза сборщика мусора
+        // в этот момент задерживает курсор во всей системе, то есть в игре. Без
+        // назначенных кнопок платить за это незачем.
+        UpdateMouseHook();
 
         Log.Info("Hotkeys", "Глобальный хук клавиатуры установлен" +
                             (_mouseHook != IntPtr.Zero ? " (и мыши)" : ""));
 
         while (GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
+            if (msg.message == WmUpdateMouseHook) { UpdateMouseHook(); continue; }
             TranslateMessage(ref msg);
             DispatchMessageW(ref msg);
         }
@@ -101,6 +101,37 @@ public sealed class HotkeyService : IDisposable
 
     [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")]
     private static extern uint GetCurrentThreadIdNative();
+
+    /// <summary>Своё сообщение потоку хука: пересмотреть, нужен ли хук мыши.</summary>
+    private const uint WmUpdateMouseHook = 0x8000 + 0x51; // WM_APP + 0x51
+
+    /// <summary>Есть ли среди назначенных комбинаций кнопка мыши.</summary>
+    private volatile bool _mouseBound;
+
+    /// <summary>
+    /// Поставить или снять хук мыши по текущим назначениям. Зовётся ТОЛЬКО на потоке
+    /// хука: хук принадлежит потоку, который его поставил, и обслуживается его циклом
+    /// сообщений.
+    /// </summary>
+    private void UpdateMouseHook()
+    {
+        if (_mouseBound && _mouseHook == IntPtr.Zero)
+        {
+            _mouseHookProc ??= MouseHookCallback;
+            _mouseHook = SetWindowsHookExW(WH_MOUSE_LL, _mouseHookProc, IntPtr.Zero, 0);
+            if (_mouseHook == IntPtr.Zero)
+                Log.Warn("Hotkeys", $"Хук мыши не установлен ({Marshal.GetLastWin32Error()}) — " +
+                                    "кнопки мыши работать не будут");
+            else if (_hook != IntPtr.Zero)
+                Log.Info("Hotkeys", "Хук мыши установлен: на кнопку мыши назначено действие");
+        }
+        else if (!_mouseBound && _mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+            Log.Info("Hotkeys", "Хук мыши снят: кнопки мыши не назначены");
+        }
+    }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
@@ -201,7 +232,10 @@ public sealed class HotkeyService : IDisposable
             TryAdd(s.HotkeyScreenshot, HotkeyAction.Screenshot);
             TryAdd(s.HotkeyScreenshotRegion, HotkeyAction.ScreenshotRegion);
             TryAdd(s.HotkeyOpenFolder, HotkeyAction.OpenFolder);
+            _mouseBound = _map.Keys.Any(k => HotkeyParser.IsMouseButton(k.vk));
         }
+        // Поток хука мог ещё не стартовать — тогда он сам спросит при запуске
+        if (_threadId != 0) PostThreadMessageW(_threadId, WmUpdateMouseHook, IntPtr.Zero, IntPtr.Zero);
     }
 
     private void TryAdd(string combo, HotkeyAction action)

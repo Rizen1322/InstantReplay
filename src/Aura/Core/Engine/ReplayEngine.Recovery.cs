@@ -130,7 +130,7 @@ public sealed partial class ReplayEngine
                             }
                             // Читаем intent под тем же lifecycle-lock: если человек
                             // нажал «остановить» в промежутке, новый файл не создаём.
-                            if (_continuousRecordingRequested) StartRecordingLocked();
+                            if (_continuousRecordingRequested) ResumeRecordingLocked();
                             if (_stopRequested)
                             {
                                 StopLocked(PipelineStopIntent.UserStop);

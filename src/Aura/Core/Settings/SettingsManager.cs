@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aura.Core.Logging;
 
@@ -30,8 +30,14 @@ public sealed class SettingsManager
         Converters = { new JsonStringEnumConverter() }
     };
 
+    /// <summary>
+    /// Папка настроек. AURA_DATA_DIR подменяет её для проверочных прогонов движка:
+    /// они не должны переписывать настройки установленной копии.
+    /// </summary>
     public static string Dir { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura");
+        Environment.GetEnvironmentVariable("AURA_DATA_DIR") is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura");
     private static string FilePath => Path.Combine(Dir, "settings.json");
     private static string TempPath => Path.Combine(Dir, $"settings.json.{Environment.ProcessId}.tmp");
 

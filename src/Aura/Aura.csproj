@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- TFM с версией Windows SDK: WPF + проекции WinRT (Windows.Graphics.Capture,
@@ -61,6 +61,14 @@
              CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="$(GameCaptureHookOutput)\Aura.GameCaptureHook64.sha256"
                       LogicalName="Aura.GameCaptureHook64.sha256" />
+    <Content Include="$(GameCaptureHookOutput)\Aura.Media64.dll"
+             Link="Aura.Media64.dll"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\native\Aura.Media\**\*.*" />
+    <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\third_party\nvenc\**\*.*" />
+    <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\third_party\rnnoise\**\*.*" />
+    <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\packaging\build_media_native.ps1" />
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\native\Aura.GameCaptureHook\**\*.*" />
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\..\third_party\minhook\**\*.c" />
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\..\third_party\minhook\**\*.h" />
@@ -78,6 +86,17 @@
            Text="Native Minecraft capture hook was not produced." />
     <Error Condition="!Exists('$(GameCaptureHookOutput)\Aura.GameCaptureHook64.sha256')"
            Text="Native Minecraft capture hook hash manifest was not produced." />
+  </Target>
+
+  <!-- Aura.Media64.dll (src/native/Aura.Media): прямой NVENC и RNNoise. Собирается Zig, как и хук. -->
+  <Target Name="BuildMediaNative"
+          BeforeTargets="CoreCompile"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Aura'"
+          Inputs="@(MediaNativeSource)"
+          Outputs="$(GameCaptureHookOutput)\Aura.Media64.dll">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\packaging\build_media_native.ps1&quot; -OutputDir &quot;$(GameCaptureHookOutput)&quot;" />
+    <Error Condition="!Exists('$(GameCaptureHookOutput)\Aura.Media64.dll')"
+           Text="Aura.Media64.dll was not produced." />
   </Target>
 
   <!-- VideoLAN.LibVLC.Windows carries three complete native runtimes. Aura is an

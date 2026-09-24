@@ -107,7 +107,11 @@ public partial class App : Application
             Log.Fatal("App", $"Исключение в фоновой задаче: {args.Exception}");
             args.SetObserved();
         };
-        Core.Interop.NativeMethods.timeBeginPeriod(1); // точный Sleep для конвейера записи и звука
+        // timeBeginPeriod(1) на весь процесс больше не нужен: потоки, которым важна
+        // точность (пейсер энкодера, захват DDA, микшер звука), ждут на собственном
+        // высокоточном таймере (Core/Interop/PreciseTimer.cs). Глобальный 1-мс тик
+        // держал систему в режиме повышенного энергопотребления даже тогда, когда
+        // повтор выключен и приложение просто лежит в трее.
         RaiseGpuPriority();
 
         Services.Settings.Load();
@@ -119,6 +123,9 @@ public partial class App : Application
         ApplyTheme(theme);
 
         MediaFactory.MFStartup(); // Media Foundation — один раз на процесс
+        // Файл буфера на диске удаляет сама система при закрытии, но после отказа
+        // питания он может остаться — убираем хвосты прошлых запусков.
+        _ = Task.Run(() => Core.Buffering.FileArenaStorage.CleanupStale(Core.Buffering.ReplayVideoBuffer.DiskDirectory));
 
         Services.Init();
         Views.ClipCommands.Register();
@@ -501,6 +508,10 @@ public partial class App : Application
             Services.Engine.Start();
             AskBorderlessPermission();
         }
+        catch (Core.Storage.InsufficientDiskSpaceException ex)
+        {
+            Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске — повтор не включён", ex.Message);
+        }
         catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось включить повтор", ex.Message); }
     }
 
@@ -528,6 +539,10 @@ public partial class App : Application
     public static void SafeStartRecording()
     {
         try { Services.Engine.StartRecordingToFile(); }
+        catch (Core.Storage.InsufficientDiskSpaceException ex)
+        {
+            Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске — запись не начата", ex.Message);
+        }
         catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось начать запись", ex.Message); }
     }
 

@@ -39,13 +39,22 @@ public sealed class AppSettings
     /// <summary>Длина Instant Replay в секундах (15..900, либо своё значение).</summary>
     public int ReplayLengthSeconds { get; set; } = 180;
 
+    /// <summary>
+    /// Держать буфер повтора в файле на диске, а не в оперативной памяти. Так делает
+    /// ShadowPlay: длинный буфер (10–30 минут на высоком битрейте) в память не
+    /// помещается. Цена — постоянная запись на диск со скоростью битрейта.
+    /// </summary>
+    public bool ReplayBufferOnDisk { get; set; }
+
     // ---------- Видео ----------
     /// <summary>Высота кадра: 720/1080/1440/2160. Ширина считается по аспекту монитора.</summary>
     public int VerticalResolution { get; set; } = 1080;
     public int Fps { get; set; } = 60;
-    /// <summary>Битрейт в Mbps (ползунок 10..80).</summary>
-    /// <summary>18 Mbps is the high-quality HEVC tier for the default 1080p60 mode.</summary>
-    public int BitrateMbps { get; set; } = 18;
+    /// <summary>
+    /// Битрейт в Мбит/с (ползунок 4..150). 20 — набор «Обычный» для HEVC 1080p60,
+    /// см. RecordingQualityPolicy.
+    /// </summary>
+    public int BitrateMbps { get; set; } = 20;
     /// <summary>
     /// HEVC по умолчанию: файлы вдвое легче при той же картинке, и битрейты готовых
     /// наборов рассчитаны именно под него. Если видеокарта его не умеет, запуск
@@ -62,9 +71,8 @@ public sealed class AppSettings
     /// видеопроцессор драйвера, и энкодер. Иначе запись идёт в восемь бит, и
     /// пользователю ничего делать не нужно.
     ///
-    /// Работает только с HEVC. У H.264 десятибитный профиль почти не
-    /// поддерживается плеерами, а NVENC его не умеет вовсе; AV1 в Media Foundation
-    /// пока слишком неровный, чтобы рисковать записью.
+    /// Работает с HEVC и AV1. У H.264 десятибитный профиль почти не
+    /// поддерживается плеерами, а NVENC его не умеет вовсе.
     /// </summary>
     public VideoBitDepth BitDepth { get; set; } = VideoBitDepth.Auto;
 
@@ -88,6 +96,18 @@ public sealed class AppSettings
     /// -60 пропускает почти всё, -30 режет жёстко.
     /// </summary>
     public float MicNoiseGateDb { get; set; } = -44f;
+
+    /// <summary>
+    /// Шумоподавление микрофона нейросетью RNNoise: убирает гул, вентиляторы и
+    /// клавиатуру прямо из голоса. Включено по умолчанию — стоит около процента ядра.
+    /// </summary>
+    public bool MicNeuralNoiseSuppression { get; set; } = true;
+
+    /// <summary>Громкость звука игры в записи, проценты (0–200).</summary>
+    public int GameVolumePercent { get; set; } = 100;
+
+    /// <summary>Громкость микрофона в записи, проценты (0–200).</summary>
+    public int MicVolumePercent { get; set; } = 100;
 
     // ---------- Горячие клавиши (строковый формат "Alt+F10") ----------
     public string HotkeySaveReplay { get; set; } = "Alt+F10";
@@ -215,6 +235,8 @@ public sealed class AppSettings
         BitrateMbps = Math.Clamp(BitrateMbps, 1, 200);
         MonitorIndex = Math.Max(0, MonitorIndex);
         MicNoiseGateDb = float.IsFinite(MicNoiseGateDb) ? Math.Clamp(MicNoiseGateDb, -70f, -10f) : -44f;
+        GameVolumePercent = Math.Clamp(GameVolumePercent, 0, 200);
+        MicVolumePercent = Math.Clamp(MicVolumePercent, 0, 200);
         AttachmentSizeMb = Math.Clamp(AttachmentSizeMb, 2, 2048);
         NotificationDurationSeconds = double.IsFinite(NotificationDurationSeconds)
             ? Math.Clamp(NotificationDurationSeconds, 0.5, 30) : 3.5;

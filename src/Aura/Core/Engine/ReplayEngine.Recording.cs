@@ -51,31 +51,73 @@ public sealed partial class ReplayEngine
         }
     }
 
+    /// <summary>
+    /// Продолжить запись в файл после пересборки конвейера. Неудача (например,
+    /// кончилось место) не должна валить саму пересборку: конвейер к этому моменту
+    /// уже работает, и ошибка, выпущенная наружу, запустила бы восстановление по
+    /// кругу. Запись останавливается, человек видит причину, повтор пишется дальше.
+    /// </summary>
+    private void ResumeRecordingLocked()
+    {
+        try { StartRecordingLocked(); }
+        catch (Exception ex)
+        {
+            _continuousRecordingRequested = false;
+            Log.Warn("Recorder", $"Запись в файл не продолжена: {ex.Message}");
+            Warning?.Invoke($"Запись в файл остановлена: {ex.Message}");
+        }
+    }
+
     private void StartRecordingLocked()
     {
         if (_recorder is not null) return;
         if (_state == EngineState.Stopped) StartWithFallbackLocked(preserveBuffers: false); // может бросить — наружу, UI покажет
-        if (_encoder?.OutputMediaType is null) return;
+        if (_encoder is not { StreamReady: true }) return;
 
         var s = _settings.Current;
+        // Места нет — запись не начинаем: файл оборвался бы через пару минут.
+        DiskSpace.Require(s.SaveRootPath,
+                          Math.Max(DiskSpace.RecordingMinimumBytes, s.BitrateBps / 8 * 120),
+                          "записи в файл");
+
         string game = GameDetector.DetectForegroundGame();
-        // Тип видеопотока берётся не сейчас, а в момент создания файла (первый keyframe):
-        // сразу после старта конвейера энкодер ещё не дописал в него заголовки кодека,
-        // и файл, открытый с таким типом, не собирается на финализации.
+        // Описание видеодорожки собирается на первом ключевом кадре записи: к нему
+        // энкодер уже отдал заголовки кодека.
+        var codec = ContainerCodec(_bufferCodec);
+        int width = _bufferWidth, height = _bufferHeight, fps = _bufferFps;
+        // Заголовок берём у движка, а не у энкодера: файл открывается в потоке
+        // писателя, когда энкодер мог уже смениться при восстановлении захвата.
+        Func<byte[], Saving.Mp4.Mp4VideoFormat> videoFormat = keyframe =>
+            Saving.Mp4.Mp4VideoFormat.FromBitstream(codec, width, height,
+                _bufferSequenceHeader ?? [], keyframe) with { FrameRate = fps };
+
+        var audioTracks = new List<(AudioTrackKind, Saving.Mp4.Mp4AudioFormat)>();
+        foreach (var kind in ReplaySaver.TracksFor(s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone))
+            if (_audio.FormatOf(kind) is { } format) audioTracks.Add((kind, format));
+
         string file = ReserveFilePath(game, "recording", DateTime.Now);
         ManualRecorder recorder;
         try
         {
-            recorder = new ManualRecorder(file, () => _encoder?.CloneOutputMediaType(),
-                s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone);
+            recorder = new ManualRecorder(file, videoFormat, audioTracks, 10_000_000L / Math.Max(1, fps));
         }
         catch
         {
             ReleaseFilePath(file);
             throw;
         }
+        recorder.Faulted += _ =>
+        {
+            // Только если это всё ещё текущая запись: пользователь мог уже нажать стоп.
+            lock (_lifecycle)
+            {
+                if (!ReferenceEquals(_recorder, recorder)) return;
+                _continuousRecordingRequested = false;
+                StopRecordingLocked(wait: false);   // причину покажет обработчик завершения
+            }
+        };
         _encoder.FrameEncoded += recorder.OnFrame;
-        _audio.BlockReady += recorder.OnAudio;
+        _audio.FrameEncoded += recorder.OnAudio;
         _recorder = recorder;
         RecordingChanged?.Invoke(true);
     }
@@ -106,7 +148,7 @@ public sealed partial class ReplayEngine
         // между проверкой и использованием
         var encoder = _encoder;
         if (encoder is not null) encoder.FrameEncoded -= recorder.OnFrame;
-        _audio.BlockReady -= recorder.OnAudio;
+        _audio.FrameEncoded -= recorder.OnAudio;
         RecordingChanged?.Invoke(false);
 
         var finish = Task.Run(() =>
@@ -122,6 +164,9 @@ public sealed partial class ReplayEngine
                 {
                     foreach (var file in result.Files) _storage.RegisterSaved(file);
                     RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+                    // Записанное целое, но запись оборвалась раньше (кончилось место) —
+                    // человек должен узнать, почему файл короче.
+                    if (result.Error is { } error) Warning?.Invoke($"Запись остановилась раньше: {error}");
                 }
                 else SaveFailed?.Invoke(result.Error ?? "запись не закрылась");
             }

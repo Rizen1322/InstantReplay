@@ -1,393 +1,112 @@
-﻿using System.Runtime.InteropServices;
-using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
-using Aura.Core.Encoding;
 using Aura.Core.Logging;
+using Aura.Core.Saving.Mp4;
 using Aura.Core.Settings;
+using Aura.Core.Storage;
 
 namespace Aura.Core.Saving;
 
 /// <summary>
-/// Сохранение снимка кольцевых буферов в MP4.
+/// Сохранение повтора в MP4: снимок буфера (готовое видео и готовый AAC) просто
+/// раскладывается в файл своим мультиплексором (<see cref="Mp4ProgressiveWriter"/>).
 ///
-/// Видео уже сжато (H264/HEVC/AV1) — SinkWriter работает в passthrough-режиме
-/// (input type == output type == сжатый), т.е. это чистый remux: сохранение
-/// 5-минутного клипа занимает доли секунды и не грузит GPU/CPU.
-/// Аудио — PCM16 48k из микшера, кодируется в AAC самим SinkWriter.
-/// Режим дорожек (Mixed/Separate/GameOnly/MicOnly) применяется здесь.
+/// Здесь нет ни одного кодека и ни одного объекта Media Foundation: раньше звук
+/// перекодировался в AAC прямо во время сохранения, писатель MF держал сэмплы,
+/// арену приходилось закреплять, а темп подачи — сдерживать через
+/// недокументированную статистику писателя. Теперь сохранение — это чтение
+/// памяти и последовательная запись на диск.
 /// </summary>
 public static class ReplaySaver
 {
-    private const int MfESinkHeadersNotFound = unchecked((int)0xC00D4A45);
-
-    /// <summary>
-    /// С какого времени открытие писателя считается нештатным.
-    ///
-    /// На здоровой системе это десятки миллисекунд (создать файл, поднять AAC-энкодер).
-    /// Порог намеренно низкий: строка в логе ничего не стоит, а без неё «зависло»
-    /// невозможно отличить от «медленно пишет на диск».
-    /// </summary>
-    private const long SlowOpenWarnMs = 1500;
-
-    /// <summary>
-    /// Открепить блоки арены — но только когда писатель отпустит ВСЕ буферы ЭТОГО
-    /// сохранения.
-    ///
-    /// Сэмплы ссылаются прямо на память арены, и Dispose писателя не гарантирует,
-    /// что он отпустил их немедленно: в замерах он удерживал 6781 сэмпл из 7067.
-    /// Если открепить раньше времени, кольцо перезапишет эти байты, а сборщик может
-    /// собрать блок целиком — и Media Foundation обратится к чужой памяти. Именно так
-    /// приложение и падало молча через несколько секунд после сохранения.
-    ///
-    /// Считаем по счётчику СВОЕЙ партии (<see cref="ArenaBufferBatch"/>), а не по
-    /// общему на процесс: следующее сохранение начинается раньше, чем заканчивается
-    /// это ожидание, и на общем счётчике оно выглядело бы как «писатель ещё держит».
-    ///
-    /// Ждём в фоне, чтобы не задерживать вызывающего: закрепление лишних блоков на
-    /// пару секунд ничего не стоит, а обращение к освобождённой памяти стоит краха.
-    /// </summary>
-    private static void UnpinWhenWriterDone(
-        ArenaBufferBatch batch, List<System.Runtime.InteropServices.GCHandle> handles, long clipBytes)
+    /// <summary>Какие дорожки кладём в файл при данном режиме и том, что есть в снимке.</summary>
+    public static List<AudioTrackKind> TracksFor(AudioTrackMode mode, bool hasGame, bool hasMic)
     {
-        if (handles.Count == 0) { batch.Free(); return; }
-
-        // Срок ожидания считаем от размера клипа, а не берём постоянные 30 секунд.
-        // Под игровой нагрузкой запись идёт медленнее в разы: в замерах 42 МБ/с
-        // против 575 МБ/с на свободной машине. Клип в гигабайт при таком темпе
-        // пишется дольше половины минуты, и постоянный срок срабатывал бы не по делу,
-        // навсегда закрепляя блоки арены. Пол считаем по 15 МБ/с — медленнее любого
-        // диска, на котором запись вообще имеет смысл.
-        const double SlowestBytesPerSecond = 15.0 * 1024 * 1024;
-        var limit = TimeSpan.FromSeconds(
-            Math.Clamp(30 + clipBytes / SlowestBytesPerSecond, 30, 180));
-
-        Task.Run(() =>
-        {
-            var clock = System.Diagnostics.Stopwatch.StartNew();
-            while (batch.Alive > 0 && clock.Elapsed < limit)
-                Thread.Sleep(20);
-
-            if (batch.Alive > 0)
-            {
-                // Так быть не должно. Блоки оставляем закреплёнными навсегда, а
-                // счётчик партии намеренно НЕ освобождаем — живые буферы всё ещё
-                // будут его править. Утечка нескольких десятков мегабайт безопаснее
-                // обращения к чужой памяти.
-                Log.Warn("Saver", $"Писатель не отпустил {batch.Alive} буферов за " +
-                                  $"{limit.TotalSeconds:F0} секунд — блоки арены остаются закреплёнными");
-                return;
-            }
-
-            foreach (var handle in handles) handle.Free();
-            batch.Free();
-            if (clock.ElapsedMilliseconds > 50)
-                Log.Info("Saver", $"Писатель отпустил буферы через {clock.ElapsedMilliseconds} мс после закрытия");
-        });
+        bool wantGame = hasGame && mode is not AudioTrackMode.MicOnly;
+        bool wantMic = hasMic && mode is not AudioTrackMode.GameOnly;
+        if (!wantGame && !wantMic) return [];
+        if (mode == AudioTrackMode.Separate && wantGame && wantMic)
+            return [AudioTrackKind.Game, AudioTrackKind.Mic];
+        return [!wantMic ? AudioTrackKind.Game
+              : !wantGame ? AudioTrackKind.Mic
+              : AudioTrackKind.Mixed];
     }
 
-    /// <summary>Имя кодека из подтипа медиатипа — для понятных сообщений об ошибке.</summary>
-    private static string VideoCodecName(IMFMediaType type)
-    {
-        try
-        {
-            Guid sub = type.GetGUID(MediaTypeAttributeKeys.Subtype);
-            if (sub == HardwareEncoders.SubtypeFor(VideoCodec.AV1)) return "AV1";
-            if (sub == VideoFormatGuids.Hevc) return "HEVC";
-            if (sub == VideoFormatGuids.H264) return "H.264";
-        }
-        catch { }
-        return "этот кодек";
-    }
-
+    /// <summary>
+    /// Записать клип. Пишется в соседний «.part» и переименовывается только после
+    /// успешной записи: незавершённый файл не носит имени клипа и не попадает в
+    /// библиотеку. Возвращает путь опубликованного файла.
+    /// </summary>
     public static string Save(
         string filePath,
-        List<EncodedFrame> video,
+        VideoSnapshot video,
+        Mp4VideoFormat videoFormat,
         AudioSnapshot audio,
-        IMFMediaType videoType,
-        AudioTrackMode trackMode,
-        bool hasGame, bool hasMic,
+        IReadOnlyList<(AudioTrackKind Kind, Mp4AudioFormat Format)> audioTracks,
         Action<double>? progress = null,
         bool gentleIo = false)
     {
         if (video.Count == 0) throw new InvalidOperationException("Видеобуфер пуст");
 
-        // Разбивка по этапам: сохранение иногда заметно затягивается, и по одному
-        // суммарному времени не понять, что виновато — открытие файла, запись
-        // видео, запись аудио или финализация контейнера.
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        long tOpen, tVideo, tAudio;
-
-        // throttling ОТКЛЮЧЁН. Пробовали включить — фаза записи выросла с 0.6 до 33 с:
-        // Media Foundation тормозит вызывающего искусственными паузами, рассчитанными
-        // на запись в реальном времени, а мы пишем готовый снимок буфера.
-        MfMp4Writer.ResetSampleCounters();
-        // Писатель освобождается ЯВНО и строго раньше, чем открепляются блоки арены:
-        // сэмплы ссылаются на них напрямую, и пока писатель жив, память трогать нельзя.
-        // Пишем в СОСЕДНИЙ файл и переименовываем только после успешной финализации.
-        //
-        // ЗАЧЕМ. MFCreateSinkWriterFromURL писал прямо в целевой файл, и любой сбой
-        // на WriteSample или Finalize (кончилось место, отвалился диск, кодек не
-        // принял поток) оставлял в папке записей MP4 без moov. Библиотека показывала
-        // его обычной карточкой, а открыть его было нельзя. Теперь незавершённый файл
-        // не носит имени клипа и удаляется сам.
-        string partPath = filePath + ".part";
-
-        // Поэтапный замер частной памяти. Прирост за сохранение складывается из
-        // разных источников, и по одной цифре «до/после» их не разделить:
-        // построение конвейера писателя, подача сэмплов, финализация контейнера и
-        // освобождение писателя тратят память по-своему.
-        long memStart = Diagnostics.MemoryMap.PrivateCommittedBytes();
-        long memOpen = memStart, memWritten = memStart, memFinal = memStart;
-        // Нужен в finally, где локальных переменных тела уже не видно.
-        long clipBytes = 0;
-
-        MfMp4Writer.Mp4Target target = MfMp4Writer.Open(
-            partPath, videoType, trackMode, hasGame, hasMic);
-        IMFSinkWriter writer = target.Writer;
-        var handles = new List<System.Runtime.InteropServices.GCHandle>();
-        // Своя партия буферов на это сохранение — по ней и ждём разгрузки писателя
-        var batch = new ArenaBufferBatch();
-        bool finalized = false;
-        string publishedPath = filePath;
-        try
-        {
-
-        int videoStream = target.VideoStream;
-        var audioStreams = target.AudioStreams;
-
-        tOpen = sw.ElapsedMilliseconds;
-        memOpen = Diagnostics.MemoryMap.PrivateCommittedBytes();
-
-        // Построение писателя данных на диск не пишет вовсе: это загрузка DLL кодеков,
-        // чтение реестра и активация COM-объектов. Секунды здесь — всегда чужая беда
-        // (антивирус на создании файла, спящий диск, занятый драйвер видеокарты), и
-        // увидеть её надо СРАЗУ, а не в итоговой строке через полминуты: к тому моменту
-        // пользователь уже считает, что приложение зависло.
-        if (tOpen > SlowOpenWarnMs)
-            Log.Warn("Saver", $"Писатель открывался {tOpen} мс — это не запись на диск, " +
-                              "а построение конвейера Media Foundation");
-
-        // Ноль времени клипа = pts первого видеокадра (keyframe)
         long baseTicks = video[0].PtsTicks;
-        int frameCount = video.Count;
-        double clipSeconds = (video[^1].PtsTicks - baseTicks) / 10_000_000.0;
+        double clipSeconds = (video[video.Count - 1].PtsTicks - baseTicks) / 10_000_000.0;
 
-        // Блоки арены, в которых лежат кадры клипа, закрепляем на время записи:
-        // сэмплы будут ссылаться прямо на них, без копирования, а писатель держит
-        // сэмплы у себя ещё какое-то время после WriteSample. Блоков единицы —
-        // по одному на каждые 64 МБ клипа.
-        var pinned = new Dictionary<byte[], IntPtr>(ReferenceEqualityComparer.Instance as IEqualityComparer<byte[]>);
-        foreach (var f in video)
+        var inputs = new List<Mp4AudioInput>();
+        int audioFrames = 0;
+        foreach (var (kind, format) in audioTracks)
         {
-            if (pinned.ContainsKey(f.Data)) continue;
-            var handle = System.Runtime.InteropServices.GCHandle.Alloc(f.Data, System.Runtime.InteropServices.GCHandleType.Pinned);
-            handles.Add(handle);
-            pinned[f.Data] = handle.AddrOfPinnedObject();
+            var track = audio[kind];
+            if (track is null || track.Frames.Count == 0) continue;
+            inputs.Add(new Mp4AudioInput(format, track.Frames, track.FirstPtsTicks - baseTicks));
+            audioFrames += track.Frames.Count;
         }
 
-        // Дорожки пишем ЧЕРЕДУЯ по времени, а не «сначала всё видео, потом всё аудио»:
-        // MP4 хранит потоки вперемешку, так писателю не нужно переупорядочивать их самому.
-        //
-        // Кадры снимка лежат в блоках арены кольцевого буфера и освобождаются все
-        // разом, когда движок отпустит список. Раньше здесь массивы возвращались в
-        // пул по ходу записи — это лечило нелинейность на гигабайтных клипах
-        // (367 МБ за 0.95 с против 950 МБ за 20 с: система уходила в подкачку).
-        // С ареной проблемы нет: снимок — это те же блоки, что буфер уже занимал,
-        // новой памяти сохранение не просит вовсе.
-        // Ограничение темпа подачи (см. WriteDrain) работает только когда писатель
-        // отдаёт статистику своей очереди. Фиксированный темп пробовали и отказались:
-        // ни 300, ни 180 МБ/с на память не повлияли (прирост нативной части всё равно
-        // равен объёму клипа), а сохранение растянулось с 2.6 до 5.5 секунды.
-        int blockSamples = audio.Count > 0 ? audio.BlockSamples : 960;
-        long totalBytes = 0;
-        foreach (var f in video) totalBytes += f.Length;
-        totalBytes += (long)audio.Count * blockSamples * sizeof(short) * audioStreams.Count;
-        clipBytes = totalBytes;
-
-        var drain = new WriteDrain(writer, videoStream, totalBytes, progress);
-
-        // Аудио пишем КРУПНЫМИ кусками (~1 с), а не блоками по 10 мс, как они приходят
-        // из микшера. Скорость финализации у Media Foundation определяется ЧИСЛОМ
-        // сэмплов в контейнере, а не объёмом: на 180-секундном клипе блоки по 10 мс
-        // давали 18 080 сэмплов на дорожку (36 160 на две) против 10 849 видеокадров —
-        // то есть 77% всех сэмплов были аудио. Секундные куски сокращают их до 180
-        // на дорожку. AAC-энкодер сам режет PCM на свои кадры, качество не меняется.
-        const int BlocksPerChunk = 100;                       // 100 × 10 мс = 1 секунда
-        // Буфер СВОЙ на каждую дорожку: они накапливаются параллельно.
-        // Второй буфер (в байтах) переиспользуется вместо ToArray() на каждый кусок:
-        // раньше это давало 138 МБ мусора на трёхминутный клип с двумя дорожками.
-        var chunkBuf = new short[audioStreams.Count][];
-        var chunkBytes = new byte[audioStreams.Count][];
-        for (int s = 0; s < audioStreams.Count; s++)
-        {
-            chunkBuf[s] = new short[BlocksPerChunk * blockSamples];
-            chunkBytes[s] = new byte[BlocksPerChunk * blockSamples * sizeof(short)];
-        }
-        var chunkFill = new int[audioStreams.Count];           // сколько блоков накоплено
-        var chunkStart = new long[audioStreams.Count];         // pts первого блока куска
-
-        // Раздельный замер: сколько времени уходит на видео (чистый remux) и сколько
-        // на аудио (там внутри WriteSample сидит AAC-кодирование). По этим двум цифрам
-        // видно, окупится ли перенос кодирования звука в момент записи.
-        long videoTicks = 0, audioTicks = 0;
-
-        // Сбросить накопленный кусок дорожки s одним сэмплом
-        void FlushAudio(int s)
-        {
-            if (chunkFill[s] == 0) return;
-            int samples = chunkFill[s] * blockSamples;
-            int byteCount = samples * sizeof(short);
-            MemoryMarshal.AsBytes<short>(chunkBuf[s].AsSpan(0, samples)).CopyTo(chunkBytes[s]);
-            using var sample = MfMp4Writer.CreateSample(
-                chunkBytes[s], 0, byteCount, chunkStart[s], chunkFill[s] * 100_000L);
-            long audioStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            writer.WriteSample(audioStreams[s].Index, sample);
-            audioTicks += System.Diagnostics.Stopwatch.GetTimestamp() - audioStart;
-            drain.Submitted(byteCount);
-            chunkFill[s] = 0;
-        }
-
-        // Отсюда и до конца подачи — единственный участок сохранения, где на диск
-        // действительно летит залп в сотни мегабайт. Только он и заслуживает фонового
-        // режима ввода-вывода: открытие писателя и финализация остаются на обычном
-        // приоритете (почему — см. BackgroundIoScope). Выход гарантирован finally ниже.
-        BackgroundIoScope.EnterIf(gentleIo);
-
-        var audioPos = new int[audioStreams.Count];
-        for (int fi = 0; fi < video.Count; fi++)
-        {
-            var f = video[fi];
-            long vpts = f.PtsTicks - baseTicks;
-
-            // Сначала — всё аудио, которое звучит раньше этого кадра
-            for (int s = 0; s < audioStreams.Count; s++)
-            {
-                var kind = audioStreams[s].Kind;
-                while (audioPos[s] < audio.Count)
-                {
-                    long apts = audio.PtsAt(audioPos[s]) - baseTicks;
-                    if (apts > vpts) break;
-                    if (apts >= 0)
-                    {
-                        if (chunkFill[s] == 0) chunkStart[s] = apts;
-                        audio.CopyTo(audioPos[s], kind,
-                                     chunkBuf[s].AsSpan(chunkFill[s] * blockSamples, blockSamples));
-                        if (++chunkFill[s] >= BlocksPerChunk) FlushAudio(s);
-                    }
-                    audioPos[s]++;
-                }
-            }
-
-            {
-                var sample = MfMp4Writer.CreateSampleNoCopy(
-                    batch, pinned[f.Data] + f.Offset, f.Length, vpts, f.DurationTicks);
-                if (f.IsKeyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
-                long videoStart = System.Diagnostics.Stopwatch.GetTimestamp();
-                writer.WriteSample(videoStream, sample);
-                videoTicks += System.Diagnostics.Stopwatch.GetTimestamp() - videoStart;
-                MfMp4Writer.ReleaseSample(sample);
-            }
-            drain.Submitted(f.Length);
-        }
-        tVideo = sw.ElapsedMilliseconds;
-
-        // Хвост аудио после последнего видеокадра
-        for (int s = 0; s < audioStreams.Count; s++)
-        {
-            var kind = audioStreams[s].Kind;
-            for (; audioPos[s] < audio.Count; audioPos[s]++)
-            {
-                long apts = audio.PtsAt(audioPos[s]) - baseTicks;
-                if (apts < 0) continue;
-                if (chunkFill[s] == 0) chunkStart[s] = apts;
-                audio.CopyTo(audioPos[s], kind, chunkBuf[s].AsSpan(chunkFill[s] * blockSamples, blockSamples));
-                if (++chunkFill[s] >= BlocksPerChunk) FlushAudio(s);
-            }
-            FlushAudio(s); // остаток дорожки
-        }
-        tAudio = sw.ElapsedMilliseconds;
-        memWritten = Diagnostics.MemoryMap.PrivateCommittedBytes();
-
-        // Финализация — один блокирующий вызов без единой точки выхода: он собирает
-        // moov и сбрасывает файл на диск. Прервать его на полпути нельзя, а выйти из
-        // фонового режима может только сам этот поток, поэтому в фоновом режиме
-        // затянувшаяся финализация превратилась бы в такую же глухую паузу, как
-        // открытие писателя. Секунда обычного приоритета в конце — честная плата.
-        BackgroundIoScope.ReleaseForCurrentThread();
-
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+        string partPath = filePath + ".part";
+        long fileBytes;
+        bool written = false;
         try
         {
-            writer.Finalize();
-            finalized = true;
-            memFinal = Diagnostics.MemoryMap.PrivateCommittedBytes();
+            using (var file = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.Read,
+                                             1 << 20, FileOptions.SequentialScan))
+            using (var stream = new GentleWriteStream(file, gentleIo))
+            {
+                fileBytes = Mp4ProgressiveWriter.Write(stream, videoFormat, new SnapshotSource(video),
+                                                       inputs, progress);
+                stream.Flush();
+            }
+            written = true;
         }
-        catch (SharpGen.Runtime.SharpGenException ex) when (ex.ResultCode.Code == MfESinkHeadersNotFound)
+        catch (IOException ex) when (DiskFull(ex))
         {
-            // Windows не смогла собрать контейнер: у MP4-мультиплексора нет поддержки
-            // этого кодека (на Windows 10 так бывает с AV1).
-            try { File.Delete(partPath); } catch { }
-            Log.Error("Saver", $"MP4 не принял поток {VideoCodecName(videoType)}: {ex.Message}");
-            throw new NotSupportedException(
-                $"Windows не умеет сохранять {VideoCodecName(videoType)} в MP4 на этой системе. " +
-                "Выберите кодек HEVC или H.264 на вкладке «Запись».");
-        }
-        // Реальный fps клипа = кадры / длительность. Именно он показывает, доехал ли
-        // конвейер до заданной частоты: при дропах в очереди энкодера кадров в файле
-        // меньше, чем секунд × fps, и запись выглядит рванее, чем настроено.
-        string fps = clipSeconds > 0.5 ? $", реально {frameCount / clipSeconds:F1} fps" : "";
-        long total = sw.ElapsedMilliseconds;
-        long fileBytes = 0;
-        try { fileBytes = new FileInfo(partPath).Length; } catch { }
-
-        Log.Info("Saver", $"Сохранено: {filePath} ({frameCount} кадров за {clipSeconds:F1} с{fps}, " +
-                          $"{audio.Count} аудиоблоков, контейнер " +
-                          $"{(target.Fragmented ? "фрагментированный" : "обычный")})");
-        Log.Info("Saver", MfMp4Writer.SampleReport);
-        Log.Info("Saver", $"Запись файла заняла {total} мс " +
-                          $"(открытие {tOpen}, видео {tVideo - tOpen}, аудио {tAudio - tVideo}, " +
-                          $"финализация {total - tAudio}); {fileBytes / (1024 * 1024)} МБ, " +
-                          $"{(total > 0 ? fileBytes / 1024.0 / 1024 / (total / 1000.0) : 0):F0} МБ/с; " +
-                          $"{drain.Report}; " +
-                          $"WriteSample: видео {videoTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} мс, " +
-                          $"аудио+AAC {audioTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} мс");
-        progress?.Invoke(1);
+            throw new InsufficientDiskSpaceException(
+                $"Клип не поместился на диск: закончилось место в {Path.GetPathRoot(filePath)}. " +
+                "Освободите место или выберите другую папку записей.");
         }
         finally
         {
-            // Поток сохранения берётся из пула и вернётся туда же. Утащить фоновый
-            // режим с собой он не имеет права: следующая работа на этом же потоке
-            // получила бы приоритет диска «очень низкий» без всякой причины.
-            // Вызов безвреден, если режим уже снят выше или не включался вовсе.
-            BackgroundIoScope.ReleaseForCurrentThread();
-            writer.Dispose();  // отпускает удержанные сэмплы
-            long memClosed = Diagnostics.MemoryMap.PrivateCommittedBytes();
-            static string Mb(long bytes) => $"{bytes / (1024 * 1024)} МБ";
-            Log.Info("Saver", $"Частная память по этапам: открытие {Mb(memOpen - memStart)}, " +
-                              $"подача {Mb(memWritten - memOpen)}, финализация {Mb(memFinal - memWritten)}, " +
-                              $"закрытие писателя {Mb(memClosed - memFinal)}; " +
-                              $"итого {Mb(memClosed - memStart)}");
-            UnpinWhenWriterDone(batch, handles, clipBytes);
-            // Только теперь файл закрыт и его можно переименовать
-            publishedPath = PublishOrDiscard(partPath, filePath, finalized);
+            if (!written)
+            {
+                try { File.Delete(partPath); }
+                catch (Exception ex) { Log.Warn("Saver", $"Не удалось убрать незавершённый файл: {ex.Message}"); }
+            }
         }
-        return publishedPath;
+
+        string published = Publish(partPath, filePath);
+        long ms = sw.ElapsedMilliseconds;
+        string fps = clipSeconds > 0.5 ? $", реально {video.Count / clipSeconds:F1} fps" : "";
+        Log.Info("Saver", $"Сохранено: {published} ({video.Count} кадров за {clipSeconds:F1} с{fps}, " +
+                          $"звук: {inputs.Count} дорожк., {audioFrames} кадров AAC); " +
+                          $"{fileBytes / (1024 * 1024)} МБ за {ms} мс" +
+                          (ms > 0 ? $", {fileBytes / 1024.0 / 1024 / (ms / 1000.0):F0} МБ/с" : ""));
+        return published;
     }
 
-    /// <summary>
-    /// Довести файл до целевого имени — или убрать за собой.
-    ///
-    /// Переименование выполняется, только если Finalize прошёл: незавершённый MP4
-    /// не должен получить имя клипа и попасть в библиотеку.
-    /// </summary>
-    private static string PublishOrDiscard(string partPath, string filePath, bool finalized)
-    {
-        if (!finalized)
-        {
-            try { File.Delete(partPath); }
-            catch (Exception ex) { Log.Warn("Saver", $"Не удалось убрать незавершённый файл: {ex.Message}"); }
-            return filePath;
-        }
+    internal static bool DiskFull(IOException ex) =>
+        (ex.HResult & 0xFFFF) is 0x70 /* ERROR_DISK_FULL */ or 0x27 /* ERROR_HANDLE_DISK_FULL */;
 
+    private static string Publish(string partPath, string filePath)
+    {
         try
         {
             File.Move(partPath, filePath);
@@ -395,7 +114,7 @@ public static class ReplaySaver
         }
         catch (Exception ex)
         {
-            string recovered = Storage.FileNaming.NextAvailablePath(filePath, File.Exists);
+            string recovered = FileNaming.NextAvailablePath(filePath, File.Exists);
             try
             {
                 File.Move(partPath, recovered);
@@ -412,218 +131,71 @@ public static class ReplaySaver
         }
     }
 
-    /// <summary>
-    /// Темп подачи сэмплов в SinkWriter.
-    ///
-    /// Тормозим подачу ТОЛЬКО когда писатель реально не успевает — по его собственной
-    /// очереди (IMFSinkWriter::GetStatistics, ByteCountQueued). Именно эта очередь
-    /// раздувала память на гигабайтных клипах: писатель принимал сэмплы быстрее, чем
-    /// сливал на диск, копил их в RAM, а потом полминуты разгребал в Finalize.
-    ///
-    /// ДВОЕ ГРАБЕЛЬ, на которые тут уже наступили:
-    ///
-    /// 1. Фиксированный потолок «220 МБ/с». Число угадано под медленный диск, а на
-    ///    замерах писатель держит ~870 МБ/с: из 4.3 секунды сохранения 811 МБ
-    ///    3.4 секунды были чистым сном пейсера при пустой очереди.
-    ///
-    /// 2. Обратная связь по РАЗМЕРУ ФАЙЛА (FileStream.Length своим дескриптором).
-    ///    Размер растущего файла обновляется рывками и сильно отстаёт от реально
-    ///    записанного, поэтому механизм постоянно считал, что диск не успевает:
-    ///    клип 317 МБ сохранялся 102 секунды, из них 102.4 с — ожидание на пустом месте.
-    ///
-    /// 3. Запасная равномерная подача «когда очередь не видна». На практике обёртка
-    ///    Vortice статистику как раз не отдаёт, и вместо страховки это стало основным
-    ///    режимом: из 3.4 секунды сохранения 626 МБ 2.8 секунды поток просто спал.
-    ///
-    /// Отсюда правило: тормозить только по очереди писателя и только если она реально
-    /// видна и реально переполнена; суммарное ожидание ограничено бюджетом «как если бы
-    /// диск давал 60 МБ/с». Нет сигнала — не тормозим вообще: память при этом защищена
-    /// тем, что кадры возвращаются в пул сразу после записи, а не копятся до конца.
-    /// </summary>
-    /// <summary>
-    /// Статистика SinkWriter — читается ПРЯМЫМ вызовом по vtable.
-    ///
-    /// ЗАЧЕМ НЕ ЧЕРЕЗ ОБЁРТКУ. IMFSinkWriter::GetStatistics требует, чтобы поле cb
-    /// структуры было заранее заполнено её размером, иначе вызов отвечает
-    /// E_INVALIDARG. Обёртка Vortice возвращает структуру по значению и cb не
-    /// заполняет — то есть у неё вызов падает ВСЕГДА.
-    ///
-    /// Последствие было не косметическое: WriteDrain ловил исключение, помечал
-    /// статистику недоступной и переставал тормозить подачу вовсе («очередь
-    /// писателя не видна — подача без ограничений» в каждом логе). Media Foundation
-    /// принимала весь клип разом и держала его в нативной памяти: после каждого
-    /// сохранения процесс прибавлял по 100–200 МБ и не отдавал их обратно.
-    ///
-    /// Проверено на живом писателе: обёртка — E_INVALIDARG, прямой вызов с
-    /// заполненным cb — HRESULT 0 и корректные поля.
-    /// </summary>
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    internal struct SinkWriterStats
+    /// <summary>Кадры снимка для мультиплексора: время от начала клипа.</summary>
+    private sealed class SnapshotSource(VideoSnapshot snapshot) : IMp4VideoSource
     {
-        public uint Cb;
-        public long LastTimestampReceived, LastTimestampEncoded, LastTimestampProcessed;
-        public long LastStreamTickReceived, LastSinkSampleRequest;
-        public ulong NumSamplesReceived, NumSamplesEncoded, NumSamplesProcessed, NumStreamTicksReceived;
-        public uint ByteCountQueued;
-        public ulong ByteCountProcessed;
-        public uint NumOutstandingSinkSampleRequests;
-        public uint AverageSampleRateReceived, AverageSampleRateEncoded, AverageSampleRateProcessed;
+        private readonly long _base = snapshot[0].PtsTicks;
 
-        /// <summary>Слот GetStatistics в vtable IMFSinkWriter (3 метода IUnknown + 10 своих).</summary>
-        private const int VtableSlot = 13;
-
-        public static unsafe bool TryRead(IMFSinkWriter writer, int stream, out SinkWriterStats stats)
-        {
-            stats = default;
-            stats.Cb = (uint)sizeof(SinkWriterStats);
-
-            IntPtr native = writer.NativePointer;
-            if (native == IntPtr.Zero) return false;
-
-            var vtable = *(IntPtr**)native;
-            var getStatistics =
-                (delegate* unmanaged[Stdcall]<IntPtr, int, SinkWriterStats*, int>)vtable[VtableSlot];
-
-            fixed (SinkWriterStats* p = &stats)
-                return getStatistics(native, stream, p) == 0;
-        }
+        public int Count => snapshot.Count;
+        public ReadOnlySpan<byte> Data(int index) => snapshot[index].Span;
+        public long Pts(int index) => snapshot[index].PtsTicks - _base;
+        public long Dts(int index) => snapshot[index].DtsTicks - _base;
+        public bool IsKeyframe(int index) => snapshot[index].IsKeyframe;
+        public long LastDuration => Math.Max(1, snapshot[snapshot.Count - 1].DurationTicks);
     }
 
-    private sealed class WriteDrain
+    /// <summary>
+    /// Запись с пониженным приоритетом ввода-вывода, пока идёт игра.
+    ///
+    /// Залп в сотни мегабайт на диск не должен отбирать ввод-вывод у игры, поэтому
+    /// поток сохранения уходит в фоновый режим Windows. Но если запись затянулась
+    /// (под нагрузкой фоновый приоритет может растянуть её в разы), режим снимается
+    /// и файл дописывается в полную силу: клип важнее пары секунд чужой подгрузки.
+    /// Режим снимается и в Dispose — поток вернётся в пул без него.
+    /// </summary>
+    private sealed class GentleWriteStream : Stream
     {
-        /// <summary>Как часто сверяться с писателем.</summary>
-        private const long CheckEveryBytes = 4L * 1024 * 1024;
-        /// <summary>Сколько данных писателю позволено держать в очереди.</summary>
-        private const long QueueLimitBytes = 64L * 1024 * 1024;
-        /// <summary>Потолок ожидания за одну сверку.</summary>
-        private const int MaxWaitPerCheckMs = 500;
-        /// <summary>
-        /// Бюджет ожидания считаем от «медленного диска» 60 МБ/с: тормозить сохранение
-        /// сильнее этого мы не имеем права ни при каких показаниях очереди.
-        /// </summary>
-        private const double BudgetBytesPerMs = 60.0 * 1024 * 1024 / 1000.0;
+        private const long BudgetMs = 1500;
 
-        private readonly IMFSinkWriter _writer;
-        private readonly int _stream;
-        private readonly long _total;
-        private readonly long _waitBudgetMs;
-        private readonly Action<double>? _progress;
+        private readonly Stream _inner;
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+        private bool _gentle;
 
-        /// <summary>
-        /// Сколько времени сохранение пишет в фоновом режиме Windows, прежде чем
-        /// вернуться к обычному приоритету. Полторы секунды — примерно вдвое больше
-        /// целого сохранения на свободной машине, то есть короткий клип успевает
-        /// записаться тихо целиком, а длинный не растягивается на десяток секунд.
-        /// </summary>
-        private const long BackgroundIoBudgetMs = 1500;
-
-        /// <summary>
-        /// Сколько можно простоять в ожидании очереди писателя, прежде чем считать
-        /// диск узким местом.
-        ///
-        /// Ожидание очереди при сквозной перезаписи упирается именно в диск: писатель
-        /// не разбирает очередь, потому что не успевает её сливать. В замере 14 сентября
-        /// клип в 482 МБ писался 1707 мс, из них 1140 мс ушло в ожидание, — и общий
-        /// бюджет в 1500 мс не сработал, потому что сам цикл записи до него не дотянул.
-        /// Прямой признак срабатывает там раньше и точнее.
-        /// </summary>
-        private const long BackgroundIoWaitBudgetMs = 600;
-
-        private long _submitted, _lastCheck, _lastProgressMs, _maxQueued;
-        private bool _statsAvailable = true;
-        private bool _backgroundIoChecked;
-
-        /// <summary>Сколько всего ждали писателя (диагностика в логе).</summary>
-        public long WaitedMs { get; private set; }
-
-        /// <summary>
-        /// Темп подачи, когда очередь писателя не видна.
-        ///
-        /// Не тормозить вовсе оказалось нельзя: писатель принимает сэмплы намного
-        /// быстрее, чем сливает их на диск, и держит клип в нативной памяти. В
-        /// замерах сохранение 800 МБ поднимало память процесса с 1.2 до 2.2 ГБ,
-        /// причём куча .NET не менялась вовсе — то есть весь гигабайт был внутри
-        /// Media Foundation.
-        ///
-        public string Report => _statsAvailable
-            ? $"очередь писателя: пик {Storage.ByteSize.Format(_maxQueued)}, ждали {WaitedMs} мс"
-            : "очередь писателя не видна — подача без ограничений";
-
-        public WriteDrain(IMFSinkWriter writer, int probeStream, long totalBytes, Action<double>? progress)
+        public GentleWriteStream(Stream inner, bool gentle)
         {
-            _writer = writer;
-            _stream = probeStream;
-            _total = Math.Max(1, totalBytes);
-            _progress = progress;
-            _waitBudgetMs = Math.Max(3000, (long)(_total / BudgetBytesPerMs));
+            _inner = inner;
+            _gentle = BackgroundIoScope.EnterIf(gentle);
         }
 
-        public void Submitted(int bytes)
-        {
-            _submitted += bytes;
-            ReportProgress();
-            if (_submitted - _lastCheck < CheckEveryBytes) return;
-            _lastCheck = _submitted;
+        public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
 
-            if (!_backgroundIoChecked &&
-                (_clock.ElapsedMilliseconds > BackgroundIoBudgetMs ||
-                 WaitedMs > BackgroundIoWaitBudgetMs))
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            _inner.Write(buffer);
+            if (_gentle && _clock.ElapsedMilliseconds > BudgetMs)
             {
-                _backgroundIoChecked = true;
+                _gentle = false;
                 if (BackgroundIoScope.ReleaseForCurrentThread())
-                    Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс, " +
-                                      $"из них ждали писателя {WaitedMs} мс) — фоновый режим " +
-                                      "ввода-вывода снят, дописываем в полную силу");
-            }
-
-            if (!_statsAvailable) return; // очередь писателя не видна — не тормозим
-
-            long start = _clock.ElapsedMilliseconds;
-            WaitForQueue();
-            WaitedMs += _clock.ElapsedMilliseconds - start;
-        }
-
-        /// <summary>
-        /// Ждём, только если писатель реально не успевает разбирать очередь.
-        /// Пока успевает — не тормозим ни на миллисекунду: на замерах он держит
-        /// ~870 МБ/с, и любой фиксированный потолок тут только растягивал сохранение.
-        /// </summary>
-        private void WaitForQueue()
-        {
-            long start = _clock.ElapsedMilliseconds;
-            while (_clock.ElapsedMilliseconds - start < MaxWaitPerCheckMs && WaitedMs < _waitBudgetMs)
-            {
-                long queued = QueuedBytes();
-                if (queued < 0) return; // статистика отвалилась прямо сейчас
-                if (queued > _maxQueued) _maxQueued = queued;
-                if (queued <= QueueLimitBytes) break;
-                Thread.Sleep(5);
+                    Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс) — " +
+                                      "фоновый режим ввода-вывода снят, дописываем в полную силу");
             }
         }
 
-        /// <summary>Байты в очереди писателя; -1 — статистика недоступна.</summary>
-        private long QueuedBytes()
-        {
-            try
-            {
-                if (SinkWriterStats.TryRead(_writer, _stream, out var stats))
-                    return stats.ByteCountQueued;
-            }
-            catch { /* ниже пометим статистику недоступной */ }
+        public override void Flush() => _inner.Flush();
 
-            _statsAvailable = false;
-            return -1;
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) BackgroundIoScope.ReleaseForCurrentThread();
+            base.Dispose(disposing);
         }
 
-        /// <summary>Прогресс наружу не чаще пяти раз в секунду — его читает UI.</summary>
-        private void ReportProgress()
-        {
-            if (_progress is null) return;
-            long now = _clock.ElapsedMilliseconds;
-            if (now - _lastProgressMs < 200) return;
-            _lastProgressMs = now;
-            _progress(Math.Clamp(_submitted / (double)_total, 0, 1));
-        }
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => _inner.Length;
+        public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 }

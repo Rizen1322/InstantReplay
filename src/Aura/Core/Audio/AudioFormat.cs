@@ -1,4 +1,4 @@
-using NAudio.Wave;
+﻿using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
 namespace Aura.Core.Audio;
@@ -55,9 +55,55 @@ internal static class AudioFormat
     /// Порядок каналов берётся стандартный для WAVE_FORMAT_EXTENSIBLE:
     /// FL FR FC LFE BL BR SL SR. Именно в таком порядке отдаёт кадры WASAPI.
     /// </summary>
+    /// <summary>
+    /// Вклад каждого канала устройства в левый и правый канал стерео. Этой же
+    /// матрицей пользуется захват WASAPI (<see cref="WasapiSource"/>).
+    /// </summary>
+    public static (float[] Left, float[] Right) StereoMatrix(int sourceChannels)
+    {
+        const float Attenuated = 0.707f;   // −3 дБ
+        var left = new float[sourceChannels];
+        var right = new float[sourceChannels];
+
+        if (sourceChannels == 1)
+        {
+            left[0] = right[0] = 1f;       // моно — одинаково в обе стороны
+            return (left, right);
+        }
+
+        // Фронт есть всегда — с него и начинаем
+        left[0] = 1f;
+        right[1] = 1f;
+
+        // Центр на индексе 2 и LFE на индексе 3 — это раскладка 5.1 и 7.1
+        // (KSAUDIO_SPEAKER_5POINT1_SURROUND / 7POINT1_SURROUND). Применять её
+        // ко всему подряд нельзя: в QUAD (FL FR BL BR) индекс 2 — это тыл слева,
+        // а индекс 3 — тыл справа, и «выбросить LFE» означало потерять целый
+        // канал. В 2.1 (FL FR LFE) индекс 2 — наоборот низкочастотный, и
+        // разводить его по сторонам как центр значит перегрузить микс басом.
+        bool hasCenterAndLfe = sourceChannels is 6 or 8;
+
+        for (int ch = 2; ch < sourceChannels; ch++)
+        {
+            if (hasCenterAndLfe && ch == 2)              // FC — поровну в обе стороны
+            {
+                left[ch] = right[ch] = Attenuated;
+                continue;
+            }
+            if (ch == 3 && hasCenterAndLfe) continue;    // LFE — намеренно мимо микса
+
+            // 2.1: третий канал низкочастотный, в стерео ему делать нечего
+            if (sourceChannels == 3) continue;
+
+            // Остальное идёт парами (тыл, затем бок): чётный — слева, нечётный — справа
+            if ((ch & 1) == 0) left[ch] = Attenuated;
+            else right[ch] = Attenuated;
+        }
+        return (left, right);
+    }
+
     private sealed class DownmixToStereoSampleProvider : ISampleProvider
     {
-        private const float Attenuated = 0.707f;   // −3 дБ
 
         private readonly ISampleProvider _source;
         private readonly int _sourceChannels;
@@ -81,35 +127,9 @@ internal static class AudioFormat
 
         private void BuildMatrix()
         {
-            // Фронт есть всегда — с него и начинаем
-            _left[0] = 1f;
-            if (_sourceChannels > 1) _right[1] = 1f;
-
-            // Центр на индексе 2 и LFE на индексе 3 — это раскладка 5.1 и 7.1
-            // (KSAUDIO_SPEAKER_5POINT1_SURROUND / 7POINT1_SURROUND). Применять её
-            // ко всему подряд нельзя: в QUAD (FL FR BL BR) индекс 2 — это тыл слева,
-            // а индекс 3 — тыл справа, и «выбросить LFE» означало потерять целый
-            // канал. В 2.1 (FL FR LFE) индекс 2 — наоборот низкочастотный, и
-            // разводить его по сторонам как центр значит перегрузить микс басом.
-            bool hasCenterAndLfe = _sourceChannels is 6 or 8;
-
-            for (int ch = 2; ch < _sourceChannels; ch++)
-            {
-                if (hasCenterAndLfe && ch == 2)              // FC — поровну в обе стороны
-                {
-                    _left[ch] = _right[ch] = Attenuated;
-                    continue;
-                }
-                if (ch == 3 && (hasCenterAndLfe || _sourceChannels == 3))
-                    continue;                                // LFE — намеренно мимо микса
-
-                // 2.1: третий канал низкочастотный, в стерео ему делать нечего
-                if (_sourceChannels == 3) continue;
-
-                // Остальное идёт парами (тыл, затем бок): чётный — слева, нечётный — справа
-                if ((ch & 1) == 0) _left[ch] = Attenuated;
-                else _right[ch] = Attenuated;
-            }
+            var (left, right) = StereoMatrix(_sourceChannels);
+            left.CopyTo(_left, 0);
+            right.CopyTo(_right, 0);
         }
 
         public int Read(float[] buffer, int offset, int count)

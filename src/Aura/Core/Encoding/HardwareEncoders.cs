@@ -89,10 +89,53 @@ public static class HardwareEncoders
         return (vendor, codecs);
     }
 
-    /// <summary>Поиск аппаратного MFT-энкодера для нужного выходного subtype.</summary>
-    public static (IMFTransform Transform, string Name)? Find(Guid outputSubtype)
+    /// <summary>
+    /// MFT_ENUM_ADAPTER_LUID: отбор MFT, принадлежащих конкретной видеокарте.
+    /// Значение проверено на живой системе с RTX 3070 и встроенной AMD: с LUID
+    /// NVIDIA MFTEnum2 отдаёт только «NVIDIA HEVC Encoder MFT», с LUID AMD — только
+    /// «AMDh265Encoder».
+    /// </summary>
+    private static readonly Guid MftEnumAdapterLuid = new("1d39518c-e220-4da8-a07f-ba172552d6b1");
+
+    /// <summary>
+    /// Поиск аппаратного MFT-энкодера для нужного выходного subtype.
+    ///
+    /// <paramref name="adapterLuid"/> — видеокарта, на которой живёт устройство
+    /// захвата. ЗАЧЕМ. На ноутбуке с двумя видеокартами MFTEnumEx отдаёт энкодеры
+    /// ВСЕХ адаптеров вперемешку, а мы брали первый, который активировался. Если
+    /// монитор подключён к встроенной графике, устройство захвата создаётся на ней,
+    /// а энкодер мог оказаться от дискретной: кадр-текстура с одного адаптера
+    /// подаётся в MFT другого, и это либо ошибка ProcessInput, либо скрытое
+    /// копирование через системную память на каждый кадр. Энкодер обязан быть с
+    /// той же видеокарты, что и кадры.
+    /// </summary>
+    public static (IMFTransform Transform, string Name)? Find(Guid outputSubtype, long? adapterLuid = null)
     {
-        var activates = Enumerate(outputSubtype);
+        if (adapterLuid is long luid)
+        {
+            IMFActivate[] onAdapter;
+            try { onAdapter = Enumerate(outputSubtype, luid); }
+            catch (Exception ex)
+            {
+                Log.Info("Encoder", $"Отбор энкодеров по видеокарте недоступен ({ex.Message}) — беру общий список");
+                onAdapter = [];
+            }
+            if (onAdapter.Length > 0)
+            {
+                var found = Activate(onAdapter);
+                if (found is not null) return found;
+            }
+            else foreach (var a in onAdapter) a.Dispose();
+
+            Log.Warn("Encoder", "На видеокарте захвата нет подходящего аппаратного энкодера — " +
+                                "беру энкодер другой видеокарты, кадры пойдут между адаптерами");
+        }
+
+        return Activate(Enumerate(outputSubtype));
+    }
+
+    private static (IMFTransform Transform, string Name)? Activate(IMFActivate[] activates)
+    {
         try
         {
             // На гибридных системах (iGPU + dGPU) активация MFT одного из вендоров
@@ -126,13 +169,27 @@ public static class HardwareEncoders
         }
     }
 
-    private static IMFActivate[] Enumerate(Guid outputSubtype)
+    private static IMFActivate[] Enumerate(Guid outputSubtype, long? adapterLuid = null)
     {
         var outInfo = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = outputSubtype };
-        MediaFactory.MFTEnumEx(
-            TransformCategoryGuids.VideoEncoder,
-            MftEnumFlagHardware | MftEnumFlagSortAndFilter,
-            null, outInfo, out IntPtr pActivates, out uint count);
+        IntPtr pActivates;
+        uint count;
+        if (adapterLuid is long luid)
+        {
+            using var attrs = MediaFactory.MFCreateAttributes(1);
+            attrs.SetBlob(MftEnumAdapterLuid, BitConverter.GetBytes(luid));
+            MediaFactory.MFTEnum2(
+                TransformCategoryGuids.VideoEncoder,
+                MftEnumFlagHardware | MftEnumFlagSortAndFilter,
+                null, outInfo, attrs, out pActivates, out count);
+        }
+        else
+        {
+            MediaFactory.MFTEnumEx(
+                TransformCategoryGuids.VideoEncoder,
+                MftEnumFlagHardware | MftEnumFlagSortAndFilter,
+                null, outInfo, out pActivates, out count);
+        }
 
         var activates = new IMFActivate[count];
         for (int i = 0; i < count; i++)

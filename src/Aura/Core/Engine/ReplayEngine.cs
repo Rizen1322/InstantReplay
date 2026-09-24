@@ -38,6 +38,9 @@ public sealed partial class ReplayEngine : IDisposable
     private IScreenCapture? _capture;
     private VideoProcessorNv12? _processor;
 
+    /// <summary>Уменьшение кадра Ланцошем до видеопроцессора; null — размер не меняется.</summary>
+    private LanczosScaler? _scaler;
+
     /// <summary>Время стадий по часам видеокарты. Диагностика, на запись не влияет.</summary>
     private Diagnostics.GpuStageTimer? _gpuTimer;
 
@@ -242,24 +245,14 @@ public sealed partial class ReplayEngine : IDisposable
         // Проблемы со звуком должны доходить до человека сразу: немой клип
         // обнаруживается уже после того, как момент упущен
         _audio.Warning += msg => Warning?.Invoke(msg);
-        // Реакция на изменение настроек записи: перезапуск конвейера на лету
-        _settings.Changed += group =>
-        {
-            // Шумодав применяется на лету — перезапускать конвейер ради порога незачем
-            if (group is "" or "video" or "audio")
-            {
-                _audio.MicNoiseGate = _settings.Current.MicNoiseSuppression;
-                _audio.MicGateThresholdDb = _settings.Current.MicNoiseGateDb;
-            }
-            if (_state == EngineState.Stopped) return;
-            if (group is "video" or "audio" or "replay")
-            {
-                Log.Info("Engine", $"Настройки '{group}' изменены — перезапускаю конвейер");
-                // Под одним замком: между Stop и Start не должен вклиниться ни хоткей
-                // сохранения, ни вотчдог со своим перезапуском
-                lock (_lifecycle) { StopLocked(); StartWithFallbackLocked(preserveBuffers: false); }
-            }
-        };
+        // Кадры AAC идут в кольцо звука всё время работы; выключенная дорожка там
+        // просто не заведена.
+        _audio.FrameEncoded += _audioBuffer.Add;
+        // Буфер потерял кадр (или начался заново после сохранения) и ждёт ключевой —
+        // просим его у энкодера сразу, а не через две секунды штатной группы.
+        _videoBuffer.KeyframeNeeded += () => _encoder?.RequestKeyframe();
+        // Реакция на изменение настроек записи (см. ReplayEngine.Settings.cs)
+        _settings.Changed += OnSettingsChanged;
     }
 
     public void Start()
@@ -280,6 +273,9 @@ public sealed partial class ReplayEngine : IDisposable
     private void StartWithFallbackLocked(bool preserveBuffers)
     {
         if (_state != EngineState.Stopped) return;
+        // Нет места на диске — повтор не включаем вовсе: копить в памяти клип,
+        // который потом не поместится в файл, значит обмануть человека.
+        if (!preserveBuffers) RequireDiskSpaceForReplay(_settings.Current);
         if (!preserveBuffers)
         {
             _gameCaptureRecovery.Resume();
@@ -401,15 +397,7 @@ public sealed partial class ReplayEngine : IDisposable
             }
 
             _captureBackend = backend;
-            int effectiveReplaySeconds = Math.Min(
-                s.ReplayLengthSeconds,
-                ReplayVideoBuffer.MaximumDurationSeconds(s.BitrateBps));
-            if (effectiveReplaySeconds < s.ReplayLengthSeconds)
-            {
-                Log.Warn("Engine", $"Повтор {s.ReplayLengthSeconds} с не помещается в арену при " +
-                                   $"{s.BitrateMbps} Мбит/с — ограничен до {effectiveReplaySeconds} с");
-                Warning?.Invoke($"Длина повтора ограничена до {TimeSpan.FromSeconds(effectiveReplaySeconds):m\\:ss} из-за объёма RAM");
-            }
+            int effectiveReplaySeconds = EffectiveReplaySeconds(s, warn: !preserveBuffers);
 
             _videoBuffer.MaxDurationTicks = TimeSpan.FromSeconds(effectiveReplaySeconds).Ticks;
             _audioBuffer.MaxDurationTicks = _videoBuffer.MaxDurationTicks;
@@ -422,16 +410,13 @@ public sealed partial class ReplayEngine : IDisposable
             byte[]? previousSequenceHeader = null;
             if (!preserveBuffers)
             {
-                _videoBuffer.Allocate(s.BitrateBps, effectiveReplaySeconds);
+                _videoBuffer.Allocate(s.BitrateBps, effectiveReplaySeconds, BufferDirectory(s));
                 _bufferSequenceHeader = null;
                 if (captureAudio)
-                    _audioBuffer.Allocate(
-                        Audio.AudioMixerEngine.BlockSamples,
-                        effectiveReplaySeconds,
-                        s.CaptureMicrophone,
-                        s.CaptureGameAudio);
+                    _audioBuffer.Allocate(effectiveReplaySeconds, s.CaptureGameAudio, s.CaptureMicrophone);
                 else
                     _audioBuffer.Release();
+                _appliedConfig = PipelineConfig.From(s);
             }
 
             long generation = Interlocked.Increment(ref _captureGeneration);
@@ -458,7 +443,7 @@ public sealed partial class ReplayEngine : IDisposable
             var outputBase = MonitorLayout.DesktopModeFor(s.MonitorIndex);
 
             // Десять бит просим только у HEVC: см. AppSettings.BitDepth.
-            bool wantTenBit = s.Codec == VideoCodec.HEVC &&
+            bool wantTenBit = VideoEncoder.SupportsTenBit(s.Codec) &&
                               s.BitDepth is VideoBitDepth.Auto or VideoBitDepth.Ten;
 
             _gpuTimer?.Dispose();
@@ -479,6 +464,28 @@ public sealed partial class ReplayEngine : IDisposable
                 Log.Warn("Capture", $"Десять бит не настроились ({ex.Message}) — беру восемь");
                 _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
                                      preferTenBit: false, outputBase);
+            }
+
+            // Уменьшение — своим фильтром Ланцоша, а видеопроцессору остаётся только
+            // перевод цвета в том же размере (см. LanczosScaler).
+            _scaler?.Dispose();
+            _scaler = LanczosScaler.TryCreate(_capture.D3DDevice, _capture.D3DContext,
+                                              canvasWidth, canvasHeight, _processor.OutWidth, _processor.OutHeight);
+            if (_scaler is not null)
+            {
+                bool tenBit = _processor.TenBit;
+                try
+                {
+                    _processor.Configure(_scaler.OutWidth, _scaler.OutHeight, _scaler.OutHeight, s.Fps, tenBit,
+                                         (_scaler.OutWidth, _scaler.OutHeight));
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("Capture", $"Видеопроцессор не принял уменьшенный кадр ({ex.Message}) — масштабирует он сам");
+                    _scaler.Dispose();
+                    _scaler = null;
+                    _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, tenBit, outputBase);
+                }
             }
 
             _frameBroker = new GpuCaptureFrameBroker(
@@ -523,8 +530,12 @@ public sealed partial class ReplayEngine : IDisposable
             if (_processor.TenBit && !encoder.TenBit)
             {
                 Log.Info("Capture", "Возвращаю видеопроцессор на восемь бит вслед за энкодером");
-                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
-                                     preferTenBit: false, outputBase);
+                if (_scaler is not null)
+                    _processor.Configure(_scaler.OutWidth, _scaler.OutHeight, _scaler.OutHeight, s.Fps,
+                                         preferTenBit: false, (_scaler.OutWidth, _scaler.OutHeight));
+                else
+                    _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
+                                         preferTenBit: false, outputBase);
             }
             bool awaitingRestartKeyframe = validateSequenceHeader;
             _encodedStreamReady = !awaitingRestartKeyframe;
@@ -573,13 +584,9 @@ public sealed partial class ReplayEngine : IDisposable
             // которого исключение не выпустить, не уронив процесс.
             _pipelineStartedAt = DateTimeOffset.UtcNow;
 
-            _audio.MicNoiseGate = s.MicNoiseSuppression;
-            _audio.MicGateThresholdDb = s.MicNoiseGateDb;
+            ApplyLiveAudioSettings(s);
             if (captureAudio && !preserveBuffers)
-            {
-                _audio.BlockReady += _audioBuffer.Add;
                 _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
-            }
 
             // Меньше блокирующих GC-пауз, пока идёт запись
             System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;
@@ -655,6 +662,7 @@ public sealed partial class ReplayEngine : IDisposable
 
     private void FrameWorkerLoop(FrameWorkerToken token, long generation)
     {
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "AuraFrameWorker");
         while (token.Running)
         {
             AutoResetEvent? ready = _frameReady;
@@ -693,7 +701,8 @@ public sealed partial class ReplayEngine : IDisposable
                 bool timed = _gpuTimer?.BeginFrame(context) == true;
 
                 long t0 = Diagnostics.PipelineProbe.Now();
-                var nv12 = _processor!.Convert(current.Texture);
+                var input = _scaler?.Scale(current.Texture) ?? current.Texture;
+                var nv12 = _processor!.Convert(input);
                 long t1 = Diagnostics.PipelineProbe.Now();
                 if (timed) _gpuTimer!.Mark(context);
 
@@ -799,6 +808,7 @@ public sealed partial class ReplayEngine : IDisposable
     public void Stop()
     {
         _stopRequested = true;
+        Interlocked.Exchange(ref _pendingSave, 0);
         _recoveryCancellation?.Cancel();
         lock (_lifecycle)
         {
@@ -1045,11 +1055,7 @@ public sealed partial class ReplayEngine : IDisposable
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
         // а записи нет».
         if (_recorder is not null) StopRecordingLocked(wait: true);
-        if (intent == PipelineStopIntent.UserStop)
-        {
-            _audio.BlockReady -= _audioBuffer.Add;
-            _audio.Stop();
-        }
+        if (intent == PipelineStopIntent.UserStop) _audio.Stop();
 
         // ПОРЯДОК ВАЖЕН, и требований тут ДВА, встречных.
         //
@@ -1070,12 +1076,17 @@ public sealed partial class ReplayEngine : IDisposable
         // оставалась живой, а нативный указатель внутри неё уже обнулён.
         _encoder?.Dispose(); _encoder = null;
         _gpuTimer?.Dispose(); _gpuTimer = null;
+        _scaler?.Dispose(); _scaler = null;
         _processor?.Dispose(); _processor = null;
         _frameBroker?.Dispose(); _frameBroker = null;
         _capture?.Dispose(); _capture = null;
         lock (_captureTargetSync) _activeCaptureTarget = null;
 
-        if (!restartActions.KeepReplayBuffer) _videoBuffer.Clear();
+        // Выключили совсем — арену отдаём системе целиком. Пересборка захвата с
+        // несовместимым форматом — чистим, сохраняя ёмкость: следующий старт
+        // конвейера продолжит писать в неё без нового выделения.
+        if (intent == PipelineStopIntent.UserStop) _videoBuffer.Release();
+        else if (!restartActions.KeepReplayBuffer) _videoBuffer.Clear();
         if (!restartActions.KeepAudioBuffer) _audioBuffer.Release();
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive;
         SetState(intent == PipelineStopIntent.UserStop

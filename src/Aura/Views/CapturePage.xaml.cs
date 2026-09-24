@@ -55,6 +55,8 @@ public partial class CapturePage : PageBase
         // ValueChanged, а обработчик читает поля, которых в тот момент ещё нет.
         Bitrate.ValueChanged += Bitrate_Changed;
         Gate.ValueChanged += Gate_Changed;
+        GameVolume.ValueChanged += Volume_Changed;
+        MicVolume.ValueChanged += Volume_Changed;
 
         BuildPresets();
         BuildLengths();
@@ -145,11 +147,11 @@ public partial class CapturePage : PageBase
     /// </summary>
     private void UpdateTenBitRow()
     {
-        bool hevc = CurrentCodec() == VideoCodec.HEVC;
-        TenBitSwitch.IsEnabled = hevc;
-        TenBitSub.Text = hevc
+        bool supported = Core.Encoding.VideoEncoder.SupportsTenBit(CurrentCodec());
+        TenBitSwitch.IsEnabled = supported;
+        TenBitSub.Text = supported
             ? "Меньше полос на небе и в тёмных сценах. Размер файла не меняется"
-            : "Доступно только с кодеком HEVC";
+            : "Доступно с кодеками HEVC и AV1";
     }
 
     private void BuildCodecs()
@@ -243,7 +245,12 @@ public partial class CapturePage : PageBase
         GameAudio.IsChecked = s.CaptureGameAudio;
         MicAudio.IsChecked = s.CaptureMicrophone;
         NoiseGate.IsChecked = s.MicNoiseSuppression;
+        NeuralDenoise.IsChecked = s.MicNeuralNoiseSuppression;
         Gate.Value = s.MicNoiseGateDb;
+        GameVolume.Value = s.GameVolumePercent;
+        MicVolume.Value = s.MicVolumePercent;
+        ShowVolumes();
+        DiskBufferSwitch.IsChecked = s.ReplayBufferOnDisk;
         GateValue.Text = $"−{Math.Abs((int)s.MicNoiseGateDb)} дБ";
         UpdateGateRow();
         SelectTag(TrackMode, s.TrackMode.ToString());
@@ -314,6 +321,8 @@ public partial class CapturePage : PageBase
             s.CaptureGameAudio = GameAudio.IsChecked == true;
             s.CaptureMicrophone = MicAudio.IsChecked == true;
             s.MicNoiseSuppression = NoiseGate.IsChecked == true;
+            s.MicNeuralNoiseSuppression = NeuralDenoise.IsChecked == true;
+            s.ReplayBufferOnDisk = DiskBufferSwitch.IsChecked == true;
             s.MicNoiseGateDb = (float)Gate.Value;
             s.RecordCursor = CursorSwitch.IsChecked == true;
             // Auto, а не Ten: там, где десять бит не поддержаны, запись обязана
@@ -380,6 +389,40 @@ public partial class CapturePage : PageBase
         if (_loading) return;
         Services.Settings.Update(s => s.MicNoiseGateDb = (float)Gate.Value, "audio-live");
     }
+
+    private void NeuralDenoise_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        Services.Settings.Update(s => s.MicNeuralNoiseSuppression = NeuralDenoise.IsChecked == true, "audio-live");
+    }
+
+    /// <summary>Громкость, как и шумодав, применяется сразу: её подбирают на слух.</summary>
+    private void Volume_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        ShowVolumes();
+        if (_loading) return;
+        int game = (int)GameVolume.Value, mic = (int)MicVolume.Value;
+        Services.Settings.Update(s =>
+        {
+            s.GameVolumePercent = game;
+            s.MicVolumePercent = mic;
+        }, "audio-live");
+    }
+
+    private void ShowVolumes()
+    {
+        GameVolumeValue.Text = $"{(int)GameVolume.Value}%";
+        MicVolumeValue.Text = $"{(int)MicVolume.Value}%";
+    }
+
+    private void DiskBuffer_Changed(object sender, RoutedEventArgs e)
+    {
+        ShowRam();
+        if (_loading) return;
+        SetDirty(true);
+    }
+
+    private bool DiskBuffer => DiskBufferSwitch.IsChecked == true;
 
     private void UpdateGateRow()
     {
@@ -454,7 +497,7 @@ public partial class CapturePage : PageBase
     {
         if (!int.TryParse(CustomLength.Text, out int seconds)) seconds = 180;
         int bitrate = Math.Max(1, (int)Bitrate.Value) * 1_000_000;
-        int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate));
+        int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate, DiskBuffer));
         return Math.Clamp(seconds, 5, supported);
     }
 
@@ -572,11 +615,14 @@ public partial class CapturePage : PageBase
         // в настройках расходится с тем, что видно в диспетчере задач.
         int seconds = ParseLength();
         long bitrate = Math.Max(1, (int)Bitrate.Value) * 1_000_000L;
-        long bytes = ReplayVideoBuffer.AllocatedCapacityBytes(bitrate, seconds);
-        int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate));
+        bool disk = DiskBuffer;
+        long bytes = ReplayVideoBuffer.AllocatedCapacityBytes(bitrate, seconds, disk);
+        int supported = Math.Min(1800, ReplayVideoBuffer.MaximumDurationSeconds(bitrate, disk));
+        string where = disk ? "на диске" : "RAM";
+        string size = bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):0.#} ГБ" : $"{bytes / (1024 * 1024)} МБ";
         RamEstimate.Text = seconds >= supported
-            ? $"≈ {bytes / (1024 * 1024)} МБ RAM · максимум {LengthWords(supported)}"
-            : $"≈ {bytes / (1024 * 1024)} МБ RAM";
+            ? $"≈ {size} {where} · максимум {LengthWords(supported)}"
+            : $"≈ {size} {where}";
     }
 
     private void ShowLevels()

@@ -1,0 +1,202 @@
+using System.Runtime.InteropServices;
+using Aura.Core.Logging;
+using Aura.Core.Settings;
+
+namespace Aura.Core.Encoding;
+
+/// <summary>
+/// Прямое кодирование через NVENC (прослойка Aura.Media64.dll, см.
+/// src/native/Aura.Media).
+///
+/// ЗАЧЕМ МИМО MEDIA FOUNDATION. MFT от NVIDIA открывает лишь часть возможностей
+/// NVENC: в логах он годами отвечал «не поддерживаю» на B-кадры, а адаптивного
+/// квантования и просмотра вперёд в ICodecAPI нет вовсе. Именно это и отличает
+/// картинку ShadowPlay: при том же битрейте NVENC с просмотром вперёд, адаптивным
+/// квантованием (пространственным и временным) и B-кадрами тратит биты туда, где их
+/// видно, — на движение и детали, а не на ровное небо. Разница видна на траве,
+/// дыме и резких поворотах камеры.
+///
+/// Всё, чего конкретная видеокарта не умеет, прослойка выключает сама (по
+/// NvEncGetEncodeCaps), а если сессия не открылась вовсе — энкодер уходит на MFT.
+/// </summary>
+internal sealed partial class NvencSession : IDisposable
+{
+    private const string Dll = "Aura.Media64.dll";
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Config
+    {
+        public int Codec, Width, Height, Fps;
+        public int Bitrate, MaxBitrate, VbvBuffer;
+        public int TenBit, GopLength, Preset, Lookahead, BFrames;
+        public int SpatialAq, TemporalAq, AqStrength, Multipass, BufferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Applied
+    {
+        public int BFrames, Lookahead, TemporalAq, SpatialAq, Multipass, BufferCount, BFrameRef, TenBit;
+    }
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_create")]
+    private static unsafe partial int Create(IntPtr device, in Config config, out Applied applied,
+                                             out IntPtr session, byte* error, int errorCapacity);
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_free_slots")]
+    private static partial int FreeSlots(IntPtr session);
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_encode")]
+    private static partial int EncodeNative(IntPtr session, IntPtr texture, long pts, int forceIdr);
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_end")]
+    private static partial void End(IntPtr session);
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_get")]
+    private static unsafe partial int Get(IntPtr session, uint timeoutMs, byte* buffer, int capacity,
+                                          out int size, out long pts, out int pictureType);
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_sequence_header")]
+    private static unsafe partial int SequenceHeaderNative(IntPtr session, byte* buffer, int capacity, out int size);
+
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_destroy")]
+    private static partial void Destroy(IntPtr session);
+
+    /// <summary>NV_ENC_PIC_TYPE: P, B, I, IDR…</summary>
+    public const int PictureIdr = 3;
+    public const int PictureI = 2;
+
+    private IntPtr _session;
+    private byte[] _output = new byte[1 << 20];
+
+    public Applied Settings { get; }
+
+    private NvencSession(IntPtr session, Applied applied)
+    {
+        _session = session;
+        Settings = applied;
+    }
+
+    /// <summary>
+    /// Есть ли смысл пробовать NVENC: видеокарта NVIDIA и прослойка на месте.
+    /// AURA_NO_NVENC=1 выключает прямой путь для проверки на MFT.
+    /// </summary>
+    public static bool Available(string adapterDescription) =>
+        adapterDescription.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) &&
+        Environment.GetEnvironmentVariable("AURA_NO_NVENC") != "1" &&
+        File.Exists(Path.Combine(AppContext.BaseDirectory, Dll));
+
+    /// <summary>
+    /// Настройки качества под разрешение и частоту. Чем больше пикселей в секунду,
+    /// тем легче пресет: NVENC обязан успевать за 60+ кадрами, пока игра грузит
+    /// видеокарту. Проверено на RTX 3070: 1440p60 на P5 с просмотром вперёд
+    /// держит темп с запасом, 4K60 — на P4 без двух проходов.
+    /// </summary>
+    public static Config ConfigFor(VideoCodec codec, int width, int height, int fps, long bitrateBps, bool tenBit)
+    {
+        double pixelRate = (double)width * height * fps;           // пикселей в секунду
+        bool heavy = pixelRate > 2560.0 * 1440 * 60 * 1.05;        // больше 1440p60
+        bool veryHeavy = pixelRate > 3840.0 * 2160 * 60 * 1.05;    // больше 4K60
+
+        return new Config
+        {
+            Codec = codec switch { VideoCodec.HEVC => 1, VideoCodec.AV1 => 2, _ => 0 },
+            Width = width,
+            Height = height,
+            Fps = fps,
+            Bitrate = (int)Math.Min(bitrateBps, int.MaxValue),
+            MaxBitrate = (int)Math.Min(bitrateBps * 2, int.MaxValue),
+            VbvBuffer = (int)Math.Min(bitrateBps, int.MaxValue),     // секунда, как у ShadowPlay
+            TenBit = tenBit ? 1 : 0,
+            GopLength = fps * 2,
+            Preset = veryHeavy ? 3 : heavy ? 4 : 5,
+            Lookahead = veryHeavy ? 0 : heavy ? 8 : 16,
+            BFrames = veryHeavy ? 0 : 2,
+            SpatialAq = 1,
+            TemporalAq = veryHeavy ? 0 : 1,
+            AqStrength = 8,
+            Multipass = heavy ? 0 : 1,
+            BufferCount = 0,                                         // прослойка посчитает сама
+        };
+    }
+
+    public static unsafe NvencSession? TryCreate(IntPtr device, Config config, out string error)
+    {
+        var buffer = new byte[512];
+        int ok;
+        IntPtr session;
+        Applied applied;
+        try
+        {
+            fixed (byte* p = buffer)
+                ok = Create(device, config, out applied, out session, p, buffer.Length);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+        {
+            error = $"прослойка NVENC не загрузилась: {ex.Message}";
+            return null;
+        }
+
+        if (ok == 0)
+        {
+            error = System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Max(0, Array.IndexOf(buffer, (byte)0)));
+            return null;
+        }
+        error = "";
+        return new NvencSession(session, applied);
+    }
+
+    public int FreeSlotCount => _session == IntPtr.Zero ? 0 : FreeSlots(_session);
+
+    /// <summary>1 — принят, 0 — нет свободного буфера, иначе исключение.</summary>
+    public bool Encode(IntPtr texture, long pts, bool forceIdr)
+    {
+        int result = EncodeNative(_session, texture, pts, forceIdr ? 1 : 0);
+        if (result < 0) throw new InvalidOperationException($"NVENC: ошибка кодирования {-result}");
+        return result == 1;
+    }
+
+    public void EndOfStream()
+    {
+        if (_session != IntPtr.Zero) End(_session);
+    }
+
+    /// <summary>Следующий выход. null — ещё не готов (или отправленных кадров нет).</summary>
+    public unsafe (ArraySegment<byte> Data, long Pts, int PictureType)? TryGet(uint timeoutMs)
+    {
+        while (true)
+        {
+            int result;
+            int size;
+            long pts;
+            int type;
+            fixed (byte* p = _output)
+                result = Get(_session, timeoutMs, p, _output.Length, out size, out pts, out type);
+            if (result == 1) return (new ArraySegment<byte>(_output, 0, size), pts, type);
+            if (result == -1) { _output = new byte[Math.Max(size, _output.Length * 2)]; continue; }
+            if (result == 0 || result == -2) return null;
+            throw new InvalidOperationException($"NVENC: ошибка выдачи {-(result + 3)}");
+        }
+    }
+
+    public unsafe byte[]? SequenceHeader()
+    {
+        var buffer = new byte[4096];
+        fixed (byte* p = buffer)
+            if (SequenceHeaderNative(_session, p, buffer.Length, out int size) == 1 && size > 0)
+                return buffer[..size];
+        return null;
+    }
+
+    public void Dispose()
+    {
+        var session = Interlocked.Exchange(ref _session, IntPtr.Zero);
+        if (session != IntPtr.Zero) Destroy(session);
+    }
+
+    public string Describe() =>
+        $"B-кадров {Settings.BFrames}{(Settings.BFrameRef == 1 ? " (опорные)" : "")}, " +
+        $"просмотр вперёд {Settings.Lookahead}, AQ {(Settings.SpatialAq == 1 ? "пространственный" : "нет")}" +
+        $"{(Settings.TemporalAq == 1 ? " + временной" : "")}, " +
+        $"проходов {(Settings.Multipass == 0 ? "1" : Settings.Multipass == 1 ? "2 (¼ разрешения)" : "2")}, " +
+        $"буферов {Settings.BufferCount}{(Settings.TenBit == 1 ? ", 10 бит" : "")}";
+}

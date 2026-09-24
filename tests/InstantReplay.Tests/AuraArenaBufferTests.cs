@@ -1,4 +1,4 @@
-using Aura.Core.Buffering;
+﻿using Aura.Core.Buffering;
 using System.Reflection;
 using Xunit;
 
@@ -23,10 +23,11 @@ public class AuraArenaBufferTests
         return new EncodedFrame(data, 0, length, ptsTicks, Second / 60, keyframe);
     }
 
-    private static void AssertPattern(EncodedFrame frame, byte seed)
+    private static void AssertPattern(BufferedFrame frame, byte seed)
     {
+        var span = frame.Span;
         for (int i = 0; i < frame.Length; i++)
-            Assert.Equal((byte)(seed + i), frame.Data[frame.Offset + i]);
+            Assert.Equal((byte)(seed + i), span[i]);
     }
 
     private static ReplayVideoBuffer Make(int seconds, long bitrateBps)
@@ -231,41 +232,127 @@ public class AuraArenaBufferTests
     }
 
     [Fact]
-    public void Completed_save_keeps_allocated_chunks_for_the_next_replay()
+    public void Completed_save_returns_empty_blocks_to_the_system()
     {
-        // Сохранение логически начинает новый replay, но физическую арену отпускать
-        // нельзя: крупные byte[] попадают в LOH, а следующий replay тут же выделяет
-        // такой же набор заново. На реальной трёхминутной записи это оставляло в
-        // процессе старую арену и поднимало память после каждого сохранения.
+        // Арена вне кучи .NET: блок, в котором не осталось живых кадров, отдаётся
+        // системе сразу. После сохранения физически занято не больше, чем нужно
+        // под кадры нового повтора плюс блок, который готовится впрок.
         var buffer = Make(seconds: 3, bitrateBps: 20 * Megabit);
 
         for (int i = 0; i < 108; i++)
             buffer.Add(Frame(i * (Second / 60), keyframe: i % 60 == 0,
                              length: 1024 * 1024, seed: (byte)i));
 
-        int chunksBeforeSave = ResidentChunkCount(buffer);
-        Assert.True(chunksBeforeSave >= 7, $"тест не заполнил арену: {chunksBeforeSave} блоков");
+        using var snapshot = buffer.TakeSnapshot(3 * Second, out long token);
+        Assert.NotEmpty(snapshot.Frames);
 
-        var snapshot = buffer.TakeSnapshot(3 * Second, out long token);
-        Assert.NotEmpty(snapshot);
-
-        // Новый replay уже начался, пока старый снимок ещё пишет файл.
         buffer.Add(Frame(2 * Second, keyframe: true, length: 1024 * 1024, seed: 0xA5));
         buffer.ReleaseSnapshot(token);
 
-        Assert.True(ResidentChunkCount(buffer) >= chunksBeforeSave,
-            "завершение сохранения выбросило блоки арены вместо их повторного использования");
+        long chunk = ArenaStorage.ChunkBytes;
+        Assert.True(buffer.ResidentBytes <= buffer.TotalBytes + 3 * chunk,
+            $"после сохранения занято {buffer.ResidentBytes >> 20} МБ при {buffer.TotalBytes >> 20} МБ данных");
     }
 
-    private static int ResidentChunkCount(ReplayVideoBuffer buffer)
+    [Fact]
+    public void Lost_frame_waits_for_next_keyframe_and_asks_for_it()
     {
-        var chunksField = typeof(ReplayVideoBuffer).GetField("_chunks",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-        var spareField = typeof(ReplayVideoBuffer).GetField("_spare",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
-        int active = ((byte[]?[])chunksField.GetValue(buffer)!).Count(chunk => chunk is not null);
-        int reusable = ((Stack<byte[]>)spareField.GetValue(buffer)!).Count;
-        return active + reusable;
+        // Кадр не влез — следующие P-кадры ссылаются на него. Буфер не принимает
+        // ничего до ключевого кадра и просит его у энкодера.
+        var buffer = Make(seconds: 2, bitrateBps: 10 * Megabit);
+        int asked = 0;
+        buffer.KeyframeNeeded += () => asked++;
+
+        buffer.Add(Frame(0, keyframe: true, length: 1000, seed: 1));
+        buffer.Add(Frame(Second / 60, keyframe: false, length: 1000, seed: 2));
+        long before = buffer.TotalBytes;
+
+        buffer.Add(Frame(2 * Second / 60, keyframe: false, length: (int)(buffer.CapacityBytes / 2), seed: 3));
+        Assert.Equal(1, asked);
+        buffer.Add(Frame(3 * Second / 60, keyframe: false, length: 1000, seed: 4));
+        Assert.Equal(before, buffer.TotalBytes);          // P-кадр после потери не принят
+
+        buffer.Add(Frame(4 * Second / 60, keyframe: true, length: 1000, seed: 5));
+        Assert.Equal(before + 1000, buffer.TotalBytes);   // ключевой принят, поток восстановлен
+    }
+
+    [Fact]
+    public void Snapshot_asks_for_keyframe_so_next_replay_starts_at_once()
+    {
+        var buffer = Make(seconds: 2, bitrateBps: 10 * Megabit);
+        int asked = 0;
+        buffer.KeyframeNeeded += () => asked++;
+        buffer.Add(Frame(0, keyframe: true, length: 1000, seed: 1));
+        using var snapshot = buffer.TakeSnapshot(2 * Second, out _);
+        Assert.Equal(1, asked);
+    }
+
+    [Fact]
+    public void Resize_keeps_buffered_frames()
+    {
+        var buffer = Make(seconds: 5, bitrateBps: 20 * Megabit);
+        for (int i = 0; i < 300; i++)
+            buffer.Add(Frame(i * (Second / 60), keyframe: i % 60 == 0, length: 30_000, seed: (byte)i));
+        long duration = buffer.BufferedDurationTicks;
+
+        Assert.True(buffer.Resize(20 * Megabit, seconds: 60, diskDirectory: null));
+        buffer.MaxDurationTicks = 60 * Second;
+        Assert.Equal(duration, buffer.BufferedDurationTicks);
+
+        using var snapshot = buffer.TakeSnapshot(60 * Second, out _);
+        Assert.Equal(300, snapshot.Count);
+        for (int i = 0; i < snapshot.Count; i++) AssertPattern(snapshot[i], (byte)i);
+    }
+
+    [Fact]
+    public void Disk_backed_arena_round_trips_frames()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "aura-buffer-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var buffer = new ReplayVideoBuffer { MaxDurationTicks = 5 * Second };
+            buffer.Allocate(20 * Megabit, 5, dir);
+            Assert.True(buffer.OnDisk);
+            for (int i = 0; i < 300; i++)
+                buffer.Add(Frame(i * (Second / 60), keyframe: i % 60 == 0, length: 50_000, seed: (byte)i));
+            using var snapshot = buffer.TakeSnapshot(5 * Second, out long token);
+            int first = 300 - snapshot.Count;
+            for (int i = 0; i < snapshot.Count; i++) AssertPattern(snapshot[i], (byte)(first + i));
+            buffer.ReleaseSnapshot(token);
+            buffer.Release();
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void Disk_arena_reserves_space_up_front_without_writing_zeros()
+    {
+        // Место под буфер на диске занимается сразу: иначе заполнившийся диск
+        // обернулся бы потерей страниц и падением на чтении при сохранении.
+        string dir = Path.Combine(Path.GetTempPath(), "aura-buffer-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            const long capacity = 2L << 30;
+            long? before = Aura.Core.Storage.DiskSpace.FreeBytes(Path.GetTempPath());
+            if (before is null || before < capacity * 2) return;   // места под проверку нет
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var storage = new FileArenaStorage(dir, capacity);
+            long elapsed = sw.ElapsedMilliseconds;
+            long? after = Aura.Core.Storage.DiskSpace.FreeBytes(Path.GetTempPath());
+            storage.Release();
+
+            Assert.True(elapsed < 2000, $"создание заняло {elapsed} мс — похоже, файл заполнялся нулями");
+            Assert.True(before - after > capacity / 2, "место под буфер не занято заранее");
+            Assert.Empty(Directory.EnumerateFiles(dir));        // DELETE_ON_CLOSE
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
     }
 
     [Fact]

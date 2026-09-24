@@ -40,8 +40,18 @@ internal sealed class EncoderTexturePool : IDisposable
     /// <summary>Сколько слотов в кольце — по этому числу считается глубина очереди.</summary>
     public int Slots => _slots.Length;
 
-    public EncoderTexturePool(ID3D11Device device, int width, int height, bool tenBit = false)
+    /// <summary>Нужна ли текстурам привязка RenderTarget (так регистрирует вход NVENC).</summary>
+    private readonly bool _renderTarget;
+
+    /// <param name="minSlots">
+    /// Сколько слотов нужно как минимум. NVENC с просмотром вперёд держит у себя
+    /// входные кадры до выдачи результата, и кольцо не имеет права переписать их
+    /// раньше: слотов должно хватать и на очередь, и на всё, что внутри энкодера.
+    /// </param>
+    public EncoderTexturePool(ID3D11Device device, int width, int height, bool tenBit = false,
+                              int minSlots = 0, bool renderTarget = false)
     {
+        _renderTarget = renderTarget;
         _device = device;
         // NV12 это полтора байта на пиксель, P010 — три: та же раскладка, но каждый
         // отсчёт занимает два байта вместо одного. На десяти битах в тот же бюджет
@@ -49,7 +59,8 @@ internal sealed class EncoderTexturePool : IDisposable
         // иначе пул выйдет за отведённую долю бюджета.
         long pixels = (long)width * height;
         long frameBytes = Math.Max(tenBit ? pixels * 3 : pixels * 3 / 2, 1);
-        _slots = new ID3D11Texture2D?[Math.Clamp(BudgetBytes(device) / frameBytes, 24, 96)];
+        long bySlots = Math.Clamp(BudgetBytes(device) / frameBytes, 24, 96);
+        _slots = new ID3D11Texture2D?[Math.Max(bySlots, minSlots)];
     }
 
     /// <summary>Сколько байт видеопамяти пул готов занять прямо сейчас.</summary>
@@ -79,7 +90,7 @@ internal sealed class EncoderTexturePool : IDisposable
                                 || destination.Description.Height != desc.Height)
         {
             destination?.Dispose();
-            desc.BindFlags = BindFlags.None;
+            desc.BindFlags = _renderTarget ? BindFlags.RenderTarget : BindFlags.None;
             desc.MiscFlags = ResourceOptionFlags.None;
             destination = _slots[slot] = _device.CreateTexture2D(desc);
         }

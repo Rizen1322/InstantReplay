@@ -1,150 +1,85 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Collections.Concurrent;
-using System.Runtime.InteropServices;
-using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
 using Aura.Core.Logging;
-using Aura.Core.Settings;
+using Aura.Core.Saving.Mp4;
 using Aura.Core.Storage;
 
 namespace Aura.Core.Saving;
 
 /// <summary>
 /// Обычная запись в файл («Начать запись»): подписывается на те же сжатые кадры
-/// и аудиоблоки, что и кольцевой буфер, но пишет их в MP4 на лету через SinkWriter.
-/// RAM не расходуется — данные сразу уходят на диск.
+/// видео и готовые кадры AAC, что и кольцевой буфер, и пишет их во фрагментированный
+/// MP4 на лету. RAM не расходуется — данные сразу уходят на диск.
 ///
-/// ТРИ ПРАВИЛА, выведенные из разбора «записал 10 минут — файла нет»:
+/// ПРАВИЛА, выведенные из разбора «записал 10 минут — файла нет»:
 ///
-/// 1. Ни одного вызова Media Foundation в потоках конвейера. Раньше OnFrame звался
-///    из event-потока энкодера, а OnAudio — из микшера (Priority=Highest) каждые
-///    10 мс, и оба лезли в SinkWriter под общим локом. Любая задержка диска
-///    останавливала выдачу кадров энкодером и подачу звука. Теперь колбэки только
-///    кладут данные в очередь, а всю работу с MF делает свой поток.
+/// 1. Ни одной записи на диск в потоках конвейера. Колбэки энкодера и микшера только
+///    кладут копию данных в очередь, а файл пишет свой поток. Медленный диск не
+///    останавливает ни выдачу кадров энкодером, ни звук.
 ///
-/// 2. Звук пишется кусками по секунде, а не блоками по 10 мс. Скорость финализации
-///    MP4 определяется ЧИСЛОМ сэмплов: на 10 минутах блоки по 10 мс дают 120 000
-///    аудиосэмплов на две дорожки против 36 000 видеокадров, и каждый из них —
-///    отдельный вызов AAC-энкодера в реальном времени. Ровно так же пишет ReplaySaver.
+/// 2. Файл фрагментированный (<see cref="FragmentedMp4Writer"/>): каждые две секунды
+///    дописывается самодостаточный фрагмент. Упал процесс, пропало питание — файл
+///    играется до последнего целого фрагмента. Предела в 4 ГБ, из-за которого
+///    раньше запись резалась на части, у такого файла нет.
 ///
-/// 3. Файл режется на части, не доходя до 4 ГБ (см. MaxSegmentBytes), и результат
-///    ПРОВЕРЯЕТСЯ: ошибка Finalize больше не проглатывается, «сохранено» показывается
-///    только если файл реально закрыт и не пуст.
+/// 3. Результат ПРОВЕРЯЕТСЯ: «сохранено» показывается только если файл закрыт и не пуст.
 /// </summary>
 public sealed class ManualRecorder : IDisposable
 {
-    /// <summary>Итог записи: успех, длительность, файлы (частей может быть несколько).</summary>
     public sealed record Result(bool Ok, int Seconds, string? Error, IReadOnlyList<string> Files);
 
-    /// <summary>
-    /// Порог разрезания файла на части.
-    ///
-    /// MP4-писатель Media Foundation адресует данные 32-битными смещениями: в
-    /// разобранном файле на 1 ГБ у него 32-битный заголовок mdat и таблицы stco,
-    /// а документация молчит о том, переключается ли он на 64-битные формы, когда
-    /// файл перерастает 4 ГБ. Ровно на этот предел приходился исходный симптом
-    /// «записал минут десять — файла нет»: при 50 Мбит/с 4 ГБ набегают на 11-й минуте.
-    ///
-    /// Пока это не проверено записью длиннее 4 ГБ, режем заранее. Заодно части,
-    /// закрытые до падения или выключения питания, остаются целыми — теряется
-    /// максимум последняя. 3.5 ГБ при 40 Мбит/с это ~12 минут на часть.
-    /// </summary>
-    private const long MaxSegmentBytes = 3_500L * 1024 * 1024;
-
-    /// <summary>Расширение недописанного файла — то же, что чистит ClipCleanup.</summary>
     private const string PartSuffix = ".part";
 
     /// <summary>
-    /// Довести часть до целевого имени или убрать за собой. Незавершённый MP4 не
-    /// должен получить имя записи: библиотека показала бы его обычной карточкой.
+    /// Ёмкость очереди писателя, в элементах. Это около пяти секунд видео и звука:
+    /// хватает пережить подвисание диска, но не копить сотни мегабайт.
     /// </summary>
-    private static string PublishOrDiscard(string partPath, string path, bool finalized)
-    {
-        if (!finalized)
-        {
-            try { File.Delete(partPath); }
-            catch (Exception ex) { Log.Warn("Recorder", $"Не удалось убрать незавершённую часть: {ex.Message}"); }
-            return path;
-        }
-
-        try
-        {
-            File.Move(partPath, path);
-            return path;
-        }
-        catch (Exception ex)
-        {
-            // Целевое имя мог занять другой параллельный writer. Валидный MP4 не
-            // оставляем под .part: очистка считает такие файлы незавершёнными.
-            string recovered = FileNaming.NextAvailablePath(path, File.Exists);
-            try
-            {
-                File.Move(partPath, recovered);
-                Log.Warn("Recorder", $"Имя части оказалось занято ({ex.Message}); сохранено как {recovered}");
-                return recovered;
-            }
-            catch (Exception recoveryEx)
-            {
-                Log.Error("Recorder", $"Часть записана, но не опубликована: {recoveryEx.Message}. " +
-                                      $"Файл остался как {partPath}");
-                throw new IOException(
-                    $"Часть записана, но не опубликована. Готовый файл сохранён как «{partPath}».", recoveryEx);
-            }
-        }
-    }
-
-    /// <summary>Глубина очереди к писателю: ~8 секунд видео. Дальше лучше дропнуть.</summary>
-    private const int QueueCapacity = 512;
-
-    /// <summary>Сколько 10-мс блоков копим в один аудиосэмпл (1 секунда).</summary>
-    private const int BlocksPerChunk = 100;
+    private const int QueueCapacity = 1024;
 
     private readonly BlockingCollection<Item> _queue = new(QueueCapacity);
     private readonly Thread _writerThread;
-    private readonly Func<IMFMediaType?> _videoType;
-    private readonly AudioTrackMode _trackMode;
-    private readonly bool _hasGame, _hasMic;
-    private readonly string _firstFilePath;
-    private readonly List<string> _files = [];
-
-    private readonly object _audioSync = new();
-    private List<(int Index, AudioTrackKind Kind)> _audioStreams = [];
-    private short[][] _chunkBuf = [];
-    private int[] _chunkFill = [];
-    private long[] _chunkStart = [];
-    private int _blockSamples;
+    private readonly Func<byte[], Mp4VideoFormat> _videoFormat;
+    private readonly IReadOnlyList<(AudioTrackKind Kind, Mp4AudioFormat Format)> _audio;
+    private readonly string _filePath;
+    private string _publishedPath;
+    private readonly long _frameDurationTicks;
 
     private long _baseTicks = -1;
     private volatile bool _finished;
     private volatile string? _error;
     private long _droppedFrames;
+    private volatile bool _droppingUntilKeyframe;
 
-    public string FilePath => _files.Count > 0 ? _files[0] : _firstFilePath;
+    private FileStream? _file;
+    private FragmentedMp4Writer? _writer;
 
-    /// <summary>Когда начали — для показа человеку («запись с 21:14»).</summary>
-    public DateTime StartedAt { get; } = DateTime.Now;
+    public string FilePath => _publishedPath;
 
     /// <summary>
-    /// Длительность записи меряем МОНОТОННЫМИ часами, а не настенными.
-    ///
-    /// ЗАЧЕМ. Длительность уходит в уведомление и в карточку библиотеки, а раньше
-    /// она считалась как разность двух DateTime.Now. Перевод часов, переход на зимнее
-    /// время или обычная синхронизация с сервером времени посреди записи сдвигают эту
-    /// разность на целый час — и запись на двадцать минут показывается как запись на
-    /// минус сорок. Stopwatch к системному времени не привязан.
+    /// Запись оборвалась сама (кончилось место, отказ диска). Приходит из потока
+    /// пула один раз: движок по нему останавливает запись, чтобы кнопка не
+    /// показывала «идёт запись», когда в файл уже ничего не пишется.
     /// </summary>
-    public System.Diagnostics.Stopwatch Elapsed { get; } = System.Diagnostics.Stopwatch.StartNew();
-    /// <summary>Сколько частей файла уже создано (для показа в интерфейсе).</summary>
-    public int PartCount { get { lock (_files) return _files.Count; } }
+    public event Action<string>? Faulted;
 
-    public ManualRecorder(string filePath, Func<IMFMediaType?> videoType,
-        AudioTrackMode trackMode, bool hasGame, bool hasMic)
+    public DateTime StartedAt { get; } = DateTime.Now;
+
+    public System.Diagnostics.Stopwatch Elapsed { get; } = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>Файл теперь один при любой длине записи.</summary>
+    public int PartCount => 1;
+
+    /// <param name="videoFormat">Описание видеодорожки по первому ключевому кадру.</param>
+    /// <param name="audio">Дорожки звука, которые кладём в файл, по порядку.</param>
+    public ManualRecorder(string filePath, Func<byte[], Mp4VideoFormat> videoFormat,
+        IReadOnlyList<(AudioTrackKind Kind, Mp4AudioFormat Format)> audio, long frameDurationTicks)
     {
-        _firstFilePath = filePath;
-        _videoType = videoType;
-        _trackMode = trackMode;
-        _hasGame = hasGame;
-        _hasMic = hasMic;
+        _filePath = filePath;
+        _publishedPath = filePath;
+        _videoFormat = videoFormat;
+        _audio = audio;
+        _frameDurationTicks = frameDurationTicks;
 
         _writerThread = new Thread(WriterLoop)
         {
@@ -157,7 +92,7 @@ public sealed class ManualRecorder : IDisposable
         Log.Info("Recorder", $"Запись в файл начата: {filePath}");
     }
 
-    // ---------------- Приём данных из конвейера (только очередь, никакого MF) ----------------
+    // ---------------- Приём данных из конвейера (только очередь) ----------------
 
     public void OnFrame(EncodedFrame f)
     {
@@ -166,18 +101,17 @@ public sealed class ManualRecorder : IDisposable
         if (Volatile.Read(ref _baseTicks) < 0)
         {
             // Ждём первый keyframe: с него начинается и файл, и отсчёт времени.
+            // Отсчёт — от момента ПОКАЗА кадра, а не декодирования: писатель
+            // начинает показ видео с первого кадра (edts), и звук должен ложиться
+            // на ту же шкалу. От DTS звук с B-кадрами шёл бы раньше картинки на
+            // их задержку.
             if (!f.IsKeyframe) return;
             Volatile.Write(ref _baseTicks, f.PtsTicks);
         }
 
-        // Потеряв кадр, досматриваем текущую группу до конца и НЕ пишем её остаток.
-        //
-        // ЗАЧЕМ. Кадры между ключевыми описаны разницей с предыдущими. Выкинуть один
-        // из середины значит оставить в файле все последующие кадры группы без того,
-        // на что они ссылаются: плеер показывает рассыпающуюся картинку до самого
-        // следующего ключевого кадра — а это две секунды. Раньше дроп по переполнению
-        // очереди рвал группу ровно так. Дешевле пропустить остаток группы целиком:
-        // в записи будет честный скачок на границе, а не две секунды мусора.
+        // Потеряв кадр, пропускаем остаток группы до следующего ключевого: кадры
+        // между ключевыми описаны разницей с предыдущими, и без пропущенного плеер
+        // показывал бы рассыпающуюся картинку две секунды.
         if (_droppingUntilKeyframe)
         {
             if (!f.IsKeyframe)
@@ -188,70 +122,36 @@ public sealed class ManualRecorder : IDisposable
             _droppingUntilKeyframe = false;
         }
 
-        // Буфер кадра живёт только на время события энкодера — копируем себе
-        // (100 КБ на кадр, 6 МБ/с). Копия короткоживущая: писатель вернёт её в пул
-        // сразу после WriteSample, поэтому пул держит лишь несколько массивов.
+        // Буфер кадра живёт только на время события энкодера — копируем себе.
         var copy = ArrayPool<byte>.Shared.Rent(f.Length);
         Buffer.BlockCopy(f.Data, f.Offset, copy, 0, f.Length);
-        if (!Enqueue(new Item(copy, f.Length, f.PtsTicks - _baseTicks, f.DurationTicks, -1, f.IsKeyframe)))
+        if (!Enqueue(new Item(copy, f.Length, f.PtsTicks - _baseTicks, f.Dts - _baseTicks, -1, f.IsKeyframe)))
             _droppingUntilKeyframe = true;
     }
 
-    /// <summary>Идёт ли сейчас пропуск остатка группы кадров после потери одного из них.</summary>
-    private volatile bool _droppingUntilKeyframe;
-
-    public void OnAudio(AudioBlock block)
+    public void OnAudio(AudioTrackKind kind, ReadOnlySpan<byte> frame, long ptsTicks)
     {
         if (_finished || _error is not null) return;
         long baseTicks = Volatile.Read(ref _baseTicks);
         if (baseTicks < 0) return;             // видео ещё не началось — звуку не от чего считать
-        long pts = block.PtsTicks - baseTicks;
-        if (pts < 0) return;
 
-        // Готовые куски кладём в очередь ПОСЛЕ выхода из лока: внутри Enqueue есть
-        // ожидание места, а писатель под тем же локом открывает новую часть файла.
-        List<Item>? ready = null;
-        lock (_audioSync)
-        {
-            if (_chunkBuf.Length == 0) return; // писатель ещё не создал дорожки
-            for (int s = 0; s < _chunkBuf.Length; s++)
-            {
-                if (_chunkFill[s] == 0) _chunkStart[s] = pts;
-                block.CopyTo(_audioStreams[s].Kind,
-                             _chunkBuf[s].AsSpan(_chunkFill[s] * _blockSamples, _blockSamples));
-                if (++_chunkFill[s] >= BlocksPerChunk)
-                    (ready ??= []).Add(TakeChunk(s));
-            }
-        }
-        if (ready is not null) foreach (var item in ready) Enqueue(item);
-    }
+        int track = -1;
+        for (int i = 0; i < _audio.Count; i++)
+            if (_audio[i].Kind == kind) { track = i; break; }
+        if (track < 0) return;
 
-    /// <summary>Забрать накопленный кусок дорожки как элемент очереди. Вызывать под _audioSync.</summary>
-    private Item TakeChunk(int s)
-    {
-        int fill = _chunkFill[s];
-        _chunkFill[s] = 0;
-
-        int samples = fill * _blockSamples;
-        int byteCount = samples * sizeof(short);
-        var bytes = ArrayPool<byte>.Shared.Rent(byteCount);
-        MemoryMarshal.AsBytes<short>(_chunkBuf[s].AsSpan(0, samples)).CopyTo(bytes);
-        return new Item(bytes, byteCount, _chunkStart[s], fill * 100_000L, s, false);
+        var copy = ArrayPool<byte>.Shared.Rent(frame.Length);
+        frame.CopyTo(copy);
+        Enqueue(new Item(copy, frame.Length, ptsTicks - baseTicks, 0, track, false));
     }
 
     private bool Enqueue(Item item, int timeoutMs = 0)
     {
-        // В callback не ждём вообще: подвесить поток энкодера или микшера из-за
-        // медленного диска — ровно та беда, от которой мы уходим. Только Finish
-        // может подождать хвостовой аудиоблок, потому что он уже работает в фоне.
+        // В колбэке не ждём вообще: подвесить поток энкодера или микшера из-за
+        // медленного диска — ровно та беда, от которой мы уходим.
         //
-        // TryAdd ОБЯЗАН быть под try. Проверка IsAddingCompleted его не защищает:
-        // между ней и самим вызовом писатель успевает выполнить CompleteAdding, и
-        // тогда TryAdd бросает InvalidOperationException. Окно открыто на каждой
-        // остановке записи — StopRecordingToFile отписывает обработчики, но уже
-        // начатый вызов отписки не видит. Раньше это исключение улетало из потока
-        // микшера, у которого нет ни одного catch, и убивало процесс ровно в тот
-        // момент, когда человек нажал «Остановить запись».
+        // TryAdd ОБЯЗАН быть под try: между проверкой IsAddingCompleted и самим
+        // вызовом писатель успевает выполнить CompleteAdding, и тогда TryAdd бросает.
         bool queued = false;
         try
         {
@@ -271,13 +171,7 @@ public sealed class ManualRecorder : IDisposable
         return false;
     }
 
-    // ---------------- Поток писателя: единственный, кто трогает Media Foundation ----------------
-
-    private IMFSinkWriter? _writer;
-    private int _videoStream = -1;
-    private long _segmentBytes;
-    private long _segmentBase;   // pts начала текущей части (нули каждого файла)
-    private int _segmentIndex;
+    // ---------------- Поток писателя ----------------
 
     private void WriterLoop()
     {
@@ -289,6 +183,11 @@ public sealed class ManualRecorder : IDisposable
                 {
                     if (_error is null) Write(item);
                 }
+                catch (IOException ex) when (ReplaySaver.DiskFull(ex))
+                {
+                    Fail("на диске закончилось место — запись остановлена, записанное сохранено");
+                    Log.Error("Recorder", ex);
+                }
                 catch (Exception ex)
                 {
                     Fail(ex.Message);
@@ -296,205 +195,154 @@ public sealed class ManualRecorder : IDisposable
                 }
                 finally { ArrayPool<byte>.Shared.Return(item.Buffer); }
             }
-            FinalizeSegment();
         }
         catch (Exception ex)
         {
             Fail(ex.Message);
             Log.Error("Recorder", ex);
         }
+        finally
+        {
+            Close();
+        }
     }
 
     private void Write(Item item)
     {
+        var data = item.Buffer.AsSpan(0, item.Length);
         if (item.Stream < 0)
         {
-            // Файл создаём на первом keyframe: к этому моменту энкодер уже отдал
-            // выходной тип С ЗАГОЛОВКАМИ кодека (SPS/PPS/VPS). Взяв тип раньше,
-            // мы получали Finalize с MF_E_SINK_HEADERS_NOT_FOUND — файл не собирался.
             if (_writer is null)
             {
+                // Файл создаём на первом ключевом кадре: к нему энкодер уже отдал
+                // заголовки кодека, из которых собирается описание дорожки.
                 if (!item.Keyframe) return;
-                OpenSegment(item.Pts);
-                if (_writer is null) return;
+                Open(data.ToArray());
             }
-            // Резать можно только по keyframe — иначе часть начнётся с «каши».
-            else if (item.Keyframe && _segmentBytes >= MaxSegmentBytes)
-            {
-                FinalizeSegment();
-                OpenSegment(item.Pts);
-                if (_writer is null) return;
-            }
-
-            long pts = item.Pts - _segmentBase;
-            if (pts < 0) return;
-            using var sample = MfMp4Writer.CreateSample(item.Buffer, 0, item.Length, pts, item.Duration);
-            if (item.Keyframe) sample.Set(SampleAttributeKeys.CleanPoint, 1u);
-            _writer.WriteSample(_videoStream, sample);
+            _writer!.WriteVideo(data, item.Pts, item.Dts, item.Keyframe);
         }
         else
         {
-            if (_writer is null || item.Stream >= _audioStreams.Count) return;
-            long pts = item.Pts - _segmentBase;
-            if (pts < 0) return;
-            using var sample = MfMp4Writer.CreateSample(item.Buffer, 0, item.Length, pts, item.Duration);
-            _writer.WriteSample(_audioStreams[item.Stream].Index, sample);
+            _writer?.WriteAudio(item.Stream, data, item.Pts);
         }
-        long before = _segmentBytes;
-        _segmentBytes += item.Length;
-        // Отметка перехода через 4 ГиБ — граница 32-битной адресации в MP4.
-        // Нужна для опыта: по ней видно, в какой момент писатель либо перешёл
-        // на 64-битные заголовки, либо начал портить файл.
-        const long FourGiB = 4L * 1024 * 1024 * 1024;
-        if (before < FourGiB && _segmentBytes >= FourGiB)
-            Log.Info("Recorder", "Файл перешёл границу 4 ГиБ — дальше проверяем, справится ли MP4-писатель");
     }
 
-    private void OpenSegment(long ptsBase)
+    private void Open(byte[] keyframe)
     {
-        string desiredPath = _segmentIndex == 0 ? _firstFilePath : PartPath(_firstFilePath, _segmentIndex + 1);
-        string path = FileNaming.NextAvailablePath(desiredPath, File.Exists);
-        // Фабрика отдаёт КОПИЮ выходного типа, а не ссылку на поле энкодера: запись
-        // переживает остановку конвейера, и Dispose энкодера не должен освобождать
-        // тип под нашим SinkWriter. Копия нужна только на время AddStream.
-        using var videoType = _videoType();
-        if (videoType is null) { Fail("энкодер не отдал тип видеопотока"); return; }
-
-        // Пишем в .part и переименовываем при закрытии части: незавершённый MP4
-        // не должен носить имя записи и попадать в библиотеку (см. ReplaySaver)
-        MfMp4Writer.Mp4Target target = MfMp4Writer.Open(
-            path + PartSuffix, videoType, _trackMode, _hasGame, _hasMic);
-        IMFSinkWriter writer = target.Writer;
-        int videoStream = target.VideoStream;
-        var audioStreams = target.AudioStreams;
-        if (_segmentIndex == 0)
-            Log.Info("Recorder", $"Контейнер: {(target.Fragmented ? "фрагментированный MP4" : "обычный MP4")}");
-
-        _writer = writer;
-        _videoStream = videoStream;
-        _segmentBytes = 0;
-        _segmentBase = ptsBase;
-        _segmentIndex++;
-        lock (_files) _files.Add(path);
-
-        lock (_audioSync)
-        {
-            _audioStreams = audioStreams;
-            if (_chunkBuf.Length != audioStreams.Count)
-            {
-                _blockSamples = AudioBlockSamples;
-                _chunkBuf = new short[audioStreams.Count][];
-                _chunkFill = new int[audioStreams.Count];
-                _chunkStart = new long[audioStreams.Count];
-                for (int s = 0; s < audioStreams.Count; s++)
-                    _chunkBuf[s] = new short[BlocksPerChunk * _blockSamples];
-            }
-            else Array.Clear(_chunkFill); // копившееся для прошлой части не тащим в новую
-        }
-
-        if (_segmentIndex > 1) Log.Info("Recorder", $"Файл достиг предела MP4 — продолжаю в {Path.GetFileName(path)}");
+        Mp4VideoFormat format = _videoFormat(keyframe);
+        Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+        _file = new FileStream(_filePath + PartSuffix, FileMode.Create, FileAccess.ReadWrite,
+                               FileShare.Read, 1 << 20);
+        _writer = new FragmentedMp4Writer(_file, format, _audio.Select(a => a.Format).ToList());
+        Log.Info("Recorder", $"Контейнер: фрагментированный MP4, {format.Codec} {format.Width}x{format.Height}, " +
+                             $"дорожек звука {_audio.Count}");
     }
 
-    /// <summary>10 мс × 48 кГц × 2 канала — размер одного блока микшера в сэмплах.</summary>
-    private const int AudioBlockSamples = MfMp4Writer.SampleRate / 100 * MfMp4Writer.Channels;
-
-    private void FinalizeSegment()
+    /// <summary>Дописать хвост, закрыть файл и опубликовать его под настоящим именем.</summary>
+    private void Close()
     {
         var writer = _writer;
-        if (writer is null) return;
+        var file = _file;
         _writer = null;
+        _file = null;
+        if (writer is null || file is null) return;
 
-        string path;
-        lock (_files) path = _files.Count > 0 ? _files[^1] : _firstFilePath;
-        string partPath = path + PartSuffix;
-        bool finalized = false;
-
+        bool closed = false;
+        long bytes = 0;
         try
         {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            writer.Finalize();
-            long bytes = 0;
-            try { bytes = new FileInfo(partPath).Length; } catch { }
-            if (bytes < 1024) Fail($"файл {Path.GetFileName(path)} пуст после финализации");
-            else
-            {
-                finalized = true;
-                Log.Info("Recorder", $"Часть закрыта: {Path.GetFileName(path)}, " +
-                                     $"{bytes / (1024 * 1024)} МБ, финализация {sw.ElapsedMilliseconds} мс");
-            }
+            writer.Finish(_frameDurationTicks);
+            file.Flush(flushToDisk: true);
+            bytes = file.Length;
+            closed = true;
         }
         catch (Exception ex)
         {
-            // Незакрытый MP4 (нет moov) не откроет ни один плеер — говорим об этом прямо,
-            // а не рисуем «сохранено».
-            Fail(ex.Message);
-            Log.Error("Recorder", $"Финализация {Path.GetFileName(path)} не удалась: {ex}");
+            // Фрагменты, которые уже на диске, играются и без хвоста: файл оставляем.
+            Log.Error("Recorder", $"Хвост записи не дописался: {ex.Message}");
+            try { bytes = file.Length; } catch { }
         }
         finally
         {
-            writer.Dispose();                 // файл закрыт — только теперь переименование
-            string published = PublishOrDiscard(partPath, path, finalized);
-            if (finalized && !string.Equals(published, path, StringComparison.OrdinalIgnoreCase))
-                lock (_files) _files[^1] = published;
+            writer.Dispose();
+            file.Dispose();
+        }
+
+        if (bytes < 1024)
+        {
+            Fail("файл записи пуст");
+            try { File.Delete(_filePath + PartSuffix); } catch { }
+            return;
+        }
+
+        try
+        {
+            // Проверяем только готовые файлы: NextAvailablePath считает занятым и
+            // имя с «.part», то есть наш собственный недописанный файл.
+            _publishedPath = File.Exists(_filePath)
+                ? FileNaming.NextAvailablePath(_filePath, candidate => File.Exists(candidate))
+                : _filePath;
+            File.Move(_filePath + PartSuffix, _publishedPath);
+            Log.Info("Recorder", $"Файл закрыт{(closed ? "" : " без хвоста")}: {Path.GetFileName(_publishedPath)}, " +
+                                 $"{bytes / (1024 * 1024)} МБ");
+        }
+        catch (Exception ex)
+        {
+            _publishedPath = _filePath + PartSuffix;
+            Fail($"запись сохранена как «{_publishedPath}», переименовать не удалось: {ex.Message}");
         }
     }
 
-    private void Fail(string message) => _error ??= message;
-
-    private static string PartPath(string path, int part)
+    private void Fail(string message)
     {
-        string dir = Path.GetDirectoryName(path)!;
-        return Path.Combine(dir, $"{Path.GetFileNameWithoutExtension(path)} (часть {part}){Path.GetExtension(path)}");
+        if (_error is not null) return;
+        _error = message;
+        if (!_finished)
+        {
+            var handler = Faulted;
+            if (handler is not null) ThreadPool.QueueUserWorkItem(_ => handler(message));
+        }
     }
 
     // ---------------- Завершение ----------------
 
-    /// <summary>
-    /// Закрывает файл(ы) и возвращает честный итог. Блокирует вызывающего до конца
-    /// записи хвоста очереди — вызывать из фонового потока, не из UI.
-    /// </summary>
     public Result Finish()
     {
-        if (_finished) return new Result(_error is null, Seconds, _error, Files);
+        if (_finished) return new Result(_error is null, Seconds, _error, [FilePath]);
         _finished = true;
-
-        var tail = new List<Item>();
-        lock (_audioSync)
-            for (int s = 0; s < _chunkFill.Length; s++)
-                if (_chunkFill[s] > 0) tail.Add(TakeChunk(s));
-        foreach (var item in tail) Enqueue(item, timeoutMs: 5000);
 
         _queue.CompleteAdding();
         if (!_writerThread.Join(TimeSpan.FromSeconds(60)))
             Fail("писатель не закончил за 60 секунд");
 
         int seconds = Seconds;
-        var files = Files;
+        bool exists = File.Exists(FilePath);
         if (_error is null)
-            Log.Info("Recorder", $"Запись завершена: {FilePath} ({seconds} сек, частей {files.Count})");
+            Log.Info("Recorder", $"Запись завершена: {FilePath} ({seconds} сек)");
         else
-            Log.Error("Recorder", $"Запись НЕ сохранена ({_error}): {FilePath}");
+            Log.Error("Recorder", $"Запись завершилась с ошибкой ({_error}): {FilePath}");
 
-        return new Result(_error is null && files.Count > 0, seconds, _error, files);
+        // Кончилось место посреди записи — записанное всё равно целое и открывается:
+        // отдаём его как сохранённое, но с пояснением.
+        return new Result(exists && (_error is null || _error.StartsWith("на диске", StringComparison.Ordinal)),
+                          seconds, _error, exists ? [FilePath] : []);
     }
 
     private int Seconds => (int)Math.Round(Elapsed.Elapsed.TotalSeconds);
-    private IReadOnlyList<string> Files { get { lock (_files) return _files.ToArray(); } }
 
     public void Dispose()
     {
         Finish();
-        _queue.Dispose();
+        // Писатель, не успевший за минуту, ещё читает очередь — освобождать её под ним нельзя.
+        if (!_writerThread.IsAlive) _queue.Dispose();
     }
 
-    /// <summary>Единица очереди: буфер из пула + куда и когда его писать.</summary>
-    private readonly struct Item(byte[] buffer, int length, long pts, long duration, int stream, bool keyframe)
+    private readonly struct Item(byte[] buffer, int length, long pts, long dts, int stream, bool keyframe)
     {
         public readonly byte[] Buffer = buffer;
         public readonly int Length = length;
         public readonly long Pts = pts;
-        public readonly long Duration = duration;
-        /// <summary>-1 — видео, иначе индекс аудиодорожки.</summary>
+        public readonly long Dts = dts;
         public readonly int Stream = stream;
         public readonly bool Keyframe = keyframe;
     }

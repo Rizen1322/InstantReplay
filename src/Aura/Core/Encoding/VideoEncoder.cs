@@ -63,6 +63,7 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     public byte[]? TryGetSequenceHeader()
     {
+        if (_nvenc is not null || _nvencHeader is not null) return _nvencHeader;
         var type = OutputMediaType;
         if (type is null) return null;
         try { return type.GetBlob(MediaTypeAttributeKeys.MpegSequenceHeader); }
@@ -211,10 +212,16 @@ public sealed class VideoEncoder : IDisposable
         Width = width; Height = height; Fps = fps;
         _frameDurationTicks = 10_000_000L / fps;
 
-        // Десять бит просим только у HEVC. У H.264 десятибитный профиль почти не
-        // поддерживается плеерами, а NVENC его не умеет вовсе; у AV1 в Media
-        // Foundation слишком неровная поддержка, чтобы рисковать записью.
-        TenBit = preferTenBit && codec == VideoCodec.HEVC;
+        // Десять бит просим у HEVC и AV1. У H.264 десятибитный профиль почти не
+        // поддерживается плеерами, а NVENC его не умеет вовсе. AV1 Main по стандарту
+        // включает 10 бит, и все декодеры AV1 (расширение Windows, браузеры,
+        // видеокарты с аппаратным AV1) его понимают. Если конкретный MFT не примет
+        // P010 или контейнер не соберётся, ниже и в движке есть откат на 8 бит.
+        TenBit = preferTenBit && SupportsTenBit(codec);
+
+        // На NVIDIA сначала прямой NVENC: у него есть то, чего нет в MFT (просмотр
+        // вперёд, адаптивное квантование, B-кадры). Не открылся — обычный путь MFT.
+        if (TryInitializeNvenc(device, width, height, fps, bitrateBps, codec)) return;
 
         _copyPool = new EncoderTexturePool(device, width, height, TenBit);
         _maxInputQueue = Math.Max(8, _copyPool.Slots - 8); // запас на кадры в работе у MFT
@@ -225,7 +232,7 @@ public sealed class VideoEncoder : IDisposable
 
         Guid subtype = HardwareEncoders.SubtypeFor(codec);
 
-        (_transform, EncoderName) = HardwareEncoders.Find(subtype) is { } found
+        (_transform, EncoderName) = HardwareEncoders.Find(subtype, AdapterLuidOf(device)) is { } found
             ? found
             : throw new NotSupportedException($"Аппаратный энкодер {codec} не найден. " +
                "Проверьте драйвер GPU или выберите H264.");
@@ -257,7 +264,9 @@ public sealed class VideoEncoder : IDisposable
         outType.Set(MediaTypeAttributeKeys.MaxKeyframeSpacing, (uint)(fps * 2));
         if (codec == VideoCodec.H264)
             outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, 100u /* eAVEncH264VProfile_High */);
-        else if (codec == VideoCodec.HEVC)
+        else
+            // Номера профилей у HEVC и AV1 совпадают: eAVEncH265VProfile_Main_420_8/10
+            // и eAVEncAV1VProfile_Main_420_8/10 — это 1 и 2 (codecapi.h).
             outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, TenBit ? Main10Profile : Main8Profile);
         SetColorInfo(outType);
         _transform.SetOutputType(0, outType, 0);
@@ -319,6 +328,260 @@ public sealed class VideoEncoder : IDisposable
         Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров " +
             $"(~{_maxInputQueue * 1000 / Math.Max(fps, 1)} мс запаса), пул {slots} текстур " +
             $"= {(long)width * height * 3 / 2 * slots / (1024 * 1024)} МБ видеопамяти");
+    }
+
+    // ---------------- NVENC напрямую ----------------
+
+    private NvencSession? _nvenc;
+    private SemaphoreSlim? _nvencSlots;
+    private readonly Queue<long> _nvencInputPts = new();
+    private long _nvencLastDts = long.MinValue;
+    private byte[]? _nvencHeader;
+
+    /// <summary>Кодирование идёт напрямую через NVENC, а не через MFT.</summary>
+    public bool DirectNvenc => _nvenc is not null;
+
+    /// <summary>Поток готов к записи в файл: энкодер знает свои заголовки.</summary>
+    public bool StreamReady => _nvenc is not null || OutputMediaType is not null;
+
+    private VideoCodec _nvencCodec;
+
+    private bool TryInitializeNvenc(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
+    {
+        _nvencCodec = codec;
+        string adapter = AdapterDescriptionOf(device);
+        if (!NvencSession.Available(adapter)) return false;
+
+        var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit);
+        var session = NvencSession.TryCreate(device.NativePointer, config, out string error);
+        if (session is null)
+        {
+            Log.Info("Encoder", $"NVENC напрямую недоступен ({error}) — кодирую через MFT");
+            return false;
+        }
+
+        _nvenc = session;
+        TenBit = session.Settings.TenBit == 1;
+        int buffers = session.Settings.BufferCount;
+        _copyPool = new EncoderTexturePool(device, width, height, TenBit, minSlots: buffers + 12, renderTarget: true);
+        _maxInputQueue = Math.Max(8, _copyPool.Slots - buffers - 2);
+        _nvencSlots = new SemaphoreSlim(buffers, buffers);
+        _nvencHeader = session.SequenceHeader();
+
+        EncoderName = "NVIDIA NVENC (напрямую)";
+        EncoderVendor = "NVIDIA";
+        EncoderLabel = $"{codec.ToString().ToLowerInvariant()}_nvenc";
+
+        _running = true;
+        _eventThread = new Thread(NvencOutputLoop) { IsBackground = true, Name = "VideoEncoder.NvencOut", Priority = ThreadPriority.AboveNormal };
+        _eventThread.Start();
+        _feedThread = new Thread(NvencFeedLoop) { IsBackground = true, Name = "VideoEncoder.NvencFeed", Priority = ThreadPriority.AboveNormal };
+        _feedThread.Start();
+        _pacerThread = new Thread(PacerLoop) { IsBackground = true, Name = "VideoEncoder.Pacer", Priority = ThreadPriority.AboveNormal };
+        _pacerThread.Start();
+
+        Log.Info("Encoder", $"HW-энкодер: NVENC напрямую, {codec}, {width}x{height}@{fps}, {bitrateBps / 1_000_000} Мбит/с " +
+                            $"(VBR, пик {bitrateBps * 2 / 1_000_000}); {session.Describe()}");
+        Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров, пул {_copyPool.Slots} текстур " +
+                            $"= {(TenBit ? (long)width * height * 3 : (long)width * height * 3 / 2) * _copyPool.Slots / (1024 * 1024)} МБ видеопамяти");
+        return true;
+    }
+
+    private static string AdapterDescriptionOf(ID3D11Device device)
+    {
+        try
+        {
+            using var dxgiDevice = device.QueryInterface<Vortice.DXGI.IDXGIDevice>();
+            using var adapter = dxgiDevice.GetAdapter();
+            return adapter.Description.Description;
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>Подача кадров в NVENC: по свободному выходному буферу, как по NeedInput у MFT.</summary>
+    private void NvencFeedLoop()
+    {
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.NvencFeed");
+        var session = _nvenc!;
+        var slots = _nvencSlots!;
+        while (_running)
+        {
+            try
+            {
+                if (!slots.Wait(200)) continue;              // свободный выходной буфер = «просьба кадра»
+                Interlocked.Increment(ref InputRequests);
+
+                bool gotFrame = false;
+                Volatile.Write(ref _inputRequestWaitingForFrame, 1);
+                try
+                {
+                    while (_running && !(gotFrame = _inputAvailable.Wait(200))) { }
+                }
+                finally { Volatile.Write(ref _inputRequestWaitingForFrame, 0); }
+                if (!gotFrame) { slots.Release(); break; }
+
+                EncoderInputFrame item;
+                lock (_queueLock)
+                {
+                    if (_inputQueue.Count == 0) { slots.Release(); continue; }
+                    item = _inputQueue.Dequeue();
+                }
+
+                // Просьба ключевого кадра (буфер потерял кадр или начал копить заново)
+                bool forceIdr = _keyframeRequested;
+                if (forceIdr) _keyframeRequested = false;
+
+                lock (_nvencInputPts) _nvencInputPts.Enqueue(item.Ticks);
+                int inFlight = Interlocked.Increment(ref _inFlight);
+                long peak;
+                while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
+                    if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
+
+                long start = Diagnostics.PipelineProbe.Now();
+                if (!session.Encode(item.Texture.NativePointer, item.Ticks, forceIdr))
+                {
+                    // Буфер занят — так быть не должно (его выдал семафор). Кадр теряем честно.
+                    lock (_nvencInputPts) RemoveLast(_nvencInputPts);
+                    Interlocked.Decrement(ref _inFlight);
+                    slots.Release();
+                    Interlocked.Increment(ref FramesDroppedRealQueue);
+                    continue;
+                }
+                Diagnostics.PipelineProbe.ProcessInput.Add(start, Diagnostics.PipelineProbe.Now());
+            }
+            catch (Exception ex)
+            {
+                if (!_running) break;
+                Log.Error("Encoder", ex);
+                Thread.Sleep(5);
+            }
+        }
+    }
+
+    private static void RemoveLast(Queue<long> queue)
+    {
+        int count = queue.Count;
+        for (int i = 0; i < count; i++)
+        {
+            long v = queue.Dequeue();
+            if (i < count - 1) queue.Enqueue(v);
+        }
+    }
+
+    /// <summary>Выдача NVENC: кадры в порядке декодирования, с временем декодирования.</summary>
+    private void NvencOutputLoop()
+    {
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.NvencOut");
+        var session = _nvenc!;
+        // Сдвиг времени декодирования: с B-кадрами кадр N по порядку декодирования
+        // декодируется на столько кадров раньше N-го входного (стандартная схема,
+        // так же считает ffmpeg). Без B-кадров сдвига нет.
+        long reorderTicks = session.Settings.BFrames * _frameDurationTicks;
+        while (_running)
+        {
+            try
+            {
+                var output = session.TryGet(100);
+                if (output is not { } frame) continue;
+                DeliverNvenc(frame.Data, frame.Pts, frame.PictureType, reorderTicks);
+            }
+            catch (Exception ex)
+            {
+                if (!_running) break;
+                Log.Error("Encoder", ex);
+                Thread.Sleep(5);
+            }
+        }
+    }
+
+    private void DeliverNvenc(ArraySegment<byte> data, long pts, int pictureType, long reorderTicks)
+    {
+        long inputPts;
+        lock (_nvencInputPts) inputPts = _nvencInputPts.Count > 0 ? _nvencInputPts.Dequeue() : pts;
+        _nvencSlots?.Release();
+        Interlocked.Decrement(ref _inFlight);
+
+        long dts = Math.Min(inputPts - reorderTicks, pts);
+        if (_nvencLastDts != long.MinValue && dts <= _nvencLastDts) dts = _nvencLastDts + 1;
+        _nvencLastDts = dts;
+
+        // Точка входа в поток — только IDR. Обычный I-кадр с B-кадрами может быть
+        // «открытой» группой: B-кадры после него ссылаются на кадры ДО него, и клип,
+        // начатый с такого кадра, рассыпается в первые мгновения. У AV1 ключевой
+        // кадр драйвер может помечать как I — там это и есть точка входа.
+        bool keyframe = pictureType == NvencSession.PictureIdr ||
+                        (pictureType == NvencSession.PictureI && _nvencCodec == VideoCodec.AV1);
+        if (keyframe)
+        {
+            _lastKeyframeTicks = pts;
+            _nvencHeader ??= _nvenc?.SequenceHeader();
+        }
+
+        Interlocked.Increment(ref FramesEncoded);
+        FrameEncoded?.Invoke(new EncodedFrame(data.Array!, data.Offset, data.Count,
+                                              pts, _frameDurationTicks, keyframe, dts));
+    }
+
+    private void DisposeNvenc()
+    {
+        _running = false;
+        // Семафор слотов будить незачем: поток подачи ждёт его с таймаутом 200 мс
+        _inputAvailable.Release(4);
+        bool feedExited = _feedThread?.Join(2000) ?? true;
+        bool pacerExited = _pacerThread?.Join(5000) ?? true;
+        bool outputExited = _eventThread?.Join(2000) ?? true;
+
+        var session = Interlocked.Exchange(ref _nvenc, null);
+        if (session is not null && (!feedExited || !outputExited))
+        {
+            // Поток всё ещё внутри вызова NVENC (видеокарта зависла на работе игры).
+            // Уничтожить сессию под ним — обращение к освобождённой памяти и падение
+            // процесса. Утечка одной сессии безопаснее; пул текстур тоже не трогаем.
+            Log.Warn("Encoder", "Поток NVENC не завершился — сессия оставлена, чтобы не уронить процесс");
+            _copyPool = null;
+            return;
+        }
+        if (session is not null)
+        {
+            // Конец потока: NVENC отдаёт то, что держит у себя, и отпускает входные
+            // текстуры. Кадры уже никому не нужны — просто забираем их.
+            try
+            {
+                session.EndOfStream();
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                while (clock.ElapsedMilliseconds < 1000 && session.TryGet(50) is not null) { }
+            }
+            catch (Exception ex) { Log.Info("Encoder", $"NVENC: хвост не выдан при закрытии ({ex.Message})"); }
+            session.Dispose();
+        }
+        lock (_queueLock) _inputQueue.Clear();
+        if (pacerExited) { _copyPool?.Dispose(); _copyPool = null; }
+        else
+        {
+            Log.Warn("Encoder", "Пейсер не завершился за 5 секунд — пул текстур оставлен сборщику");
+            _copyPool = null;
+        }
+        _nvencSlots?.Dispose();
+    }
+
+    /// <summary>Есть ли у кодека десятибитный профиль, который мы готовы просить.</summary>
+    public static bool SupportsTenBit(VideoCodec codec) => codec is VideoCodec.HEVC or VideoCodec.AV1;
+
+    /// <summary>LUID видеокарты, на которой создано устройство; null — узнать не удалось.</summary>
+    internal static long? AdapterLuidOf(ID3D11Device device)
+    {
+        try
+        {
+            using var dxgiDevice = device.QueryInterface<Vortice.DXGI.IDXGIDevice>();
+            using var adapter = dxgiDevice.GetAdapter();
+            var luid = adapter.Description.Luid;
+            return ((long)luid.HighPart << 32) | luid.LowPart;
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Encoder", $"Видеокарта устройства не определилась: {ex.Message}");
+            return null;
+        }
     }
 
     // MF_MT_YUV_MATRIX — в Vortice 3.x ключа нет, задаём по GUID
@@ -652,12 +915,28 @@ public sealed class VideoEncoder : IDisposable
     /// ровно то, что видно у пользователя: длина буфера гуляет вокруг заказанной на
     /// целый GOP, а сохранённый клип оказывается длиннее настройки.
     /// </summary>
+    /// <summary>
+    /// Попросить ключевой кадр на ближайшем входе, не дожидаясь штатной группы.
+    ///
+    /// Зовёт буфер повтора: он потерял кадр посреди группы или начал копить заново
+    /// после сохранения и до ключевого кадра ничего не принимает. Без просьбы это
+    /// до двух секунд выброшенного видео.
+    /// </summary>
+    public void RequestKeyframe() => _keyframeRequested = true;
+
+    private volatile bool _keyframeRequested;
+
     private void MaybeForceKeyframe(long sampleTicks)
     {
         if (_forceKeyframeUnavailable || _codecApi is null) return;
-        if (_lastKeyframeTicks != long.MinValue && sampleTicks - _lastKeyframeTicks < KeyframeIntervalTicks) return;
+        bool requested = _keyframeRequested;
+        if (!requested && _lastKeyframeTicks != long.MinValue &&
+            sampleTicks - _lastKeyframeTicks < KeyframeIntervalTicks) return;
+        // Просьба, пришедшая слишком скоро после прошлой, не теряется: флаг остаётся
+        // и сработает на одном из следующих кадров.
         if (_lastKeyframeRequestTicks != long.MinValue &&
             sampleTicks - _lastKeyframeRequestTicks < KeyframeRequestGapTicks) return;
+        _keyframeRequested = false;
 
         _lastKeyframeRequestTicks = sampleTicks;
 
@@ -886,9 +1165,13 @@ public sealed class VideoEncoder : IDisposable
 
     private void PacerLoopCore()
     {
+        // Высокоточный таймер вместо Thread.Sleep: без глобального timeBeginPeriod(1)
+        // сон квантуется по 15.6 мс, и пейсер ставил бы дубликаты пачками.
+        using var timer = new Interop.PreciseTimer();
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.Pacer");
         while (_running)
         {
-            Thread.Sleep(4);
+            timer.Wait(40_000); // 4 мс
             // Вне _cfrLock: смена пресета не должна держать подачу кадров
             _quality?.Tick(Interlocked.Read(ref FramesEncoded),
                            Interlocked.Read(ref FramesSubmitted),
@@ -938,6 +1221,7 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     private void EventLoop()
     {
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.Events");
         while (_running)
         {
             IMFMediaEvent? ev = null;
@@ -972,6 +1256,7 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     private void FeedLoop()
     {
+        using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.Feed");
         while (_running)
         {
             try
@@ -1051,6 +1336,7 @@ public sealed class VideoEncoder : IDisposable
     private byte[] _scratch = new byte[256 * 1024];
 
     private bool _outputTypeRefreshed;
+    private bool _loggedBFrames;
 
     /// <summary>
     /// После первого сжатого кадра забираем у MFT ФАКТИЧЕСКИЙ выходной тип.
@@ -1125,11 +1411,17 @@ public sealed class VideoEncoder : IDisposable
         if (!providesSamples)
         {
             ourSample = MediaFactory.MFCreateSample();
-            ourSample.AddBuffer(MediaFactory.MFCreateMemoryBuffer(streamInfo.Size));
+            // Буфер отпускаем сразу после AddBuffer: сэмпл держит свою ссылку. Иначе
+            // наша висела бы до финализатора, а их при SustainedLowLatency почти нет —
+            // та же утечка, что уже чинили в MfMp4Writer.CreateSample.
+            using var outputMemory = MediaFactory.MFCreateMemoryBuffer(streamInfo.Size);
+            ourSample.AddBuffer(outputMemory);
             outBuffer.Sample = ourSample;
         }
 
         var hr = _transform.ProcessOutput(ProcessOutputFlags.None, 1, ref outBuffer, out _);
+        // Коллекция событий, если MFT её вернул, принадлежит вызывающему.
+        outBuffer.Events?.Dispose();
         // Неудача — это чаще всего MF_E_TRANSFORM_NEED_MORE_INPUT: отдавать нечего,
         // и кадры законно остаются ВНУТРИ энкодера. Счётчик здесь трогать нельзя,
         // он опускается ровно тогда, когда кадр действительно вышел наружу.
@@ -1156,16 +1448,29 @@ public sealed class VideoEncoder : IDisposable
         // Отсчёт «давно ли был ключевой» ведём по факту выдачи, а не по нашим просьбам
         if (keyframe) _lastKeyframeTicks = sample.SampleTime;
 
+        // Время декодирования. Без B-кадров энкодер его не ставит, и оно равно
+        // времени показа. С B-кадрами (их может включить сам драйвер, когда адаптер
+        // качества снимает режим низкой задержки) кадры идут в порядке
+        // декодирования, и время показа скачет — контейнеру нужны оба.
+        long dts = long.MinValue;
+        try { dts = (long)sample.GetUInt64(SampleAttributeKeys.DecodeTimestamp); } catch { }
+        if (dts != long.MinValue && dts != sample.SampleTime && !_loggedBFrames)
+        {
+            _loggedBFrames = true;
+            Log.Info("Encoder", "Энкодер выдаёт кадры в порядке декодирования (B-кадры) — время декодирования учитывается");
+        }
+
         Interlocked.Increment(ref FramesEncoded);
         Diagnostics.PipelineProbe.DrainOutput.Add(drainStart, Diagnostics.PipelineProbe.Now());
         FrameEncoded?.Invoke(new EncodedFrame(_scratch, 0, currentLength,
-                                              sample.SampleTime, sample.SampleDuration, keyframe));
+                                              sample.SampleTime, sample.SampleDuration, keyframe, dts));
     }
 
     private static ulong PackLong(int hi, int lo) => ((ulong)(uint)hi << 32) | (uint)lo;
 
     public void Dispose()
     {
+        if (_nvenc is not null) { DisposeNvenc(); return; }
         _running = false;
         // Drain будит поток, застрявший в блокирующем GetEvent: асинхронный MFT
         // в ответ обязан прислать METransformDrainComplete.

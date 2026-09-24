@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -35,10 +35,15 @@
     <Compile Include="..\..\src\Aura\Core\Storage\FileNaming.cs" Link="App\FileNaming.cs" />
     <Compile Include="..\..\src\Aura\Core\Library\ClipGrouping.cs" Link="App\ClipGrouping.cs" />
     <Compile Include="..\..\src\Aura\Core\Buffering\ReplayBuffers.cs" Link="App\ReplayBuffers.cs" />
+    <Compile Include="..\..\src\Aura\Core\Buffering\ReplayVideoBuffer.cs" Link="App\ReplayVideoBuffer.cs" />
+    <Compile Include="..\..\src\Aura\Core\Buffering\ArenaStorage.cs" Link="App\ArenaStorage.cs" />
+    <Compile Include="..\..\src\Aura\Core\Saving\Mp4\*.cs" Link="App\Mp4\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\Aura\Core\Audio\AudioTimeline.cs" Link="App\AudioTimeline.cs" />
+    <Compile Include="..\..\src\Aura\Core\Audio\AudioDsp.cs" Link="App\AudioDsp.cs" />
+    <Compile Include="..\..\src\Aura\Core\Storage\DiskSpace.cs" Link="App\DiskSpace.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\LanczosWeights.cs" Link="App\LanczosWeights.cs" />
     <Compile Include="..\..\src\Aura\Core\Logging\Log.cs" Link="App\Log.cs" />
     <Compile Include="..\..\src\Aura\Core\Diagnostics\PipelineProbe.cs" Link="App\PipelineProbe.cs" />
-    <!-- Чистый COM-интероп без графики: подключается к тестам как есть -->
-    <Compile Include="..\..\src\Aura\Core\Saving\ArenaMediaBuffer.cs" Link="App\ArenaMediaBuffer.cs" />
     <Compile Include="..\..\src\Aura\Core\System\UpdateVerification.cs" Link="App\UpdateVerification.cs" />
     <Compile Include="..\..\src\Aura\Core\System\TrustedUrl.cs" Link="App\TrustedUrl.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioFormat.cs" Link="App\AudioFormat.cs" />
