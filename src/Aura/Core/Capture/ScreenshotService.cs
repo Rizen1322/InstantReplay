@@ -214,6 +214,24 @@ public static class ScreenshotService
     private static async Task<(byte[] Bgra, int W, int H)> CaptureOwnSessionAsync(
         int monitorIndex, bool cursor, bool forceWgc)
     {
+        try
+        {
+            return await CaptureWithAsync(monitorIndex, cursor, forceWgc);
+        }
+        catch (Exception ex) when (!forceWgc && ScreenCaptureFactory.IsWgcAvailable &&
+                                   ScreenCaptureFactory.Selection.Backend != CaptureBackend.Wgc)
+        {
+            // Desktop Duplication на этой машине не открылась (у друга на Windows 10:
+            // E_INVALIDARG из DuplicateOutput). Скриншот важнее рамки: снимаем через WGC.
+            Log.Warn("Screenshot", $"Своя сессия {ScreenCaptureFactory.Selection.Backend} не открылась " +
+                                   $"({ex.Message.Trim()}), снимаю через WGC");
+            return await CaptureWithAsync(monitorIndex, cursor, forceWgc: true);
+        }
+    }
+
+    private static async Task<(byte[] Bgra, int W, int H)> CaptureWithAsync(
+        int monitorIndex, bool cursor, bool forceWgc)
+    {
         var tcs = new TaskCompletionSource<(byte[] Bgra, int W, int H)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 

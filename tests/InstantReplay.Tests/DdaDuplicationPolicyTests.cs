@@ -20,6 +20,7 @@ public sealed class DdaDuplicationPolicyTests
     [Theory]
     [InlineData(unchecked((int)0x80004002))]
     [InlineData(unchecked((int)0x80004001))]
+    [InlineData(unchecked((int)0x80070057))] // E_INVALIDARG из DuplicateOutput1 на Windows 10
     [InlineData(unchecked((int)0x887A0004))]
     public void CapabilityFailuresMayFallBack(int hresult) =>
         Assert.True(DdaDuplicationPolicy.ShouldFallBackToLegacy(hresult));
