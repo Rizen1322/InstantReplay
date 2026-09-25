@@ -258,8 +258,19 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         result = AURA_GL_CAPTURE_FAILED;
         goto done;
     }
-    if (now < state->next_issue_100ns) goto done;
-    state->next_issue_100ns = now + UINT64_C(10000000) / (uint64_t)target_fps;
+    // Расписание копится от прошлого слота, а не от момента съёмки. Раньше
+    // следующий слот ставился на now + интервал: при игре на 70-100 к/с кадр
+    // приходил на пару миллисекунд раньше слота и пропускался, и вместо 60 к/с
+    // в запись шло 35-45. Четверть интервала допуска снимает дребезг кадров
+    // игры, а после долгой паузы (меню, свёрнутое окно) расписание догоняет
+    // текущее время, а не отдаёт пачку кадров подряд.
+    uint64_t interval = UINT64_C(10000000) / (uint64_t)target_fps;
+    uint64_t slack = interval / 4;
+    if (state->next_issue_100ns != 0 && now + slack < state->next_issue_100ns) goto done;
+    if (state->next_issue_100ns == 0 || now > state->next_issue_100ns + interval)
+        state->next_issue_100ns = now + interval;
+    else
+        state->next_issue_100ns += interval;
 
     GLint previous_buffer = 0;
     GLint previous_pack_alignment = 4;

@@ -248,5 +248,11 @@ public sealed class GameDatabase
         "ccleaner", "hwinfo64", "hwinfo", "msiafterburner", "rtss", "cpu-z", "gpu-z",
         "hwmonitor", "aida64", "crystaldiskinfo", "icue", "lghub", "synapse",
         "armourycrate", "msi center", "nzxt cam", "signalrgb", "openrgb", "fancontrol",
+
+        // ---- оверлеи и окна поверх игр ----
+        "porthole", "gamebar", "gamebarftserver", "xboxgamebarwidgets", "nvcontainer",
+        "nvidia overlay", "steamoverlayui", "gameoverlayui", "discordoverlay",
+        "powertoys", "powertoys.peek.ui", "everything", "flow.launcher", "wox",
+        "lively", "wallpaper32", "wallpaper64", "rainmeter", "translucenttb",
     };
 }

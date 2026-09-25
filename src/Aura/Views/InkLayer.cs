@@ -33,7 +33,7 @@ public sealed class InkShape
 /// </summary>
 public sealed class InkLayer : FrameworkElement
 {
-    private static readonly Color SelectionColor = Color.FromRgb(0xE0, 0x3B, 0x3B);
+    private static readonly Color SelectionColor = Color.FromRgb(0x32, 0xD7, 0x4B);
 
     /// <summary>
     /// Подсветка найденной области. Заливка нарочно едва заметная: она обязана
@@ -41,9 +41,9 @@ public sealed class InkLayer : FrameworkElement
     /// Кисти заморожены — объект живёт весь сеанс оверлея и перерисовывается
     /// на каждое движение мыши.
     /// </summary>
-    private static readonly Brush CandidateFill = Freeze(new SolidColorBrush(Color.FromArgb(0x22, 0x3B, 0x82, 0xF6)));
+    private static readonly Brush CandidateFill = Freeze(new SolidColorBrush(Color.FromArgb(0x1C, 0x32, 0xD7, 0x4B)));
     private static readonly Pen CandidatePen = Freeze(new Pen(
-        Freeze(new SolidColorBrush(Color.FromArgb(0xCC, 0x3B, 0x82, 0xF6))), 1.5));
+        Freeze(new SolidColorBrush(Color.FromArgb(0xCC, 0x32, 0xD7, 0x4B))), 1.5));
 
     private static T Freeze<T>(T value) where T : Freezable
     {

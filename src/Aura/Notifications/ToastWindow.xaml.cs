@@ -31,9 +31,6 @@ public sealed record ToastContent(
 /// </summary>
 public partial class ToastWindow : Window
 {
-    private const double CompactWidth = 250, CompactHeight = 62;
-    private const double WideWidth = 400, WideHeight = 74;
-
     private readonly Storyboard _spin;
     private DispatcherTimer? _expandTimer, _hideTimer;
 
@@ -75,143 +72,133 @@ public partial class ToastWindow : Window
         _expandTimer?.Stop();
         _hideTimer?.Stop();
 
-        // Сбрасываем сдвиг от прошлого ухода: иначе каждое следующее уведомление
-        // появлялось на 14 px правее, и отступы слева и справа переставали совпадать.
-        CardShift.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty, null);
+        // Сбрасываем сдвиг от прошлого ухода: иначе следующее уведомление
+        // появлялось бы смещённым.
+        CardShift.BeginAnimation(TranslateTransform.XProperty, null);
+        CardShift.BeginAnimation(TranslateTransform.YProperty, null);
         CardShift.X = 0;
+        CardShift.Y = 0;
 
         Place(position);
-
         bool busy = content.BusyTitle is not null;
-        TitleText.Text = content.BusyTitle ?? content.Title;
-        SubText.Text = busy ? "секунду…" : content.Subtitle;
-        ApplyTitleLayout();
-        HintText.Text = content.Hint ?? "";
-        ArtIcon.Data = content.Icon;
-        // Цвет события — на значке и полосе времени, а подложка значка того же
-        // цвета, но приглушённая: плотная цветная плитка кричала поверх игры.
-        var tint = (content.Tint as SolidColorBrush)?.Color ?? Colors.White;
-        Art.Background = new SolidColorBrush(Color.FromArgb(0x2E, tint.R, tint.G, tint.B));
-        ArtIcon.Foreground = new SolidColorBrush(tint);
-        Life.Background = new SolidColorBrush(tint);
-        Shot.Source = null;
-        Shot.Opacity = 0;
+        Fill(content, busy);
 
-        // Компактное состояние
-        Card.Width = CompactWidth;
-        Card.Height = CompactHeight;
-        Art.Width = 40; Art.Height = 40;
-        SubText.Opacity = 0;
-        HintText.Opacity = 0;
-        LifeTrack.Opacity = 0;
-        ArtIcon.Opacity = busy ? 0 : 1;
-        Spin.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        if (busy) _spin.Begin();
-        else _spin.Stop();
-
+        bool wasVisible = IsVisible && Opacity > 0.5;
         if (!IsVisible)
         {
             Opacity = 0;
             Show();
         }
-        AppearAnimation();
+        if (!wasVisible) AppearAnimation();
 
         _pending = content;
         _pendingSeconds = seconds;
         _pendingThumb = thumbnailSource;
 
-        // Без ожидания карточка разворачивается сразу. С ожиданием ждём
-        // CompleteToast, но не дольше отведённого срока: молча висеть нельзя.
-        _expandTimer = StartTimer(busy ? maxWaitSeconds : 0.28,
-                                  () => Expand(_pending!, seconds, thumbnailSource));
+        if (busy)
+            // Ждём CompleteToast, но не дольше отведённого срока: молча висеть нельзя
+            _expandTimer = StartTimer(maxWaitSeconds, () => Finish(_pending!, seconds, thumbnailSource));
+        else
+            Finish(content, seconds, thumbnailSource);
     }
 
-    /// <summary>Работа закончена: капсула разворачивается в карточку с результатом.</summary>
+    /// <summary>Снимок вёрстки в режиме --dev: содержимое без показа и анимаций.</summary>
+    internal void PrepareForSnapshot(ToastContent content)
+    {
+        Fill(content, busy: false);
+        LifeTrack.Opacity = 1;
+        LifeScale.ScaleX = 0.7;
+        Life.Background = Tint(content);
+    }
+
+    /// <summary>Работа закончена: карточка показывает результат.</summary>
     public void CompleteToast(string title, string subtitle)
     {
         if (_pending is null || !IsVisible) return;
         _expandTimer?.Stop();
         _pending = _pending with { Title = title, Subtitle = subtitle, BusyTitle = null };
-        Expand(_pending, _pendingSeconds, _pendingThumb);
+        Fill(_pending, busy: false);
+        Finish(_pending, _pendingSeconds, _pendingThumb);
     }
 
-    private void AppearAnimation()
+    private static SolidColorBrush Tint(ToastContent content) =>
+        new((content.Tint as SolidColorBrush)?.Color ?? Colors.White);
+
+    /// <summary>Текст, значок и цвет. Размер карточки при этом не меняется.</summary>
+    private void Fill(ToastContent content, bool busy)
     {
-        var ease = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.3 };
-        BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.22)));
-        CardShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty,
-            new DoubleAnimation(18, 0, TimeSpan.FromSeconds(0.42)) { EasingFunction = ease });
-        CardScale.BeginAnimation(ScaleTransform.ScaleXProperty,
-            new DoubleAnimation(0.94, 1, TimeSpan.FromSeconds(0.42)) { EasingFunction = ease });
-        CardScale.BeginAnimation(ScaleTransform.ScaleYProperty,
-            new DoubleAnimation(0.94, 1, TimeSpan.FromSeconds(0.42)) { EasingFunction = ease });
+        var tint = Tint(content).Color;
+        TitleText.Text = busy ? content.BusyTitle! : content.Title;
+        SubText.Text = busy ? "секунду…" : content.Subtitle;
+        SubText.Visibility = string.IsNullOrWhiteSpace(SubText.Text) ? Visibility.Collapsed : Visibility.Visible;
+        TitleText.FontSize = SubText.Visibility == Visibility.Visible ? 13 : 13.5;
+        HintText.Text = busy ? "" : content.Hint ?? "";
+
+        // Цвет события на значке и полоске, подложка значка того же цвета, но
+        // приглушённая: плотная цветная плитка кричала поверх игры.
+        ArtIcon.Data = content.Icon;
+        ArtIcon.Foreground = new SolidColorBrush(tint);
+        Art.Background = new SolidColorBrush(busy ? Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF)
+                                                  : Color.FromArgb(0x22, tint.R, tint.G, tint.B));
+        Art.Width = 36;
+        Art.CornerRadius = new CornerRadius(10);
+        Shot.Source = null;
+        Shot.Opacity = 0;
+        ArtIcon.Opacity = busy ? 0 : 1;
+        Spin.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        if (busy) _spin.Begin();
+        else _spin.Stop();
+        LifeTrack.BeginAnimation(OpacityProperty, null);
+        LifeTrack.Opacity = 0;
     }
 
-    private void Expand(ToastContent content, double seconds, Func<ImageSource?>? thumbnailSource)
+    /// <summary>Итог: кадр из записи вместо значка, полоска времени и таймер ухода.</summary>
+    private void Finish(ToastContent content, double seconds, Func<ImageSource?>? thumbnailSource)
     {
-        _spin.Stop();
-        Spin.Visibility = Visibility.Collapsed;
+        if (content.BusyTitle is not null) Fill(content with { BusyTitle = null }, busy: false);
 
-        var ease = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.22 };
-        var grow = TimeSpan.FromSeconds(0.5);
-
-        TitleText.Text = content.Title;
-        SubText.Text = content.Subtitle;
-        ApplyTitleLayout();
-
-        Card.BeginAnimation(WidthProperty, new DoubleAnimation(WideWidth, grow) { EasingFunction = ease });
-        Card.BeginAnimation(HeightProperty, new DoubleAnimation(WideHeight, grow) { EasingFunction = ease });
-        Art.BeginAnimation(WidthProperty, new DoubleAnimation(64, grow) { EasingFunction = ease });
-        Art.BeginAnimation(HeightProperty, new DoubleAnimation(40, grow) { EasingFunction = ease });
-
-        ArtIcon.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.2)));
-        SubText.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.3)) { BeginTime = TimeSpan.FromSeconds(0.1) });
-        if (!string.IsNullOrEmpty(HintText.Text))
-            HintText.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.3)) { BeginTime = TimeSpan.FromSeconds(0.12) });
-
-        // Кадр из записи — если он есть, плитка с иконкой уступает ему место
-        if (content.WantsThumbnail && thumbnailSource is not null)
+        if (content.WantsThumbnail && thumbnailSource?.Invoke() is { } image)
         {
-            var image = thumbnailSource();
-            if (image is not null)
-            {
-                Shot.Source = image;
-                Shot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.35)));
-                ArtIcon.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromSeconds(0.25)));
-            }
+            // Кадр шире значка: 16:9, как сама запись
+            Art.Width = 64;
+            Art.CornerRadius = new CornerRadius(7);
+            Shot.Source = image;
+            Shot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.3)));
+            ArtIcon.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromSeconds(0.2)));
         }
 
-        // Полоска времени показа
-        LifeTrack.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.25)));
-        Life.Width = WideWidth - 24;
+        Life.Background = Tint(content);
+        LifeTrack.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.2)));
         LifeScale.BeginAnimation(ScaleTransform.ScaleXProperty,
             new DoubleAnimation(1, 0, TimeSpan.FromSeconds(Math.Max(1, seconds))));
 
         _hideTimer = StartTimer(Math.Max(1, seconds), HideToast);
     }
 
+    private void AppearAnimation()
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var time = TimeSpan.FromSeconds(0.38);
+        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.22)));
+        CardShift.BeginAnimation(TranslateTransform.YProperty,
+            new DoubleAnimation(Card.VerticalAlignment == VerticalAlignment.Top ? -14 : 14, 0, time) { EasingFunction = ease });
+        CardScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.97, 1, time) { EasingFunction = ease });
+        CardScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.97, 1, time) { EasingFunction = ease });
+    }
+
     public void HideToast()
     {
         _hideTimer?.Stop();
-        var fade = new DoubleAnimation(0, TimeSpan.FromSeconds(0.28));
+        var fade = new DoubleAnimation(0, TimeSpan.FromSeconds(0.28)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn } };
         fade.Completed += (_, _) => { if (Opacity <= 0.01) Hide(); };
         BeginAnimation(OpacityProperty, fade);
-        CardShift.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty,
-            new DoubleAnimation(0, 14, TimeSpan.FromSeconds(0.28)));
+        CardShift.BeginAnimation(TranslateTransform.YProperty,
+            new DoubleAnimation(0, Card.VerticalAlignment == VerticalAlignment.Top ? -8 : 8, TimeSpan.FromSeconds(0.28)));
+        CardScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, 0.97, TimeSpan.FromSeconds(0.28)));
+        CardScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 0.97, TimeSpan.FromSeconds(0.28)));
     }
 
-    /// <summary>Окно прижимается к нужному углу рабочего стола, карточка — к тому же углу внутри.</summary>
-    /// <summary>
-    /// Заголовок без второй строки набирается крупнее и стоит по центру карточки.
-    /// Уведомления вроде «Запись началась» второй строкой ничего не добавляли —
-    /// мелкая подпись под заголовком только дробила карточку.
-    /// </summary>
-    private void ApplyTitleLayout()
-    {
-        bool hasSubtitle = !string.IsNullOrWhiteSpace(SubText.Text);
-        SubText.Visibility = hasSubtitle ? Visibility.Visible : Visibility.Collapsed;
-        TitleText.FontSize = hasSubtitle ? 12.5 : 14.5;
-    }
+    /// <summary>Окно прижимается к нужному углу рабочего стола, карточка к тому же углу внутри.</summary>
 
     private void Place(NotificationPosition position)
     {

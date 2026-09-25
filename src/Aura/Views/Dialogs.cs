@@ -29,19 +29,51 @@ public static class Dialogs
     /// </summary>
     public static void ShowChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries)
     {
-        if (entries.Count == 0) return;
-        var app = Application.Current;
-        if (app is null) return;
+        if (entries.Count == 0 || Application.Current is null) return;
+        CreateChangelogWindow(entries).ShowDialog();
+    }
 
-        var content = new StackPanel();
-        content.Children.Add(new TextBlock
+    /// <summary>
+    /// Окно «Что нового»: знак и номер версии крупно, дальше разделы с короткими
+    /// строчками. Строка «## …» внутри версии становится заголовком раздела.
+    /// </summary>
+    internal static Window CreateChangelogWindow(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries)
+    {
+        var app = Application.Current!;
+        var window = NewDialogWindow(width: 600);
+
+        // --- шапка ---
+        var head = new Grid { Margin = new Thickness(28, 26, 28, 0) };
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition());
+        var logo = new System.Windows.Controls.Image
+        {
+            Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://siteoforigin:,,,/Assets/logo.png")),
+            Width = 52,
+            Height = 52,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        RenderOptions.SetBitmapScalingMode(logo, BitmapScalingMode.HighQuality);
+        head.Children.Add(logo);
+
+        var titles = new StackPanel { Margin = new Thickness(16, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        titles.Children.Add(new TextBlock
         {
             Text = "Что нового",
-            FontFamily = (FontFamily)app.FindResource("DispFont"),
-            FontSize = 19,
+            FontSize = 12.5,
+            Foreground = (Brush)app.FindResource("AccentTxBrush"),
             FontWeight = FontWeights.SemiBold
         });
-        content.Children.Add(new TextBlock
+        titles.Children.Add(new TextBlock
+        {
+            Text = entries[0].Headline,
+            FontFamily = (FontFamily)app.FindResource("DispFont"),
+            FontSize = 21,
+            FontWeight = FontWeights.Bold,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 2, 0, 0)
+        });
+        titles.Children.Add(new TextBlock
         {
             Text = entries.Count == 1
                 ? $"Версия {entries[0].Version}"
@@ -49,48 +81,51 @@ public static class Dialogs
             Style = (Style)app.FindResource("RowSub"),
             Margin = new Thickness(0, 3, 0, 0)
         });
+        Grid.SetColumn(titles, 1);
+        head.Children.Add(titles);
 
-        foreach (var entry in entries)
+        // --- содержимое ---
+        var content = new StackPanel { Margin = new Thickness(28, 6, 24, 8) };
+        for (int n = 0; n < entries.Count; n++)
         {
-            content.Children.Add(new TextBlock
-            {
-                Text = entry.Headline,
-                FontSize = 14.5,
-                FontWeight = FontWeights.SemiBold,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 18, 0, 0)
-            });
+            var entry = entries[n];
+            // Заголовок второй и следующих версий: у первой он уже в шапке
+            if (n > 0)
+                content.Children.Add(new TextBlock
+                {
+                    Text = $"{entry.Headline}, {entry.Version}",
+                    FontFamily = (FontFamily)app.FindResource("DispFont"),
+                    FontSize = 15,
+                    FontWeight = FontWeights.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 22, 0, 0)
+                });
 
+            StackPanel? card = null;
             foreach (string item in entry.Items)
             {
-                var row = new Grid { Margin = new Thickness(0, 9, 0, 0) };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                row.ColumnDefinitions.Add(new ColumnDefinition());
-
-                // Точка вместо тире: маркер держит левый край строк ровным
-                var dot = new Border
+                if (item.StartsWith("## "))
                 {
-                    Width = 5,
-                    Height = 5,
-                    CornerRadius = new CornerRadius(2.5),
-                    Background = (Brush)app.FindResource("AccentBrush"),
-                    Margin = new Thickness(2, 7, 10, 0),
-                    VerticalAlignment = VerticalAlignment.Top
-                };
-                row.Children.Add(dot);
-
-                var text = new TextBlock
+                    content.Children.Add(new TextBlock
+                    {
+                        Text = item[3..],
+                        Style = (Style)app.FindResource("GroupLabel"),
+                        Margin = new Thickness(2, 18, 0, 8)
+                    });
+                    card = null;
+                    continue;
+                }
+                if (card is null)
                 {
-                    Text = item,
-                    Style = (Style)app.FindResource("RowSub"),
-                    TextWrapping = TextWrapping.Wrap,
-                    LineHeight = 19,
-                    LineStackingStrategy = LineStackingStrategy.BlockLineHeight
-                };
-                Grid.SetColumn(text, 1);
-                row.Children.Add(text);
-
-                content.Children.Add(row);
+                    card = new StackPanel { Margin = new Thickness(14, 6, 14, 12) };
+                    content.Children.Add(new Border
+                    {
+                        Style = (Style)app.FindResource("Card"),
+                        Margin = new Thickness(0, n == 0 && content.Children.Count == 0 ? 16 : 0, 0, 0),
+                        Child = card
+                    });
+                }
+                card.Children.Add(Bullet(item, app));
             }
         }
 
@@ -99,29 +134,64 @@ public static class Dialogs
         {
             Content = content,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 420,
-            Margin = new Thickness(0, 0, 4, 0)
+            MaxHeight = Math.Min(560, SystemParameters.WorkArea.Height - 240),
+            Margin = new Thickness(0, 10, 4, 0)
         };
-
-        var panel = new StackPanel { Margin = new Thickness(24, 22, 20, 18) };
-        panel.Children.Add(scroll);
-
-        var window = NewDialogWindow(width: 480);
 
         var okButton = new Button
         {
-            Content = "Понятно",
+            Content = "Отлично",
             Style = (Style)app.FindResource("BtnPri"),
-            MinWidth = 120,
+            MinWidth = 140,
+            Height = 38,
             IsDefault = true,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 18, 0, 0)
+            HorizontalAlignment = HorizontalAlignment.Right
         };
         okButton.Click += (_, _) => window.Close();
-        panel.Children.Add(okButton);
+        var foot = new Border
+        {
+            BorderBrush = (Brush)app.FindResource("SepBrush"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(28, 14, 28, 18),
+            Child = okButton
+        };
+
+        var panel = new StackPanel();
+        panel.Children.Add(head);
+        panel.Children.Add(scroll);
+        panel.Children.Add(foot);
 
         Dress(window, panel, app);
-        window.ShowDialog();
+        return window;
+    }
+
+    /// <summary>Строчка списка: зелёная точка слева держит край ровным.</summary>
+    private static Grid Bullet(string text, Application app)
+    {
+        var row = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        row.Children.Add(new Border
+        {
+            Width = 6,
+            Height = 6,
+            CornerRadius = new CornerRadius(3),
+            Background = (Brush)app.FindResource("AccentBrush"),
+            Margin = new Thickness(0, 7, 12, 0),
+            VerticalAlignment = VerticalAlignment.Top
+        });
+        var body = new TextBlock
+        {
+            Text = text,
+            FontSize = 13,
+            Foreground = (Brush)app.FindResource("Tx2Brush"),
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 20,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight
+        };
+        Grid.SetColumn(body, 1);
+        row.Children.Add(body);
+        return row;
     }
 
     /// <summary>

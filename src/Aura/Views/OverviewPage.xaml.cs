@@ -53,6 +53,7 @@ public partial class OverviewPage : PageBase
 
     public override void OnShown()
     {
+        TipText.Text = Tips.Next("overview");
         Refresh();
         BuildStrip();
         _tick.Start();
@@ -242,7 +243,7 @@ public partial class OverviewPage : PageBase
         _loadedClips = true;
         Recent.ItemsSource = items;
         if (Recent.ItemsPanel is not null)
-            Dispatcher.BeginInvoke(() =>
+            _ = Dispatcher.BeginInvoke(() =>
             {
                 if (FindPanel(Recent) is UniformGrid grid) grid.Columns = take;
             }, DispatcherPriority.Loaded);

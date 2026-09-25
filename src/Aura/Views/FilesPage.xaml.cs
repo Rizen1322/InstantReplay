@@ -20,6 +20,7 @@ public partial class FilesPage : PageBase
     public FilesPage()
     {
         InitializeComponent();
+        AddTips(Aside, "files");
         HideAsideWhenNarrow(AsideCol, Aside);
         Services.Storage.StatsChanged += stats => Dispatcher.BeginInvoke(() => ShowStats(stats));
         Loaded += (_, _) => Load();

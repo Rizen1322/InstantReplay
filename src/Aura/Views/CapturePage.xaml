@@ -24,27 +24,6 @@
                 <TextBlock Text="Готовые наборы" Style="{StaticResource GroupLabel}" Margin="4,4,4,7"/>
                 <UniformGrid x:Name="Presets" Rows="1" Columns="4" Margin="0,0,-8,0"/>
 
-                <!-- ==================== ЧТО ЗАПИСЫВАТЬ ==================== -->
-                <TextBlock Text="Что записывать" Style="{StaticResource GroupLabel}"/>
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <c:AdaptiveRow Margin="16,12,16,12">
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="Экран" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Игра на весь экран пишется с этого монитора" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <ComboBox x:Name="Monitor" MinWidth="240" SelectionChanged="VideoSelection_Changed"/>
-                        </c:AdaptiveRow>
-                        <c:AdaptiveRow Margin="16,12,16,12">
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="Курсор мыши" Style="{StaticResource RowLabel}"/>
-                                <TextBlock x:Name="CursorSub" Text="В шутерах обычно не нужен" Style="{StaticResource RowSub}"/>
-                            </StackPanel>
-                            <c:Switch x:Name="CursorSwitch" Click="Video_Changed"/>
-                        </c:AdaptiveRow>
-                    </StackPanel>
-                </Border>
-
                 <!-- ==================== КАЧЕСТВО ==================== -->
                 <TextBlock Text="Качество" Style="{StaticResource GroupLabel}"/>
                 <Border Style="{StaticResource Card}">
@@ -126,6 +105,27 @@
                         </c:AdaptiveRow>
                     </StackPanel>
                 </Border>
+
+                <!-- ==================== ЧТО ЗАПИСЫВАТЬ ==================== -->
+                <TextBlock Text="Что записывать" Style="{StaticResource GroupLabel}"/>
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Экран" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Игра на весь экран пишется с этого монитора" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <ComboBox x:Name="Monitor" MinWidth="240" SelectionChanged="VideoSelection_Changed"/>
+                        </c:AdaptiveRow>
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Курсор мыши" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="CursorSub" Text="В шутерах обычно не нужен" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Switch x:Name="CursorSwitch" Click="Video_Changed"/>
+                        </c:AdaptiveRow>
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </ScrollViewer>
 
@@ -155,13 +155,6 @@
                         <TextBlock Grid.Row="2" Text="Файл повтора" Style="{StaticResource KvKey}"/>
                         <TextBlock x:Name="KvClip" Grid.Row="2" Grid.Column="1" Style="{StaticResource KvVal}"/>
                     </Grid>
-                </StackPanel>
-            </Border>
-            <Border Style="{StaticResource AsidePanel}">
-                <StackPanel>
-                    <TextBlock Text="Подсказка" Style="{StaticResource AsideTitle}"/>
-                    <TextBlock Style="{StaticResource AsideNote}"
-                               Text="Для шутеров хватает 1440p и 60 кадров с HEVC. 120 и 144 кадра нужны, только если ролик будут смотреть замедленно: файл и нагрузка растут почти вдвое."/>
                 </StackPanel>
             </Border>
         </StackPanel>

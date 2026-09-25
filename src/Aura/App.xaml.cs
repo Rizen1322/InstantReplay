@@ -166,7 +166,14 @@ public partial class App : Application
         int snapArg = Array.IndexOf(e.Args, "--snapshot");
         if (dev && snapArg >= 0 && snapArg + 1 < e.Args.Length)
         {
-            SnapshotAndExit(_main, e.Args[snapArg + 1]);
+            int clipArg = Array.IndexOf(e.Args, "--editor");
+            Window target = clipArg >= 0 && clipArg + 1 < e.Args.Length
+                ? Views.ClipEditorWindow.CreateForSnapshot(e.Args[clipArg + 1])
+                : e.Args.Contains("--toast") ? SnapshotToast()
+                : e.Args.Contains("--changelog")
+                    ? Views.Dialogs.CreateChangelogWindow(Core.SystemIntegration.Changelog.Entries.Take(1).ToList())
+                    : _main;
+            SnapshotAndExit(target, e.Args[snapArg + 1]);
             return;
         }
 
@@ -286,7 +293,7 @@ public partial class App : Application
     /// </summary>
     private static BitmapSource? ThemeIcon(AppTheme theme, int wanted)
     {
-        string file = theme == AppTheme.Deep ? "tray-deep.ico" : "tray.ico";
+        const string file = "tray.ico";
         try
         {
             var uri = new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", file));
@@ -318,6 +325,16 @@ public partial class App : Application
     }
 
     /// <summary>Нарисовать окно в PNG за пределами экрана и выйти (проверка вёрстки).</summary>
+    private static Window SnapshotToast()
+    {
+        var toast = new Notifications.ToastWindow();
+        toast.PrepareForSnapshot(new Notifications.ToastContent(
+            "Повтор сохранён, 3:00", "Counter-Strike 2, 214 МБ",
+            Current.TryFindResource("Ico.Save") as System.Windows.Media.Geometry,
+            (System.Windows.Media.Brush)Current.FindResource("AccentBrush"), Hint: "F9"));
+        return toast;
+    }
+
     private static void SnapshotAndExit(Window window, string path)
     {
         window.ShowActivated = false;
@@ -325,8 +342,11 @@ public partial class App : Application
         window.WindowStartupLocation = WindowStartupLocation.Manual;
         window.Left = -32000;
         window.Top = -32000;
-        window.Width = 1180;
-        window.Height = 760;
+        if (window is Aura.MainWindow or Views.ClipEditorWindow)
+        {
+            window.Width = 1180;
+            window.Height = 760;
+        }
         window.Show();
         var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         timer.Tick += (_, _) =>
@@ -368,7 +388,6 @@ public partial class App : Application
     {
         string file = theme switch
         {
-            AppTheme.Deep => "Theme/Palette.Deep.xaml",
             AppTheme.Dark => "Theme/Palette.Dark.xaml",
             AppTheme.Light => "Theme/Palette.Light.xaml",
             _ => IsSystemDark() ? "Theme/Palette.Dark.xaml" : "Theme/Palette.Light.xaml"

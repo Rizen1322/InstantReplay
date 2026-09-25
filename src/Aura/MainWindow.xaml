@@ -71,9 +71,8 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel x:Name="Brand" Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
-                    <Border Width="22" Height="22" CornerRadius="6" Background="{DynamicResource AccentBrush}">
-                        <Ellipse Width="9" Height="9" Stroke="{DynamicResource AccentInkBrush}" StrokeThickness="2"/>
-                    </Border>
+                    <Image Source="pack://siteoforigin:,,,/Assets/logo.png" Width="26" Height="26"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
                     <TextBlock Text="Aura" FontFamily="{DynamicResource DispFont}" FontSize="15" FontWeight="Bold"
                                VerticalAlignment="Center" Margin="9,0,0,1"/>
                 </StackPanel>

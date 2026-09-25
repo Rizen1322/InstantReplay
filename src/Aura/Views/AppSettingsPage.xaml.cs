@@ -27,6 +27,7 @@ public partial class AppSettingsPage : PageBase
     public AppSettingsPage()
     {
         InitializeComponent();
+        AddTips(Aside, "app");
         HideAsideWhenNarrow(AsideCol, Aside);
         Duration.ValueChanged += Duration_Changed;
         BuildPositions();
@@ -72,10 +73,11 @@ public partial class AppSettingsPage : PageBase
         UpdateNotificationOptions();
         Duration.Value = s.NotificationDurationSeconds;
         DurationValue.Text = $"{s.NotificationDurationSeconds:0.#} с".Replace('.', ',');
-        SelectTag(Sound, s.SaveSound.ToString());
+        MarkOn(Sounds, s.SaveSound.ToString());
         HighlightPosition(s.NotificationPosition);
 
-        SelectTag(Theme, s.Theme.ToString());
+        MarkOn(Themes, s.Theme.ToString());
+        ShowScreenBackdrop();
         SelectTag(Scale, s.UiScale switch
         {
             0 => "0", 0.9 => "0.9", 1 => "1", 1.15 => "1.15", 1.35 => "1.35", _ => "0"
@@ -123,6 +125,54 @@ public partial class AppSettingsPage : PageBase
             Dispatcher.BeginInvoke(ShowThumbCacheSize);
         });
     }
+
+    /// <summary>Отметить выбранную кнопку в ряду: Tag="on" включает подсветку стиля.</summary>
+    private static void MarkOn(Panel row, string uid)
+    {
+        foreach (var child in row.Children)
+            if (child is Button button) button.Tag = button.Uid == uid ? "on" : null;
+    }
+
+    /// <summary>
+    /// Фон схемы экрана: настоящий кадр из игры, если он есть. Сначала свежий
+    /// кадр из ленты буфера, иначе последний скриншот. Места уведомлений на фоне
+    /// игры понятнее, чем на пустом прямоугольнике.
+    /// </summary>
+    private void ShowScreenBackdrop()
+    {
+        var frames = ReplayFilmstrip.Snapshot();
+        if (frames.Count > 0)
+        {
+            SetBackdrop(frames[^1].Image);
+            return;
+        }
+        string folder = Services.Settings.Current.ScreenshotFolder;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                if (!Directory.Exists(folder)) return;
+                var file = new DirectoryInfo(folder)
+                    .EnumerateFiles("*.*", SearchOption.AllDirectories)
+                    .Where(f => f.Extension is ".png" or ".jpg" or ".jpeg")
+                    .OrderByDescending(f => f.LastWriteTimeUtc)
+                    .FirstOrDefault();
+                if (file is null) return;
+                var image = new System.Windows.Media.Imaging.BitmapImage();
+                image.BeginInit();
+                image.UriSource = new Uri(file.FullName);
+                image.DecodePixelWidth = 320;
+                image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                image.EndInit();
+                image.Freeze();
+                Dispatcher.BeginInvoke(() => SetBackdrop(image));
+            }
+            catch { }
+        });
+    }
+
+    private void SetBackdrop(ImageSource image) =>
+        PositionScreen.Background = new ImageBrush(image) { Stretch = Stretch.UniformToFill, Opacity = 0.75 };
 
     private static void SelectTag(ItemsControl control, string tag)
     {
@@ -205,11 +255,9 @@ public partial class AppSettingsPage : PageBase
         PositionNote.Text = $"Нажми на место на экране. Сейчас: {PositionName(current)}.";
     }
 
-    private void Sound_Changed(object sender, SelectionChangedEventArgs e)
+    private void Sound_Click(object sender, RoutedEventArgs e)
     {
-        if (_loading) return;
-        var tag = (string?)((ComboBoxItem)Sound.SelectedItem).Tag ?? "Soft";
-        var sound = Enum.Parse<SaveSound>(tag);
+        var sound = Enum.Parse<SaveSound>(((Button)sender).Uid);
 
         string? customPath = null;
         if (sound == SaveSound.Custom)
@@ -221,7 +269,7 @@ public partial class AppSettingsPage : PageBase
             };
             if (dialog.ShowDialog() == true)
                 customPath = dialog.FileName;
-            else { SelectTag(Sound, Services.Settings.Current.SaveSound.ToString()); return; }
+            else return;
         }
 
         Services.Settings.Update(s =>
@@ -229,6 +277,7 @@ public partial class AppSettingsPage : PageBase
             s.SaveSound = sound;
             if (customPath is not null) s.CustomSaveSoundPath = customPath;
         }, "ui");
+        MarkOn(Sounds, sound.ToString());
         PlaySound_Click(sender, e);
     }
 
@@ -239,15 +288,19 @@ public partial class AppSettingsPage : PageBase
     }
 
     private void DemoReplay_Click(object sender, RoutedEventArgs e) =>
-        Services.Notifications.Show(NotificationKind.Saved, "Повтор сохранён · 3:00", "Counter-Strike 2 · 214 МБ");
+        Services.Notifications.Show(NotificationKind.Saved, "Повтор сохранён, 3:00", "Counter-Strike 2, 214 МБ");
 
     private void DemoShot_Click(object sender, RoutedEventArgs e) =>
-        Services.Notifications.Show(NotificationKind.Screenshot, "Скриншот сохранён", "2560×1440 · 4,1 МБ");
+        Services.Notifications.Show(NotificationKind.Screenshot, "Скриншот сохранён", "2560×1440, 4,1 МБ");
 
-    private void Theme_Changed(object sender, SelectionChangedEventArgs e)
+    private void DemoError_Click(object sender, RoutedEventArgs e) =>
+        Services.Notifications.Show(NotificationKind.Warning, "Повтор не включён: нет места",
+                                    "На диске E: осталось 1,2 ГБ. Освободи место или смени папку");
+
+    private void Theme_Click(object sender, RoutedEventArgs e)
     {
-        if (_loading || Theme.SelectedItem is not ListBoxItem item) return;
-        var theme = Enum.Parse<AppTheme>((string)item.Tag);
+        var theme = Enum.Parse<AppTheme>(((Button)sender).Uid);
+        MarkOn(Themes, theme.ToString());
         Services.Settings.Update(s => s.Theme = theme, "ui");
         App.ApplyTheme(theme);
     }
@@ -351,9 +404,8 @@ public partial class AppSettingsPage : PageBase
 
     private void Reset_Click(object sender, RoutedEventArgs e)
     {
-        var answer = MessageBox.Show("Вернуть все настройки к исходным?", "Aura",
-            MessageBoxButton.OKCancel, MessageBoxImage.Question);
-        if (answer != MessageBoxResult.OK) return;
+        if (!Dialogs.Ask("Сбросить настройки?",
+                "Все настройки вернутся к исходным. Клипы и скриншоты останутся на месте.", "Сбросить")) return;
 
         Services.Settings.Reset();
         App.ApplyTheme(Services.Settings.Current.Theme);

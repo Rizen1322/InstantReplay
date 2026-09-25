@@ -6,18 +6,50 @@ namespace Aura.Core.Notifications;
 
 /// <summary>
 /// Звук сохранения. Встроенные варианты синтезируются в WAV прямо в памяти
-/// (никаких ресурсов/файлов): Classic — двухтоновый «дзынь» вверх,
-/// Soft — короткий мягкий тон с плавным затуханием. Custom — свой WAV-файл.
-/// Буфер держим в static-поле: SND_ASYNC играет из нашей памяти.
+/// (никаких ресурсов и файлов), Custom — свой WAV-файл. Буфер держим в
+/// static-поле: SND_ASYNC играет из нашей памяти.
+///
+/// Как сделано, чтобы звук был приятным поверх игры:
+/// - только гармоничные обертоны и консонансы (кварта, квинта). Негармоничный
+///   «колокол» и эхо короткими задержками звучали металлически;
+/// - мягкая атака 6-10 мс, без щелчка, и плавный экспоненциальный спад;
+/// - ширина стерео от лёгкой расстройки каналов, а не от отражений;
+/// - срез верхов на 7 кГц и пик около −15 дБ: звук слышно, но он не режет.
 /// </summary>
 public static class NotificationSounds
 {
-    private const int Rate = 44100;
+    private const int Rate = 48000;
 
-    private static readonly Lazy<byte[]> Classic = new(() => Synth(
-        [(660, 0.00, 0.10, 0.55), (880, 0.09, 0.22, 0.5)]));
-    private static readonly Lazy<byte[]> Soft = new(() => Synth(
-        [(523, 0.00, 0.22, 0.35), (784, 0.02, 0.20, 0.18)]));
+    /// <summary>
+    /// Нота: частота, начало (с), спад (с), громкость, атака (с), глубина FM и
+    /// отношение модулятора. FM даёт мягкий «электропиано» призвук в начале ноты,
+    /// который за 60 мс сходит на чистый тон.
+    /// </summary>
+    private readonly record struct Note(double Freq, double Start, double Decay, double Volume,
+                                        double Attack = 0.008, double FmIndex = 0, double FmRatio = 1,
+                                        double Octave = 0.12);
+
+    // Мягкий: две чистые ноты вверх на кварту, соль и до. Короткий и круглый.
+    private static readonly Lazy<byte[]> SoftWav = new(() => Render(
+    [
+        new Note(783.99, 0.000, 0.10, 0.8, Attack: 0.006, Octave: 0.08),
+        new Note(1046.5, 0.085, 0.22, 0.9, Attack: 0.006, Octave: 0.08),
+    ]));
+
+    // Колокольчик: электропиано, ми и си (квинта), первая чуть тише.
+    private static readonly Lazy<byte[]> ClassicWav = new(() => Render(
+    [
+        new Note(659.25, 0.000, 0.28, 0.7, Attack: 0.004, FmIndex: 1.6, FmRatio: 1),
+        new Note(987.77, 0.100, 0.45, 0.85, Attack: 0.004, FmIndex: 1.4, FmRatio: 1),
+    ]));
+
+    // Стекло: одна высокая нота с тёплой нижней октавой и долгим тихим хвостом.
+    private static readonly Lazy<byte[]> GlassWav = new(() => Render(
+    [
+        new Note(1318.5, 0.000, 0.55, 0.75, Attack: 0.004, FmIndex: 0.5, FmRatio: 2, Octave: 0.0),
+        new Note(659.25, 0.000, 0.35, 0.35, Attack: 0.010, Octave: 0.0),
+        new Note(1975.5, 0.045, 0.40, 0.25, Attack: 0.004, Octave: 0.0),
+    ]));
 
     private static byte[]? _playing; // держим ссылку, пока играет SND_ASYNC|SND_MEMORY
 
@@ -31,8 +63,9 @@ public static class NotificationSounds
                 case SaveSound.Custom when !string.IsNullOrWhiteSpace(customPath) && File.Exists(customPath):
                     PlaySoundW(customPath, IntPtr.Zero, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
                     return;
-                case SaveSound.Classic: PlayMemory(Classic.Value); return;
-                default: PlayMemory(Soft.Value); return;
+                case SaveSound.Classic: PlayMemory(ClassicWav.Value); return;
+                case SaveSound.Glass: PlayMemory(GlassWav.Value); return;
+                default: PlayMemory(SoftWav.Value); return;
             }
         }
         catch (Exception ex) { Log.Warn("Sound", ex.Message); }
@@ -44,38 +77,79 @@ public static class NotificationSounds
         PlaySoundBytes(_playing, IntPtr.Zero, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
     }
 
-    /// <summary>Синтез WAV: набор синусов (частота, старт сек, длительность сек, громкость).</summary>
-    private static byte[] Synth((double freq, double start, double dur, double vol)[] notes)
+    /// <summary>Готовый WAV для тестов и проверки на слух.</summary>
+    internal static byte[] Wav(SaveSound sound) => sound switch
     {
-        double total = notes.Max(n => n.start + n.dur) + 0.05;
-        int samples = (int)(total * Rate);
-        var mix = new double[samples];
-        foreach (var (freq, start, dur, vol) in notes)
+        SaveSound.Classic => ClassicWav.Value,
+        SaveSound.Glass => GlassWav.Value,
+        _ => SoftWav.Value
+    };
+
+    private static byte[] Render(Note[] notes)
+    {
+        double tail = notes.Max(n => n.Start + n.Decay * 6);
+        int samples = (int)((tail + 0.05) * Rate);
+        var left = new double[samples];
+        var right = new double[samples];
+
+        foreach (var note in notes)
         {
-            int s0 = (int)(start * Rate), len = (int)(dur * Rate);
-            for (int i = 0; i < len && s0 + i < samples; i++)
+            int s0 = (int)(note.Start * Rate);
+            int len = Math.Min(samples - s0, (int)(note.Decay * 6 * Rate));
+            // Каналы расстроены на доли герца: звук шире, но без эха
+            for (int ch = 0; ch < 2; ch++)
             {
-                double t = i / (double)Rate;
-                // Огибающая: быстрая атака 8 мс, экспоненциальный спад
-                double env = Math.Min(1.0, t / 0.008) * Math.Exp(-3.5 * t / dur);
-                mix[s0 + i] += Math.Sin(2 * Math.PI * freq * t) * vol * env;
+                var buffer = ch == 0 ? left : right;
+                double freq = note.Freq * (ch == 0 ? 0.9993 : 1.0007);
+                double phase = 0, modPhase = 0, octPhase = 0;
+                for (int i = 0; i < len; i++)
+                {
+                    double t = i / (double)Rate;
+                    double attack = t < note.Attack ? 0.5 - 0.5 * Math.Cos(Math.PI * t / note.Attack) : 1;
+                    double env = attack * Math.Exp(-t / note.Decay);
+                    double index = note.FmIndex * Math.Exp(-t / 0.06);
+                    modPhase += 2 * Math.PI * freq * note.FmRatio / Rate;
+                    phase += 2 * Math.PI * freq / Rate;
+                    octPhase += 2 * Math.PI * freq * 2 / Rate;
+                    double v = Math.Sin(phase + index * Math.Sin(modPhase))
+                             + note.Octave * Math.Sin(octPhase) * Math.Exp(-t / (note.Decay * 0.5));
+                    buffer[s0 + i] += v * note.Volume * env;
+                }
             }
         }
 
-        var pcm = new short[samples];
-        for (int i = 0; i < samples; i++)
-            pcm[i] = (short)(Math.Clamp(mix[i], -1, 1) * short.MaxValue);
+        // Срез верхов: двойной однополюсный фильтр на 7 кГц
+        double a = Math.Exp(-2 * Math.PI * 7000.0 / Rate);
+        double peak = 1e-9;
+        foreach (var buffer in new[] { left, right })
+        {
+            double y1 = 0, y2 = 0;
+            for (int i = 0; i < samples; i++)
+            {
+                y1 = (1 - a) * buffer[i] + a * y1;
+                y2 = (1 - a) * y1 + a * y2;
+                buffer[i] = y2;
+                peak = Math.Max(peak, Math.Abs(y2));
+            }
+        }
 
-        // WAV-заголовок (PCM 16-bit mono)
-        using var ms = new MemoryStream();
-        using var w = new BinaryWriter(ms);
-        int dataLen = samples * 2;
+        // Пик около −15 дБ и плавный конец последних 30 мс
+        double norm = 0.18 / peak;
+        int fade = (int)(0.03 * Rate);
+        using var stream = new MemoryStream(44 + samples * 4);
+        using var w = new BinaryWriter(stream);
+        int dataLen = samples * 4;
         w.Write("RIFF"u8); w.Write(36 + dataLen); w.Write("WAVE"u8);
-        w.Write("fmt "u8); w.Write(16); w.Write((short)1); w.Write((short)1);
-        w.Write(Rate); w.Write(Rate * 2); w.Write((short)2); w.Write((short)16);
+        w.Write("fmt "u8); w.Write(16); w.Write((short)1); w.Write((short)2);
+        w.Write(Rate); w.Write(Rate * 4); w.Write((short)4); w.Write((short)16);
         w.Write("data"u8); w.Write(dataLen);
-        foreach (short s in pcm) w.Write(s);
-        return ms.ToArray();
+        for (int i = 0; i < samples; i++)
+        {
+            double f = i > samples - fade ? (samples - i) / (double)fade : 1;
+            w.Write((short)(Math.Clamp(left[i] * norm * f, -1, 1) * short.MaxValue));
+            w.Write((short)(Math.Clamp(right[i] * norm * f, -1, 1) * short.MaxValue));
+        }
+        return stream.ToArray();
     }
 
     private const uint SND_ASYNC = 0x0001, SND_NODEFAULT = 0x0002, SND_MEMORY = 0x0004, SND_FILENAME = 0x00020000;

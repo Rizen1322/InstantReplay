@@ -22,6 +22,7 @@ public partial class KeysPage : PageBase
     public KeysPage()
     {
         InitializeComponent();
+        AddTips(Aside, "keys");
         HideAsideWhenNarrow(AsideCol, Aside);
         Loaded += (_, _) => Build();
     }

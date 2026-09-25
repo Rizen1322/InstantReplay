@@ -121,4 +121,12 @@ public class GameDatabaseTests
         Assert.All(paths, p => Assert.EndsWith("games.json", p));
         Assert.Contains(paths, p => p.StartsWith(AppContext.BaseDirectory, StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void ОверлеиНеСчитаютсяИграми()
+    {
+        var db = GameDatabase.BuiltIn();
+        Assert.True(db.IsIgnored("Porthole"));
+        Assert.True(db.IsIgnored("GameBar"));
+    }
 }

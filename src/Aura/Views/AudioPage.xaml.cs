@@ -31,6 +31,7 @@ public partial class AudioPage : PageBase
     public AudioPage()
     {
         InitializeComponent();
+        AddTips(Aside, "audio");
 
         // Подписка ПОСЛЕ разбора разметки: присвоение Minimum само поднимает
         // ValueChanged, а обработчик читает поля, которых в тот момент ещё нет.

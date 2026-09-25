@@ -63,22 +63,24 @@
                                                FontFamily="{DynamicResource DispFont}" FontWeight="SemiBold" Foreground="{DynamicResource TxBrush}"/>
                                 </StackPanel>
                             </c:AdaptiveRow>
-                            <c:AdaptiveRow Margin="16,12,16,12">
-                                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                                    <TextBlock Text="Звук при сохранении" Style="{StaticResource RowLabel}"/>
-                                    <TextBlock Text="Сигнал, что запись легла на диск" Style="{StaticResource RowSub}"/>
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal">
-                                    <ComboBox x:Name="Sound" MinWidth="160" SelectionChanged="Sound_Changed">
-                                        <ComboBoxItem Content="Мягкий" Tag="Soft"/>
-                                        <ComboBoxItem Content="Классический" Tag="Classic"/>
-                                        <ComboBoxItem Content="Свой файл…" Tag="Custom"/>
-                                        <ComboBoxItem Content="Без звука" Tag="None"/>
-                                    </ComboBox>
-                                    <Button Style="{StaticResource BtnSquare}" Margin="8,0,0,0" Click="PlaySound_Click"
-                                            ToolTip="Прослушать" c:Deco.Icon="{DynamicResource Ico.Play}" c:Deco.Filled="True"/>
-                                </StackPanel>
-                            </c:AdaptiveRow>
+                            <StackPanel Margin="16,12,16,10">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                        <TextBlock Text="Звук при сохранении" Style="{StaticResource RowLabel}"/>
+                                        <TextBlock Text="Сигнал, что запись легла на диск. Нажми, чтобы прослушать" Style="{StaticResource RowSub}"/>
+                                    </StackPanel>
+                                    <Button Style="{StaticResource BtnSquare}" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                            Click="PlaySound_Click" ToolTip="Прослушать ещё раз"
+                                            c:Deco.Icon="{DynamicResource Ico.Play}" c:Deco.Filled="True"/>
+                                </Grid>
+                                <WrapPanel x:Name="Sounds" Margin="0,10,0,0">
+                                    <Button Style="{StaticResource ChipBtn}" Content="Мягкий" Uid="Soft" Click="Sound_Click"/>
+                                    <Button Style="{StaticResource ChipBtn}" Content="Колокольчик" Uid="Classic" Click="Sound_Click"/>
+                                    <Button Style="{StaticResource ChipBtn}" Content="Стекло" Uid="Glass" Click="Sound_Click"/>
+                                    <Button Style="{StaticResource ChipBtn}" Content="Свой файл…" Uid="Custom" Click="Sound_Click"/>
+                                    <Button Style="{StaticResource ChipBtn}" Content="Без звука" Uid="None" Click="Sound_Click"/>
+                                </WrapPanel>
+                            </StackPanel>
                         </StackPanel>
                     </StackPanel>
                 </Border>
@@ -87,15 +89,39 @@
                 <TextBlock Text="Оформление" Style="{StaticResource GroupLabel}"/>
                 <Border Style="{StaticResource Card}">
                     <StackPanel>
-                        <c:AdaptiveRow Margin="16,12,16,12">
-                            <TextBlock Text="Тема" Style="{StaticResource RowLabel}" VerticalAlignment="Center" Margin="0,0,16,0"/>
-                            <c:Segmented x:Name="Theme" SelectionChanged="Theme_Changed">
-                                <ListBoxItem Content="Тёмная" Tag="Dark"/>
-                                <ListBoxItem Content="Глубокая" Tag="Deep"/>
-                                <ListBoxItem Content="Светлая" Tag="Light"/>
-                                <ListBoxItem Content="Как в системе" Tag="System"/>
-                            </c:Segmented>
-                        </c:AdaptiveRow>
+                        <UniformGrid x:Name="Themes" Rows="1" Columns="3" Margin="12,12,4,4">
+                            <Button Style="{StaticResource TileBtn}" Uid="Dark" Click="Theme_Click">
+                                <StackPanel>
+                                    <Border Height="40" CornerRadius="6" Background="#FF0C0D0F" BorderBrush="#22FFFFFF" BorderThickness="1">
+                                        <Border Width="26" Height="6" CornerRadius="3" Background="#FF32D74B" HorizontalAlignment="Left" Margin="8,0,0,0"/>
+                                    </Border>
+                                    <TextBlock Text="Тёмная" FontSize="12.5" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource TileBtn}" Uid="Light" Click="Theme_Click">
+                                <StackPanel>
+                                    <Border Height="40" CornerRadius="6" Background="#FFF2F3F5" BorderBrush="#22000000" BorderThickness="1">
+                                        <Border Width="26" Height="6" CornerRadius="3" Background="#FF28B83F" HorizontalAlignment="Left" Margin="8,0,0,0"/>
+                                    </Border>
+                                    <TextBlock Text="Светлая" FontSize="12.5" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource TileBtn}" Uid="System" Click="Theme_Click">
+                                <StackPanel>
+                                    <Border Height="40" CornerRadius="6" BorderBrush="#22FFFFFF" BorderThickness="1" ClipToBounds="True">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                <GradientStop Color="#FFF2F3F5" Offset="0"/>
+                                                <GradientStop Color="#FFF2F3F5" Offset="0.5"/>
+                                                <GradientStop Color="#FF0C0D0F" Offset="0.5"/>
+                                                <GradientStop Color="#FF0C0D0F" Offset="1"/>
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                    </Border>
+                                    <TextBlock Text="Как в системе" FontSize="12.5" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                                </StackPanel>
+                            </Button>
+                        </UniformGrid>
                         <c:AdaptiveRow Margin="16,12,16,12" MinTextWidth="170">
                             <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
                                 <TextBlock Text="Размер интерфейса" Style="{StaticResource RowLabel}"/>
@@ -191,7 +217,7 @@
                 <StackPanel>
                     <TextBlock Text="Где показывать уведомления" Style="{StaticResource AsideTitle}"/>
                     <c:Aspect>
-                        <Border CornerRadius="8" BorderBrush="{DynamicResource SepBrush}" BorderThickness="1" Padding="8">
+                        <Border x:Name="PositionScreen" CornerRadius="8" BorderBrush="{DynamicResource SepBrush}" BorderThickness="1" Padding="8">
                             <Border.Background>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                                     <GradientStop Color="#FF1E2126" Offset="0"/>
@@ -207,12 +233,13 @@
             <Border x:Name="PreviewPanel" Style="{StaticResource AsidePanel}">
                 <StackPanel>
                     <TextBlock Text="Как выглядит уведомление" Style="{StaticResource AsideTitle}"/>
-                    <UniformGrid Rows="1" Columns="2">
-                        <Button Content="Повтор" Click="DemoReplay_Click" Margin="0,0,4,0"/>
-                        <Button Content="Скриншот" Click="DemoShot_Click" Margin="4,0,0,0"/>
+                    <UniformGrid Rows="1" Columns="3">
+                        <Button Content="Повтор" Click="DemoReplay_Click" Margin="0,0,4,0" Padding="4,0"/>
+                        <Button Content="Скриншот" Click="DemoShot_Click" Margin="2,0" Padding="4,0"/>
+                        <Button Content="Ошибка" Click="DemoError_Click" Margin="4,0,0,0" Padding="4,0"/>
                     </UniformGrid>
                     <TextBlock Style="{StaticResource AsideNote}" Margin="0,8,0,0"
-                               Text="Уведомление покажется там, где его увидишь в игре."/>
+                               Text="Покажется там же и так же, как в игре."/>
                 </StackPanel>
             </Border>
         </StackPanel>

@@ -35,6 +35,16 @@ public abstract class PageBase : UserControl
         };
     }
 
+    /// <summary>
+    /// Панель «Совет» в правую колонку. Совет меняется при каждом заходе в раздел.
+    /// </summary>
+    protected void AddTips(Panel aside, string topic)
+    {
+        var panel = Tips.Panel(topic, out var refresh);
+        aside.Children.Add(panel);
+        IsVisibleChanged += (_, e) => { if (e.NewValue is true) refresh(); };
+    }
+
     public virtual void OnShown() { }
     public virtual void OnHidden() { }
 }

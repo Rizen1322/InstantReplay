@@ -61,8 +61,12 @@ public static class GameDetector
                 if (pid == _cachedPid && string.Equals(exe, _cachedExe, StringComparison.OrdinalIgnoreCase))
                     return _cachedName;
 
-            string name = Resolve(proc, exe);
+            string? name = Resolve(proc, exe, hwnd);
 
+            // null: окно пока не похоже на игру (не на весь экран и не из папки
+            // игр). Не кэшируем: игра часто стартует окном и через секунду
+            // разворачивается, и ответ должен смениться вместе с ней.
+            if (name is null) return "Desktop";
             lock (_cacheSync) { _cachedPid = pid; _cachedExe = exe; _cachedName = name; }
             return name;
         }
@@ -73,8 +77,11 @@ public static class GameDetector
         }
     }
 
-    /// <summary>Разрешение имени без кэша — самая дорогая часть.</summary>
-    private static string Resolve(Process proc, string exe)
+    /// <summary>
+    /// Разрешение имени без кэша, самая дорогая часть. null: программа неизвестна
+    /// и её окно на игру не похоже.
+    /// </summary>
+    private static string? Resolve(Process proc, string exe, IntPtr hwnd)
     {
         var database = _database;
 
@@ -91,6 +98,15 @@ public static class GameDetector
         // Всё из системных папок Windows — точно не игра (игры туда не ставятся)
         if (IsWindowsComponent(path)) return "Desktop";
 
+        // Незнакомая программа считается игрой, только если она из папки игр
+        // (Steam, Epic, Xbox и другие) или её окно закрывает весь монитор. Иначе
+        // любое окно на переднем плане, от оверлея до утилиты, заводило себе
+        // папку в библиотеке записей.
+        if (!IsGameLibraryPath(path) && !CoversMonitor(hwnd)) return null;
+
+        // У Steam самое точное имя игры: папка в steamapps\common
+        if (SteamFolderName(path) is { } steamName) return Sanitize(steamName);
+
         // Пробуем человекочитаемое имя из ресурсов exe
         if (path is not null)
             try
@@ -102,6 +118,53 @@ public static class GameDetector
             catch { }
 
         return Sanitize(exe);
+    }
+
+    /// <summary>Куда ставят игры магазины и лаунчеры.</summary>
+    private static readonly string[] GameLibraryMarkers =
+    [
+        @"\steamapps\common\", @"\Epic Games\", @"\Riot Games\", @"\XboxGames\",
+        @"\GOG Games\", @"\GOG Galaxy\Games\", @"\Ubisoft Game Launcher\games\",
+        @"\EA Games\", @"\Rockstar Games\", @"\Wargaming.net\", @"\Lesta\",
+        @"\VK Play\", @"\itch\apps\", @"\Battle.net\", @"\WindowsApps\",
+        @"\Games\", @"\Игры\",
+    ];
+
+    internal static bool IsGameLibraryPath(string? path) =>
+        !string.IsNullOrEmpty(path) &&
+        GameLibraryMarkers.Any(marker => path.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>«…\steamapps\common\Dead by Daylight\…» даёт «Dead by Daylight».</summary>
+    internal static string? SteamFolderName(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        const string marker = @"\steamapps\common\";
+        int at = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (at < 0) return null;
+        string rest = path[(at + marker.Length)..];
+        int slash = rest.IndexOf('\\');
+        return slash > 0 ? rest[..slash] : null;
+    }
+
+    /// <summary>Окно закрывает весь свой монитор: полноэкранная или безрамочная игра.</summary>
+    private static bool CoversMonitor(IntPtr hwnd)
+    {
+        try
+        {
+            if (NativeMethods.DwmGetWindowAttribute(hwnd, NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
+                    out var window, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.RECT>()) != 0)
+                return false;
+            var monitor = NativeMethods.MonitorFromWindow(hwnd, 2);
+            var info = new NativeMethods.MONITORINFO
+            {
+                cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>()
+            };
+            if (!NativeMethods.GetMonitorInfoW(monitor, ref info)) return false;
+            var m = info.rcMonitor;
+            return window.Left <= m.Left + 2 && window.Top <= m.Top + 2 &&
+                   window.Right >= m.Right - 2 && window.Bottom >= m.Bottom - 2;
+        }
+        catch { return false; }
     }
 
     /// <summary>Программа лежит в системных папках Windows — служебное окно, а не игра.</summary>

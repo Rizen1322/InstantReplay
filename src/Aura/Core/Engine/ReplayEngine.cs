@@ -145,6 +145,10 @@ public sealed partial class ReplayEngine : IDisposable
     public TimeSpan BufferedDuration => TimeSpan.FromTicks(_videoBuffer.BufferedDurationTicks);
     public long BufferedBytes => _videoBuffer.TotalBytes;
 
+    /// <summary>Сколько видеопамяти занимает запись (МБ) и бюджет Windows. null — повтор выключен.</summary>
+    public (long UsedMb, long BudgetMb)? VideoMemory =>
+        _capture is { } capture ? Core.Capture.GpuInfo.Usage(capture.D3DDevice) : null;
+
     /// <summary>Метка активного энкодера для шапки UI, напр. "h264_nvenc".</summary>
     public string EncoderLabel => _encoder?.EncoderLabel ?? "";
     /// <summary>Вендор активного энкодера (NVIDIA/AMD/Intel).</summary>

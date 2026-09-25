@@ -53,6 +53,7 @@ public partial class CapturePage : PageBase
     public CapturePage()
     {
         InitializeComponent();
+        AddTips(Aside, "video");
 
         // Подписка ПОСЛЕ разбора разметки: присвоение Minimum само поднимает
         // ValueChanged, а обработчик читает поля, которых в тот момент ещё нет.

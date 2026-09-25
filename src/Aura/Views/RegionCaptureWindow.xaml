@@ -20,7 +20,7 @@
         <!-- Панель инструментов намеренно самостоятельна по стилям: оверлей должен
              выглядеть одинаково независимо от темы приложения и не тянуть словари. -->
         <Style x:Key="ToolButton" TargetType="ToggleButton">
-            <Setter Property="Foreground" Value="#E8E8ED"/>
+            <Setter Property="Foreground" Value="#A3A8B2"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="10,6"/>
@@ -29,17 +29,17 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
-                        <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="6"
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="8"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bg" Property="Background" Value="#2E2E38"/>
+                                <Setter TargetName="Bg" Property="Background" Value="#22252B"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Bg" Property="Background" Value="#E03B3B"/>
-                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="Bg" Property="Background" Value="#2632D74B"/>
+                                <Setter Property="Foreground" Value="#32D74B"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -48,7 +48,7 @@
         </Style>
 
         <Style x:Key="ActionButton" TargetType="Button">
-            <Setter Property="Foreground" Value="#E8E8ED"/>
+            <Setter Property="Foreground" Value="#A3A8B2"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="10,6"/>
@@ -57,13 +57,13 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="6"
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}" CornerRadius="8"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bg" Property="Background" Value="#2E2E38"/>
+                                <Setter TargetName="Bg" Property="Background" Value="#22252B"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -84,8 +84,8 @@
         <views:InkLayer x:Name="Ink" IsHitTestVisible="False"/>
 
         <Canvas x:Name="Layer">
-            <Border x:Name="Toolbar" Visibility="Collapsed" Background="#1C1C22" CornerRadius="10"
-                    BorderBrush="#33FFFFFF" BorderThickness="1" Padding="4">
+            <Border x:Name="Toolbar" Visibility="Collapsed" Background="#F2131418" CornerRadius="12"
+                    BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="5">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.55" Color="Black"/>
                 </Border.Effect>
@@ -111,14 +111,14 @@
                                   ToolTip="Стирка: убрать пометку под курсором (E)">
                         <c:Icon Data="{DynamicResource Ico.Eraser}" Size="17"/>
                     </ToggleButton>
-                    <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
+                    <Border Width="1" Background="#1FFFFFFF" Margin="5,8"/>
                     <!-- Толщина линии: кнопка по кругу меняет три значения, а сама точка
                          показывает выбранное — отдельная подпись не нужна. -->
                     <Button x:Name="ThicknessBtn" Style="{StaticResource ActionButton}" ToolTip="Толщина линии">
-                        <Ellipse x:Name="ThicknessDot" Width="7" Height="7" Fill="#E8E8ED"/>
+                        <Ellipse x:Name="ThicknessDot" Width="7" Height="7" Fill="#A3A8B2"/>
                     </Button>
 
-                    <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
+                    <Border Width="1" Background="#1FFFFFFF" Margin="5,8"/>
                     <!-- Цвет свёрнут в одну кнопку: семь кружков в ряд занимали больше
                          места, чем все инструменты вместе, и панель переставала влезать
                          над узким выделением. Кнопка сама показывает текущий цвет, а по
@@ -130,7 +130,7 @@
                         </Grid>
                     </ToggleButton>
 
-                    <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
+                    <Border Width="1" Background="#1FFFFFFF" Margin="5,8"/>
                     <Button x:Name="UndoBtn" Style="{StaticResource ActionButton}" ToolTip="Убрать последнее (Ctrl+Z)">
                         <c:Icon Data="{DynamicResource Ico.Undo}" Size="17"/>
                     </Button>
@@ -143,35 +143,35 @@
                         </c:Icon>
                     </Button>
 
-                    <Border Width="1" Background="#33FFFFFF" Margin="5,6"/>
+                    <Border Width="1" Background="#1FFFFFFF" Margin="5,8"/>
                     <Button x:Name="CopyBtn" Style="{StaticResource ActionButton}" ToolTip="В буфер обмена (Ctrl+C)">
                         <c:Icon Data="{DynamicResource Ico.Copy}" Size="17"/>
                     </Button>
                     <Button x:Name="SaveBtn" Style="{StaticResource ActionButton}" ToolTip="Сохранить в папку (Ctrl+S)">
-                        <c:Icon Data="{DynamicResource Ico.Save}" Size="17"/>
+                        <c:Icon Data="{DynamicResource Ico.Save}" Size="17" Foreground="#32D74B"/>
                     </Button>
-                    <Button x:Name="CloseBtn" Style="{StaticResource ActionButton}" Foreground="#FF8A8A" ToolTip="Отмена (Esc)">
+                    <Button x:Name="CloseBtn" Style="{StaticResource ActionButton}" ToolTip="Отмена (Esc)">
                         <c:Icon Data="{DynamicResource Ico.X}" Size="17"/>
                     </Button>
                 </StackPanel>
             </Border>
 
-            <Border x:Name="SizeChip" Visibility="Collapsed" Background="#CC1C1C22" CornerRadius="5"
-                    Padding="7,3" BorderBrush="#33FFFFFF" BorderThickness="1">
-                <TextBlock x:Name="SizeText" Foreground="#E8E8ED" FontSize="12" FontFamily="Consolas"/>
+            <Border x:Name="SizeChip" Visibility="Collapsed" Background="#32D74B" CornerRadius="5" Padding="7,2,7,3">
+                <TextBlock x:Name="SizeText" Foreground="#062A0E" FontSize="12" FontWeight="SemiBold"
+                           FontFamily="{DynamicResource DispFont}"/>
             </Border>
 
             <!-- Раскрытая палитра. На том же холсте, а не всплывающим окном: оверлей
                  сам растянут поверх всех окон, и отдельный Popup со своим hwnd тут
                  воюет за порядок отрисовки. -->
-            <Border x:Name="ColorPanel" Visibility="Collapsed" Background="#1C1C22" CornerRadius="10"
-                    BorderBrush="#33FFFFFF" BorderThickness="1" Padding="6,5">
+            <Border x:Name="ColorPanel" Visibility="Collapsed" Background="#F2131418" CornerRadius="12"
+                    BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="6,5">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="18" ShadowDepth="2" Opacity="0.55" Color="Black"/>
                 </Border.Effect>
                 <StackPanel Orientation="Horizontal">
                     <StackPanel x:Name="Swatches" Orientation="Horizontal" VerticalAlignment="Center"/>
-                    <Border Width="1" Background="#33FFFFFF" Margin="5,2"/>
+                    <Border Width="1" Background="#1FFFFFFF" Margin="5,4"/>
                     <!-- Пипетка живёт здесь же: она про цвет, а не про рисование -->
                     <ToggleButton x:Name="EyedropperBtn" Style="{StaticResource ToolButton}"
                                   ToolTip="Пипетка: взять цвет с кадра (I)">
@@ -181,7 +181,7 @@
             </Border>
 
             <!-- Что возьмёт пипетка: кружок цвета под курсором и его код -->
-            <Border x:Name="ColorPeek" Visibility="Collapsed" Background="#E61C1C22" CornerRadius="6"
+            <Border x:Name="ColorPeek" Visibility="Collapsed" Background="#F2131418" CornerRadius="8"
                     Padding="6,4" BorderBrush="#55FFFFFF" BorderThickness="1" IsHitTestVisible="False">
                 <StackPanel Orientation="Horizontal">
                     <Grid VerticalAlignment="Center" Margin="0,0,6,0">
@@ -189,17 +189,19 @@
                         <Ellipse Width="14" Height="14" Stroke="#66FFFFFF" StrokeThickness="1"/>
                     </Grid>
                     <TextBlock x:Name="PeekText" Foreground="#E8E8ED" FontSize="12"
-                               FontFamily="Consolas" VerticalAlignment="Center"/>
+                               FontFamily="{DynamicResource DispFont}" VerticalAlignment="Center"/>
                 </StackPanel>
             </Border>
         </Canvas>
 
-        <TextBlock x:Name="Hint" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,28,0,0"
-                   Foreground="#D8D8E0" FontSize="14" IsHitTestVisible="False"
-                   Text="Протяни область мышью. Ctrl выделяет окно целиком, Esc отменяет">
-            <TextBlock.Effect>
-                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.8" Color="Black"/>
-            </TextBlock.Effect>
-        </TextBlock>
+        <!-- Подсказка плашкой, а не голым текстом с тенью: на светлой картинке
+             текст с тенью читался плохо. Плашка прячется вместе с текстом. -->
+        <Border HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,24,0,0" IsHitTestVisible="False"
+                Background="#E6131418" CornerRadius="17" Padding="16,8,16,9"
+                BorderBrush="#1FFFFFFF" BorderThickness="1"
+                Visibility="{Binding Visibility, ElementName=Hint}">
+            <TextBlock x:Name="Hint" Foreground="#E8E8ED" FontSize="13"
+                       Text="Протяни область мышью. Ctrl выделяет окно целиком, Esc отменяет"/>
+        </Border>
     </Grid>
 </Window>

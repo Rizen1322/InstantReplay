@@ -11,56 +11,54 @@
                 <TextBlock Text="Железо и нагрузка от записи" Style="{StaticResource Lede}" Margin="12,0,0,5" VerticalAlignment="Bottom"/>
             </StackPanel>
 
-            <!-- Видеокарта -->
-            <Border Style="{StaticResource Card}" Padding="16,14,16,14">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <Border x:Name="GpuLogo" Width="44" Height="44" CornerRadius="10" Background="{DynamicResource WellBrush}"
-                            BorderBrush="{DynamicResource SepBrush}" BorderThickness="1">
-                        <c:Icon x:Name="GpuIcon" Data="{DynamicResource Ico.Chip}" Size="24" Foreground="{DynamicResource Tx2Brush}"
-                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Border>
-                    <StackPanel Grid.Column="1" Margin="14,0,14,0" VerticalAlignment="Center">
-                        <TextBlock x:Name="GpuName" Text="Определяю…" FontFamily="{DynamicResource DispFont}"
-                                   FontSize="16" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="GpuSub" Style="{StaticResource RowSub}"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Border x:Name="DriverPill" Style="{StaticResource Pill}" Margin="0,0,10,0"
-                                Background="{DynamicResource AccentSoftBrush}" Visibility="Collapsed">
-                            <TextBlock x:Name="DriverPillText" Style="{StaticResource PillText}"
-                                       Foreground="{DynamicResource AccentTxBrush}"/>
+            <!-- Видеокарта и живая нагрузка одной карточкой: сверху кто кодирует,
+                 под чертой, как он справляется прямо сейчас. -->
+            <Border Style="{StaticResource Card}" Padding="0">
+                <StackPanel>
+                    <Grid Margin="16,14,16,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Border x:Name="GpuLogo" Width="44" Height="44" CornerRadius="10" Background="{DynamicResource WellBrush}"
+                                BorderBrush="{DynamicResource SepBrush}" BorderThickness="1">
+                            <c:Icon x:Name="GpuIcon" Data="{DynamicResource Ico.Chip}" Size="24" Foreground="{DynamicResource Tx2Brush}"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
-                        <Button x:Name="DriverButton" Content="Проверить драйвер" Click="CheckDriver_Click"/>
-                        <Button x:Name="DownloadDriverButton" Content="Скачать обновление" Style="{StaticResource BtnPri}"
-                                c:Deco.Icon="{DynamicResource Ico.Down}"
-                                Margin="8,0,0,0" Visibility="Collapsed" Click="DownloadDriver_Click"/>
-                    </StackPanel>
-                </Grid>
+                        <StackPanel Grid.Column="1" Margin="14,0,14,0" VerticalAlignment="Center">
+                            <TextBlock x:Name="GpuName" Text="Определяю…" FontFamily="{DynamicResource DispFont}"
+                                       FontSize="16" FontWeight="SemiBold"/>
+                            <TextBlock x:Name="GpuSub" Style="{StaticResource RowSub}" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border x:Name="DriverPill" Style="{StaticResource Pill}" Margin="0,0,10,0"
+                                    Background="{DynamicResource AccentSoftBrush}" Visibility="Collapsed">
+                                <TextBlock x:Name="DriverPillText" Style="{StaticResource PillText}"
+                                           Foreground="{DynamicResource AccentTxBrush}"/>
+                            </Border>
+                            <Button x:Name="DriverButton" Content="Проверить драйвер" Click="CheckDriver_Click"/>
+                            <Button x:Name="DownloadDriverButton" Content="Скачать обновление" Style="{StaticResource BtnPri}"
+                                    c:Deco.Icon="{DynamicResource Ico.Down}"
+                                    Margin="8,0,0,0" Visibility="Collapsed" Click="DownloadDriver_Click"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Нагрузка сейчас. Живые счётчики конвейера: только здесь видно,
+                         что захват отдаёт меньше кадров, чем просили, или что кадры
+                         теряются на забитой очереди. В логе те же числа раз в минуту. -->
+                    <Border BorderBrush="{DynamicResource SepBrush}" BorderThickness="0,1,0,0">
+                        <UniformGrid x:Name="Load" Rows="0" Columns="5"/>
+                    </Border>
+                </StackPanel>
             </Border>
             <TextBlock x:Name="DriverStatus" Style="{StaticResource RowSub}" Margin="4,8,0,0"/>
 
-            <!-- Нагрузка сейчас.
-
-                 Живые счётчики работающего конвейера. Это единственное место, где
-                 видно, что захват отдаёт меньше кадров, чем просили, или что кадры
-                 летят в мусор из-за переполненной очереди энкодера: в логе эти же
-                 числа появляются раз в минуту и постфактум. -->
-            <Grid>
-                <TextBlock Text="Нагрузка сейчас" Style="{StaticResource GroupLabel}"/>
-                <TextBlock x:Name="LoadHint" Style="{StaticResource Caption3}"
-                           HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,4,8"/>
-            </Grid>
-            <!-- Плитки, а не строки: числа тут меняются каждую секунду, и в столбце
-                 одинаковых строк за ними неудобно следить. -->
-            <UniformGrid x:Name="Load" Rows="0" Columns="5" Margin="0,0,-10,0"/>
-
             <!-- Компьютер -->
-            <TextBlock Text="Компьютер" Style="{StaticResource GroupLabel}" Margin="4,10,4,7"/>
+            <Grid Margin="4,10,4,7">
+                <TextBlock Text="Компьютер" Style="{StaticResource GroupLabel}" Margin="0"/>
+                <TextBlock x:Name="LoadHint" Style="{StaticResource Caption3}" HorizontalAlignment="Right" Visibility="Collapsed"/>
+            </Grid>
             <Border Style="{StaticResource Card}">
                 <StackPanel x:Name="Specs"/>
             </Border>

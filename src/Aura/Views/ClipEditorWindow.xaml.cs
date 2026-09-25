@@ -110,6 +110,13 @@ public partial class ClipEditorWindow : Window
         };
     }
 
+    /// <summary>Окно без показа: для снимка вёрстки в режиме --dev.</summary>
+    internal static Window CreateForSnapshot(string path) =>
+        new ClipEditorWindow(new ClipItem(path, Path.GetDirectoryName(path) ?? "")) { _snapshotOnly = true };
+
+    /// <summary>Снимок вёрстки: плеер не поднимаем, чтобы не играл звук.</summary>
+    private bool _snapshotOnly;
+
     public static void ShowFor(ClipItem item)
     {
         var window = new ClipEditorWindow(item);
@@ -125,6 +132,8 @@ public partial class ClipEditorWindow : Window
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        if (_snapshotOnly) { _durationSeconds = 185; _endSeconds = 125; _startSeconds = 40; UpdatePreviewTime(74);
+            _ = Dispatcher.BeginInvoke(() => { BuildRuler(); UpdateTimelineVisuals(); }, DispatcherPriority.Loaded); return; }
         Log.Info("Editor", $"Открываю {Path.GetFileName(_item.FullPath)}");
         try
         {

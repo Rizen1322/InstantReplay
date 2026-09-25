@@ -61,7 +61,8 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
         {
             var (icon, tint) = Look(NotificationKind.Saved);
             Window().ShowToast(
-                new ToastContent("Готово", "", icon, tint, BusyTitle: busyTitle, WantsThumbnail: true),
+                new ToastContent("Готово", "", icon, tint, BusyTitle: busyTitle, WantsThumbnail: true,
+                                 Hint: string.IsNullOrWhiteSpace(s.HotkeySaveReplay) ? null : s.HotkeySaveReplay),
                 s.NotificationPosition, s.NotificationDurationSeconds, Thumbnail, maxWaitSeconds);
         });
     }

@@ -48,6 +48,7 @@ public partial class ClipsPage : PageBase
     public ClipsPage()
     {
         InitializeComponent();
+        SearchBox.IsKeyboardFocusWithinChanged += (_, _) => UpdateSearchHint();
         // Прокрутку ищем именно в Loaded: OnShown зовётся сразу после присвоения
         // содержимого окну, когда визуального дерева над страницей ещё нет и
         // подниматься к ScrollViewer просто не по чему.
@@ -337,9 +338,17 @@ public partial class ClipsPage : PageBase
         Render();
     }
 
+    /// <summary>
+    /// Подпись в поле видна, только пока поле пустое и не в фокусе: иначе курсор
+    /// стоит вплотную к подписи, и она читается как уже набранный текст.
+    /// </summary>
+    private void UpdateSearchHint() =>
+        SearchHint.Visibility = SearchBox.Text.Length == 0 && !SearchBox.IsKeyboardFocusWithin
+            ? Visibility.Visible : Visibility.Collapsed;
+
     private void Search_Changed(object sender, TextChangedEventArgs e)
     {
-        SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateSearchHint();
         if (!_loaded) return;
         Render();
     }

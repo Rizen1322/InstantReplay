@@ -24,10 +24,13 @@ public enum AudioTrackMode
     MicOnly
 }
 public enum NotificationPosition { TopLeft, TopRight, BottomLeft, BottomRight, TopCenter }
-/// <summary>Deep — тёмно-фиолетовая с градиентами (Palette.Deep.xaml).</summary>
+/// <summary>
+/// Deep осталась только для чтения старых настроек: тема «Глубокая» убрана в 2.0,
+/// и при загрузке она превращается в тёмную.
+/// </summary>
 public enum AppTheme { Dark, Light, System, Deep }
 public enum AppLanguage { Ru, En }
-public enum SaveSound { None, Classic, Soft, Custom }
+public enum SaveSound { None, Classic, Soft, Custom, Glass, Drop }
 
 /// <summary>
 /// Все пользовательские настройки. Сериализуются в JSON
@@ -250,9 +253,10 @@ public sealed class AppSettings
         if (!Enum.IsDefined(Codec)) Codec = VideoCodec.H264;
         if (!Enum.IsDefined(TrackMode)) TrackMode = AudioTrackMode.Mixed;
         if (!Enum.IsDefined(NotificationPosition)) NotificationPosition = NotificationPosition.BottomRight;
-        if (!Enum.IsDefined(Theme)) Theme = AppTheme.Dark;
+        if (!Enum.IsDefined(Theme) || Theme == AppTheme.Deep) Theme = AppTheme.Dark;
         if (!Enum.IsDefined(Language)) Language = AppLanguage.Ru;
-        if (!Enum.IsDefined(SaveSound)) SaveSound = SaveSound.Soft;
+        // «Капля» убрана в 2.0: у кого она была выбрана, играет «Мягкий»
+        if (!Enum.IsDefined(SaveSound) || SaveSound == SaveSound.Drop) SaveSound = SaveSound.Soft;
 
         SaveRootPath = ValidDirectoryOrDefault(SaveRootPath,
             Environment.SpecialFolder.MyVideos, "Aura");

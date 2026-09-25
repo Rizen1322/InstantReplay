@@ -68,7 +68,10 @@
         <Setter Property="Height" Value="24"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
-        <Setter Property="Focusable" Value="True"/>
+        <!-- Без обводки фокуса: после щелчка мышью переключатель получал фокус
+             и вокруг него оставалось зелёное кольцо. -->
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type c:Switch}">
@@ -84,8 +87,6 @@
                                 <TranslateTransform x:Name="KnobShift" X="0"/>
                             </Border.RenderTransform>
                         </Border>
-                        <Border x:Name="Focus" CornerRadius="14" BorderThickness="2"
-                                BorderBrush="{DynamicResource AccentBrush}" Opacity="0" Margin="-3"/>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="Large" Value="True">
@@ -96,9 +97,6 @@
                             <Setter TargetName="Track" Property="CornerRadius" Value="16"/>
                             <Setter TargetName="On" Property="CornerRadius" Value="16"/>
                             <Setter TargetName="Knob" Property="CornerRadius" Value="14"/>
-                        </Trigger>
-                        <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="Focus" Property="Opacity" Value="0.9"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45"/>
@@ -632,14 +630,19 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TextBox">
-                    <Border x:Name="B" Background="{DynamicResource Card2Brush}" CornerRadius="9"
-                            BorderBrush="{DynamicResource HairBrush}" BorderThickness="1"
+                    <Border x:Name="B" Background="{DynamicResource WellBrush}" CornerRadius="8"
+                            BorderBrush="{DynamicResource SepBrush}" BorderThickness="1"
                             Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
                         <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource HairBrush}"/>
+                        </Trigger>
+                        <!-- Фокус без синей рамки: у приложения один акцент, и это не он.
+                             Поле просто светлеет по краю, как в системных приложениях. -->
                         <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                            <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource BlueBrush}"/>
+                            <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Tx3Brush}"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
