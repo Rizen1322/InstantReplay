@@ -110,6 +110,15 @@ public partial class AudioPage : PageBase
 
     private void Apply_Click()
     {
+        // «Одна игра» без выбранной игры раньше молча сохранялась как «весь звук»,
+        // и в запись шёл Discord. Теперь без игры не применяем.
+        if (GameAudio.IsChecked == true && OneGame && GameProcess.SelectedItem is null)
+        {
+            Dialogs.Say("Выбери игру",
+                "Запусти игру, нажми «Обновить список» рядом с полем «Какая игра» и выбери её. " +
+                "Или переключи «Что писать» на «Весь звук».");
+            return;
+        }
         Services.Settings.Update(s =>
         {
             s.CaptureGameAudio = GameAudio.IsChecked == true;
@@ -174,9 +183,21 @@ public partial class AudioPage : PageBase
         }
         catch { }
 
+        // Плюс любые программы с окном: игра могла ещё не издать ни звука, и в
+        // списке звуковых сеансов её пока нет. Системные и заведомо не игры мимо.
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
         foreach (var p in System.Diagnostics.Process.GetProcesses())
             using (p)
-                try { if (database.TryGetGame(p.ProcessName, out _)) Add(p.ProcessName); } catch { }
+                try
+                {
+                    if (database.TryGetGame(p.ProcessName, out _)) { Add(p.ProcessName); continue; }
+                    if (p.MainWindowHandle == IntPtr.Zero || database.IsIgnored(p.ProcessName)) continue;
+                    string? path = null;
+                    try { path = p.MainModule?.FileName; } catch { }
+                    if (path is not null && path.StartsWith(windows, StringComparison.OrdinalIgnoreCase)) continue;
+                    Add(p.ProcessName);
+                }
+                catch { }
 
         if (selected is not null && !names.ContainsKey(selected))
             names[selected] = database.TryGetGame(selected, out var t) ? $"{t} ({selected}), не запущена" : $"{selected}, не запущена";
@@ -279,7 +300,9 @@ public partial class AudioPage : PageBase
 
     private void ShowDeviceNames()
     {
-        GameDeviceName.Text = (RenderDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
+        GameDeviceName.Text = OneGame
+            ? (GameProcess.SelectedItem as ComboBoxItem)?.Tag is string exe ? $"только {exe}" : "игра не выбрана"
+            : (RenderDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
         MicDeviceName.Text = (CaptureDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
     }
 
