@@ -355,7 +355,14 @@ public partial class App : Application
             try
             {
                 var root = (FrameworkElement)window.Content;
-                var bitmap = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96,
+                // --scale 2 рисует снимок в двойном разрешении (для роликов и превью)
+                var args = Environment.GetCommandLineArgs();
+                int scaleArg = Array.IndexOf(args, "--scale");
+                double scale = scaleArg >= 0 && scaleArg + 1 < args.Length &&
+                               double.TryParse(args[scaleArg + 1], System.Globalization.NumberStyles.Float,
+                                               System.Globalization.CultureInfo.InvariantCulture, out var k) ? k : 1;
+                var bitmap = new RenderTargetBitmap((int)(window.ActualWidth * scale), (int)(window.ActualHeight * scale),
+                                                    96 * scale, 96 * scale,
                                                     System.Windows.Media.PixelFormats.Pbgra32);
                 var canvas = new System.Windows.Media.DrawingVisual();
                 using (var dc = canvas.RenderOpen())
@@ -420,16 +427,19 @@ public partial class App : Application
 
         n.PreviewSource = engine.TryUseLiveFrame;
 
-        EngineState prev = EngineState.Stopped;
         engine.StateChanged += _ => Services.Ui.Enqueue(UpdateTray);
         engine.RecordingChanged += _ => Services.Ui.Enqueue(UpdateTray);
+        // Уведомляем о самом повторе, а не о конвейере: запись в файл без повтора
+        // тоже поднимает конвейер, но «Повтор включён» при этом было бы враньём.
+        bool wasActive = false;
         engine.StateChanged += state =>
         {
-            if (state == EngineState.Running && prev == EngineState.Stopped)
+            bool active = engine.ReplayActive && state == EngineState.Running;
+            if (active && !wasActive)
                 n.Show(NotificationKind.ReplayOn, "Повтор включён");
-            else if (state == EngineState.Stopped && prev != EngineState.Stopped)
+            else if (!engine.ReplayActive && wasActive)
                 n.Show(NotificationKind.Stopped, "Повтор выключен");
-            prev = state;
+            if (active || !engine.ReplayActive) wasActive = active;
         };
 
         // Сохранение показывается в два этапа: снимок буфера — уже гарантия клипа,
@@ -618,7 +628,8 @@ public partial class App : Application
 
     public static void ToggleEngine()
     {
-        if (Services.Engine.State == EngineState.Stopped) SafeStartEngine();
+        // Идёт запись без повтора: переключатель включает повтор, запись не трогает
+        if (!Services.Engine.ReplayActive) SafeStartEngine();
         else Services.Engine.Stop();
     }
 
@@ -819,7 +830,7 @@ public partial class App : Application
     {
         if (_tray is null) return;
         var engine = Services.Engine;
-        bool running = engine.State != EngineState.Stopped;
+        bool running = engine.ReplayActive;
 
         _tray.ToolTipText = engine.IsRecordingToFile ? "Aura: идёт запись"
                           : running ? "Aura: повтор пишется" : "Aura: выключено";

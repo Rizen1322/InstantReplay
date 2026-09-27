@@ -374,7 +374,7 @@ public partial class MainWindow : Window
     private void SyncMaster()
     {
         var engine = Services.Engine;
-        bool on = engine.State != EngineState.Stopped;
+        bool on = engine.ReplayActive;
         StatusText.Text = on ? "Повтор" : "Повтор выключен";
         StatusTime.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         StatusTime.Text = FormatSpan(engine.BufferedDuration);

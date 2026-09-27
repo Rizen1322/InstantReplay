@@ -24,7 +24,8 @@ public sealed partial class ReplayEngine
     // ---------------- Обычная запись в файл ----------------
 
     /// <summary>
-    /// Начать обычную запись в файл. Если буфер выключен — включает его.
+    /// Начать обычную запись в файл. Если повтор выключен, конвейер поднимается
+    /// только ради записи и гасится, когда её остановят.
     ///
     /// Под тем же замком, что и остальной жизненный цикл: метод трогает _encoder,
     /// _audio и _recorder, а параллельный Stop() обнуляет ровно их. Monitor
@@ -38,14 +39,34 @@ public sealed partial class ReplayEngine
             // Recovery уже владеет обязанностью поднять конвейер. Здесь достаточно
             // записать пользовательский intent; новый сегмент откроется после старта.
             if (_state == EngineState.Recovering) return;
+            // Флаг ставится ДО запуска: иначе на старте конвейера интерфейс и
+            // уведомления успели бы решить, что включили повтор.
+            bool wasStopped = _state == EngineState.Stopped;
+            if (wasStopped) _recordingOnly = true;
             try
             {
                 StartRecordingLocked();
                 _continuousRecordingRequested = _recorder is not null;
+                if (wasStopped)
+                {
+                    if (_recorder is not null)
+                        Log.Info("Recorder", "Запись в файл без повтора: конвейер выключится вместе с записью");
+                    else
+                    {
+                        // Запись не открылась: не оставляем включённым повтор, которого не просили
+                        _recordingOnly = false;
+                        if (_state != EngineState.Stopped) StopLocked();
+                    }
+                }
             }
             catch
             {
                 _continuousRecordingRequested = false;
+                if (wasStopped)
+                {
+                    _recordingOnly = false;
+                    if (_state != EngineState.Stopped) StopLocked();
+                }
                 throw;
             }
         }
@@ -231,7 +252,16 @@ public sealed partial class ReplayEngine
             // Важен даже вызов между двумя сегментами, когда _recorder уже null:
             // recovery не должен после него снова открыть файл.
             _continuousRecordingRequested = false;
-            return StopRecordingLocked(wait);
+            string? file = StopRecordingLocked(wait);
+            if (_recordingOnly)
+            {
+                // Повтор не включали: конвейер был нужен только записи. Файл уже
+                // отцеплен от энкодера и дописывается в фоне, так что гасить можно сразу.
+                _recordingOnly = false;
+                Log.Info("Recorder", "Запись без повтора закончена, конвейер выключаю");
+                StopLocked();
+            }
+            return file;
         }
     }
 

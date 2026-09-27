@@ -298,6 +298,12 @@ public sealed class AudioMixerEngine : IDisposable
         var mixLimiter = new Limiter(2);
         var gate = new NoiseGate();
         using var denoiser = RnnoiseDenoiser.TryCreate();
+        // Одна строка при каждом запуске микшера: по логу сразу видно, был ли шумодав
+        // в записи. Без неё «шумодав не работает» проверить было не по чему.
+        Log.Info("Audio", denoiser is null
+            ? "Шумодав RNNoise: библиотека не загрузилась, микрофон пишется без него"
+            : $"Шумодав RNNoise: готов, {(MicNeuralDenoise ? "включён" : "выключен в настройках")}");
+        bool denoiseWas = MicNeuralDenoise;
         long block = 0;
         int report = 0;
 
@@ -339,7 +345,13 @@ public sealed class AudioMixerEngine : IDisposable
             if (micLine is not null)
             {
                 micLine.Read(position, mic, BlockFrames);
-                if (MicNeuralDenoise) denoiser?.ProcessBlock(mic);
+                bool denoise = MicNeuralDenoise;
+                if (denoise != denoiseWas)
+                {
+                    denoiseWas = denoise;
+                    Log.Info("Audio", $"Шумодав RNNoise {(denoise ? "включён" : "выключен")}");
+                }
+                if (denoise) denoiser?.ProcessBlock(mic);
                 float g = MicNoiseGate ? gate.Process(mic, MicGateThresholdDb) : 1f;
                 float k = g * mv;
                 if (k != 1f) for (int i = 0; i < mic.Length; i++) mic[i] *= k;

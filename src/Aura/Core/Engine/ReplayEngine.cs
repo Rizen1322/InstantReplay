@@ -226,6 +226,15 @@ public sealed partial class ReplayEngine : IDisposable
     // команда «остановить» меняет его даже в промежутке между сегментами.
     private bool _continuousRecordingRequested;
     public bool IsRecordingToFile => _recorder is not null;
+
+    /// <summary>
+    /// Конвейер поднят только ради записи в файл: повтор человек не включал. Как
+    /// только запись остановят, конвейер гасится сам.
+    /// </summary>
+    private volatile bool _recordingOnly;
+
+    /// <summary>Повтор включён по-настоящему, а не поднят ради одной записи в файл.</summary>
+    public bool ReplayActive => _state != EngineState.Stopped && !_recordingOnly;
     /// <summary>Сколько идёт обычная запись; null — не пишем.</summary>
     public TimeSpan? RecordingElapsed => _recorder is { } r ? r.Elapsed.Elapsed : null;
     /// <summary>Номер текущей части файла (файл режется по достижении предела MP4).</summary>
@@ -274,6 +283,13 @@ public sealed partial class ReplayEngine : IDisposable
             // приостановила нас.
             ForgetSystemSuspend();
             if (_state == EngineState.Stopped) _replayNvencStats = NvencStats.Take();
+            // Повтор включили во время записи «без повтора»: конвейер уже работает,
+            // и после записи он теперь должен остаться включённым.
+            if (_recordingOnly)
+            {
+                _recordingOnly = false;
+                StateChanged?.Invoke(_state);
+            }
             StartWithFallbackLocked(preserveBuffers: false);
         }
     }
@@ -829,6 +845,7 @@ public sealed partial class ReplayEngine : IDisposable
         lock (_lifecycle)
         {
             _continuousRecordingRequested = false;
+            _recordingOnly = false;
             // Выключил человек — системной паузе тут больше нечего держать.
             ForgetSystemSuspend();
             StopLocked();

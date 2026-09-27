@@ -84,7 +84,7 @@ public partial class OverviewPage : PageBase
     private void Refresh()
     {
         var engine = Services.Engine;
-        bool on = engine.State != EngineState.Stopped;
+        bool on = engine.ReplayActive;
         var s = Services.Settings.Current;
 
         Master.IsChecked = on;
@@ -107,7 +107,8 @@ public partial class OverviewPage : PageBase
         bool recording = engine.IsRecordingToFile;
         RecordLabel.Text = recording ? "Стоп" : "Запись";
         RecordDot.Fill = (Brush)FindResource(recording ? "TxBrush" : "RecBrush");
-        RecordButton.IsEnabled = on || recording;
+        // Запись в файл не требует включённого повтора: конвейер поднимется сам
+        RecordButton.IsEnabled = true;
 
         FrameIdle.Visibility = on && FrameImage.Background is ImageBrush ? Visibility.Collapsed : Visibility.Visible;
         IdleTitle.Text = on ? "Жду кадр" : "Повтор выключен";
