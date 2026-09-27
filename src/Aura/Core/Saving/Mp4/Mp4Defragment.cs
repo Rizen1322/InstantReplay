@@ -200,6 +200,37 @@ public static class Mp4Defragment
     }
 
     /// <summary>
+    /// Нужна ли записи правка для Vegas: фрагментированный файл, где меньше двух
+    /// звуковых дорожек. С двумя дорожками Vegas такой файл открывает, а записи с
+    /// одной дорожкой начиная с 2.0.8 Aura делает обычными сама.
+    /// Смотрит только заголовок в начале файла, поэтому быстрая.
+    /// </summary>
+    public static bool NeedsVegasFix(string path)
+    {
+        try
+        {
+            using var file = File.OpenRead(path);
+            foreach (var box in TopLevel(file))
+            {
+                if (box.Type != "moov") continue;
+                long start = box.Offset + box.Header, end = box.Offset + box.Size;
+                if (FindChild(file, start, end, "mvex") < 0) return false;
+                int audio = 0;
+                foreach (var trak in Children(file, start, end).Where(c => c.Type == "trak"))
+                {
+                    if (trak.Size > 1 << 20) continue;
+                    byte[] bytes = Read(file, trak.Offset, (int)trak.Size);
+                    var hdlr = Find(bytes, "mdia/hdlr");
+                    if (hdlr.Offset >= 0 && TextEncoding.ASCII.GetString(bytes, hdlr.Offset + 16, 4) == "soun") audio++;
+                }
+                return audio < 2;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
     /// Превратить готовый фрагментированный файл в обычный. false — файл уже обычный
     /// или разобрать его не удалось (тогда он не тронут).
     /// </summary>

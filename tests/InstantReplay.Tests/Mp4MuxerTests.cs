@@ -217,8 +217,10 @@ public class Mp4MuxerTests
         {
             File.WriteAllBytes(path, fragmented);
             Assert.True(Mp4Defragment.IsFragmented(path));
+            Assert.True(Mp4Defragment.NeedsVegasFix(path));   // звуковых дорожек меньше двух
             Assert.True(Mp4Defragment.ConvertFile(path));
             Assert.False(Mp4Defragment.IsFragmented(path));
+            Assert.False(Mp4Defragment.NeedsVegasFix(path));
             Assert.False(Mp4Defragment.ConvertFile(path));   // второй раз делать нечего
 
             byte[] file = File.ReadAllBytes(path);

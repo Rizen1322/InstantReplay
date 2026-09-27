@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -554,6 +554,12 @@ public partial class ClipsPage : PageBase
                 // которое сделает: на отмеченной записи это «Снять выделение».
                 case "SelectItem" when named is MenuItem select:
                     select.Header = clip?.IsSelected == true ? "Снять выделение" : "Выделить";
+                    break;
+
+                case "VegasItem":
+                    named.Visibility = clip is { IsScreenshot: false } &&
+                                       Core.Saving.Mp4.Mp4Defragment.NeedsVegasFix(clip.FullPath)
+                        ? Visibility.Visible : Visibility.Collapsed;
                     break;
             }
         }

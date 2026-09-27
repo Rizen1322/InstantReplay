@@ -77,7 +77,11 @@
                                     Foreground="{DynamicResource Tx2Brush}"/>
                         </MenuItem.Icon>
                     </MenuItem>
-                    <MenuItem Header="Сделать совместимым с Vegas" Style="{DynamicResource TrayMenuItem}"
+                    <!-- Виден только у записей, которые Vegas не откроет: фрагментированный
+                         файл с одной звуковой дорожкой. Новые такие записи Aura делает
+                         обычными сама, поэтому пункт бывает только у старых. -->
+                    <MenuItem x:Name="VegasItem" Header="Сделать совместимым с Vegas" Style="{DynamicResource TrayMenuItem}"
+                              Visibility="Collapsed"
                               ToolTip="Делает запись обычным MP4 без перекодирования. Нужно, если Vegas не открывает файл"
                               Command="{x:Static v:ClipCommands.MakeCompatible}" CommandParameter="{Binding}">
                         <MenuItem.Icon>
