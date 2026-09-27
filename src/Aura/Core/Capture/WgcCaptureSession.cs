@@ -107,7 +107,11 @@ internal sealed class WgcCaptureSession : IScreenCapture
             _started = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _nextFrameDeadline = 0;
-            _earlyToleranceTicks = 0;
+            // Четверть кадра допуска нужна всегда, а не только при MinUpdateInterval:
+            // на 60 Гц мониторе при записи в 60 кадров метки гуляют на доли
+            // миллисекунды, и кадр, пришедший на 0.1 мс раньше дедлайна, выбрасывался.
+            // Следующий приходил только через период, и частота падала вдвое.
+            _earlyToleranceTicks = _minFrameIntervalTicks / 4;
             Interlocked.Exchange(ref _framesReceived, 0);
             Interlocked.Exchange(ref _framesAccepted, 0);
             Interlocked.Exchange(ref _closedReported, 0);
@@ -228,7 +232,12 @@ internal sealed class WgcCaptureSession : IScreenCapture
 
     private int PoolSizeFor(int height)
     {
-        int generous = height > 1440 ? 6 : 12;
+        // Каждый кадр копируется в брокер прямо в обработчике и сразу отпускается,
+        // так что копить их в пуле незачем. Двенадцать буферов на 4K это 400 МБ
+        // видеопамяти рядом с игрой, а после заминки система выдавала пачку
+        // устаревших кадров, и каждый копировался зря. OBS берёт два; третий
+        // на случай, когда обработчик на миг задержался.
+        int generous = 3;
         if (GpuInfo.Usage(D3DDevice) is not { } vram || vram.BudgetMb <= 0) return generous;
 
         long frameMb = Math.Max((long)Math.Max(Width, 1) * height * 4 >> 20, 1);

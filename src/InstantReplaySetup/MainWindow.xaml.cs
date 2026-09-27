@@ -44,6 +44,28 @@ public partial class MainWindow : Window
     // Снимаются с UI ДО фоновой работы: PathBox трогать из другого потока нельзя
     private string _root = "", _appDir = "", _mainExe = "";
 
+    /// <summary>
+    /// Папка установки по умолчанию: Program Files. Раньше Aura ставилась в
+    /// %LocalAppData%\Programs, куда может писать любая программа пользователя,
+    /// а сама Aura работает от администратора и стартует задачей с наивысшими
+    /// правами. Подменённый там Aura.exe или подложенная рядом DLL получили бы
+    /// права администратора без запроса UAC.
+    /// </summary>
+    private static string DefaultRoot => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Aura");
+
+    /// <summary>Установка лежит в папке пользователя, откуда её нужно перенести.</summary>
+    private static bool IsUserWritableLocation(string root)
+    {
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string full = Path.GetFullPath(root).TrimEnd('\\') + "\\";
+        return full.StartsWith(local.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(roaming.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)
+            || full.StartsWith(profile.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void SnapshotPaths()
     {
         _root = PathBox.Text.Trim();
@@ -55,9 +77,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Closed += (_, _) => StopMusic();
-        PathBox.Text = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Programs", "Aura");
+        PathBox.Text = DefaultRoot;
 
         long payload = GetPayloadSize();
         SizeText.Text = payload > 0 ? $"потребуется ~{payload * 2.2 / (1024 * 1024):0} МБ" : "";
@@ -80,7 +100,7 @@ public partial class MainWindow : Window
     private async void StartUpdate()
     {
         if (!string.IsNullOrWhiteSpace(App.UpdateTarget))
-            PathBox.Text = App.UpdateTarget!;
+            PathBox.Text = IsUserWritableLocation(App.UpdateTarget!) ? DefaultRoot : App.UpdateTarget!;
         SnapshotPaths();
 
         Title = "Обновление Aura";
@@ -264,13 +284,22 @@ public partial class MainWindow : Window
 
         // Закрываем и новое приложение, и старое: при обновлении с 1.0.x работает
         // ещё InstantReplay.exe и держит файлы в папке установки.
+        // При обновлении Aura закрывается сама: дописывает запись и сохраняет
+        // настройки. Ждём её, и только если она не успела, завершаем силой —
+        // раньше установщик сразу убивал процесс, и запись оставалась недописанной.
         foreach (string name in new[] { ProcessName, OldProcessName })
             foreach (var p in Process.GetProcessesByName(name))
-                try { p.Kill(); p.WaitForExit(3000); } catch { }
+                try
+                {
+                    if (!p.WaitForExit(App.UpdateMode ? 20000 : 0)) { p.Kill(); p.WaitForExit(3000); }
+                }
+                catch { }
 
         MigrateFromInstantReplay();
+        var previousRoots = FindPreviousRoots();
 
         Directory.CreateDirectory(_root);
+        HardenDirectory(_root);
         File.WriteAllText(
             Path.Combine(_root, InstallMarkerName),
             "Aura installation root. This marker is required by AuraUninstall.exe.\n");
@@ -306,8 +335,12 @@ public partial class MainWindow : Window
             }
 
             SetStatus("Создание ярлыков…", 90);
+            // Установка на весь компьютер — ярлык в общем «Пуске». Прежний личный
+            // ярлык указывал бы на удалённую папку.
+            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                                   "Programs", $"{AppName}.lnk"));
             string startMenu = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu), "Programs");
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu), "Programs");
             CreateShortcut(Path.Combine(startMenu, $"{AppName}.lnk"));
             if (desktopShortcut)
                 CreateShortcut(Path.Combine(
@@ -324,7 +357,10 @@ public partial class MainWindow : Window
             // Обновление с прежней версии удаляет её огромную копию установщика.
             TryDelete(Path.Combine(_root, "Uninstall.exe"));
 
-            using (var key = Registry.CurrentUser.CreateSubKey(UninstallKey))
+            // Запись в «Установленных программах» — на весь компьютер (HKLM), как и
+            // сама установка. Личная запись прежних версий убирается.
+            try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
+            using (var key = Registry.LocalMachine.CreateSubKey(UninstallKey))
             {
                 key.SetValue("DisplayName", AppName);
                 key.SetValue("DisplayVersion", InstalledVersion());
@@ -355,7 +391,125 @@ public partial class MainWindow : Window
             SetStatus("Регистрация пакета identity…", 97);
             RegisterIdentityPackage();
         }
+
+        // Прежняя установка в папке пользователя больше не нужна: удаляем её
+        // целиком, иначе там остался бы старый Aura.exe, доступный на запись.
+        foreach (string old in previousRoots)
+        {
+            SetStatus("Удаление прежней установки…", 99);
+            RemovePreviousRoot(old);
+        }
         SetStatus("Готово", 100);
+    }
+
+    /// <summary>
+    /// Прежние установки Aura, которые надо убрать после установки в новую папку:
+    /// путь из личной записи в «Установленных программах» и старая папка по
+    /// умолчанию. Берём только папки с меткой установки: так чужое не тронем.
+    /// </summary>
+    private List<string> FindPreviousRoots()
+    {
+        var found = new List<string>();
+        void Consider(string? root)
+        {
+            if (string.IsNullOrWhiteSpace(root)) return;
+            try
+            {
+                string full = Path.GetFullPath(root).TrimEnd('\\');
+                if (full.Equals(Path.GetFullPath(_root).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return;
+                if (!File.Exists(Path.Combine(full, InstallMarkerName))) return;
+                if (!found.Contains(full, StringComparer.OrdinalIgnoreCase)) found.Add(full);
+            }
+            catch { }
+        }
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(UninstallKey);
+            Consider(key?.GetValue("InstallLocation") as string);
+        }
+        catch { }
+        Consider(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                              "Programs", "Aura"));
+        return found;
+    }
+
+    /// <summary>
+    /// Удаляет только то, что туда клала Aura: папку app, метку и старый
+    /// Uninstall.exe. Саму папку только если она осталась пустой: человек мог
+    /// выбрать для установки общую папку, и чужие файлы в ней трогать нельзя.
+    /// </summary>
+    private static void RemovePreviousRoot(string root)
+    {
+        string app = Path.Combine(root, "app");
+        try
+        {
+            if (Directory.Exists(app)) Directory.Delete(app, recursive: true);
+            Log($"Прежняя установка удалена: {root}");
+        }
+        catch (Exception ex)
+        {
+            // Файл занят (например, открыт в проводнике): удалим после перезагрузки
+            Log($"Прежнюю установку не удалось удалить сразу ({ex.Message}), удалю при перезагрузке: {app}");
+            try
+            {
+                foreach (string file in Directory.EnumerateFiles(app, "*", SearchOption.AllDirectories))
+                    if (!TryDeleteFile(file)) MoveFileExW(file, null, MovefileDelayUntilReboot);
+                foreach (string dir in Directory.EnumerateDirectories(app, "*", SearchOption.AllDirectories)
+                                                .OrderByDescending(d => d.Length))
+                    MoveFileExW(dir, null, MovefileDelayUntilReboot);
+                MoveFileExW(app, null, MovefileDelayUntilReboot);
+            }
+            catch { }
+        }
+        TryDelete(Path.Combine(root, "Uninstall.exe"));
+        TryDelete(Path.Combine(root, InstallMarkerName));
+        try
+        {
+            if (Directory.Exists(root) && !Directory.EnumerateFileSystemEntries(root).Any())
+                Directory.Delete(root);
+        }
+        catch { }
+    }
+
+    private static bool TryDeleteFile(string path)
+    {
+        try { File.Delete(path); return true; } catch { return false; }
+    }
+
+    private const int MovefileDelayUntilReboot = 0x4;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern bool MoveFileExW(string existing, string? replacement, int flags);
+
+    /// <summary>
+    /// Права на папку установки: менять файлы могут только администраторы и
+    /// система, остальные только читают и запускают. В Program Files так уже
+    /// есть, но папку можно выбрать и в другом месте, например на D:\.
+    /// </summary>
+    private static void HardenDirectory(string root)
+    {
+        try
+        {
+            var security = new System.Security.AccessControl.DirectorySecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            var inherit = System.Security.AccessControl.InheritanceFlags.ContainerInherit |
+                          System.Security.AccessControl.InheritanceFlags.ObjectInherit;
+            var none = System.Security.AccessControl.PropagationFlags.None;
+            var allow = System.Security.AccessControl.AccessControlType.Allow;
+            void Add(System.Security.Principal.WellKnownSidType sid, System.Security.AccessControl.FileSystemRights rights) =>
+                security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                    new System.Security.Principal.SecurityIdentifier(sid, null), rights, inherit, none, allow));
+            Add(System.Security.Principal.WellKnownSidType.LocalSystemSid, System.Security.AccessControl.FileSystemRights.FullControl);
+            Add(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, System.Security.AccessControl.FileSystemRights.FullControl);
+            Add(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, System.Security.AccessControl.FileSystemRights.ReadAndExecute);
+            // «Все пакеты приложений»: так же, как в Program Files, чтобы identity
+            // Aura и системные компоненты могли читать внешнюю папку пакета
+            security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                new System.Security.Principal.SecurityIdentifier("S-1-15-2-1"),
+                System.Security.AccessControl.FileSystemRights.ReadAndExecute, inherit, none, allow));
+            new DirectoryInfo(root).SetAccessControl(security);
+        }
+        catch (Exception ex) { Log($"Права на папку установки не выставлены: {ex.Message}"); }
     }
 
     /// <summary>
@@ -583,7 +737,17 @@ public partial class MainWindow : Window
         PageProgress.Visibility = Visibility.Visible;
         ProgressTitle.Text = "Удаление…";
 
-        string root = Path.GetDirectoryName(Environment.ProcessPath!)!;
+        // Раньше удалялась папка, где лежит сам установщик: запуск
+        // «InstantReplaySetup.exe /uninstall» из «Загрузок» стирал «Загрузки».
+        // Теперь удаляем только настоящую папку установки: с меткой и app\Aura.exe.
+        string? root = InstalledRoot();
+        if (root is null)
+        {
+            MessageBox.Show(this, "Установленная Aura не найдена.", "Удаление Aura",
+                            MessageBoxButton.OK, MessageBoxImage.Information);
+            Close();
+            return;
+        }
         await Task.Run(() =>
         {
             SetStatus("Закрытие приложения…", 15);
@@ -621,6 +785,9 @@ public partial class MainWindow : Window
             UnregisterIdentityPackage();
 
             SetStatus("Удаление файлов…", 80);
+            try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
+            TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu),
+                                   "Programs", $"{AppName}.lnk"));
             try { Directory.Delete(Path.Combine(root, "app"), recursive: true); } catch { }
         });
 
@@ -633,6 +800,22 @@ public partial class MainWindow : Window
             UseShellExecute = false
         });
         Close();
+    }
+
+    /// <summary>Корень установленной Aura из записи «Установленных программ»; null — не найдено.</summary>
+    private static string? InstalledRoot()
+    {
+        foreach (var hive in new[] { Registry.LocalMachine, Registry.CurrentUser })
+            try
+            {
+                using var key = hive.OpenSubKey(UninstallKey);
+                if (key?.GetValue("InstallLocation") is string root && root.Length > 0 &&
+                    File.Exists(Path.Combine(root, InstallMarkerName)) &&
+                    File.Exists(Path.Combine(root, "app", ExeName)))
+                    return root;
+            }
+            catch { }
+        return null;
     }
 
     private static void TryDelete(string path)

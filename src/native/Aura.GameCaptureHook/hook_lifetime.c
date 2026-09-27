@@ -67,9 +67,24 @@ DWORD WINAPI aura_hook_control_thread(void *module_pointer)
     // наших обработчиков. Раньше трамплины снимались до ожидания, то есть память
     // под кодом освобождалась, пока по нему ещё могли идти.
     aura_present_hooks_disable();
-    for (int attempt = 0; attempt < 200 && aura_present_hooks_active_callbacks() != 0; ++attempt) {
+    for (int attempt = 0; attempt < 2000 && aura_present_hooks_active_callbacks() != 0; ++attempt) {
         Sleep(1);
     }
+
+    // Поток отрисовки игры может застрять внутри нашего обработчика надолго:
+    // SwapBuffers с vsync, свёрнутое окно, драйвер ждёт видеокарту. Раньше через
+    // 200 мс код выгружался в любом случае, и поток возвращался в освобождённую
+    // память: игра падала. Теперь, если за 2 секунды он не вышел, DLL остаётся в
+    // процессе навсегда (так делает и OBS): перехват выключен, вреда от неё нет.
+    if (aura_present_hooks_active_callbacks() != 0) {
+        aura_hook_ipc_set_state(&ipc, AURA_GAME_HOOK_STATE_STOPPED, AURA_GAME_HOOK_ERROR_NONE);
+        aura_hook_ipc_heartbeat(&ipc);
+        aura_hook_ipc_close(&ipc);
+        ExitThread(3);
+    }
+    // Поток мог войти в трамплин за миг до того, как поднял счётчик: даём ему
+    // пройти эти несколько инструкций.
+    Sleep(50);
 
     // Шаг 3. Теперь снятие безопасно.
     aura_present_hooks_remove();

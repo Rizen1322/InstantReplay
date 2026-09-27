@@ -68,6 +68,12 @@ public sealed class FragmentedMp4Writer : IDisposable
 
     private bool _headerWritten;
 
+    /// <summary>Запись фрагмента сорвалась: дальше в файл ничего не пишем.</summary>
+    private bool _broken;
+
+    /// <summary>Конец последнего целиком записанного фрагмента (или заголовка).</summary>
+    private long _lastGoodEnd;
+
     /// <summary>Сколько байт уже в файле.</summary>
     public long BytesWritten => _out.Position;
 
@@ -118,6 +124,7 @@ public sealed class FragmentedMp4Writer : IDisposable
         // Заголовок пишется с начала файла, поэтому смещение mehd в буфере и в файле совпадает.
         _out.Write(w.Span);
         _out.Flush();
+        _lastGoodEnd = _out.Position;
     }
 
     private void WriteEmptyTrak(BoxWriter w, int trackId, bool audio, Mp4AudioFormat? format, int mediaStart)
@@ -150,7 +157,7 @@ public sealed class FragmentedMp4Writer : IDisposable
     /// <summary>Кадр видео в Annex B. Время — 100-нс тики от начала записи.</summary>
     public void WriteVideo(ReadOnlySpan<byte> annexB, long pts, long dts, bool keyframe)
     {
-        if (_finished) return;
+        if (_finished || _broken) return;
         if (!_hasVideo && !keyframe) return;
         if (!_headerWritten) WriteHeader(_video.CtsUnits(pts - dts));
 
@@ -180,7 +187,7 @@ public sealed class FragmentedMp4Writer : IDisposable
     /// <summary>Кадр AAC дорожки <paramref name="track"/>. Время — 100-нс тики от начала записи.</summary>
     public void WriteAudio(int track, ReadOnlySpan<byte> frame, long pts)
     {
-        if (_finished || track >= _audio.Count || !_headerWritten) return;
+        if (_finished || _broken || track >= _audio.Count || !_headerWritten) return;
         var pending = _audioPending[track];
         int rate = _audio[track].SampleRate;
         long position = pts * rate / 10_000_000;         // где кадр должен лежать, в сэмплах
@@ -254,9 +261,29 @@ public sealed class FragmentedMp4Writer : IDisposable
             cursor += p.Data.Length;
         }
 
-        // Индекс для обычного оглавления: где в файле лежит каждый кусок
-        long dataStart = moofOffset + w.Length + 8;
-        long chunkOffset = dataStart;
+        try
+        {
+            _out.Write(w.Span);
+            var header = new BoxWriter();
+            header.U32((uint)mdatSize);
+            header.FourCc("mdat");
+            _out.Write(header.Span);
+            if (hasVideo) _videoPending.Data.WriteTo(_out);
+            foreach (var p in _audioPending) if (p.Samples.Count > 0) p.Data.WriteTo(_out);
+            _out.Flush();
+        }
+        catch
+        {
+            // Фрагмент записался не целиком (кончилось место). Файл годен до
+            // последнего целого фрагмента: запоминаем это и дальше ничего не пишем,
+            // иначе повторный сброс лёг бы после битых байт и испортил оглавление.
+            _broken = true;
+            throw;
+        }
+        _lastGoodEnd = _out.Position;
+
+        // Индекс для обычного оглавления — только после того, как фрагмент целиком на диске
+        long chunkOffset = moofOffset + w.Length + 8;
         if (hasVideo)
         {
             Remember(_videoIndex, _videoPending, chunkOffset, video: true, nextVideoDts);
@@ -269,15 +296,6 @@ public sealed class FragmentedMp4Writer : IDisposable
             chunkOffset += _audioPending[i].Data.Length;
         }
         _moofOffsets.Add(moofOffset);
-
-        _out.Write(w.Span);
-        var header = new BoxWriter();
-        header.U32((uint)mdatSize);
-        header.FourCc("mdat");
-        _out.Write(header.Span);
-        if (hasVideo) _videoPending.Data.WriteTo(_out);
-        foreach (var p in _audioPending) if (p.Samples.Count > 0) p.Data.WriteTo(_out);
-        _out.Flush();
 
         if (hasVideo)
         {
@@ -352,6 +370,13 @@ public sealed class FragmentedMp4Writer : IDisposable
         if (_finished) return;
         _finished = true;
         if (!_headerWritten) return;   // ни одного кадра — писать нечего
+        if (_broken)
+        {
+            // Писать хвост после сбоя нельзя: обрезаем файл по последнему целому
+            // фрагменту, и он остаётся рабочим фрагментированным MP4
+            try { _out.SetLength(_lastGoodEnd); _out.Flush(); } catch { }
+            return;
+        }
         Flush(_hasVideo ? _lastVideoUnits + _video.ToUnits(lastFrameTicks) : 0);
 
         // mfra: таблица быстрого перехода по фрагментам — для перемотки.

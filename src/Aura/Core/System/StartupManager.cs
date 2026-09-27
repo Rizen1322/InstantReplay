@@ -48,6 +48,7 @@ public static class StartupManager
     {
         try
         {
+            HardenInstallDirectory();
             RemoveLegacyRunEntry();
             var (code, output) = RunSchtasks(capture: true, "/Query", "/TN", TaskName, "/FO", "LIST", "/V");
             bool exists = code == 0;
@@ -64,6 +65,66 @@ public static class StartupManager
             }
         }
         catch (Exception ex) { Log.Warn("Startup", $"Сверка автозапуска: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Папка установки, куда может писать обычный пользователь, превращает задачу
+    /// с наивысшими правами в дыру: любая программа подменит Aura.exe или подложит
+    /// рядом DLL и получит права администратора при входе, без запроса UAC.
+    /// Установщик теперь ставит в Program Files и сам закрывает права, а здесь
+    /// вторая линия: старые установки закрываются при первом же запуске.
+    /// Трогаем только настоящую раскладку установки: &lt;корень&gt;\app\Aura.exe и метка.
+    /// </summary>
+    private static void HardenInstallDirectory()
+    {
+        try
+        {
+            string app = Path.GetDirectoryName(ExePath)!;
+            string? root = Path.GetDirectoryName(app);
+            if (root is null || !Path.GetFileName(app).Equals("app", StringComparison.OrdinalIgnoreCase) ||
+                !File.Exists(Path.Combine(root, ".aura-install-root"))) return;
+            if (!WritableByUsers(root)) return;
+
+            var security = new System.Security.AccessControl.DirectorySecurity();
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            var inherit = System.Security.AccessControl.InheritanceFlags.ContainerInherit |
+                          System.Security.AccessControl.InheritanceFlags.ObjectInherit;
+            void Add(string sid, System.Security.AccessControl.FileSystemRights rights) =>
+                security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                    new System.Security.Principal.SecurityIdentifier(sid), rights, inherit,
+                    System.Security.AccessControl.PropagationFlags.None,
+                    System.Security.AccessControl.AccessControlType.Allow));
+            Add("S-1-5-18", System.Security.AccessControl.FileSystemRights.FullControl);        // SYSTEM
+            Add("S-1-5-32-544", System.Security.AccessControl.FileSystemRights.FullControl);    // Администраторы
+            Add("S-1-5-32-545", System.Security.AccessControl.FileSystemRights.ReadAndExecute); // Пользователи
+            Add("S-1-15-2-1", System.Security.AccessControl.FileSystemRights.ReadAndExecute);   // Пакеты приложений
+            new DirectoryInfo(root).SetAccessControl(security);
+            Log.Info("Startup", $"Права на папку установки закрыты от записи: {root}");
+        }
+        catch (Exception ex) { Log.Warn("Startup", $"Права на папку установки: {ex.Message}"); }
+    }
+
+    /// <summary>Может ли в папку писать кто-то, кроме администраторов и системы.</summary>
+    private static bool WritableByUsers(string directory)
+    {
+        var rules = new DirectoryInfo(directory).GetAccessControl()
+            .GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
+        const System.Security.AccessControl.FileSystemRights write =
+            System.Security.AccessControl.FileSystemRights.WriteData |
+            System.Security.AccessControl.FileSystemRights.AppendData |
+            System.Security.AccessControl.FileSystemRights.Delete |
+            System.Security.AccessControl.FileSystemRights.ChangePermissions |
+            System.Security.AccessControl.FileSystemRights.TakeOwnership;
+        foreach (System.Security.AccessControl.FileSystemAccessRule rule in rules)
+        {
+            if (rule.AccessControlType != System.Security.AccessControl.AccessControlType.Allow) continue;
+            // «Только для наследования» (CREATOR OWNER) к самой папке не относится
+            if ((rule.PropagationFlags & System.Security.AccessControl.PropagationFlags.InheritOnly) != 0) continue;
+            string sid = rule.IdentityReference.Value;
+            if (sid is "S-1-5-18" or "S-1-5-32-544" or "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464") continue;
+            if ((rule.FileSystemRights & write) != 0) return true;
+        }
+        return false;
     }
 
     private static void CreateTask()

@@ -12,6 +12,14 @@
 #define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
 #define GL_READ_FRAMEBUFFER 0x8CA8
 #define GL_BGRA 0x80E1
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#define GL_ALREADY_SIGNALED 0x911A
+#define GL_CONDITION_SATISFIED 0x911C
+
+typedef struct __GLsync *GLsync;
+typedef GLsync(APIENTRY *aura_gl_fence_sync_fn)(GLenum, GLbitfield);
+typedef GLenum(APIENTRY *aura_gl_client_wait_sync_fn)(GLsync, GLbitfield, uint64_t);
+typedef void(APIENTRY *aura_gl_delete_sync_fn)(GLsync);
 
 typedef void(APIENTRY *aura_gl_gen_buffers_fn)(GLsizei, GLuint *);
 typedef void(APIENTRY *aura_gl_delete_buffers_fn)(GLsizei, const GLuint *);
@@ -29,8 +37,20 @@ typedef struct aura_gl_capture_state {
     aura_gl_map_buffer_fn map_buffer;
     aura_gl_unmap_buffer_fn unmap_buffer;
     aura_gl_bind_framebuffer_fn bind_framebuffer;
+    aura_gl_fence_sync_fn fence_sync;
+    aura_gl_client_wait_sync_fn client_wait_sync;
+    aura_gl_delete_sync_fn delete_sync;
     HGLRC owner_context;
     GLuint pbos[3];
+    /* Когда в PBO попросили кадр: это и есть время кадра, а не миг чтения.
+       Читается PBO через два захвата, и штамп «сейчас» опаздывал на ~33 мс. */
+    uint64_t issue_100ns[3];
+    /* Готовность чтения кадра в PBO: без неё glMapBuffer на загруженной
+       видеокарте останавливал поток отрисовки игры до конца копирования. */
+    GLsync fences[3];
+    /* Сколько раз подряд кадр пропущен из-за неготовности: при постоянной
+       перегрузке пропускать всё подряд нельзя, иначе запись встанет вовсе. */
+    int skipped_in_row;
     int width;
     int height;
     int stride;
@@ -96,17 +116,33 @@ static int load_functions(aura_gl_capture_state *state)
     // свой привязанным, и возвращать нечего.
     state->bind_framebuffer =
         (aura_gl_bind_framebuffer_fn)load_gl_function("glBindFramebuffer", "glBindFramebufferEXT");
+    // Необязательные (GL 3.2 / ARB_sync): без них читаем по-старому, с ожиданием
+    state->fence_sync = (aura_gl_fence_sync_fn)load_gl_function("glFenceSync", NULL);
+    state->client_wait_sync = (aura_gl_client_wait_sync_fn)load_gl_function("glClientWaitSync", NULL);
+    state->delete_sync = (aura_gl_delete_sync_fn)load_gl_function("glDeleteSync", NULL);
+    if (state->fence_sync == NULL || state->client_wait_sync == NULL || state->delete_sync == NULL) {
+        state->fence_sync = NULL;
+        state->client_wait_sync = NULL;
+        state->delete_sync = NULL;
+    }
     return state->gen_buffers != NULL && state->delete_buffers != NULL &&
            state->bind_buffer != NULL && state->buffer_data != NULL &&
            state->map_buffer != NULL && state->unmap_buffer != NULL;
 }
 
+static void drop_fence(aura_gl_capture_state *state, unsigned index)
+{
+    if (state->fences[index] != NULL && state->delete_sync != NULL) state->delete_sync(state->fences[index]);
+    state->fences[index] = NULL;
+}
+
 static void release_current_context(aura_gl_capture_state *state)
 {
-    if (state->initialized && state->delete_buffers != NULL &&
-        state->owner_context == wglGetCurrentContext()) {
-        state->delete_buffers(3, state->pbos);
+    if (state->initialized && state->owner_context == wglGetCurrentContext()) {
+        for (unsigned index = 0; index < 3; ++index) drop_fence(state, index);
+        if (state->delete_buffers != NULL) state->delete_buffers(3, state->pbos);
     }
+    memset(state->fences, 0, sizeof(state->fences));
     memset(state->pbos, 0, sizeof(state->pbos));
     state->initialized = 0;
     state->issued_count = 0;
@@ -121,6 +157,7 @@ static int initialize_ring(aura_gl_capture_state *state, int width, int height)
 
     if (state->owner_context == current) release_current_context(state);
     else {
+        memset(state->fences, 0, sizeof(state->fences));
         memset(state->pbos, 0, sizeof(state->pbos));
         state->initialized = 0;
         state->issued_count = 0;
@@ -212,7 +249,6 @@ static int publish_frame(
 
 aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
 {
-    (void)dc;
     if (ipc == NULL || ipc->header == NULL) return AURA_GL_CAPTURE_FAILED;
     if (!TryAcquireSRWLockExclusive(&g_capture_lock)) {
         InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
@@ -230,10 +266,22 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         goto done;
     }
 
-    GLint viewport[4] = {0};
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    int width = viewport[2];
-    int height = viewport[3];
+    // Размер заднего буфера — это клиентская область окна. GL_VIEWPORT к моменту
+    // SwapBuffers хранит то, что игра выставила последним (проход шейдера,
+    // интерфейс), и чтение шло не того размера. Так же делает OBS.
+    int width = 0, height = 0;
+    HWND window = dc != NULL ? WindowFromDC(dc) : NULL;
+    RECT client;
+    if (window != NULL && GetClientRect(window, &client)) {
+        width = client.right - client.left;
+        height = client.bottom - client.top;
+    }
+    if (width <= 0 || height <= 0) {
+        GLint viewport[4] = {0};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        width = viewport[2];
+        height = viewport[3];
+    }
     uint64_t byte_count = width > 0 && height > 0
         ? (uint64_t)width * (uint64_t)height * UINT64_C(4)
         : 0;
@@ -306,16 +354,36 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         result = AURA_GL_CAPTURE_FAILED;
         goto done;
     }
+    state->issue_100ns[write_index] = now;
+    drop_fence(state, write_index);
+    if (state->fence_sync != NULL)
+        state->fences[write_index] = state->fence_sync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     ++state->issued_count;
     InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_issued);
     result = AURA_GL_CAPTURE_ISSUED;
 
-    if (state->issued_count >= 3) {
-        unsigned read_index = (write_index + 1) % 3;
+    unsigned read_index = (write_index + 1) % 3;
+    // Кадр в самом старом PBO ещё не дочитан видеокартой: не ждём его на потоке
+    // игры, а пропускаем. Следующий захват этот PBO всё равно перезапишет.
+    int ready = 1;
+    if (state->issued_count >= 3 && state->fences[read_index] != NULL) {
+        GLenum wait = state->client_wait_sync(state->fences[read_index], 0, 0);
+        ready = wait == GL_ALREADY_SIGNALED || wait == GL_CONDITION_SATISFIED;
+        // Один пропуск подряд допустим, второй — уже нет: тогда ждём как раньше
+        if (!ready && state->skipped_in_row >= 1) ready = 1;
+        if (!ready) {
+            ++state->skipped_in_row;
+            InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
+        }
+    }
+    if (ready) state->skipped_in_row = 0;
+
+    if (state->issued_count >= 3 && ready) {
+        drop_fence(state, read_index);
         state->bind_buffer(GL_PIXEL_PACK_BUFFER, state->pbos[read_index]);
         const uint8_t *pixels = (const uint8_t *)state->map_buffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
         if (pixels != NULL) {
-            int published = publish_frame(ipc, state, pixels, now);
+            int published = publish_frame(ipc, state, pixels, state->issue_100ns[read_index]);
             GLboolean unmapped = state->unmap_buffer(GL_PIXEL_PACK_BUFFER);
             if (published && unmapped == GL_TRUE) result = AURA_GL_CAPTURE_PUBLISHED;
             else {

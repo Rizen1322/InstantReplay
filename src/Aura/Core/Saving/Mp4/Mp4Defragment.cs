@@ -237,6 +237,13 @@ public static class Mp4Defragment
     public static bool ConvertFile(string path)
     {
         using var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+        // Файл мог оборваться посреди фрагмента (кончилось место, пропало питание).
+        // Новое оглавление, дописанное в конец такого файла, легло бы внутрь
+        // объявленного, но недописанного mdat, и его никто бы не нашёл. Сначала
+        // обрезаем по последнему целому фрагменту.
+        var (validEnd, fragments) = CompletePrefix(file);
+        if (fragments == 0) return false;
+        if (validEnd < file.Length) file.SetLength(validEnd);
         var boxes = TopLevel(file).ToList();
         var moovBox = boxes.FirstOrDefault(b => b.Type == "moov");
         if (moovBox.Type is null) return false;
@@ -306,6 +313,63 @@ public static class Mp4Defragment
         long mfra = boxes.FirstOrDefault(b => b.Type == "mfra") is { Type: not null } m ? m.Offset : -1;
         Finalize(file, tracks, moovBox.Offset, moofs, mfra);
         return true;
+    }
+
+    /// <summary>
+    /// Где кончается целая часть фрагментированного файла: заголовок и все
+    /// фрагменты moof+mdat, дописанные полностью. Блок, чей объявленный размер
+    /// выходит за конец файла, и всё после него — оборванный хвост.
+    /// </summary>
+    internal static (long End, int Fragments) CompletePrefix(Stream file)
+    {
+        long end = 0;
+        int fragments = 0;
+        bool moofOpen = false;
+        foreach (var box in TopLevel(file))
+        {
+            if (box.Offset + box.Size > file.Length) break;
+            switch (box.Type)
+            {
+                case "moof":
+                    moofOpen = true;
+                    break;
+                case "mdat":
+                    if (moofOpen) fragments++;
+                    moofOpen = false;
+                    end = box.Offset + box.Size;
+                    break;
+                default:
+                    if (!moofOpen) end = box.Offset + box.Size;
+                    break;
+            }
+        }
+        return (end, fragments);
+    }
+
+    /// <summary>
+    /// Спасти запись, которая осталась «.part» после падения или отключения
+    /// питания: обрезать по последнему целому фрагменту, при одной звуковой
+    /// дорожке сделать обычным MP4 (для Vegas) и переименовать в «… (восстановлено).mp4».
+    /// null — это не фрагментированная запись или в ней нет ни одного целого фрагмента.
+    /// </summary>
+    public static string? RecoverPart(string partPath)
+    {
+        if (!partPath.EndsWith(".part", StringComparison.OrdinalIgnoreCase) || !IsFragmented(partPath)) return null;
+        using (var file = new FileStream(partPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var (end, fragments) = CompletePrefix(file);
+            if (fragments == 0) return null;
+            if (end < file.Length) file.SetLength(end);
+            file.Flush(flushToDisk: true);
+        }
+        if (NeedsVegasFix(partPath)) ConvertFile(partPath);
+
+        string final = partPath[..^".part".Length];
+        string stem = Path.Combine(Path.GetDirectoryName(final)!, Path.GetFileNameWithoutExtension(final) + " (восстановлено)");
+        string target = stem + ".mp4";
+        for (int n = 2; File.Exists(target); n++) target = $"{stem} {n}.mp4";
+        File.Move(partPath, target);
+        return target;
     }
 
     private static bool ReadTraf(byte[] data, int start, int size,

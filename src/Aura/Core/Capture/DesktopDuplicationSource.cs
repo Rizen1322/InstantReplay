@@ -381,7 +381,11 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 if (_minFrameIntervalTicks > 0)
                 {
                     if (_nextFrameDeadline == 0) _nextFrameDeadline = ticks;
-                    if (ticks < _nextFrameDeadline) continue;
+                    // Четверть кадра допуска, как в WGC: иначе кадр, пришедший на
+                    // долю миллисекунды раньше, выбрасывается, и при частоте монитора,
+                    // равной частоте записи, fps падает вдвое. Средняя частота выше
+                    // заданной не поднимется: дедлайн сдвигается на целый интервал.
+                    if (ticks < _nextFrameDeadline - _minFrameIntervalTicks / 4) continue;
                     _nextFrameDeadline += _minFrameIntervalTicks;
                     if (ticks - _nextFrameDeadline > _minFrameIntervalTicks * 4)
                         _nextFrameDeadline = ticks + _minFrameIntervalTicks;

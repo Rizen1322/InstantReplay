@@ -73,6 +73,15 @@ internal sealed class CursorOverlay : IDisposable
         _ready = TryBuildPipeline();
     }
 
+    /// <summary>
+    /// Будет ли курсор вообще нарисован. Игра с обзором мышью прячет курсор почти
+    /// всегда, и тогда чистая копия кадра плюс копия в выходную текстуру это два
+    /// лишних полных копирования на каждый кадр ради ничего: кадр можно сразу
+    /// класть в выходную текстуру.
+    /// </summary>
+    public bool WillDraw(in DdaCursorSnapshot cursor) =>
+        _ready && cursor.Visible && cursor.Shape is { Width: > 0, Height: > 0 };
+
     /// <summary>Копирует чистый кадр и накладывает только проверенный снимок курсора.</summary>
     public void Compose(
         ID3D11Texture2D clean,

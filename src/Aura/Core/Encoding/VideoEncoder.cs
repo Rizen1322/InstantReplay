@@ -208,6 +208,7 @@ public sealed class VideoEncoder : IDisposable
 
     /// <summary>Кадры, не дошедшие даже до преобразования: очередь была забита.</summary>
     public long FramesSkippedBeforeConvert;
+    public long FramesSkippedSameSlot;
 
     /// <summary>Размер кольца текстур и потолок очереди — их считает бюджет видеопамяти.</summary>
     public int PoolSlots => _copyPool?.Slots ?? 0;
@@ -583,7 +584,11 @@ public sealed class VideoEncoder : IDisposable
         var shared = pool.AcquireForEncoder(item.Texture, 200);
         if (shared is null)
         {
-            // Захват так и не отдал слот — кадр теряем, слот остаётся занятым
+            // Захват так и не отдал слот: кадр теряем, а слот возвращаем в пул.
+            // Раньше он так и оставался занятым, и после 24 таких сбоев пул кончался
+            // насовсем: дальше каждый кадр падал в «нет свободной текстуры».
+            // Release сам вернёт ключ 0, а если не сможет, TryCopy починит слот.
+            pool.Release(item.Texture);
             Interlocked.Increment(ref FramesDroppedRealQueue);
             Interlocked.Increment(ref NvencStats.DroppedInputFrames);
             if (Interlocked.Increment(ref _nvencAcquireFailures) is 1 or 100)
@@ -1218,6 +1223,32 @@ public sealed class VideoEncoder : IDisposable
     // закрывает пейсер в реальном времени.
     private const int MaxBackfillSlots = 8;
 
+    /// <summary>
+    /// Кадр попадает в тот же слот сетки 1/fps, что и прошлый настоящий кадр.
+    ///
+    /// Захват часто отдаёт кадры чаще частоты записи: 144 Гц монитор при записи в
+    /// 60 кадров. Раньше каждый такой кадр честно масштабировался, переводился в
+    /// NV12 и копировался в пул, а потом всё равно сдвигался в следующий слот или
+    /// выбрасывался. Это до двух лишних проходов видеокарты на кадр как раз тогда,
+    /// когда игра грузит её сильнее всего. Слот уже представлен кадром, поэтому
+    /// второй можно пропустить ещё до преобразования.
+    /// </summary>
+    /// <summary>Следующий слот сетки: по номеру слота, см. EncoderCfrPolicy.SlotPts.</summary>
+    private long NextSlot(long pts) => EncoderCfrPolicy.NextSlot(pts, _cfrBase, Fps);
+
+    public bool SameSlotAsLastFrame(long ticks)
+    {
+        lock (_cfrLock)
+        {
+            if (_cfrBase < 0 || Fps <= 0) return false;
+            long natural = EncoderCfrPolicy.NaturalSlot(ticks, _cfrBase, Fps);
+            if (natural != _lastRealPts) return false;
+            // Экран жив: пейсер не должен считать это паузой
+            _lastRealArrivalWall = NowQpcTicks();
+            return true;
+        }
+    }
+
     public void SubmitFrame(ID3D11Texture2D nv12PoolTexture, long ticks, ID3D11DeviceContext context)
     {
         if (!_running) return;
@@ -1238,8 +1269,8 @@ public sealed class VideoEncoder : IDisposable
             {
                 // Счёт слотов и число дубликатов задним числом — в EncoderCfrPolicy:
                 // это единственная часть конвейера, которую можно проверить тестом.
-                natural = EncoderCfrPolicy.NaturalSlot(ticks, _cfrBase, _frameDurationTicks);
-                if (EncoderCfrPolicy.QuantizePts(ticks, _cfrBase, _lastCfrPts, _frameDurationTicks) is not long placed)
+                natural = EncoderCfrPolicy.NaturalSlot(ticks, _cfrBase, Fps);
+                if (EncoderCfrPolicy.QuantizePts(ticks, _cfrBase, _lastCfrPts, Fps) is not long placed)
                 {
                     // Слот давно закрыт повторами. Картинку сохраняем как источник
                     // следующих повторов, а время для пейсера — настоящее.
@@ -1270,11 +1301,11 @@ public sealed class VideoEncoder : IDisposable
             {
                 // Пропущенные слоты между прошлым кадром и этим — дубликаты задним числом
                 if (_copyPool!.Latest is not null &&
-                    EncoderCfrPolicy.BackfillSlots(_lastCfrPts, pts, _frameDurationTicks, MaxBackfillSlots) > 0)
+                    EncoderCfrPolicy.BackfillSlots(_lastCfrPts, pts, _cfrBase, Fps, MaxBackfillSlots) > 0)
                 {
-                    while (_lastCfrPts + _frameDurationTicks < pts)
+                    while (NextSlot(_lastCfrPts) < pts)
                     {
-                        long duplicatePts = _lastCfrPts + _frameDurationTicks;
+                        long duplicatePts = NextSlot(_lastCfrPts);
                         bool encoderBehind = EncoderIsBehind();
                         if (!CanEnqueueDuplicate(encoderBehind))
                         {
@@ -1479,7 +1510,7 @@ public sealed class VideoEncoder : IDisposable
                 long silence = NowQpcTicks() - _lastRealArrivalWall;
                 long fillTarget = _lastRealPts + silence - _frameDurationTicks * 5;
                 int catchUp = 0;
-                while (_lastCfrPts + _frameDurationTicks <= fillTarget && catchUp++ < 4)
+                while (NextSlot(_lastCfrPts) <= fillTarget && catchUp++ < 4)
                 {
                     // Дубликаты держат CFR. Настоящий кадр всё равно имеет приоритет:
                     // при полной очереди он вытеснит первый накопленный дубликат.
@@ -1491,7 +1522,7 @@ public sealed class VideoEncoder : IDisposable
                         break;
                     }
 
-                    long pts = _lastCfrPts + _frameDurationTicks;
+                    long pts = NextSlot(_lastCfrPts);
                     var dup = CopyIntoPool(_copyPool.Latest);
                     if (dup is null)
                     {

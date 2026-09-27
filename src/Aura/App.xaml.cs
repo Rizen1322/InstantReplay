@@ -250,12 +250,14 @@ public partial class App : Application
     });
 
     /// <summary>
-    /// Убрать недописанные файлы, оставшиеся от прерванных сохранений.
+    /// Разобрать недописанные файлы, оставшиеся от прерванных сохранений.
     ///
     /// Клип и части обычной записи пишутся как «.mp4.part» и переименовываются
-    /// только после успешной финализации. Если процесс убили или пропало питание,
-    /// такой хвост остаётся на диске навсегда: сам он никому не мешает, но место
-    /// занимает и накапливается. Трогаем только заведомо свои — по расширению.
+    /// только после успешной финализации. Недописанный клип повтора без оглавления
+    /// не открывается ничем, его удаляем. А запись в файл идёт фрагментами и после
+    /// падения или отключения питания играется до последнего целого фрагмента:
+    /// раньше её тоже удаляли, и терялось ровно то, ради чего фрагменты и нужны.
+    /// Теперь такая запись восстанавливается как «… (восстановлено).mp4».
     /// </summary>
     private static void PruneUnfinishedFiles(string root)
     {
@@ -263,6 +265,7 @@ public partial class App : Application
 
         int removed = 0;
         long freed = 0;
+        var recovered = new List<string>();
         foreach (string file in Directory.EnumerateFiles(root, "*.part", SearchOption.AllDirectories))
             try
             {
@@ -270,6 +273,17 @@ public partial class App : Application
                 var info = new FileInfo(file);
                 if (DateTime.UtcNow - info.LastWriteTimeUtc < TimeSpan.FromMinutes(10)) continue;
 
+                string? saved = null;
+                try { saved = Core.Saving.Mp4.Mp4Defragment.RecoverPart(file); }
+                catch (Exception ex) { Log.Warn("App", $"Запись «{info.Name}» не восстановлена: {ex.Message}"); }
+                if (saved is not null)
+                {
+                    Services.Storage.RegisterSaved(saved);
+                    recovered.Add(saved);
+                    Log.Info("App", $"Восстановлена запись после сбоя: {saved}");
+                    continue;
+                }
+                if (!File.Exists(file)) continue;
                 freed += info.Length;
                 File.Delete(file);
                 removed++;
@@ -278,6 +292,13 @@ public partial class App : Application
 
         if (removed > 0)
             Log.Info("App", $"Убрано незавершённых файлов: {removed} ({freed / (1024 * 1024)} МБ)");
+        if (recovered.Count > 0)
+        {
+            Services.Notifications.Show(NotificationKind.Info,
+                recovered.Count == 1 ? "Восстановлена запись после сбоя" : $"Восстановлено записей после сбоя: {recovered.Count}",
+                Path.GetFileName(recovered[0]));
+            Views.ClipCommands.NotifyLibraryChanged();
+        }
     }
 
     /// <summary>

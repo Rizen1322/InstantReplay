@@ -239,6 +239,103 @@ public class Mp4MuxerTests
         finally { File.Delete(path); }
     }
 
+    /// <summary>Фрагментированная запись без хвоста — как после падения процесса.</summary>
+    private static byte[] CrashedRecording(int frames)
+    {
+        var clip = H264Clip(frames);
+        var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1280, 720, [], clip[0].Item1)
+                     with { FrameRate = 60 };
+        var ms = new MemoryStream();
+        var writer = new FragmentedMp4Writer(ms, format, []);
+        for (int i = 0; i < clip.Count; i++)
+            writer.WriteVideo(clip[i].Item1, i * 166_666, i * 166_666, clip[i].Item2);
+        return ms.ToArray();   // Finish не зовём: процесс «упал»
+    }
+
+    [Fact]
+    public void Truncated_fragment_is_cut_before_conversion()
+    {
+        byte[] whole = CrashedRecording(400);
+        // Обрываем посреди последнего mdat: так файл выглядит после отключения питания
+        byte[] cut = whole[..(whole.Length - 1000)];
+        string path = Path.Combine(Path.GetTempPath(), $"aura-cut-{Guid.NewGuid():N}.mp4");
+        try
+        {
+            File.WriteAllBytes(path, cut);
+            Assert.True(Mp4Defragment.ConvertFile(path));
+            byte[] file = File.ReadAllBytes(path);
+            // moov достижим: обход верхнего уровня доходит до него без выхода за конец
+            Assert.Equal(1, CountTopLevel(file, "moov"));
+            var moov = Find(file, "moov");
+            Assert.True(moov.Offset + moov.Size == file.Length, "оглавление должно быть последним блоком");
+            Assert.Equal(0, CountTopLevel(file, "moof"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Crashed_part_file_is_recovered_not_deleted()
+    {
+        byte[] cut = CrashedRecording(400)[..^500];
+        string dir = Path.Combine(Path.GetTempPath(), $"aura-rec-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string part = Path.Combine(dir, "Game 2026-09-28 - 10-00-00.mp4.part");
+            File.WriteAllBytes(part, cut);
+            string? saved = Mp4Defragment.RecoverPart(part);
+            Assert.NotNull(saved);
+            Assert.False(File.Exists(part));
+            Assert.EndsWith("(восстановлено).mp4", saved);
+            byte[] file = File.ReadAllBytes(saved!);
+            Assert.True(CountTopLevel(file, "moov") >= 1);
+
+            // Недописанный клип повтора (не фрагментированный) не восстанавливается
+            string junk = Path.Combine(dir, "Clip.mp4.part");
+            File.WriteAllBytes(junk, new byte[4096]);
+            Assert.Null(Mp4Defragment.RecoverPart(junk));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void Writer_stops_cleanly_after_write_failure()
+    {
+        var clip = H264Clip(400);
+        var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1280, 720, [], clip[0].Item1)
+                     with { FrameRate = 60 };
+        // Отказ посреди записи: на середине того, что записалось бы целиком
+        var stream = new FailingStream(failAfter: CrashedRecording(400).Length / 2);
+        var writer = new FragmentedMp4Writer(stream, format, []);
+        bool failed = false;
+        for (int i = 0; i < clip.Count && !failed; i++)
+            try { writer.WriteVideo(clip[i].Item1, i * 166_666, i * 166_666, clip[i].Item2); }
+            catch (IOException) { failed = true; }
+        Assert.True(failed, "поток должен был отказать");
+        stream.Fail = false;
+        writer.Finish(166_666);   // не должен ни бросить, ни писать после битых байт
+        byte[] file = stream.ToArray();
+        var (end, fragments) = Mp4Defragment.CompletePrefix(new MemoryStream(file));
+        Assert.Equal(file.Length, end);   // хвост обрезан по целому фрагменту
+        Assert.True(fragments >= 1);
+    }
+
+    /// <summary>Поток, который отказывает после заданного числа байт (кончилось место).</summary>
+    private sealed class FailingStream(long failAfter) : MemoryStream
+    {
+        public bool Fail = true;
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (Fail && Position + count > failAfter)
+            {
+                base.Write(buffer, offset, (int)Math.Max(0, failAfter - Position));
+                throw new IOException("На диске недостаточно места");
+            }
+            base.Write(buffer, offset, count);
+        }
+        public override void Write(ReadOnlySpan<byte> buffer) => Write(buffer.ToArray(), 0, buffer.Length);
+    }
+
     private static int CountTopLevel(byte[] file, string type)
     {
         int count = 0;

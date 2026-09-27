@@ -1,4 +1,4 @@
-﻿using System.IO.MemoryMappedFiles;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Vortice.Direct3D11;
@@ -461,7 +461,14 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _heartbeatTimer?.Dispose();
+        // Dispose() таймера не ждёт уже идущий обратный вызов, а тот читает общую
+        // память, которую ниже освобождаем: чтение освобождённой памяти роняет
+        // процесс без шанса поймать исключение. Ждём, пока вызов закончится.
+        if (_heartbeatTimer is { } timer)
+        {
+            using var done = new ManualResetEvent(false);
+            if (timer.Dispose(done)) done.WaitOne(TimeSpan.FromSeconds(2));
+        }
         _heartbeatTimer = null;
         if (_framePointer is not null)
         {
@@ -473,7 +480,13 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         }
         _stopEvent.Set();
         if (_readerThread.IsAlive && !_readerThread.Join(TimeSpan.FromSeconds(2)))
-            Failed?.Invoke(new TimeoutException("OpenGL reader thread не остановился за 2 секунды"));
+        {
+            // Поток чтения ещё внутри общей памяти или текстур: освободить их под
+            // ним значит уронить процесс. Оставляем их сборщику и системе, это
+            // единичная утечка при зависшем драйвере, а не падение.
+            Aura.Core.Logging.Log.Warn("Capture", "Поток чтения кадров Minecraft не остановился за 2 с, память моста оставлена");
+            return;
+        }
 
         _frameTexture?.Dispose();
         _uploadTexture?.Dispose();

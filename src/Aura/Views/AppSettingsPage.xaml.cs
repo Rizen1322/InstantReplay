@@ -373,6 +373,10 @@ public partial class AppSettingsPage : PageBase
             string? root = Core.SystemIntegration.UpdateService.InstallRoot;
             if (root is null || !Core.SystemIntegration.UpdateService.LaunchInstaller(installer, root))
                 throw new InvalidOperationException("не удалось запустить установщик");
+
+            // Закрываемся сами и штатно: запись в файл дописывается, настройки
+            // сохраняются. Установщик ждёт выхода, а не убивает процесс.
+            (Application.Current as App)?.ExitApp();
         }
         catch (Exception ex)
         {

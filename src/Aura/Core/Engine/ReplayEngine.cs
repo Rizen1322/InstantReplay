@@ -733,6 +733,13 @@ public sealed partial class ReplayEngine : IDisposable
                     return;
                 }
 
+                // Слот сетки уже занят прошлым кадром: см. VideoEncoder.SameSlotAsLastFrame
+                if (_encoder is { } slotCheck && slotCheck.SameSlotAsLastFrame(current.Timestamp))
+                {
+                    Interlocked.Increment(ref slotCheck.FramesSkippedSameSlot);
+                    return;
+                }
+
                 // Метки видеокарты ставятся вокруг тех же двух стадий, что и
                 // секундомер потока. Сравнение этих двух цифр и есть весь смысл:
                 // процессор здесь только ставит команды в очередь.

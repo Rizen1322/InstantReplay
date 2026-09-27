@@ -114,7 +114,10 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             {
                 slot.Scope = captured.Scope;
                 slot.CleanCurrent = false;
-                if (!_separateCursor)
+                // Курсора в кадре не будет: сразу в выходную текстуру, без чистой
+                // копии. CleanCurrent = false, и снимок области возьмёт Output, где
+                // курсора и так нет.
+                if (!_separateCursor || !_cursorOverlay!.WillDraw(cursor))
                 {
                     CopyFrame(captured, slot.Output);
                     return;

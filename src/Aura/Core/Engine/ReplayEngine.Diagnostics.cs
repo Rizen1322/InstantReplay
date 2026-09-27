@@ -30,6 +30,7 @@ public sealed partial class ReplayEngine
     // кадры (дропы очереди = не успевает энкодер; низкий submit = не успевает захват).
     private System.Threading.Timer? _statsTimer;
     private long _lastSkippedBeforeConvert;
+    private long _lastSkippedSameSlot;
     private long _lastSubmitted, _lastEncoded, _lastDropped, _lastDiscardedDuplicates,
                  _lastSuppressedDuplicates, _lastDuplicated, _lastReceived, _lastAccepted;
     private long _lastRequests, _lastPacerBlocked;
@@ -38,7 +39,7 @@ public sealed partial class ReplayEngine
     {
         _lastSubmitted = _lastEncoded = _lastDropped = _lastDiscardedDuplicates =
             _lastSuppressedDuplicates = _lastDuplicated = _lastReceived = _lastAccepted = 0;
-        _lastRequests = _lastPacerBlocked = _lastSkippedBeforeConvert = 0;
+        _lastRequests = _lastPacerBlocked = _lastSkippedBeforeConvert = _lastSkippedSameSlot = 0;
         _statsWindowStart = DateTime.UtcNow;
         _statsTimer?.Dispose();
         _statsTimer = new System.Threading.Timer(_ => DumpStats("за минуту"),
@@ -60,6 +61,7 @@ public sealed partial class ReplayEngine
         if (enc is null || State == EngineState.Stopped) return;
 
         long skipped = Interlocked.Read(ref enc.FramesSkippedBeforeConvert);
+        long sameSlot = Interlocked.Read(ref enc.FramesSkippedSameSlot);
         long s = enc.FramesSubmitted, e = enc.FramesEncoded,
              d = enc.FramesDroppedRealQueue,
              discardedDuplicates = enc.FramesDiscardedDuplicates,
@@ -90,6 +92,9 @@ public sealed partial class ReplayEngine
             (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (давление очереди/MFT)" : "") +
             (skipped > _lastSkippedBeforeConvert
                 ? $"; не преобразовано на забитой очереди {skipped - _lastSkippedBeforeConvert}"
+                : "") +
+            (sameSlot > _lastSkippedSameSlot
+                ? $"; лишних кадров в том же слоте {sameSlot - _lastSkippedSameSlot}"
                 : "") +
             (Interlocked.Exchange(ref enc.MaxPtsLeadTicks, long.MinValue) is long maxLead && maxLead != long.MinValue
                 ? $"; время кадра от захвата {Interlocked.Exchange(ref enc.MinPtsLeadTicks, long.MaxValue) / 10_000.0:+0.0;-0.0}..{maxLead / 10_000.0:+0.0;-0.0} мс"
@@ -124,6 +129,7 @@ public sealed partial class ReplayEngine
 
         _lastSubmitted = s; _lastEncoded = e; _lastDropped = d;
         _lastSkippedBeforeConvert = skipped;
+        _lastSkippedSameSlot = sameSlot;
         _lastDiscardedDuplicates = discardedDuplicates;
         _lastSuppressedDuplicates = suppressedDuplicates;
         _lastDuplicated = dup;

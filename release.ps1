@@ -144,7 +144,7 @@ try {
         Write-Host "   ВНИМАНИЕ: ключ подписи не заведён, релиз уйдёт только с контрольной суммой" -ForegroundColor Yellow
     }
 }
-finally { Pop-Location }
+finally { Pop-Location; $ErrorActionPreference = 'Stop' }
 
 # ---------- Версия в csproj ----------
 Step "2/6 Обновление версии в csproj"
@@ -180,6 +180,10 @@ Write-Host "   Проверено: в Aura.exe версия $built"
 # ---------- Коммит и тег ----------
 Step "4/6 Коммит и тег"
 Push-Location $root
+# Предупреждения git (например, о замене LF на CRLF) идут в stderr. При Stop
+# PowerShell 5.1 превращает их в ошибку и обрывает релиз посреди коммита.
+# Успех git здесь проверяется по $LASTEXITCODE.
+$ErrorActionPreference = 'Continue'
 try {
     git add -A
     git commit -q -m "Release $tag"

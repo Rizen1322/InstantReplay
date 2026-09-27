@@ -84,6 +84,10 @@ internal static class Program
         foreach (string name in new[] { AppName, OldAppName })
         {
             TryDelete(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu),
+                "Programs",
+                $"{name}.lnk"));
+            TryDelete(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
                 "Programs",
                 $"{name}.lnk"));
@@ -95,6 +99,7 @@ internal static class Program
 
     private static void DeleteRegistration()
     {
+        try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
         try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
         try { Registry.CurrentUser.DeleteSubKeyTree(OldUninstallKey, throwOnMissingSubKey: false); } catch { }
         try

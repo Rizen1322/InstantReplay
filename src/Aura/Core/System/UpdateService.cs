@@ -381,11 +381,13 @@ public sealed class UpdateService
             foreach (string name in new[] { "Aura", "InstantReplay" })
                 try
                 {
-                    using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                        @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + name);
-                    if (key?.GetValue("InstallLocation") is string root && root.Length > 0
-                        && File.Exists(Path.Combine(root, "app", "Aura.exe")))
-                        return root;
+                    foreach (var hive in new[] { Microsoft.Win32.Registry.LocalMachine, Microsoft.Win32.Registry.CurrentUser })
+                    {
+                        using var key = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + name);
+                        if (key?.GetValue("InstallLocation") is string root && root.Length > 0
+                            && File.Exists(Path.Combine(root, "app", "Aura.exe")))
+                            return root;
+                    }
                 }
                 catch { }
 
