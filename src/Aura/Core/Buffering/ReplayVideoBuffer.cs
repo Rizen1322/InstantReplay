@@ -1,4 +1,4 @@
-﻿using Aura.Core.Logging;
+using Aura.Core.Logging;
 
 namespace Aura.Core.Buffering;
 
@@ -750,8 +750,12 @@ public sealed class ReplayVideoBuffer
         }
     }
 
-    /// <summary>Папка файла буфера на диске.</summary>
-    public static string DiskDirectory =>
+    /// <summary>
+    /// Папка файла буфера на диске. Рядом с настройками: у проверочного прогона со
+    /// своей папкой данных и буфер свой, и он не трогает файл работающей Aura.
+    /// Приложение ставит её при запуске от папки настроек.
+    /// </summary>
+    public static string DiskDirectory { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura", "ReplayBuffer");
 
     /// <summary>Отпустить арену целиком: конвейер выключен, память возвращается системе.</summary>

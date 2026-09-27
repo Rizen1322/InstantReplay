@@ -90,6 +90,13 @@ public sealed class AppSettings
     public AudioTrackMode TrackMode { get; set; } = AudioTrackMode.Mixed;
     /// <summary>ID устройства вывода (loopback). null = устройство по умолчанию.</summary>
     public string? RenderDeviceId { get; set; }
+
+    /// <summary>
+    /// Звук игры только из этой программы (имя exe без «.exe»), а не весь звук
+    /// устройства. null — весь звук компьютера. Discord и браузер в запись тогда
+    /// не попадают.
+    /// </summary>
+    public string? GameAudioProcess { get; set; }
     /// <summary>ID микрофона. null = устройство по умолчанию.</summary>
     public string? CaptureDeviceId { get; set; }
     /// <summary>Шумоподавление микрофона (noise gate: убирает фоновый гул в паузах).</summary>

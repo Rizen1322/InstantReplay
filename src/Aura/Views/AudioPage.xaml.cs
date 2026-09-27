@@ -77,6 +77,8 @@ public partial class AudioPage : PageBase
         ShowGate();
         SelectTrack(s.TrackMode.ToString());
         FillAudioDevices(s);
+        GameScope.SelectedIndex = s.GameAudioProcess is null ? 0 : 1;
+        FillProcesses(s.GameAudioProcess);
         UpdateDependents();
         _loading = false;
         SetDirty(false);
@@ -115,6 +117,7 @@ public partial class AudioPage : PageBase
             s.TrackMode = Enum.Parse<AudioTrackMode>((string)((ListBoxItem)TrackMode.SelectedItem).Tag);
             s.RenderDeviceId = (string?)((ComboBoxItem)RenderDevice.SelectedItem)?.Tag;
             s.CaptureDeviceId = (string?)((ComboBoxItem)CaptureDevice.SelectedItem)?.Tag;
+            s.GameAudioProcess = OneGame ? (string?)(GameProcess.SelectedItem as ComboBoxItem)?.Tag : null;
         }, "video");
         SetDirty(false);
     }
@@ -122,6 +125,72 @@ public partial class AudioPage : PageBase
     // ---------------- Обработчики ----------------
 
     private void AudioSelection_Changed(object sender, SelectionChangedEventArgs e) => Audio_Changed(sender, e);
+
+    private bool OneGame => (GameScope.SelectedItem as ListBoxItem)?.Tag as string == "One";
+
+    private void GameScope_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (OneGame && GameProcess.SelectedItem is null && GameProcess.Items.Count > 0) GameProcess.SelectedIndex = 0;
+        Audio_Changed(sender, e);
+    }
+
+    private void RefreshProcesses_Click(object sender, RoutedEventArgs e) =>
+        FillProcesses((GameProcess.SelectedItem as ComboBoxItem)?.Tag as string ?? Services.Settings.Current.GameAudioProcess);
+
+    /// <summary>
+    /// Программы, из которых можно писать звук: те, у кого сейчас есть звуковой
+    /// сеанс (хоть раз что-то играли), и запущенные игры из списка известных.
+    /// Выбранная раньше игра остаётся в списке, даже если сейчас не запущена.
+    /// </summary>
+    private void FillProcesses(string? selected)
+    {
+        bool wasLoading = _loading;
+        _loading = true;
+        var names = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var database = Core.GameDetection.GameDatabase.Load();
+        string self = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+
+        void Add(string exe)
+        {
+            if (string.IsNullOrWhiteSpace(exe) || names.ContainsKey(exe)) return;
+            if (exe.Equals(self, StringComparison.OrdinalIgnoreCase) || exe is "Idle" or "System" or "audiodg") return;
+            names[exe] = database.TryGetGame(exe, out var title) ? $"{title} ({exe})" : exe;
+        }
+
+        try
+        {
+            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            foreach (var device in enumerator.EnumerateAudioEndPoints(
+                         NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.DeviceState.Active))
+            {
+                var sessions = device.AudioSessionManager.Sessions;
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    uint pid = sessions[i].GetProcessID;
+                    if (pid == 0) continue;
+                    try { using var p = System.Diagnostics.Process.GetProcessById((int)pid); Add(p.ProcessName); } catch { }
+                }
+            }
+        }
+        catch { }
+
+        foreach (var p in System.Diagnostics.Process.GetProcesses())
+            using (p)
+                try { if (database.TryGetGame(p.ProcessName, out _)) Add(p.ProcessName); } catch { }
+
+        if (selected is not null && !names.ContainsKey(selected))
+            names[selected] = database.TryGetGame(selected, out var t) ? $"{t} ({selected}), не запущена" : $"{selected}, не запущена";
+
+        GameProcess.Items.Clear();
+        foreach (var (exe, title) in names)
+            GameProcess.Items.Add(new ComboBoxItem { Content = title, Tag = exe });
+        foreach (ComboBoxItem item in GameProcess.Items)
+            if (string.Equals((string)item.Tag, selected, StringComparison.OrdinalIgnoreCase)) GameProcess.SelectedItem = item;
+        GameProcessSub.Text = names.Count == 0
+            ? "Запусти игру и нажми обновить: она появится в списке"
+            : "Пока игра не запущена, звук игры не пишется";
+        _loading = wasLoading;
+    }
 
     private void Audio_Changed(object sender, RoutedEventArgs e)
     {
@@ -176,7 +245,10 @@ public partial class AudioPage : PageBase
     {
         bool game = GameAudio.IsChecked == true, mic = MicAudio.IsChecked == true;
         bool gate = NoiseGate.IsChecked == true;
-        GameDeviceRow.Visibility = Show(game);
+        GameScopeRow.Visibility = Show(game);
+        GameProcessRow.Visibility = Show(game && OneGame);
+        // Звук одной игры берётся у самой игры, устройство вывода ему не нужно
+        GameDeviceRow.Visibility = Show(game && !OneGame);
         MicDeviceRow.Visibility = Show(mic);
         GameVolumeRow.Visibility = Show(game);
         MicVolumeRow.Visibility = Show(mic);

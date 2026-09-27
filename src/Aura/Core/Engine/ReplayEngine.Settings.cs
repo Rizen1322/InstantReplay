@@ -1,4 +1,4 @@
-﻿using Aura.Core.Buffering;
+using Aura.Core.Buffering;
 using Aura.Core.Capture;
 using Aura.Core.Logging;
 using Aura.Core.Settings;
@@ -29,13 +29,13 @@ public sealed partial class ReplayEngine
         VideoCodec Codec, int Height, int Fps, VideoBitDepth BitDepth, int Monitor,
         int BitrateMbps, bool Cursor,
         int ReplaySeconds, bool OnDisk,
-        bool Game, bool Mic, string? RenderDevice, string? CaptureDevice)
+        bool Game, bool Mic, string? RenderDevice, string? CaptureDevice, string? GameProcess)
     {
         public static PipelineConfig From(AppSettings s) => new(
             s.Codec, s.VerticalResolution, s.Fps, s.BitDepth, s.MonitorIndex,
             s.BitrateMbps, s.RecordCursor,
             s.ReplayLengthSeconds, s.ReplayBufferOnDisk,
-            s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
+            s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId, s.GameAudioProcess);
 
         public bool FormatDiffers(PipelineConfig o) =>
             Codec != o.Codec || Height != o.Height || Fps != o.Fps || BitDepth != o.BitDepth || Monitor != o.Monitor;
@@ -46,7 +46,8 @@ public sealed partial class ReplayEngine
             ReplaySeconds != o.ReplaySeconds || OnDisk != o.OnDisk || BitrateMbps != o.BitrateMbps;
 
         public bool AudioDiffers(PipelineConfig o) =>
-            Game != o.Game || Mic != o.Mic || RenderDevice != o.RenderDevice || CaptureDevice != o.CaptureDevice;
+            Game != o.Game || Mic != o.Mic || RenderDevice != o.RenderDevice || CaptureDevice != o.CaptureDevice ||
+            GameProcess != o.GameProcess;
     }
 
     private PipelineConfig? _appliedConfig;
@@ -109,34 +110,41 @@ public sealed partial class ReplayEngine
     }
 
     /// <summary>Длина повтора, которая реально помещается в арену.</summary>
+    /// <summary>
+    /// Буфер на диске: если так выбрано в настройках, а ещё всегда при записи в файл
+    /// без повтора. Ради одной записи держать арену на сотни мегабайт в памяти
+    /// незачем: повтор человек не включал, а файл пишется на диск и так.
+    /// </summary>
+    private bool UseDiskBuffer(AppSettings s) => s.ReplayBufferOnDisk || _recordingOnly;
+
     private int EffectiveReplaySeconds(AppSettings s, bool warn)
     {
-        int max = ReplayVideoBuffer.MaximumDurationSeconds(s.BitrateBps, s.ReplayBufferOnDisk);
+        bool onDisk = UseDiskBuffer(s);
+        int max = ReplayVideoBuffer.MaximumDurationSeconds(s.BitrateBps, onDisk);
         int effective = Math.Min(s.ReplayLengthSeconds, max);
         if (warn && effective < s.ReplayLengthSeconds)
         {
             Log.Warn("Engine", $"Повтор {s.ReplayLengthSeconds} с не помещается в арену при " +
                                $"{s.BitrateMbps} Мбит/с — ограничен до {effective} с");
             Warning?.Invoke($"Длина повтора ограничена до {TimeSpan.FromSeconds(effective):m\\:ss}: " +
-                            (s.ReplayBufferOnDisk ? "не хватает места под буфер" : "не хватает оперативной памяти") +
-                            (s.ReplayBufferOnDisk ? "" : ". Включите «Буфер на диске», чтобы писать дольше"));
+                            (onDisk ? "не хватает места под буфер" : "не хватает оперативной памяти"));
         }
         return effective;
     }
 
     /// <summary>Папка файла буфера, если он на диске; null — буфер в памяти.</summary>
-    private static string? BufferDirectory(AppSettings s) =>
-        s.ReplayBufferOnDisk ? ReplayVideoBuffer.DiskDirectory : null;
+    private string? BufferDirectory(AppSettings s) =>
+        UseDiskBuffer(s) ? ReplayVideoBuffer.DiskDirectory : null;
 
     /// <summary>
     /// Хватает ли места, чтобы включить повтор: под клип в папке записей, а для
     /// буфера на диске — ещё и под сам буфер.
     /// </summary>
-    private static void RequireDiskSpaceForReplay(AppSettings s)
+    private void RequireDiskSpaceForReplay(AppSettings s)
     {
         DiskSpace.Require(s.SaveRootPath, DiskSpace.ReplayClipBytes(s.BitrateBps, s.ReplayLengthSeconds),
                           "сохранения повтора");
-        if (s.ReplayBufferOnDisk)
+        if (UseDiskBuffer(s))
         {
             int seconds = Math.Min(s.ReplayLengthSeconds, ReplayVideoBuffer.MaximumDurationSeconds(s.BitrateBps, true));
             DiskSpace.Require(ReplayVideoBuffer.DiskDirectory,
@@ -149,7 +157,7 @@ public sealed partial class ReplayEngine
     private void ApplyBufferSize(PipelineConfig now)
     {
         var s = _settings.Current;
-        if (now.OnDisk) RequireDiskSpaceForReplay(s);
+        if (UseDiskBuffer(s)) RequireDiskSpaceForReplay(s);
 
         // Пока пишется клип, его кадры держат арену — ждём, потом меняем размер.
         WaitForPendingWrites();
@@ -175,7 +183,7 @@ public sealed partial class ReplayEngine
         _audioBuffer.Resize(EffectiveReplaySeconds(s, warn: false), s.CaptureGameAudio, s.CaptureMicrophone);
         ApplyLiveAudioSettings(s);
         if (s.CaptureGameAudio || s.CaptureMicrophone)
-            _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
+            _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId, s.GameAudioProcess);
     }
 
     /// <summary>

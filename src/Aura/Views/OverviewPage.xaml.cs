@@ -110,10 +110,13 @@ public partial class OverviewPage : PageBase
         // Запись в файл не требует включённого повтора: конвейер поднимется сам
         RecordButton.IsEnabled = true;
 
-        FrameIdle.Visibility = on && FrameImage.Background is ImageBrush ? Visibility.Collapsed : Visibility.Visible;
-        IdleTitle.Text = on ? "Жду кадр" : "Повтор выключен";
-        IdleSub.Text = on ? "Картинка появится через пару секунд" : "Включи, чтобы не упустить момент";
-        if (!on) FrameImage.Background = null;
+        // Живой кадр нужен, пока работает захват, а не только повтор: запись в
+        // файл без повтора тоже поднимает захват, и картинка должна быть видна.
+        bool capturing = engine.State != EngineState.Stopped;
+        FrameIdle.Visibility = capturing && FrameImage.Background is ImageBrush ? Visibility.Collapsed : Visibility.Visible;
+        IdleTitle.Text = capturing ? "Жду кадр" : "Повтор выключен";
+        IdleSub.Text = capturing ? "Картинка появится через пару секунд" : "Включи, чтобы не упустить момент";
+        if (!capturing) FrameImage.Background = null;
 
         // Шкала ленты: слева самое старое, что лежит в буфере
         double total = Math.Max(1, buffered.TotalSeconds);
@@ -123,7 +126,7 @@ public partial class OverviewPage : PageBase
         Scale2.Text = "−" + Format(TimeSpan.FromSeconds(total / 3));
         UpdatePick();
 
-        ShowLevels(on, s);
+        ShowLevels(capturing, s);
     }
 
     private void ShowLevels(bool on, Core.Settings.AppSettings s)

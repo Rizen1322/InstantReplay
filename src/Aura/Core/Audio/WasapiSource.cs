@@ -17,7 +17,7 @@ namespace Aura.Core.Audio;
 /// </summary>
 public sealed class WasapiSource : IDisposable
 {
-    private readonly MMDevice _device;
+    private readonly MMDevice? _device;
     private readonly AudioClient _client;
     private readonly AudioCaptureClient _capture;
     private readonly WaveFormat _format;
@@ -34,6 +34,9 @@ public sealed class WasapiSource : IDisposable
     private float[] _converted = new float[4096];
 
     public string? FellBackTo { get; }
+
+    /// <summary>Процесс, чей звук пишется; null — весь звук устройства.</summary>
+    public int? ProcessId { get; }
 
     public event Action<Exception>? Failed;
 
@@ -70,6 +73,34 @@ public sealed class WasapiSource : IDisposable
 
         Log.Info("Audio", $"Источник запущен: {_name} ({_format.SampleRate} Гц, {_format.Channels} кан., " +
                           $"{Describe(_format)})");
+    }
+
+    /// <summary>
+    /// Звук одной программы и её дочерних процессов (loopback процесса). Формат
+    /// задаём сами: у такого клиента нет собственного формата микшера, а система
+    /// сама приводит звук программы к нему.
+    /// </summary>
+    public WasapiSource(int processId, string processName, AudioTimeline timeline)
+    {
+        _loopback = true;
+        _timeline = timeline;
+        ProcessId = processId;
+        _name = $"loopback процесса {processName} ({processId})";
+        _client = ProcessLoopback.Activate(processId, TimeSpan.FromSeconds(5));
+        _format = new WaveFormat(48000, 16, 2);
+        _inChannels = 2;
+        _matrix = BuildMatrix(_inChannels, timeline.Channels);
+
+        var flags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.Loopback |
+                    AudioClientStreamFlags.AutoConvertPcm | AudioClientStreamFlags.SrcDefaultQuality;
+        _client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, _format, Guid.Empty);
+        _client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
+        _capture = _client.AudioCaptureClient;
+
+        _thread = new Thread(Loop) { IsBackground = true, Name = "Audio.Process", Priority = ThreadPriority.Highest };
+        _client.Start();
+        _thread.Start();
+        Log.Info("Audio", $"Источник запущен: {_name} (48000 Гц, 2 кан., pcm16)");
     }
 
     private static (MMDevice, string?) Resolve(MMDeviceEnumerator enumerator, DataFlow flow, string? deviceId, bool loopback)
@@ -121,7 +152,8 @@ public sealed class WasapiSource : IDisposable
                 bool silent = (flags & AudioClientBufferFlags.Silent) != 0;
                 bool discontinuity = (flags & AudioClientBufferFlags.DataDiscontinuity) != 0;
                 bool badTime = (flags & AudioClientBufferFlags.TimestampError) != 0;
-                if (badTime) qpc = NowTicks();
+                // У loopback процесса метка времени бывает нулевой: берём «сейчас»
+                if (badTime || qpc <= 0) qpc = NowTicks();
 
                 Convert(data, frames, silent);
                 _timeline.Push(_converted, frames, _format.SampleRate, qpc, discontinuity);
@@ -222,7 +254,7 @@ public sealed class WasapiSource : IDisposable
         try { _client.Stop(); } catch { }
         _capture.Dispose();
         _client.Dispose();
-        _device.Dispose();
+        _device?.Dispose();
         _packetReady.Dispose();
     }
 }

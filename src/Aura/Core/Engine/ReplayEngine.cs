@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -288,6 +288,10 @@ public sealed partial class ReplayEngine : IDisposable
             if (_recordingOnly)
             {
                 _recordingOnly = false;
+                // Буфер записи лежал на диске; повтору он нужен там, где выбрано
+                // в настройках (по умолчанию в памяти)
+                try { ApplyBufferSize(PipelineConfig.From(_settings.Current)); }
+                catch (Exception ex) { Log.Warn("Engine", $"Буфер повтора не перенесён: {ex.Message}"); }
                 StateChanged?.Invoke(_state);
             }
             StartWithFallbackLocked(preserveBuffers: false);
@@ -618,7 +622,7 @@ public sealed partial class ReplayEngine : IDisposable
 
             ApplyLiveAudioSettings(s);
             if (captureAudio && !preserveBuffers)
-                _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId);
+                _audio.Start(s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId, s.GameAudioProcess);
 
             // Меньше блокирующих GC-пауз, пока идёт запись
             System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency;

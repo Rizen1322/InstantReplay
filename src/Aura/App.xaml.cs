@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -125,6 +125,7 @@ public partial class App : Application
         MediaFactory.MFStartup(); // Media Foundation — один раз на процесс
         // Файл буфера на диске удаляет сама система при закрытии, но после отказа
         // питания он может остаться — убираем хвосты прошлых запусков.
+        Core.Buffering.ReplayVideoBuffer.DiskDirectory = Path.Combine(SettingsManager.Dir, "ReplayBuffer");
         _ = Task.Run(() => Core.Buffering.FileArenaStorage.CleanupStale(Core.Buffering.ReplayVideoBuffer.DiskDirectory));
 
         Services.Init();
@@ -133,8 +134,14 @@ public partial class App : Application
         Views.ReplayFilmstrip.Start();
         GuardCodec();
 
-        StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
-        Services.Hotkeys.Start();
+        // Отладочная копия автозапуск не трогает: раньше каждый запуск с --dev
+        // переписывал задачу Планировщика на свой путь, и после перезагрузки
+        // стартовала копия из папки сборки вместо установленной Aura.
+        if (!dev) StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
+        // Снимок вёрстки и самопроверка идут рядом с настоящей Aura: перехватывать
+        // её сочетания клавиш им нельзя.
+        bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record");
+        if (!(dev && headless)) Services.Hotkeys.Start();
 
         // Приложение живёт в трее, но выходить обязано только по своей команде.
         // Иначе, если значок не создался, а окно спрятано, WPF гасит процесс сам
@@ -159,6 +166,26 @@ public partial class App : Application
         // Значки под тему — здесь, а не в ApplyTheme выше: там окна ещё не было,
         // а кнопку на панели задач рисует именно иконка окна.
         ApplyThemeIcons(theme);
+
+        // --selftest-record N: записать N секунд в файл без повтора и выйти. Только
+        // для проверки конвейера записи без рук (--dev и своя папка данных).
+        int selfTestArg = Array.IndexOf(e.Args, "--selftest-record");
+        if (dev && selfTestArg >= 0 && selfTestArg + 1 < e.Args.Length &&
+            int.TryParse(e.Args[selfTestArg + 1], out int selfTestSeconds))
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1000);
+                SafeStartRecording();
+                Log.Info("SelfTest", $"запись идёт: {Services.Engine.IsRecordingToFile}, повтор: {Services.Engine.ReplayActive}, " +
+                                     $"конвейер: {Services.Engine.State}");
+                await Task.Delay(selfTestSeconds * 1000);
+                string? file = Services.Engine.StopRecordingToFile(wait: true);
+                await Task.Delay(1500);
+                Log.Info("SelfTest", $"файл: {file}; конвейер после записи: {Services.Engine.State}");
+                Current.Dispatcher.Invoke(ExitApp);
+            });
+        }
 
         // --snapshot файл.png — снимок вёрстки без экрана: окно открывается за его
         // пределами и без фокуса (не мешает игре или работе), рисуется в картинку,

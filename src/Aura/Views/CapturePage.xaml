@@ -95,7 +95,10 @@
                                 </StackPanel>
                             </WrapPanel>
                         </StackPanel>
-                        <c:AdaptiveRow Margin="16,6,16,13">
+                        <!-- Буфер на диске спрятан: для записи в файл без повтора он включается
+                             сам, а для повтора по умолчанию выключен. Вручную его по-прежнему
+                             можно включить в settings.json (ReplayBufferOnDisk). -->
+                        <c:AdaptiveRow Margin="16,6,16,13" Visibility="Collapsed">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
                                 <TextBlock Text="Буфер на диске" Style="{StaticResource RowLabel}"/>
                                 <TextBlock Text="Для длинного повтора: память почти не занимает, но диск пишется постоянно"

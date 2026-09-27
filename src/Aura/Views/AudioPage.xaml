@@ -29,6 +29,28 @@
                             </StackPanel>
                             <c:Switch x:Name="GameAudio" Click="Audio_Changed"/>
                         </c:AdaptiveRow>
+                        <c:AdaptiveRow x:Name="GameScopeRow" Margin="32,4,16,12" MinTextWidth="200">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Что писать" Style="{StaticResource RowLabel}"/>
+                                <TextBlock Text="Одна игра: без Discord, браузера и звуков Windows" Style="{StaticResource RowSub}"/>
+                            </StackPanel>
+                            <c:Segmented x:Name="GameScope" SelectionChanged="GameScope_Changed">
+                                <ListBoxItem Content="Весь звук" Tag="All"/>
+                                <ListBoxItem Content="Одна игра" Tag="One"/>
+                            </c:Segmented>
+                        </c:AdaptiveRow>
+                        <c:AdaptiveRow x:Name="GameProcessRow" Margin="32,4,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Какая игра" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="GameProcessSub" Style="{StaticResource RowSub}"
+                                           Text="Пока игра не запущена, звук игры не пишется"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <ComboBox x:Name="GameProcess" MinWidth="220" SelectionChanged="AudioSelection_Changed"/>
+                                <Button Style="{StaticResource BtnSquare}" Margin="8,0,0,0" Click="RefreshProcesses_Click"
+                                        ToolTip="Обновить список: запусти игру и нажми" c:Deco.Icon="{DynamicResource Ico.Refresh}"/>
+                            </StackPanel>
+                        </c:AdaptiveRow>
                         <c:AdaptiveRow x:Name="GameDeviceRow" Margin="32,4,16,12">
                             <TextBlock Text="Откуда брать звук игры" Style="{StaticResource RowLabel}" VerticalAlignment="Center"/>
                             <ComboBox x:Name="RenderDevice" MinWidth="260" SelectionChanged="AudioSelection_Changed"/>

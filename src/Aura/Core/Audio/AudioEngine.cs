@@ -86,6 +86,11 @@ public sealed class AudioMixerEngine : IDisposable
     // сменила устройство по умолчанию.
     private bool _wantGame, _wantMic;
     private string? _renderDeviceId, _captureDeviceId;
+
+    /// <summary>Имя exe игры, чей звук пишется; null — весь звук устройства вывода.</summary>
+    private string? _gameProcess;
+    private System.Threading.Timer? _processWatch;
+    private bool _processMissingLogged;
     private MMDeviceEnumerator? _deviceWatchEnumerator;
     private DefaultDeviceWatcher? _deviceWatcher;
     private int _generation;
@@ -123,12 +128,15 @@ public sealed class AudioMixerEngine : IDisposable
         }
     }
 
-    public void Start(bool captureGame, bool captureMic, string? renderDeviceId, string? captureDeviceId)
+    public void Start(bool captureGame, bool captureMic, string? renderDeviceId, string? captureDeviceId,
+                      string? gameProcess = null)
     {
         Stop();
 
         _wantGame = captureGame; _wantMic = captureMic;
         _renderDeviceId = renderDeviceId; _captureDeviceId = captureDeviceId;
+        _gameProcess = string.IsNullOrWhiteSpace(gameProcess) ? null : gameProcess.Trim();
+        _processMissingLogged = false;
         if (!captureGame && !captureMic) return;
 
         long origin = NowTicks();
@@ -163,6 +171,15 @@ public sealed class AudioMixerEngine : IDisposable
 
         WatchDefaultDevices();
 
+        // Звук одной игры: игра может запуститься позже Aura, перезапуститься с
+        // новым номером процесса или закрыться. Раз в две секунды сверяемся.
+        if (captureGame && _gameProcess is not null)
+        {
+            int watchGeneration = Volatile.Read(ref _generation);
+            _processWatch = new System.Threading.Timer(_ => SyncGameProcess(watchGeneration), null,
+                                                       TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        }
+
         Interlocked.Exchange(ref _mixedUpTo, origin);
         _running = true;
         int generation = Volatile.Read(ref _generation);
@@ -176,6 +193,33 @@ public sealed class AudioMixerEngine : IDisposable
     private WasapiSource? OpenSource(bool loopback)
     {
         var line = loopback ? _gameLine! : _micLine!;
+        if (loopback && _gameProcess is { } processName)
+        {
+            int? pid = ProcessLoopback.FindProcess(processName);
+            if (pid is null)
+            {
+                // Игра не запущена: пишем тишину, а не весь компьютер, иначе в
+                // запись попал бы как раз тот звук, от которого человек отказался
+                if (!_processMissingLogged)
+                    Log.Info("Audio", $"Звук игры: {processName} не запущена, жду её");
+                _processMissingLogged = true;
+                return null;
+            }
+            try
+            {
+                var source = new WasapiSource(pid.Value, processName, line);
+                source.Failed += _ => RestartSource(DataFlow.Render);
+                _processMissingLogged = false;
+                return source;
+            }
+            catch (Exception ex)
+            {
+                // Старая Windows 10 без loopback процесса: лучше весь звук, чем никакого
+                Log.Warn("Audio", $"Звук только из {processName} недоступен ({ex.Message}), пишу весь звук");
+                Warning?.Invoke("Звук отдельной игры на этой Windows недоступен, пишется весь звук компьютера");
+                _gameProcess = null;
+            }
+        }
         try
         {
             var source = new WasapiSource(loopback, loopback ? _renderDeviceId : _captureDeviceId, line);
@@ -194,6 +238,33 @@ public sealed class AudioMixerEngine : IDisposable
                 : "Микрофон записать не удалось — проверьте устройство в настройках");
             return null;
         }
+    }
+
+    /// <summary>Подхватить игру, которая запустилась, перезапустилась или закрылась.</summary>
+    private void SyncGameProcess(int generation)
+    {
+        try
+        {
+            string? name = _gameProcess;
+            if (!_running || name is null || generation != Volatile.Read(ref _generation)) return;
+            int? wanted = ProcessLoopback.FindProcess(name);
+            int? current;
+            lock (_sync) current = _game?.ProcessId;
+            if (wanted == current) return;
+
+            WasapiSource? replacement = wanted is null ? null : OpenSource(loopback: true);
+            WasapiSource? old;
+            lock (_sync)
+            {
+                if (!_running || generation != _generation) { replacement?.Dispose(); return; }
+                old = _game;
+                _game = replacement;
+            }
+            if (replacement is not null) Log.Info("Audio", $"Звук игры: подключился к {name} ({wanted})");
+            else if (old is not null) Log.Info("Audio", $"Звук игры: {name} закрылась, пишу тишину до её запуска");
+            old?.Dispose();
+        }
+        catch (Exception ex) { Log.Warn("Audio", $"Слежение за процессом игры: {ex.Message}"); }
     }
 
     private void Emit(AudioTrackKind kind, ReadOnlySpan<byte> frame, long pts)
@@ -216,7 +287,8 @@ public sealed class AudioMixerEngine : IDisposable
             _deviceWatchEnumerator = new MMDeviceEnumerator();
             _deviceWatcher = new DefaultDeviceWatcher(flow =>
             {
-                bool affectsGame = flow == DataFlow.Render && _wantGame && _renderDeviceId is null;
+                // Звук отдельной игры от устройства по умолчанию не зависит
+                bool affectsGame = flow == DataFlow.Render && _wantGame && _renderDeviceId is null && _gameProcess is null;
                 bool affectsMic = flow == DataFlow.Capture && _wantMic && _captureDeviceId is null;
                 if (affectsGame || affectsMic) RestartSource(flow);
             });
@@ -412,6 +484,8 @@ public sealed class AudioMixerEngine : IDisposable
     {
         Interlocked.Increment(ref _generation);
         _running = false;
+        _processWatch?.Dispose();
+        _processWatch = null;
         try
         {
             if (_deviceWatcher is not null && _deviceWatchEnumerator is not null)

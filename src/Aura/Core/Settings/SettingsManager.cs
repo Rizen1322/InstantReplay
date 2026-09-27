@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aura.Core.Logging;
 
@@ -31,13 +31,22 @@ public sealed class SettingsManager
     };
 
     /// <summary>
-    /// Папка настроек. AURA_DATA_DIR подменяет её для проверочных прогонов движка:
-    /// они не должны переписывать настройки установленной копии.
+    /// Папка настроек. Ключ --data-dir или переменная AURA_DATA_DIR подменяют её для
+    /// проверочных прогонов: они не должны переписывать настройки установленной копии.
+    /// Ключ нужен, потому что Aura запускается с правами администратора, а
+    /// повышенный процесс получает окружение заново и переменную не видит.
     /// </summary>
-    public static string Dir { get; } =
-        Environment.GetEnvironmentVariable("AURA_DATA_DIR") is { Length: > 0 } custom
+    public static string Dir { get; } = ResolveDir();
+
+    private static string ResolveDir()
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        int i = Array.IndexOf(args, "--data-dir");
+        if (i >= 0 && i + 1 < args.Length && args[i + 1].Length > 0) return args[i + 1];
+        return Environment.GetEnvironmentVariable("AURA_DATA_DIR") is { Length: > 0 } custom
             ? custom
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura");
+    }
     private static string FilePath => Path.Combine(Dir, "settings.json");
     private static string TempPath => Path.Combine(Dir, $"settings.json.{Environment.ProcessId}.tmp");
 
