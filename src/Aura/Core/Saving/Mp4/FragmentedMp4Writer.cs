@@ -1,4 +1,4 @@
-﻿namespace Aura.Core.Saving.Mp4;
+namespace Aura.Core.Saving.Mp4;
 
 /// <summary>
 /// Фрагментированный MP4 для обычной записи в файл: оглавление в начале описывает
@@ -48,19 +48,8 @@ public sealed class FragmentedMp4Writer : IDisposable
     /// превращается в обычный: кусок на дорожку в каждом фрагменте, данные остаются
     /// на месте, переписывается лишь несколько байт и дописывается moov в конец.
     /// </summary>
-    private sealed class TrackIndex
-    {
-        public readonly List<int> Sizes = [];
-        public readonly List<uint> Durations = [];
-        public readonly List<int> Cts = [];
-        public readonly List<int> Sync = [];              // номера ключевых, с 1
-        public readonly List<(long Offset, int Count)> Chunks = [];
-        public long FirstDts = -1;
-        public long MediaDuration;
-    }
-
-    private readonly TrackIndex _videoIndex = new();
-    private TrackIndex[] _audioIndex = [];
+    private readonly Mp4Defragment.TrackIndex _videoIndex = new();
+    private Mp4Defragment.TrackIndex[] _audioIndex = [];
     private long _headerMoovOffset = -1;
     private readonly List<long> _moofOffsets = [];
     private long _mfraOffset = -1;
@@ -73,8 +62,8 @@ public sealed class FragmentedMp4Writer : IDisposable
         _audioPending = new Pending[audio.Count];
         _audioNextDts = new long[audio.Count];
         for (int i = 0; i < audio.Count; i++) { _audioPending[i] = new Pending(); _audioNextDts[i] = -1; }
-        _audioIndex = new TrackIndex[audio.Count];
-        for (int i = 0; i < audio.Count; i++) _audioIndex[i] = new TrackIndex();
+        _audioIndex = new Mp4Defragment.TrackIndex[audio.Count];
+        for (int i = 0; i < audio.Count; i++) _audioIndex[i] = new Mp4Defragment.TrackIndex();
     }
 
     private bool _headerWritten;
@@ -299,7 +288,7 @@ public sealed class FragmentedMp4Writer : IDisposable
         foreach (var p in _audioPending) Reset(p);
     }
 
-    private static void Remember(TrackIndex index, Pending p, long offset, bool video, long nextVideoDts)
+    private static void Remember(Mp4Defragment.TrackIndex index, Pending p, long offset, bool video, long nextVideoDts)
     {
         if (index.FirstDts < 0) index.FirstDts = p.FirstDts;
         index.Chunks.Add((offset, p.Samples.Count));
@@ -309,12 +298,7 @@ public sealed class FragmentedMp4Writer : IDisposable
             long next = i + 1 < p.Samples.Count
                 ? p.Samples[i + 1].Dts
                 : video ? nextVideoDts : s.Dts + Mp4AudioFormat.FrameSamples;
-            uint duration = (uint)Math.Max(1, next - s.Dts);
-            index.Sizes.Add(s.Size);
-            index.Durations.Add(duration);
-            index.Cts.Add(s.Cts);
-            if (s.Key) index.Sync.Add(index.Sizes.Count);
-            index.MediaDuration += duration;
+            index.Add(s.Size, (uint)Math.Max(1, next - s.Dts), s.Cts, s.Key);
         }
     }
 
@@ -403,145 +387,44 @@ public sealed class FragmentedMp4Writer : IDisposable
         _out.Position = end;
         _out.Flush();
 
-        ConvertToProgressive();
+        // Фрагментированный файл по умолчанию и остаётся таким: так его понимают
+        // плееры, DaVinci и Premiere. Vegas же не открывает его, когда звуковая
+        // дорожка одна (например, микрофон выключен), а с двумя открывает. Только в
+        // этом случае делаем файл обычным; любой другой можно переделать из меню клипа.
+        if (_audio.Count < 2) ConvertToProgressive();
     }
 
     /// <summary>
-    /// Сделать из фрагментированного файла обычный, не трогая данные: дописать в
-    /// конец moov с полными таблицами сэмплов, а старый заголовок, moof и mfra
-    /// переименовать в «free». Обычные программы тогда видят один moov и mdat с
-    /// кадрами, лишние блоки пропускают. Пока запись идёт, файл остаётся
-    /// фрагментированным и переживает падение; превращение — только в самом конце.
+    /// Сделать из фрагментированного файла обычный, не трогая данные (см.
+    /// <see cref="Mp4Defragment"/>). Пока запись идёт, файл остаётся фрагментированным
+    /// и переживает падение; превращение — только в самом конце.
     /// </summary>
     private void ConvertToProgressive()
     {
         if (_headerMoovOffset < 0 || _videoIndex.Sizes.Count == 0) return;
-        long end = _out.Position;
-        bool co64 = end > uint.MaxValue - (1L << 26);
+        var tracks = new List<Mp4Defragment.Track>
+        {
+            new(1, false, _video.Timescale, _video.Width, _video.Height, "Video",
+                SampleDescription(w => _video.WriteSampleEntry(w)), _ctsShift, _videoIndex)
+        };
+        for (int i = 0; i < _audio.Count; i++)
+        {
+            if (_audioIndex[i].Sizes.Count == 0) continue;
+            var format = _audio[i];
+            tracks.Add(new(i + 2, true, format.SampleRate, 0, 0, format.Name,
+                           SampleDescription(w => format.WriteSampleEntry(w)), 0, _audioIndex[i]));
+        }
+        Mp4Defragment.Finalize(_out, tracks, _headerMoovOffset, _moofOffsets, _mfraOffset);
+    }
 
+    private static byte[] SampleDescription(Action<BoxWriter> entry)
+    {
         var w = new BoxWriter();
-        w.Begin("moov");
-        long movieDuration = (long)Mp4Boxes.ToMovie(_videoIndex.MediaDuration - _ctsShift, _video.Timescale);
-        for (int i = 0; i < _audio.Count; i++)
-        {
-            var a = _audioIndex[i];
-            if (a.Sizes.Count == 0) continue;
-            long delay = Math.Max(0, a.FirstDts) * Mp4Boxes.MovieTimescale / _audio[i].SampleRate;
-            movieDuration = Math.Max(movieDuration, delay + (long)Mp4Boxes.ToMovie(a.MediaDuration, _audio[i].SampleRate));
-        }
-        Mp4Boxes.Mvhd(w, (ulong)movieDuration, _audio.Count + 2);
-        WriteClassicTrak(w, 1, _videoIndex, audio: false, null, _video.Timescale, 0, co64);
-        for (int i = 0; i < _audio.Count; i++)
-        {
-            var a = _audioIndex[i];
-            if (a.Sizes.Count == 0) continue;
-            long delay = Math.Max(0, a.FirstDts) * Mp4Boxes.MovieTimescale / _audio[i].SampleRate;
-            WriteClassicTrak(w, i + 2, a, audio: true, _audio[i], _audio[i].SampleRate, delay, co64);
-        }
-        w.End();
-
-        _out.Position = end;
-        _out.Write(w.Span);
-        _out.Flush();
-
-        // Только после того как новое оглавление целиком на диске: старые блоки
-        // превращаются в «free». Упади здесь — у файла будут оба оглавления, и
-        // фрагментированное по-прежнему читается.
-        Rename(_headerMoovOffset);
-        foreach (long moof in _moofOffsets) Rename(moof);
-        // Совместимые марки «iso5/iso6» в ftyp обещают фрагменты; файл теперь
-        // обычный, и строгие импортёры видят честные «mp42/mp41»
-        _out.Position = 24;
-        _out.Write("mp42mp41"u8);
-        if (_mfraOffset >= 0) Rename(_mfraOffset);
-        _out.Position = _out.Length;
-        _out.Flush();
-    }
-
-    private void Rename(long boxOffset)
-    {
-        _out.Position = boxOffset + 4;
-        _out.Write("free"u8);
-    }
-
-    private void WriteClassicTrak(BoxWriter w, int trackId, TrackIndex t, bool audio, Mp4AudioFormat? format,
-                                  int timescale, long delayMovie, bool co64)
-    {
-        long mediaStart = audio ? 0 : Math.Clamp(_ctsShift, 0, Math.Max(0, t.MediaDuration - 1));
-        ulong mediaMovie = Mp4Boxes.ToMovie(t.MediaDuration - mediaStart, timescale);
-
-        w.Begin("trak");
-        Mp4Boxes.Tkhd(w, trackId, mediaMovie + (ulong)delayMovie, audio, audio ? 0 : _video.Width, audio ? 0 : _video.Height);
-        Mp4Boxes.Edts(w, delayMovie, mediaMovie, mediaStart);
-        w.Begin("mdia");
-        Mp4Boxes.Mdhd(w, timescale, (ulong)t.MediaDuration);
-        Mp4Boxes.Hdlr(w, audio, audio ? format!.Name : "Video");
-        w.Begin("minf");
-        Mp4Boxes.MediaHeaderAndDinf(w, audio);
-        w.Begin("stbl");
-
         w.BeginFull("stsd", 0, 0);
         w.U32(1);
-        if (audio) format!.WriteSampleEntry(w); else _video.WriteSampleEntry(w);
+        entry(w);
         w.End();
-
-        var stts = new List<(uint Count, uint Delta)>();
-        foreach (uint d in t.Durations)
-        {
-            if (stts.Count > 0 && stts[^1].Delta == d) stts[^1] = (stts[^1].Count + 1, d);
-            else stts.Add((1, d));
-        }
-        w.BeginFull("stts", 0, 0);
-        w.U32((uint)stts.Count);
-        foreach (var (count, delta) in stts) { w.U32(count); w.U32(delta); }
-        w.End();
-
-        if (!audio && t.Cts.Any(c => c != 0))
-        {
-            var ctts = new List<(uint Count, int Offset)>();
-            foreach (int o in t.Cts)
-            {
-                if (ctts.Count > 0 && ctts[^1].Offset == o) ctts[^1] = (ctts[^1].Count + 1, o);
-                else ctts.Add((1, o));
-            }
-            w.BeginFull("ctts", 1, 0);
-            w.U32((uint)ctts.Count);
-            foreach (var (count, off) in ctts) { w.U32(count); w.I32(off); }
-            w.End();
-        }
-
-        if (!audio && t.Sync.Count < t.Sizes.Count)
-        {
-            w.BeginFull("stss", 0, 0);
-            w.U32((uint)t.Sync.Count);
-            foreach (int s in t.Sync) w.U32((uint)s);
-            w.End();
-        }
-
-        var stsc = new List<(uint FirstChunk, uint PerChunk)>();
-        for (int c = 0; c < t.Chunks.Count; c++)
-        {
-            uint per = (uint)t.Chunks[c].Count;
-            if (stsc.Count == 0 || stsc[^1].PerChunk != per) stsc.Add(((uint)c + 1, per));
-        }
-        w.BeginFull("stsc", 0, 0);
-        w.U32((uint)stsc.Count);
-        foreach (var (first, per) in stsc) { w.U32(first); w.U32(per); w.U32(1); }
-        w.End();
-
-        w.BeginFull("stsz", 0, 0);
-        w.U32(0);
-        w.U32((uint)t.Sizes.Count);
-        foreach (int s in t.Sizes) w.U32((uint)s);
-        w.End();
-
-        w.BeginFull(co64 ? "co64" : "stco", 0, 0);
-        w.U32((uint)t.Chunks.Count);
-        foreach (var (offset, _) in t.Chunks)
-            if (co64) w.U64((ulong)offset); else w.U32((uint)offset);
-        w.End();
-
-        w.End(); w.End(); w.End(); w.End(); // stbl, minf, mdia, trak
+        return w.ToArray();
     }
 
     public void Dispose()

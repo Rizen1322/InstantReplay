@@ -195,6 +195,48 @@ public class Mp4MuxerTests
         Assert.True(nal + 4 <= firstSize, $"NAL {nal} не лезет в сэмпл {firstSize}");
     }
 
+    [Fact]
+    public void Old_fragmented_file_is_converted_in_place()
+    {
+        var frames = H264Clip(300);
+        var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1280, 720, [], frames[0].Item1)
+                     with { FrameRate = 60 };
+        var ms = new MemoryStream();
+        byte[] fragmented;
+        using (var writer = new FragmentedMp4Writer(ms, format, []))
+        {
+            for (int i = 0; i < frames.Count; i++)
+                writer.WriteVideo(frames[i].Item1, i * 166_666, i * 166_666, frames[i].Item2);
+            // Файл, записанный до 2.0.7: фрагменты без обычного оглавления
+            fragmented = ms.ToArray();
+            writer.Finish(166_666);
+        }
+
+        string path = Path.Combine(Path.GetTempPath(), $"aura-defrag-{Guid.NewGuid():N}.mp4");
+        try
+        {
+            File.WriteAllBytes(path, fragmented);
+            Assert.True(Mp4Defragment.IsFragmented(path));
+            Assert.True(Mp4Defragment.ConvertFile(path));
+            Assert.False(Mp4Defragment.IsFragmented(path));
+            Assert.False(Mp4Defragment.ConvertFile(path));   // второй раз делать нечего
+
+            byte[] file = File.ReadAllBytes(path);
+            Assert.Equal(0, CountTopLevel(file, "moof"));
+            Assert.Equal(1, CountTopLevel(file, "moov"));
+            var stsz = Find(file, "moov/trak/mdia/minf/stbl/stsz");
+            // Во фрагментах до Finish лежат все кадры, кроме последнего незакрытого фрагмента
+            uint samples = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsz.Offset + 16));
+            Assert.True(samples > 0 && samples <= 300, $"сэмплов {samples}");
+            var stco = Find(file, "moov/trak/mdia/minf/stbl/stco");
+            uint firstChunk = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stco.Offset + 16));
+            uint firstSize = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsz.Offset + 20));
+            uint nal = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan((int)firstChunk));
+            Assert.True(nal + 4 <= firstSize);
+        }
+        finally { File.Delete(path); }
+    }
+
     private static int CountTopLevel(byte[] file, string type)
     {
         int count = 0;

@@ -500,6 +500,35 @@ public sealed partial class ReplayEngine
     private (int X, int Y) _wdCursor;
     private uint _wdInputTick;
 
+    /// <summary>Сколько секунд сверх обычного порога ждать, если поломку выдаёт только клавиатура.</summary>
+    private const double KeyboardEvidenceGrace = 7;
+
+    /// <summary>
+    /// Ввод идёт на обычный рабочий стол, а не на защищённый (экран блокировки,
+    /// UAC). Если определить не удалось, считаем обычным: так ведёт себя код до проверки.
+    /// </summary>
+    private static bool IsDefaultInputDesktop()
+    {
+        IntPtr desktop = OpenInputDesktop(0, false, 0x0001 /* DESKTOP_READOBJECTS */);
+        if (desktop == IntPtr.Zero) return false;   // нет доступа — это как раз защищённый стол
+        try
+        {
+            var name = new char[64];
+            if (!GetUserObjectInformationW(desktop, 2 /* UOI_NAME */, name, name.Length * 2, out _)) return true;
+            return new string(name).TrimEnd((char)0).Equals("Default", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { CloseDesktop(desktop); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern bool GetUserObjectInformationW(IntPtr handle, int index, [System.Runtime.InteropServices.Out] char[] info, int length, out int needed);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool CloseDesktop(IntPtr desktop);
+
     private static (int X, int Y) CursorPosition() =>
         GetCursorPos(out var p) ? (p.X, p.Y) : (int.MinValue, int.MinValue);
 
@@ -645,7 +674,12 @@ public sealed partial class ReplayEngine
                 bool cursorComposed = _settings.Current.RecordCursor;
                 bool cursorMoved = CursorPosition() != _wdCursor;
                 bool inputHappened = LastInputTick() != _wdInputTick;
-                bool evidence = cursorComposed ? cursorMoved : inputHappened && !cursorMoved;
+                // Экран блокировки, UAC и Ctrl+Alt+Del живут на отдельном защищённом
+                // рабочем столе, и WGC его не отдаёт. Ввод PIN там выглядел как
+                // «клавиши жмут, а кадров нет» и пересобирал захват на ровном месте.
+                bool secureDesktop = !IsDefaultInputDesktop();
+                bool evidence = !secureDesktop &&
+                                (cursorComposed ? cursorMoved : inputHappened && !cursorMoved);
                 if (!evidence)
                 {
                     _wdEvidenceSince = null;
@@ -658,6 +692,10 @@ public sealed partial class ReplayEngine
                 }
                 _wdEvidenceSince ??= DateTime.UtcNow;
                 silent = (DateTime.UtcNow - _wdEvidenceSince.Value).TotalSeconds;
+                // Клавиатура — признак слабый: нажатия бывают и без перемен на экране
+                // (модификаторы, горячие клавиши, ввод в свёрнутое окно). Без курсора в
+                // кадре ждём дольше, чтобы не пересобирать из-за них.
+                if (!cursorComposed) silent -= KeyboardEvidenceGrace;
             }
 
             // Ранняя запись в лог: она не чинит захват, но без неё причина эпизода

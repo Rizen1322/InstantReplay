@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 using Aura.Core.Library;
@@ -30,6 +30,12 @@ public static class ClipCommands
 
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
     public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);
+
+    /// <summary>
+    /// Сделать запись обычным MP4 для Vegas и других строгих редакторов. Данные не
+    /// перекодируются: дописывается оглавление, это доли секунды.
+    /// </summary>
+    public static ICommand MakeCompatible { get; } = new ClipAction(MakeCompatibleAsync, item => !item.IsScreenshot);
 
     /// <summary>
     /// «Выделить» из меню карточки: включает режим выделения и берёт эту запись
@@ -232,6 +238,33 @@ public static class ClipCommands
             Log.Warn("Ffmpeg", ex.Message);
         }
         finally { _compressing = false; }
+    }
+
+    private static async void MakeCompatibleAsync(ClipItem item)
+    {
+        try
+        {
+            bool converted = await Task.Run(() =>
+                Core.Saving.Mp4.Mp4Defragment.IsFragmented(item.FullPath) &&
+                Core.Saving.Mp4.Mp4Defragment.ConvertFile(item.FullPath));
+            if (converted)
+            {
+                Log.Info("Library", $"Сделан обычный MP4: {item.FileName}");
+                Services.Notifications.Show(Core.Notifications.NotificationKind.Info,
+                                            "Готово: файл откроется в Vegas", item.FileName);
+            }
+            else
+                Dialogs.Say("Уже совместим", "Этот файл и так обычный MP4: его откроет любой редактор.");
+        }
+        catch (IOException ex)
+        {
+            Dialogs.Say("Файл занят", $"Закрой программу, в которой открыт клип, и попробуй снова. {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Library", $"Обычный MP4 не получился: {ex.Message}");
+            Dialogs.Say("Не получилось", ex.Message);
+        }
     }
 
     /// <summary>Длительность файла у системы — если её ещё не подтянула карточка.</summary>
