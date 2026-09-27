@@ -244,6 +244,10 @@ public sealed partial class ReplayEngine
         };
         _recorderFrameHandler = recorder.OnFrame;
         _encoder.FrameEncoded += _recorderFrameHandler;
+        // Файл начинается с ключевого кадра, а они идут раз в две секунды. Без
+        // просьбы запись теряла до двух секунд в начале: нажал «Запись», а в
+        // файле первые мгновения отсутствуют.
+        _encoder.RequestKeyframe();
         _audio.FrameEncoded += recorder.OnAudio;
         _recorder = recorder;
         RecordingStartedUtc ??= DateTime.UtcNow;

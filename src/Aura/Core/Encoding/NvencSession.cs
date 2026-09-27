@@ -113,7 +113,11 @@ internal sealed partial class NvencSession : IDisposable
             Fps = fps,
             Bitrate = (int)Math.Min(bitrateBps, int.MaxValue),
             MaxBitrate = (int)Math.Min(bitrateBps * 2, int.MaxValue),
-            VbvBuffer = (int)Math.Min(bitrateBps, int.MaxValue),     // секунда, как у ShadowPlay
+            // Две секунды буфера VBV. Файл не поток: задержки, ради которой в
+            // трансляциях держат буфер коротким, у записи нет. Длинный буфер даёт
+            // перераспределять биты внутри пары секунд, и резкая сцена после
+            // спокойной не рассыпается в кашу. Средний битрейт тот же.
+            VbvBuffer = (int)Math.Min(bitrateBps * 2, int.MaxValue),
             TenBit = tenBit ? 1 : 0,
             GopLength = fps * 2,
             Preset = veryHeavy ? 3 : heavy ? 4 : 5,
@@ -123,14 +127,17 @@ internal sealed partial class NvencSession : IDisposable
             // единого эпизода. Включим по умолчанию после проверки в настоящей игре;
             // до тех пор — AURA_NVENC_LOOKAHEAD. Временной AQ без него не работает.
             Lookahead = 0,
-            // Без B-кадров и многопроходности: так NVIDIA советует кодировать в
-            // реальном времени, и так меньше кадров живёт внутри энкодера. Включаются
-            // переменными AURA_NVENC_BFRAMES / AURA_NVENC_MULTIPASS для проверок.
-            BFrames = 0,
+            // Два B-кадра (опорные «в середине», где карта умеет) и второй проход в
+            // четверть разрешения: так по умолчанию кодирует OBS, и это почти всё
+            // качество, которое NVENC вообще может дать при том же битрейте. Работу
+            // делает отдельный блок NVENC, шейдеры игры он не отнимает. На потоках
+            // тяжелее 1440p60 не включаем: там NVENC и так на пределе темпа.
+            // Переменные AURA_NVENC_BFRAMES / AURA_NVENC_MULTIPASS для проверок.
+            BFrames = heavy ? 0 : 2,
             SpatialAq = 1,
             TemporalAq = 0,
             AqStrength = 8,
-            Multipass = 0,
+            Multipass = heavy ? 0 : 1,
             BufferCount = 0,                                         // прослойка посчитает сама
         });
     }

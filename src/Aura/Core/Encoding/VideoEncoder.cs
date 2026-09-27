@@ -731,9 +731,14 @@ public sealed class VideoEncoder : IDisposable
         // Точка входа в поток — только IDR. Обычный I-кадр с B-кадрами может быть
         // «открытой» группой: B-кадры после него ссылаются на кадры ДО него, и клип,
         // начатый с такого кадра, рассыпается в первые мгновения. У AV1 ключевой
-        // кадр драйвер может помечать как I — там это и есть точка входа.
+        // кадр драйвер может помечать как I, но I бывает и intra-only кадром, с
+        // которого воспроизведение начать нельзя. Настоящий ключевой кадр AV1 NVENC
+        // всегда отдаёт вместе с заголовком последовательности (repeatSeqHdr):
+        // по нему и отличаем, иначе клип мог начаться с кадра, после которого
+        // декодер показывает мусор.
         bool keyframe = pictureType == NvencSession.PictureIdr ||
-                        (pictureType == NvencSession.PictureI && _nvencCodec == VideoCodec.AV1);
+                        (pictureType == NvencSession.PictureI && _nvencCodec == VideoCodec.AV1 &&
+                         Saving.Mp4.Av1Obu.HasSequenceHeader(data.AsSpan()));
         if (_nvencResync)
         {
             if (!keyframe)

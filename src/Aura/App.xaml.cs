@@ -140,7 +140,8 @@ public partial class App : Application
         if (!dev) StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
         // Снимок вёрстки и самопроверка идут рядом с настоящей Aura: перехватывать
         // её сочетания клавиш им нельзя.
-        bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record");
+        bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record") ||
+                        e.Args.Contains("--selftest-replay");
         if (!(dev && headless)) Services.Hotkeys.Start();
 
         // Приложение живёт в трее, но выходить обязано только по своей команде.
@@ -214,6 +215,26 @@ public partial class App : Application
                 string? file = Current.Dispatcher.Invoke(() => Services.Engine.StopRecordingToFile(wait: true));
                 await Task.Delay(1500);
                 Log.Info("SelfTest", $"файл: {file}; конвейер после записи: {Services.Engine.State}");
+                Current.Dispatcher.Invoke(ExitApp);
+            });
+        }
+
+        // --selftest-replay N: включить повтор, через N секунд сохранить клип и выйти
+        int replayTestArg = Array.IndexOf(e.Args, "--selftest-replay");
+        if (dev && replayTestArg >= 0 && replayTestArg + 1 < e.Args.Length &&
+            int.TryParse(e.Args[replayTestArg + 1], out int replayTestSeconds))
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1000);
+                Current.Dispatcher.Invoke(SafeStartEngine);
+                await Task.Delay(replayTestSeconds * 1000);
+                var saved = new TaskCompletionSource<string>();
+                Services.Engine.ReplaySaved += (file, _) => saved.TrySetResult(file);
+                Services.Engine.SaveFailed += msg => saved.TrySetResult("ошибка: " + msg);
+                Current.Dispatcher.Invoke(() => Services.Engine.SaveReplay());
+                string result = await Task.WhenAny(saved.Task, Task.Delay(30_000)) == saved.Task ? saved.Task.Result : "таймаут";
+                Log.Info("SelfTest", $"повтор сохранён: {result}");
                 Current.Dispatcher.Invoke(ExitApp);
             });
         }

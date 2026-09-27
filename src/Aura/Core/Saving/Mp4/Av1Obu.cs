@@ -103,6 +103,17 @@ public static class Av1Obu
         return FindIn(sequenceHeader) ?? FindIn(keyframe);
     }
 
+    /// <summary>Есть ли в кадре заголовок последовательности (без выделения памяти).</summary>
+    public static bool HasSequenceHeader(ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty) return false;
+        Span<Unit> units = stackalloc Unit[NalUnits.MaxNalsPerFrame];
+        int count = Split(data, units);
+        for (int i = 0; i < count; i++)
+            if (units[i].Type == SequenceHeader) return true;
+        return false;
+    }
+
     private static byte[]? FindIn(ReadOnlySpan<byte> data)
     {
         if (data.IsEmpty) return null;
