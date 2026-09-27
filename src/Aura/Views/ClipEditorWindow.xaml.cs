@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -133,7 +133,7 @@ public partial class ClipEditorWindow : Window
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         if (_snapshotOnly) { _durationSeconds = 185; _endSeconds = 125; _startSeconds = 40; UpdatePreviewTime(74);
-            _ = Dispatcher.BeginInvoke(() => { BuildRuler(); UpdateTimelineVisuals(); }, DispatcherPriority.Loaded); return; }
+            _ = Dispatcher.BeginInvoke(() => { BuildRuler(); UpdateTimelineVisuals(); _ = BuildFilmstripAsync(); }, DispatcherPriority.Loaded); return; }
         Log.Info("Editor", $"Открываю {Path.GetFileName(_item.FullPath)}");
         try
         {
@@ -246,9 +246,83 @@ public partial class ClipEditorWindow : Window
         UpdateTimelineVisuals();
         BuildRuler();
         UpdatePreviewTime(CurrentSeconds);
+        if (first) _ = BuildFilmstripAsync();
+    }
+
+    /// <summary>
+    /// Кадры клипа на шкале, чтобы было видно, где что происходит. Раньше шкала
+    /// была сплошной тёмной полосой. Кадры даёт Windows (MediaComposition) по
+    /// ближайшему ключевому кадру: быстро и без ffmpeg. Не вышло (нет декодера
+    /// HEVC) — шкала просто останется без кадров.
+    /// </summary>
+    private async Task BuildFilmstripAsync()
+    {
+        const int count = 14;
+        try
+        {
+            var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(_item.FullPath);
+            var clip = await Windows.Media.Editing.MediaClip.CreateFromFileAsync(file);
+            var composition = new Windows.Media.Editing.MediaComposition();
+            composition.Clips.Add(clip);
+            var total = clip.OriginalDuration;
+            Film.Children.Clear();
+            for (int i = 0; i < count && !_disposed; i++)
+            {
+                var at = TimeSpan.FromTicks((long)(total.Ticks * (i + 0.5) / count));
+                using var stream = await composition.GetThumbnailAsync(at, 0, 96,
+                    Windows.Media.Editing.VideoFramePrecision.NearestKeyFrame);
+                var image = new System.Windows.Media.Imaging.BitmapImage();
+                using (var managed = stream.AsStream())
+                {
+                    image.BeginInit();
+                    image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    image.StreamSource = managed;
+                    image.EndInit();
+                }
+                image.Freeze();
+                Film.Children.Add(new System.Windows.Controls.Image { Source = image, Stretch = Stretch.UniformToFill });
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Editor", $"Кадры на шкалу не получены: {ex.Message}");
+        }
     }
 
     private double CurrentSeconds => _player is null ? 0 : Math.Clamp(_player.Time / 1000.0, 0, _durationSeconds);
+
+    /// <summary>
+    /// Куда мы последний раз перематывали и когда. LibVLC на паузе ещё какое-то
+    /// время отдаёт старое время, пока декодирует новый кадр. Раньше Shift+→
+    /// прибавлял секунду к этому устаревшему числу и при повторе улетал на
+    /// несколько секунд вперёд, а Shift+← отнимал её от старого значения и
+    /// возвращал видео на то же место: казалось, что назад не идёт вовсе.
+    /// </summary>
+    private double? _seekTarget;
+    private long _seekTick;
+
+    /// <summary>
+    /// Позиция, от которой считать шаги и ставить границы. Пока свежая перемотка
+    /// не доехала (на паузе или первые полсекунды игры), это цель перемотки,
+    /// иначе то, что показывает плеер.
+    /// </summary>
+    private double LogicalSeconds
+    {
+        get
+        {
+            if (_seekTarget is { } target && _player is not null)
+            {
+                bool fresh = Environment.TickCount64 - _seekTick < 600;
+                bool arrived = Math.Abs(CurrentSeconds - target) < 0.12;
+                if (!_player.IsPlaying || fresh)
+                {
+                    if (!arrived || !_player.IsPlaying) return target;
+                }
+                _seekTarget = null;
+            }
+            return CurrentSeconds;
+        }
+    }
 
     private void Play_Click(object sender, RoutedEventArgs e) => TogglePlayback();
 
@@ -260,7 +334,7 @@ public partial class ClipEditorWindow : Window
             _player.SetPause(true);
             return;
         }
-        double position = CurrentSeconds;
+        double position = LogicalSeconds;
         if (position < _startSeconds || position >= _endSeconds - 0.02) Seek(_startSeconds);
         _player.Play();
     }
@@ -276,6 +350,9 @@ public partial class ClipEditorWindow : Window
             return;
         }
         if (_scrubbing) return;            // пока тянут шкалу, позицию ведёт мышь
+        // На паузе после перемотки держим цель, а не устаревшее время плеера:
+        // иначе метка на шкале дёргалась бы назад и обратно
+        position = LogicalSeconds;
         UpdatePlayhead(position);
         UpdatePreviewTime(position);
     }
@@ -297,7 +374,7 @@ public partial class ClipEditorWindow : Window
     {
         if (_player is null) return;
         if (_player.IsPlaying) _player.SetPause(true);
-        if (delta > TimeSpan.Zero)
+        if (delta > TimeSpan.Zero && _seekTarget is null)
         {
             _player.NextFrame();
             Dispatcher.BeginInvoke(() =>
@@ -307,13 +384,15 @@ public partial class ClipEditorWindow : Window
             }, DispatcherPriority.Background);
             return;
         }
-        Seek(CurrentSeconds + delta.TotalSeconds);
+        Seek(LogicalSeconds + delta.TotalSeconds);
     }
 
     private void Seek(double seconds)
     {
         if (_player is null || _durationSeconds <= 0) return;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
+        _seekTarget = seconds;
+        _seekTick = Environment.TickCount64;
         _player.Time = (long)Math.Round(seconds * 1000);
         UpdatePlayhead(seconds);
         UpdatePreviewTime(seconds);
@@ -658,13 +737,13 @@ public partial class ClipEditorWindow : Window
 
     private void SetIn()
     {
-        _startSeconds = Math.Clamp(CurrentSeconds, 0, _endSeconds - MinimumSelectionSeconds);
+        _startSeconds = Math.Clamp(LogicalSeconds, 0, _endSeconds - MinimumSelectionSeconds);
         UpdateTimelineVisuals();
     }
 
     private void SetOut()
     {
-        _endSeconds = Math.Clamp(CurrentSeconds, _startSeconds + MinimumSelectionSeconds, _durationSeconds);
+        _endSeconds = Math.Clamp(LogicalSeconds, _startSeconds + MinimumSelectionSeconds, _durationSeconds);
         UpdateTimelineVisuals();
     }
 
@@ -682,6 +761,9 @@ public partial class ClipEditorWindow : Window
         if (width <= 0 || _durationSeconds <= 0) return;
 
         TimelineTrack.Width = width;
+        FilmBox.Width = width;
+        // Скругление как у шкалы: картинки кадров иначе торчали бы углами
+        FilmBox.Clip = new RectangleGeometry(new Rect(0, 0, width, 40), 8, 8);
         double handleWidth = InHandle.Width;
         double usable = Math.Max(1, width - handleWidth);
         double inCenter = handleWidth / 2 + _startSeconds / _durationSeconds * usable;
@@ -889,13 +971,13 @@ public partial class ClipEditorWindow : Window
         else if (e.Key == Key.End) { Seek(_endSeconds); e.Handled = true; }
         else if (e.Key == Key.Left)
         {
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(CurrentSeconds - 1);
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(LogicalSeconds - 1);
             else Step(-FrameStep);
             e.Handled = true;
         }
         else if (e.Key == Key.Right)
         {
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(CurrentSeconds + 1);
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(LogicalSeconds + 1);
             else Step(FrameStep);
             e.Handled = true;
         }

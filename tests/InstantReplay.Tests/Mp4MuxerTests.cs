@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using Aura.Core.Saving.Mp4;
 using Xunit;
 
@@ -160,26 +160,52 @@ public class Mp4MuxerTests
         var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1280, 720, [], frames[0].Item1)
                      with { FrameRate = 60 };
         var ms = new MemoryStream();
+        byte[] whileRecording;
+        byte[] file;
         using (var writer = new FragmentedMp4Writer(ms, format, []))
         {
             for (int i = 0; i < frames.Count; i++)
                 writer.WriteVideo(frames[i].Item1, i * 166_666, i * 166_666, frames[i].Item2);
+            // Пока запись идёт, файл фрагментированный: переживёт падение процесса
+            whileRecording = ms.ToArray();
             writer.Finish(166_666);
         }
-        byte[] file = ms.ToArray();
+        file = ms.ToArray();
 
-        Assert.True(Find(file, "moov/mvex/trex").Offset > 0);
-        int moofs = 0;
+        Assert.True(Find(whileRecording, "moov/mvex/trex").Offset > 0);
+        Assert.True(CountTopLevel(whileRecording, "moof") >= 2, "фрагментов меньше двух");
+
+        // После закрытия — обычный MP4 для Vegas: один moov с полными таблицами,
+        // фрагменты и старый заголовок стали «free», данные на месте
+        Assert.Equal(0, CountTopLevel(file, "moof"));
+        Assert.Equal(0, CountTopLevel(file, "mfra"));
+        Assert.Equal(1, CountTopLevel(file, "moov"));
+        var moov = Find(file, "moov");
+        Assert.Equal(-1, Find(file, "mvex", moov.Offset + 8, moov.Offset + moov.Size).Offset);
+        var stsz = Find(file, "moov/trak/mdia/minf/stbl/stsz");
+        Assert.Equal(300u, BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsz.Offset + 16)));
+        Assert.Equal("mp42", System.Text.Encoding.ASCII.GetString(file, 24, 4));
+
+        // Первый кусок оглавления указывает на первый кадр: размер из stsz совпадает
+        // с длиной NAL, записанной в начале данных
+        var stco = Find(file, "moov/trak/mdia/minf/stbl/stco");
+        uint firstChunk = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stco.Offset + 16));
+        uint firstSize = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsz.Offset + 20));
+        uint nal = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan((int)firstChunk));
+        Assert.True(nal + 4 <= firstSize, $"NAL {nal} не лезет в сэмпл {firstSize}");
+    }
+
+    private static int CountTopLevel(byte[] file, string type)
+    {
+        int count = 0;
         for (int pos = 0; pos + 8 <= file.Length;)
         {
             int size = (int)BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(pos));
-            if (System.Text.Encoding.ASCII.GetString(file, pos + 4, 4) == "moof") moofs++;
+            if (size < 8) break;
+            if (System.Text.Encoding.ASCII.GetString(file, pos + 4, 4) == type) count++;
             pos += size;
         }
-        Assert.True(moofs >= 2, $"фрагментов {moofs}");
-        // mfra в конце: последние 4 байта — его размер
-        int mfra = (int)BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(file.Length - 4));
-        Assert.Equal("mfra", System.Text.Encoding.ASCII.GetString(file, file.Length - mfra + 4, 4));
+        return count;
     }
 
     [Fact]

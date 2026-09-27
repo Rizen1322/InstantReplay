@@ -264,12 +264,16 @@
                         MouseLeftButtonDown="Timeline_MouseLeftButtonDown"
                         MouseLeftButtonUp="Timeline_MouseLeftButtonUp"
                         MouseMove="Timeline_MouseMove" MouseLeave="Timeline_MouseLeave">
-                    <Border x:Name="TimelineTrack" Height="40" CornerRadius="8" Background="{DynamicResource WellBrush}"
+                    <Border x:Name="TimelineTrack" Height="40" CornerRadius="8" Background="{DynamicResource Card2Brush}"
                             BorderBrush="{DynamicResource SepBrush}" BorderThickness="1" Canvas.Top="8"/>
-                    <Border x:Name="DimBefore" Height="40" Background="#8C000000" CornerRadius="8,0,0,8" Canvas.Top="8"/>
-                    <Border x:Name="SelectedRange" Height="40" Background="#2032D74B"
+                    <!-- Кадры клипа по всей длине шкалы -->
+                    <Border x:Name="FilmBox" Height="40" Canvas.Top="8" IsHitTestVisible="False">
+                        <UniformGrid x:Name="Film" Rows="1"/>
+                    </Border>
+                    <Border x:Name="DimBefore" Height="40" Background="#A6000000" CornerRadius="8,0,0,8" Canvas.Top="8"/>
+                    <Border x:Name="SelectedRange" Height="40" Background="#1032D74B"
                             BorderBrush="{DynamicResource AccentBrush}" BorderThickness="0,2" Canvas.Top="8"/>
-                    <Border x:Name="DimAfter" Height="40" Background="#8C000000" CornerRadius="0,8,8,0" Canvas.Top="8"/>
+                    <Border x:Name="DimAfter" Height="40" Background="#A6000000" CornerRadius="0,8,8,0" Canvas.Top="8"/>
                     <Rectangle x:Name="HoverLine" Width="1" Height="40" Canvas.Top="8" Fill="{DynamicResource Tx3Brush}"
                                Visibility="Collapsed" IsHitTestVisible="False"/>
                     <Grid x:Name="Playhead" Width="12" Height="56" IsHitTestVisible="False">
