@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -43,6 +43,9 @@ public sealed partial class ReplayEngine
             // уведомления успели бы решить, что включили повтор.
             bool wasStopped = _state == EngineState.Stopped;
             if (wasStopped) _recordingOnly = true;
+            // Новая запись — новый отсчёт. Части одной записи (после пересборки
+            // конвейера) время не сбрасывают: оно ставится только если его нет.
+            if (_recorder is null) RecordingStartedUtc = null;
             try
             {
                 StartRecordingLocked();
@@ -232,6 +235,7 @@ public sealed partial class ReplayEngine
         _encoder.FrameEncoded += _recorderFrameHandler;
         _audio.FrameEncoded += recorder.OnAudio;
         _recorder = recorder;
+        RecordingStartedUtc ??= DateTime.UtcNow;
         _recorderNvencStats = NvencStats.Take();
         _recorderDetached = false;
         _recorderSequenceHeader = _bufferSequenceHeader;
@@ -252,6 +256,7 @@ public sealed partial class ReplayEngine
             // Важен даже вызов между двумя сегментами, когда _recorder уже null:
             // recovery не должен после него снова открыть файл.
             _continuousRecordingRequested = false;
+            RecordingStartedUtc = null;
             string? file = StopRecordingLocked(wait);
             if (_recordingOnly)
             {

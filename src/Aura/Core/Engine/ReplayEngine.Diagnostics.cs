@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -67,7 +67,12 @@ public sealed partial class ReplayEngine
              dup = enc.FramesDuplicated;
         long req = enc.InputRequests, blocked = enc.PacerBlocked;
         long rcv = cap?.FramesReceived ?? 0, acc = cap?.FramesAccepted ?? 0;
-        double seconds = Math.Max((DateTime.UtcNow - _statsWindowStart).TotalSeconds, 0.001);
+        // Момент снятия счётчиков. Окно следующей выгрузки начинается ровно отсюда:
+        // раньше начало ставилось в конце метода, после раскладки памяти, а она
+        // под тяжёлой игрой однажды шла 45 секунд. Следующая строка тогда делила
+        // счётчики за минуту на 3 секунды и показывала «800 кадров в секунду».
+        DateTime snapshotAt = DateTime.UtcNow;
+        double seconds = Math.Max((snapshotAt - _statsWindowStart).TotalSeconds, 0.001);
         if (seconds < 2) return; // только что выгружали — нечего показывать
 
         // fps по каждой стадии: сразу видно, кто именно не дотягивает до настроенного.
@@ -124,7 +129,7 @@ public sealed partial class ReplayEngine
         _lastDuplicated = dup;
         _lastReceived = rcv; _lastAccepted = acc;
         _lastRequests = req; _lastPacerBlocked = blocked;
-        _statsWindowStart = DateTime.UtcNow;
+        _statsWindowStart = snapshotAt;
     }
 
     /// <summary>

@@ -89,9 +89,24 @@ public partial class OverviewPage : PageBase
 
         Master.IsChecked = on;
         var buffered = engine.BufferedDuration;
-        BufferTime.Text = Format(buffered);
-        BufferOf.Text = $"из {Format(TimeSpan.FromSeconds(s.ReplayLengthSeconds))}";
-        BufferTime.Foreground = (Brush)FindResource(on ? "TxBrush" : "Tx3Brush");
+        // Запись в файл без повтора: крупное время — сколько идёт запись, без
+        // «из 3:00». Предел повтора к записи отношения не имеет и только путал.
+        bool recordingOnly = engine.IsRecordingToFile && !on;
+        if (recordingOnly)
+        {
+            var since = engine.RecordingStartedUtc ?? DateTime.UtcNow;
+            BufferTime.Text = Format(DateTime.UtcNow - since);
+            BufferOf.Text = "запись в файл";
+            BufferTime.Foreground = (Brush)FindResource("TxBrush");
+        }
+        else
+        {
+            BufferTime.Text = Format(buffered);
+            BufferOf.Text = $"из {Format(TimeSpan.FromSeconds(s.ReplayLengthSeconds))}";
+            BufferTime.Foreground = (Brush)FindResource(on ? "TxBrush" : "Tx3Brush");
+        }
+        // Лента и выделение — про буфер повтора; при записи без повтора их нет
+        Strip.Visibility = recordingOnly ? Visibility.Collapsed : Visibility.Visible;
 
         LengthText.Text = LengthWords(s.ReplayLengthSeconds);
         QualityText.Text = $"{Resolution(s.VerticalResolution)}{s.Fps}, {s.BitrateMbps} Мбит/с";
@@ -120,11 +135,14 @@ public partial class OverviewPage : PageBase
 
         // Шкала ленты: слева самое старое, что лежит в буфере
         double total = Math.Max(1, buffered.TotalSeconds);
-        Scale.Visibility = on && buffered.TotalSeconds >= 3 ? Visibility.Visible : Visibility.Hidden;
+        Scale.Visibility = on && buffered.TotalSeconds >= 3 ? Visibility.Visible
+                         : recordingOnly ? Visibility.Collapsed : Visibility.Hidden;
         Scale0.Text = "−" + Format(TimeSpan.FromSeconds(total));
         Scale1.Text = "−" + Format(TimeSpan.FromSeconds(total * 2 / 3));
         Scale2.Text = "−" + Format(TimeSpan.FromSeconds(total / 3));
         UpdatePick();
+        if (recordingOnly)
+            PickInfo.Text = "Идёт запись в файл. «Стоп» сохранит её";
 
         ShowLevels(capturing, s);
     }

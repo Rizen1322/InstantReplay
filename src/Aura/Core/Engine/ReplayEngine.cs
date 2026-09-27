@@ -227,6 +227,9 @@ public sealed partial class ReplayEngine : IDisposable
     private bool _continuousRecordingRequested;
     public bool IsRecordingToFile => _recorder is not null;
 
+    /// <summary>Когда началась текущая запись в файл (UTC); null — не пишем.</summary>
+    public DateTime? RecordingStartedUtc { get; private set; }
+
     /// <summary>
     /// Конвейер поднят только ради записи в файл: повтор человек не включал. Как
     /// только запись остановят, конвейер гасится сам.
