@@ -176,18 +176,20 @@ public partial class App : Application
             _ = Task.Run(async () =>
             {
                 await Task.Delay(1000);
-                SafeStartRecording();
+                // Из потока интерфейса, как при нажатии кнопки: из пула потоков
+                // (MTA) проверка не ловила ошибки, которые бывают только в STA.
+                Current.Dispatcher.Invoke(SafeStartRecording);
                 Log.Info("SelfTest", $"запись идёт: {Services.Engine.IsRecordingToFile}, повтор: {Services.Engine.ReplayActive}, " +
                                      $"конвейер: {Services.Engine.State}");
                 if (e.Args.Contains("--selftest-replay-during"))
                 {
                     await Task.Delay(selfTestSeconds * 500);
-                    SafeStartEngine();
+                    Current.Dispatcher.Invoke(SafeStartEngine);
                     Log.Info("SelfTest", $"включил повтор посреди записи: повтор {Services.Engine.ReplayActive}");
                     await Task.Delay(selfTestSeconds * 500);
                 }
                 else await Task.Delay(selfTestSeconds * 1000);
-                string? file = Services.Engine.StopRecordingToFile(wait: true);
+                string? file = Current.Dispatcher.Invoke(() => Services.Engine.StopRecordingToFile(wait: true));
                 await Task.Delay(1500);
                 Log.Info("SelfTest", $"файл: {file}; конвейер после записи: {Services.Engine.State}");
                 Current.Dispatcher.Invoke(ExitApp);

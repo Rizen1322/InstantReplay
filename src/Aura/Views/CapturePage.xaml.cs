@@ -64,7 +64,9 @@ public partial class CapturePage : PageBase
         // Курсор пишется на любой версии Windows: на «десятке» кадры берутся через
         // Desktop Duplication, и раньше переключатель там был неактивен с подписью
         // «не работает» — теперь приложение дорисовывает курсор само.
-        Loaded += (_, _) => LoadFromSettings();
+        // При каждом возврате на страницу Loaded срабатывает заново: неприменённые
+        // правки при этом не трогаем.
+        Loaded += (_, _) => { if (!_dirty) LoadFromSettings(); };
         // Узкое окно: панель справа уходит, список занимает всю ширину
         SizeChanged += (_, _) =>
         {
@@ -74,9 +76,12 @@ public partial class CapturePage : PageBase
         };
     }
 
-    public override void OnShown() => LoadFromSettings();
+    /// <summary>Неприменённые правки переживают уход в другой раздел.</summary>
+    public override void OnShown() { if (!_dirty) LoadFromSettings(); }
 
-    public override void OnHidden() => (Window.GetWindow(this) as MainWindow)?.HideApplyBar();
+    public override void ApplyPending() => Apply_Click(this, new RoutedEventArgs());
+
+    public override void RevertPending() => Revert_Click(this, new RoutedEventArgs());
 
     // ---------------- Сборка ----------------
 
@@ -517,9 +522,6 @@ public partial class CapturePage : PageBase
         if (_dirty == dirty) return;
         _dirty = dirty;
 
-        var window = Window.GetWindow(this) as MainWindow;
-        if (dirty) window?.ShowApplyBar("Изменения ещё не применены", () => Apply_Click(this, new RoutedEventArgs()),
-                                        () => Revert_Click(this, new RoutedEventArgs()));
-        else window?.HideApplyBar();
+        ReportPending(dirty);
     }
 }

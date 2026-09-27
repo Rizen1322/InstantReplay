@@ -86,22 +86,36 @@ public sealed class WasapiSource : IDisposable
         _timeline = timeline;
         ProcessId = processId;
         _name = $"loopback процесса {processName} ({processId})";
-        _client = ProcessLoopback.Activate(processId, TimeSpan.FromSeconds(5));
         _format = new WaveFormat(48000, 16, 2);
         _inChannels = 2;
         _matrix = BuildMatrix(_inChannels, timeline.Channels);
 
+        // Клиент loopback процесса живёт в многопоточном апартаменте COM, и для
+        // него нет прокси. Из потока интерфейса (STA) приведение к IAudioClient
+        // падало с «Unable to cast COM object», и Aura молча писала весь звук.
+        // Поэтому всё общение с клиентом идёт в MTA: пул потоков и наш поток захвата.
         var flags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.Loopback |
                     AudioClientStreamFlags.AutoConvertPcm | AudioClientStreamFlags.SrcDefaultQuality;
-        _client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, _format, Guid.Empty);
-        _client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
-        _capture = _client.AudioCaptureClient;
+        (_client, _capture) = InMta(() =>
+        {
+            var client = ProcessLoopback.Activate(processId, TimeSpan.FromSeconds(5));
+            client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, _format, Guid.Empty);
+            client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
+            return (client, client.AudioCaptureClient);
+        });
 
         _thread = new Thread(Loop) { IsBackground = true, Name = "Audio.Process", Priority = ThreadPriority.Highest };
-        _client.Start();
+        _thread.SetApartmentState(ApartmentState.MTA);
+        InMta(() => { _client.Start(); return 0; });
         _thread.Start();
         Log.Info("Audio", $"Источник запущен: {_name} (48000 Гц, 2 кан., pcm16)");
     }
+
+    /// <summary>Выполнить в MTA: уже в нём — сразу, иначе в пуле потоков.</summary>
+    private static T InMta<T>(Func<T> action) =>
+        Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA
+            ? action()
+            : Task.Run(action).GetAwaiter().GetResult();
 
     private static (MMDevice, string?) Resolve(MMDeviceEnumerator enumerator, DataFlow flow, string? deviceId, bool loopback)
     {
@@ -251,10 +265,15 @@ public sealed class WasapiSource : IDisposable
             Log.Warn("Audio", $"Поток захвата {_name} не завершился — источник оставлен");
             return;
         }
-        try { _client.Stop(); } catch { }
-        _capture.Dispose();
-        _client.Dispose();
-        _device?.Dispose();
+        void Release()
+        {
+            try { _client.Stop(); } catch { }
+            _capture.Dispose();
+            _client.Dispose();
+            _device?.Dispose();
+        }
+        if (ProcessId is null) Release();
+        else InMta(() => { Release(); return 0; });   // клиент процесса живёт только в MTA
         _packetReady.Dispose();
     }
 }

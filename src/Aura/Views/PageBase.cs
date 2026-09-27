@@ -45,6 +45,20 @@ public abstract class PageBase : UserControl
         IsVisibleChanged += (_, e) => { if (e.NewValue is true) refresh(); };
     }
 
+    /// <summary>
+    /// Отметить, что на странице есть неприменённые правки. Окно держит плашку
+    /// «Применить» и помнит страницу, даже когда человек ушёл в другой раздел:
+    /// правки не теряются, а применить их можно откуда угодно.
+    /// </summary>
+    protected void ReportPending(bool pending) =>
+        (Application.Current?.MainWindow as MainWindow)?.SetPending(this, pending);
+
+    /// <summary>Применить неприменённые правки страницы.</summary>
+    public virtual void ApplyPending() { }
+
+    /// <summary>Отбросить правки: вернуть страницу к сохранённым настройкам.</summary>
+    public virtual void RevertPending() { }
+
     public virtual void OnShown() { }
     public virtual void OnHidden() { }
 }

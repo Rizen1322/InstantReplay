@@ -80,7 +80,7 @@ public static class ClipThumbnails
         Payload payload;
         try
         {
-            payload = await Task.Run(() => FetchAsync(item));
+            payload = await FetchSharedAsync(item);
         }
         catch (Exception ex)
         {
@@ -119,21 +119,35 @@ public static class ClipThumbnails
         }
     }
 
-    /// <summary>Фоновая часть: кэш или система. UI-потока здесь нет вообще.</summary>
-    private static async Task<Payload> FetchAsync(ClipItem item)
+    /// <summary>
+    /// Запросы кадра одного файла в полёте. Главный экран и «Клипы» держат свои
+    /// карточки одного и того же клипа, и раньше обе шли за кадром одновременно:
+    /// одна писала .thumb, пока вторая его читала, и в лог летело «файл занят
+    /// другим процессом». Теперь второй запрос ждёт первый.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<Payload>> InFlight = new();
+
+    private static async Task<Payload> FetchSharedAsync(ClipItem item)
     {
         string key = CacheKey(item);
+        var task = InFlight.GetOrAdd(key, _ => Task.Run(() => FetchAsync(item, key)));
+        try { return await task.ConfigureAwait(false); }
+        finally { InFlight.TryRemove(new KeyValuePair<string, Task<Payload>>(key, task)); }
+    }
+
+    /// <summary>Фоновая часть: кэш или система. UI-потока здесь нет вообще.</summary>
+    private static async Task<Payload> FetchAsync(ClipItem item, string key)
+    {
         string thumbFile = Path.Combine(CacheDir, key + ".thumb");
         string metaFile = Path.Combine(CacheDir, key + ".meta");
 
         TimeSpan? duration = null;
         string? resolution = null;
 
-        if (File.Exists(thumbFile))
+        if (File.Exists(thumbFile) && await ReadSharedAsync(thumbFile).ConfigureAwait(false) is { } cached)
         {
-            byte[] cached = await File.ReadAllBytesAsync(thumbFile).ConfigureAwait(false);
-            if (File.Exists(metaFile))
-                ParseMeta(await File.ReadAllTextAsync(metaFile).ConfigureAwait(false), ref duration, ref resolution);
+            if (File.Exists(metaFile) && await ReadSharedAsync(metaFile).ConfigureAwait(false) is { } meta)
+                ParseMeta(System.Text.Encoding.UTF8.GetString(meta), ref duration, ref resolution);
             return new Payload(cached, duration, resolution, false);
         }
 
@@ -179,12 +193,64 @@ public static class ClipThumbnails
             }
 
             Directory.CreateDirectory(CacheDir);
-            if (bytes is not null) await File.WriteAllBytesAsync(thumbFile, bytes).ConfigureAwait(false);
-            await File.WriteAllTextAsync(metaFile, BuildMeta(duration, resolution)).ConfigureAwait(false);
+            if (bytes is not null) await WriteAtomicAsync(thumbFile, bytes).ConfigureAwait(false);
+            await WriteAtomicAsync(metaFile, System.Text.Encoding.UTF8.GetBytes(BuildMeta(duration, resolution)))
+                .ConfigureAwait(false);
 
             return new Payload(bytes, duration, resolution, noDecoder);
         }
         finally { Gate.Release(); }
+    }
+
+    /// <summary>
+    /// Прочитать файл кэша, не мешая чужой записи. null — файл занят или пропал:
+    /// тогда кадр просто возьмём у системы ещё раз.
+    /// </summary>
+    private static async Task<byte[]?> ReadSharedAsync(string path)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete, 4096, useAsync: true);
+                var buffer = new byte[stream.Length];
+                int read = 0;
+                while (read < buffer.Length)
+                {
+                    int n = await stream.ReadAsync(buffer.AsMemory(read)).ConfigureAwait(false);
+                    if (n == 0) break;
+                    read += n;
+                }
+                return read == buffer.Length ? buffer : null;
+            }
+            catch (FileNotFoundException) { return null; }
+            catch (IOException) { await Task.Delay(40).ConfigureAwait(false); }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Записать файл кэша целиком или никак: сначала во временный, потом заменить.
+    /// Читатель никогда не увидит наполовину записанный кадр.
+    /// </summary>
+    private static async Task WriteAtomicAsync(string path, byte[] data)
+    {
+        string temp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(temp, data).ConfigureAwait(false);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch (IOException)
+        {
+            // Файл держит другой процесс (вторая копия Aura): кадр у нас уже есть в
+            // памяти, кэш обновим в следующий раз
+        }
+        finally
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+        }
     }
 
     /// <summary>Пережать кадр в JPEG: системный поставщик отдаёт несжатый BMP.</summary>

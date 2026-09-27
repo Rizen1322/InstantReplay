@@ -248,8 +248,8 @@ public partial class MainWindow : Window
         ToolActions.Children.Clear();
         foreach (var action in page.ToolbarActions) ToolActions.Children.Add(action);
         Scroll.ScrollToTop();
-        HideApplyBar();
         page.OnShown();
+        UpdateApplyBar();
 
         // Страница въезжает снизу с лёгким проявлением
         PageHost.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromSeconds(0.28)));
@@ -306,16 +306,38 @@ public partial class MainWindow : Window
 
     // ---------------- Панель несохранённых изменений ----------------
 
-    private Action? _applyAction, _revertAction;
+    /// <summary>Страницы с неприменёнными правками, в порядке правки.</summary>
+    private readonly List<PageBase> _pendingPages = [];
+
+    /// <summary>
+    /// Страница сообщает о своих неприменённых правках. Плашка одна на окно и живёт
+    /// дольше страницы: ушёл в другой раздел, а правки «Видео» остались и видны
+    /// внизу. Раньше плашка пряталась при переходе, а при возврате страница
+    /// перечитывала настройки, и правки молча пропадали.
+    /// </summary>
+    public void SetPending(PageBase page, bool pending)
+    {
+        _pendingPages.Remove(page);
+        if (pending) _pendingPages.Add(page);
+        UpdateApplyBar();
+    }
+
+    private void UpdateApplyBar()
+    {
+        if (_pendingPages.Count == 0) { HideApplyBar(); return; }
+
+        var names = _pendingPages.Select(p => $"«{p.Title}»").ToList();
+        bool here = _pendingPages.Count == 1 && ReferenceEquals(_pendingPages[0], _current);
+        ApplyText.Text = here ? "Изменения ещё не применены"
+            : names.Count == 1 ? $"Не применены изменения в {names[0]}"
+            : $"Не применены изменения в {string.Join(" и ", names)}";
+        ShowApplyBar();
+    }
 
     /// <summary>Показать плашку «есть несохранённое» внизу окна.</summary>
-    public void ShowApplyBar(string text, Action apply, Action revert)
+    private void ShowApplyBar()
     {
-        ApplyText.Text = text;
-        _applyAction = apply;
-        _revertAction = revert;
-
-        if (ApplyBar.Visibility == Visibility.Visible) return;
+        if (ApplyBar.Visibility == Visibility.Visible && ApplyBar.Opacity > 0.5) return;
         ApplyBar.Visibility = Visibility.Visible;
         ApplyBar.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.25)));
         ApplyShift.BeginAnimation(TranslateTransform.YProperty,
@@ -323,9 +345,8 @@ public partial class MainWindow : Window
             { EasingFunction = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.3 } });
     }
 
-    public void HideApplyBar()
+    private void HideApplyBar()
     {
-        _applyAction = _revertAction = null;
         if (ApplyBar.Visibility != Visibility.Visible) return;
 
         var fade = new DoubleAnimation(0, TimeSpan.FromSeconds(0.2));
@@ -335,8 +356,15 @@ public partial class MainWindow : Window
             new DoubleAnimation(90, TimeSpan.FromSeconds(0.3)));
     }
 
-    private void ApplyOk_Click(object sender, RoutedEventArgs e) => _applyAction?.Invoke();
-    private void ApplyRevert_Click(object sender, RoutedEventArgs e) => _revertAction?.Invoke();
+    private void ApplyOk_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var page in _pendingPages.ToList()) page.ApplyPending();
+    }
+
+    private void ApplyRevert_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var page in _pendingPages.ToList()) page.RevertPending();
+    }
 
     // ---------------- Шапка ----------------
 

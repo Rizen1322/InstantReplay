@@ -48,16 +48,21 @@ public partial class AudioPage : PageBase
         };
     }
 
+    /// <summary>Неприменённые правки переживают уход в другой раздел.</summary>
     public override void OnShown()
     {
-        LoadFromSettings();
+        if (!_dirty) LoadFromSettings();
         _levels.Start();
     }
+
+    public override void ApplyPending() => Apply_Click();
+
+    public override void RevertPending() => LoadFromSettings();
 
     public override void OnHidden()
     {
         _levels.Stop();
-        (Window.GetWindow(this) as MainWindow)?.HideApplyBar();
+
     }
 
     // ---------------- Загрузка и сохранение ----------------
@@ -353,8 +358,6 @@ public partial class AudioPage : PageBase
         if (_dirty == dirty) return;
         _dirty = dirty;
 
-        var window = Window.GetWindow(this) as MainWindow;
-        if (dirty) window?.ShowApplyBar("Изменения ещё не применены", Apply_Click, LoadFromSettings);
-        else window?.HideApplyBar();
+        ReportPending(dirty);
     }
 }
