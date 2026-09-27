@@ -561,6 +561,7 @@ public partial class App : Application
             Views.ClipCommands.NotifyClipAdded(file);
         };
 
+        Services.Hotkeys.PushToTalkChanged += (held, ticks) => engine.SetPushToTalk(held, ticks);
         Services.Hotkeys.HotkeyPressed += action => Services.Ui.Enqueue(() =>
         {
             switch (action)

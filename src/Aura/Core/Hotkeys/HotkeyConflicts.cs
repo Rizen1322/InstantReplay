@@ -31,6 +31,7 @@ public static class HotkeyConflicts
         new(HotkeyAction.Screenshot, "Скриншот экрана", s.HotkeyScreenshot),
         new(HotkeyAction.ScreenshotRegion, "Скриншот области", s.HotkeyScreenshotRegion),
         new(HotkeyAction.OpenFolder, "Открыть папку записей", s.HotkeyOpenFolder),
+        new(HotkeyAction.PushToTalk, "Микрофон, пока держишь", s.HotkeyPushToTalk),
     ];
 
     /// <summary>

@@ -48,6 +48,46 @@ public sealed class HotkeyService : IDisposable
     // Для действия нужен только переход «отпущена → нажата»; отдельно запоминаем
     // съеденные клавиши, чтобы не отдавать игре их повторы и одинокий KEYUP.
     private readonly HashSet<uint> _keysDown = [];
+
+    /// <summary>
+    /// Push-to-talk: клавиша, пока зажата, открывает микрофон. Отдельно от _map:
+    /// действия съедают нажатие, а эта клавиша обязана дойти до Discord и игры.
+    /// </summary>
+    private (uint vk, bool ctrl, bool shift, bool alt, bool win)? _pushToTalk;
+    private bool _pushToTalkHeld;
+
+    /// <summary>Push-to-talk зажата или отпущена; второй аргумент — время в тиках QPC (100 нс).</summary>
+    public event Action<bool, long>? PushToTalkChanged;
+
+    private static long NowTicks() => (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
+                                             (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
+
+    /// <summary>Нажатие или отпускание кнопки: не наша ли это push-to-talk.</summary>
+    private void TrackPushToTalk(uint vk, bool down)
+    {
+        if (_pushToTalk is not { } key || key.vk != vk) return;
+        if (down)
+        {
+            if (_pushToTalkHeld) return;
+            // Модификаторы из сочетания обязаны быть зажаты, лишние не мешают:
+            // в игре с зажатым Shift говорить тоже надо
+            if (key.ctrl && (GetAsyncKeyState(0x11) & 0x8000) == 0) return;
+            if (key.shift && (GetAsyncKeyState(0x10) & 0x8000) == 0) return;
+            if (key.alt && (GetAsyncKeyState(0x12) & 0x8000) == 0) return;
+            if (key.win && ((GetAsyncKeyState(0x5B) | GetAsyncKeyState(0x5C)) & 0x8000) == 0) return;
+            _pushToTalkHeld = true;
+        }
+        else
+        {
+            if (!_pushToTalkHeld) return;
+            _pushToTalkHeld = false;
+        }
+        // Прямо из хука, а не через пул потоков: там нажатие и отпускание могли
+        // выполниться в обратном порядке, и микрофон остался бы открытым. Обработчик
+        // только кладёт отметку в список под замком, это микросекунды.
+        try { PushToTalkChanged?.Invoke(_pushToTalkHeld, NowTicks()); }
+        catch (Exception ex) { Log.Warn("Hotkeys", $"Push-to-talk: {ex.Message}"); }
+    }
     private readonly HashSet<uint> _consumedKeys = [];
 
     public HotkeyService(SettingsManager settings)
@@ -210,6 +250,7 @@ public sealed class HotkeyService : IDisposable
 
             if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
             {
+                TrackPushToTalk(vk, down: false);
                 _keysDown.Remove(vk);
                 if (_consumedKeys.Remove(vk)) return new IntPtr(1);
             }
@@ -221,6 +262,7 @@ public sealed class HotkeyService : IDisposable
                     return _consumedKeys.Contains(vk)
                         ? new IntPtr(1)
                         : CallNextHookEx(_hook, nCode, wParam, lParam);
+                TrackPushToTalk(vk, down: true);
 
                 if (!Suspended && TryFire(vk))
                 {
@@ -242,6 +284,21 @@ public sealed class HotkeyService : IDisposable
     /// </summary>
     private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        if (nCode >= 0)
+        {
+            // Push-to-talk на кнопке мыши: и нажатие, и отпускание, дальше по цепочке
+            int button = (int)wParam;
+            if (button is WM_MBUTTONDOWN or WM_MBUTTONUP or WM_XBUTTONDOWN or WM_XBUTTONUP && _pushToTalk is not null)
+            {
+                uint pttVk = 0x04;
+                if (button is WM_XBUTTONDOWN or WM_XBUTTONUP)
+                {
+                    uint data = (uint)Marshal.ReadInt32(lParam, MouseDataOffset) >> 16;
+                    pttVk = data == XBUTTON1 ? 0x05u : data == XBUTTON2 ? 0x06u : 0u;
+                }
+                TrackPushToTalk(pttVk, down: button is WM_MBUTTONDOWN or WM_XBUTTONDOWN);
+            }
+        }
         if (nCode >= 0 && !Suspended)
         {
             int message = (int)wParam;
@@ -298,7 +355,16 @@ public sealed class HotkeyService : IDisposable
             TryAdd(s.HotkeyScreenshot, HotkeyAction.Screenshot);
             TryAdd(s.HotkeyScreenshotRegion, HotkeyAction.ScreenshotRegion);
             TryAdd(s.HotkeyOpenFolder, HotkeyAction.OpenFolder);
-            _mouseBound = _map.Keys.Any(k => HotkeyParser.IsMouseButton(k.vk));
+            _pushToTalk = !string.IsNullOrWhiteSpace(s.HotkeyPushToTalk) &&
+                          HotkeyParser.TryParse(s.HotkeyPushToTalk, out var ptt) ? ptt : null;
+            // Сочетание сменили, пока клавиша зажата: микрофон не должен остаться открытым
+            if (_pushToTalkHeld)
+            {
+                _pushToTalkHeld = false;
+                PushToTalkChanged?.Invoke(false, NowTicks());
+            }
+            _mouseBound = _map.Keys.Any(k => HotkeyParser.IsMouseButton(k.vk)) ||
+                          _pushToTalk is { } p && HotkeyParser.IsMouseButton(p.vk);
         }
         // Поток хука мог ещё не стартовать — тогда он сам спросит при запуске
         if (_threadId != 0) PostThreadMessageW(_threadId, WmUpdateMouseHook, IntPtr.Zero, IntPtr.Zero);

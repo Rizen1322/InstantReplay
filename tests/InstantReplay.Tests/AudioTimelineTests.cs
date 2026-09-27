@@ -98,4 +98,43 @@ public class AudioTimelineTests
         Assert.InRange(maxOut, 0.85f, 0.9f);   // потолок −1 дБFS (0.891) под AAC
         Assert.True(limiter.MinGain < 0.6f);
     }
+
+    [Fact]
+    public void Push_to_talk_opens_by_audio_time_and_holds_after_release()
+    {
+        var gate = new PushToTalkGate();
+        const long s = 10_000_000;
+        gate.Set(true, 1 * s);
+        gate.Set(false, 2 * s);
+
+        Assert.False(gate.IsOpenAt(s - 1));            // до нажатия
+        Assert.True(gate.IsOpenAt(s + s / 2));         // зажата
+        Assert.True(gate.IsOpenAt(2 * s + s / 10));    // 100 мс после отпускания: ещё открыт
+        Assert.False(gate.IsOpenAt(2 * s + s / 4));    // 250 мс: закрыт
+    }
+
+    [Fact]
+    public void Push_to_talk_ignores_repeated_state_and_keeps_old_press()
+    {
+        var gate = new PushToTalkGate();
+        const long s = 10_000_000;
+        gate.Set(true, 1 * s);
+        gate.Set(true, 3 * s);                         // автоповтор клавиши
+        Assert.True(gate.IsOpenAt(2 * s));
+        // Долгое удержание: старое нажатие не выбрасывается, пока нет отпускания
+        gate.Set(false, 60 * s);
+        Assert.True(gate.IsOpenAt(59 * s));
+        Assert.False(gate.IsOpenAt(61 * s));
+    }
+
+    [Fact]
+    public void Push_to_talk_orders_events_by_time_not_arrival()
+    {
+        var gate = new PushToTalkGate();
+        const long s = 10_000_000;
+        gate.Set(false, 2 * s);                        // отпускание пришло раньше нажатия
+        gate.Set(true, 1 * s);
+        Assert.True(gate.IsOpenAt(s + s / 2));
+        Assert.False(gate.IsOpenAt(3 * s));
+    }
 }

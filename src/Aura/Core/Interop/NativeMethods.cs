@@ -221,6 +221,7 @@ internal static partial class NativeMethods
     // Кнопки мыши, которые можно назначать на действия. Левой и правой здесь нет
     // намеренно: перехватить их значило бы отобрать у человека мышь.
     internal const int WM_MBUTTONDOWN = 0x0207, WM_XBUTTONDOWN = 0x020B;
+    internal const int WM_MBUTTONUP = 0x0208, WM_XBUTTONUP = 0x020C;
 
     /// <summary>Какая боковая кнопка нажата — лежит в старшем слове mouseData.</summary>
     internal const uint XBUTTON1 = 0x0001, XBUTTON2 = 0x0002;

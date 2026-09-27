@@ -864,6 +864,9 @@ public sealed partial class ReplayEngine : IDisposable
     /// повтора, и гаснет вместе с её остановкой. Раньше переключатель повтора
     /// обрывал и запись, хотя человек выключал только повтор.
     /// </summary>
+    /// <summary>Push-to-talk зажата или отпущена в момент <paramref name="ticks"/> (QPC, 100 нс).</summary>
+    public void SetPushToTalk(bool held, long ticks) => _audio.PushToTalk.Set(held, ticks);
+
     public void StopReplay()
     {
         lock (_lifecycle)

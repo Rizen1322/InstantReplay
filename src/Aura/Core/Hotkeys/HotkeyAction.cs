@@ -10,5 +10,7 @@ public enum HotkeyAction
     ToggleInstantReplay,
     Screenshot,
     ScreenshotRegion,
-    OpenFolder
+    OpenFolder,
+    /// <summary>Микрофон пишется, только пока клавиша зажата. Нажатие не съедается.</summary>
+    PushToTalk
 }

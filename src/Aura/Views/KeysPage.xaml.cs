@@ -270,6 +270,7 @@ public partial class KeysPage : PageBase
             HotkeyAction.StopRecording => s.HotkeyStopRecording,
             HotkeyAction.Screenshot => s.HotkeyScreenshot,
             HotkeyAction.ScreenshotRegion => s.HotkeyScreenshotRegion,
+            HotkeyAction.PushToTalk => s.HotkeyPushToTalk,
             _ => s.HotkeyOpenFolder
         };
     }
@@ -288,6 +289,7 @@ public partial class KeysPage : PageBase
                 case HotkeyAction.Screenshot: s.HotkeyScreenshot = combo; break;
                 case HotkeyAction.ScreenshotRegion: s.HotkeyScreenshotRegion = combo; break;
                 case HotkeyAction.OpenFolder: s.HotkeyOpenFolder = combo; break;
+                case HotkeyAction.PushToTalk: s.HotkeyPushToTalk = combo; break;
             }
         }, "hotkeys");
     }
@@ -305,6 +307,7 @@ public partial class KeysPage : PageBase
             s.HotkeyScreenshot = defaults.HotkeyScreenshot;
             s.HotkeyScreenshotRegion = defaults.HotkeyScreenshotRegion;
             s.HotkeyOpenFolder = defaults.HotkeyOpenFolder;
+            s.HotkeyPushToTalk = defaults.HotkeyPushToTalk;
         }, "hotkeys");
         Build();
     }

@@ -1,4 +1,4 @@
-namespace Aura.Core.Audio;
+﻿namespace Aura.Core.Audio;
 
 /// <summary>
 /// Пиковый лимитер с просмотром вперёд.
@@ -75,6 +75,63 @@ public sealed class Limiter
             }
             _delayPos = (_delayPos + 1) % LookaheadFrames;
         }
+    }
+}
+
+/// <summary>
+/// Push-to-talk по времени звука, а не по времени обработки.
+///
+/// Микшер сводит звук с отставанием в 200 мс (MixLagTicks). Если бы он смотрел,
+/// зажата ли клавиша прямо сейчас, микрофон открывался бы на 200 мс позже нажатия
+/// и глотал начало фразы. Поэтому нажатия запоминаются со временем QPC, и для
+/// каждого блока спрашивается, была ли клавиша зажата в его момент.
+///
+/// После отпускания микрофон держится ещё 200 мс: клавишу обычно отпускают, не
+/// договорив последний слог. У Discord для этого та же задержка отпускания.
+/// </summary>
+public sealed class PushToTalkGate
+{
+    public const long ReleaseHoldTicks = 2_000_000;
+    private static readonly long KeepTicks = 20 * 10_000_000L;
+
+    private readonly object _sync = new();
+    private readonly List<(long Ticks, bool Down)> _events = [];
+
+    public void Set(bool down, long ticks)
+    {
+        lock (_sync)
+        {
+            // По времени, а не по порядку прихода: отметки идут из разных потоков
+            int at = _events.Count;
+            while (at > 0 && _events[at - 1].Ticks > ticks) at--;
+            if (at > 0 && _events[at - 1].Down == down) return;
+            _events.Insert(at, (ticks, down));
+            // Старое не нужно: микшер отстаёт на доли секунды, а не на минуты.
+            // Последнее событие до окна храним, оно задаёт состояние в его начале.
+            while (_events.Count > 1 && _events[1].Ticks < ticks - KeepTicks) _events.RemoveAt(0);
+        }
+    }
+
+    /// <summary>Открыт ли микрофон в момент <paramref name="ticks"/> с учётом задержки отпускания.</summary>
+    public bool IsOpenAt(long ticks) => HeldAt(ticks) || HeldAt(ticks - ReleaseHoldTicks);
+
+    private bool HeldAt(long ticks)
+    {
+        lock (_sync)
+        {
+            bool held = false;
+            foreach (var (at, down) in _events)
+            {
+                if (at > ticks) break;
+                held = down;
+            }
+            return held;
+        }
+    }
+
+    public void Clear()
+    {
+        lock (_sync) _events.Clear();
     }
 }
 

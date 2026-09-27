@@ -55,7 +55,7 @@ public sealed partial class ReplayEngine
     private void OnSettingsChanged(string group)
     {
         // Громкость и шумодав — на лету, без всякого перезапуска
-        if (group is "" or "video" or "audio" or "audio-live")
+        if (group is "" or "video" or "audio" or "audio-live" or "hotkeys")
             ApplyLiveAudioSettings(_settings.Current);
 
         if (group is not ("" or "video" or "audio" or "replay")) return;
@@ -150,6 +150,11 @@ public sealed partial class ReplayEngine
         _audio.MicGateThresholdDb = s.MicNoiseGateDb;
         _audio.GameVolume = s.GameVolumePercent / 100f;
         _audio.MicVolume = s.MicVolumePercent / 100f;
+        bool pushToTalk = !string.IsNullOrWhiteSpace(s.HotkeyPushToTalk);
+        if (_audio.PushToTalkEnabled != pushToTalk)
+            Log.Info("Audio", pushToTalk ? $"Push-to-talk: микрофон пишется, пока зажата {s.HotkeyPushToTalk}"
+                                         : "Push-to-talk выключен, микрофон пишется всегда");
+        _audio.PushToTalkEnabled = pushToTalk;
     }
 
     /// <summary>Длина повтора, которая реально помещается в арену.</summary>

@@ -57,6 +57,12 @@ public sealed class AudioMixerEngine : IDisposable
     public bool MicNeuralDenoise { get; set; } = true;
     public float MicGateThresholdDb { get; set; } = -44f;
 
+    /// <summary>Push-to-talk включён: микрофон пишется, только пока клавиша зажата.</summary>
+    public bool PushToTalkEnabled { get; set; }
+
+    /// <summary>Нажатия push-to-talk со временем (см. <see cref="PushToTalkGate"/>).</summary>
+    public PushToTalkGate PushToTalk { get; } = new();
+
     /// <summary>Громкость звука игры, 1 — без изменений (0..2).</summary>
     public float GameVolume { get; set; } = 1f;
 
@@ -486,6 +492,7 @@ public sealed class AudioMixerEngine : IDisposable
                 if (denoise) denoiser?.ProcessBlock(mic);
                 float g = MicNoiseGate ? gate.Process(mic, MicGateThresholdDb) : 1f;
                 float k = g * mv;
+                if (PushToTalkEnabled && !PushToTalk.IsOpenAt(blockStart)) k = 0f;
                 // Усиление плавно ведём от прошлого блока к новому внутри блока.
                 // Раньше оно менялось ступенькой раз в 10 мс, и гейт на открытии и
                 // закрытии давал щелчки.

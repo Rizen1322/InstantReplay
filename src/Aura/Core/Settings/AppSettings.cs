@@ -136,6 +136,13 @@ public sealed class AppSettings
     public string HotkeyScreenshotRegion { get; set; } = "PrintScreen";
     public string HotkeyOpenFolder { get; set; } = "Alt+F8";
 
+    /// <summary>
+    /// Push-to-talk: микрофон попадает в запись, только пока зажата эта клавиша.
+    /// Пусто — микрофон пишется всегда. Клавиша не перехватывается: её же обычно
+    /// держат для Discord, и она обязана доходить и до него, и до игры.
+    /// </summary>
+    public string HotkeyPushToTalk { get; set; } = "";
+
     // ---------- Хранилище ----------
     public string SaveRootPath { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Aura");
