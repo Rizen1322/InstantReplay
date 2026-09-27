@@ -188,6 +188,28 @@ public partial class App : Application
                     Log.Info("SelfTest", $"включил повтор посреди записи: повтор {Services.Engine.ReplayActive}");
                     await Task.Delay(selfTestSeconds * 500);
                 }
+                else if (e.Args.Contains("--selftest-replay-toggle"))
+                {
+                    // Повтор включили и выключили посреди записи: запись обязана идти дальше
+                    await Task.Delay(selfTestSeconds * 333);
+                    Current.Dispatcher.Invoke(ToggleEngine);
+                    Log.Info("SelfTest", $"повтор включён: {Services.Engine.ReplayActive}");
+                    await Task.Delay(selfTestSeconds * 333);
+                    Current.Dispatcher.Invoke(ToggleEngine);
+                    Current.Dispatcher.Invoke(() => Services.Engine.SaveReplay());
+                    Log.Info("SelfTest", $"повтор выключен: повтор {Services.Engine.ReplayActive}, " +
+                                         $"запись идёт {Services.Engine.IsRecordingToFile}");
+                    await Task.Delay(selfTestSeconds * 333);
+                }
+                else if (e.Args.Contains("--selftest-format-change"))
+                {
+                    // Смена разрешения посреди записи: запись продолжается новым файлом
+                    await Task.Delay(selfTestSeconds * 500);
+                    Services.Settings.Update(s => s.VerticalResolution = s.VerticalResolution == 720 ? 1080 : 720, "video");
+                    Log.Info("SelfTest", $"сменил разрешение: запись идёт {Services.Engine.IsRecordingToFile}, " +
+                                         $"конвейер {Services.Engine.State}");
+                    await Task.Delay(selfTestSeconds * 500);
+                }
                 else await Task.Delay(selfTestSeconds * 1000);
                 string? file = Current.Dispatcher.Invoke(() => Services.Engine.StopRecordingToFile(wait: true));
                 await Task.Delay(1500);
@@ -511,6 +533,7 @@ public partial class App : Application
         engine.Warning += msg => n.Show(NotificationKind.Warning, msg);
 
         engine.RecordingChanged += rec => { if (rec) n.Show(NotificationKind.Recording, "Запись началась"); };
+        engine.RecordingPartSaved += file => Services.Ui.Enqueue(() => Views.ClipCommands.NotifyClipAdded(file));
         engine.RecordingSaved += (file, seconds) =>
         {
             n.Show(NotificationKind.Saved, "Запись сохранена", $"{Loc.Duration(seconds)} · {Describe(file)}");
@@ -685,9 +708,10 @@ public partial class App : Application
 
     public static void ToggleEngine()
     {
-        // Идёт запись без повтора: переключатель включает повтор, запись не трогает
+        // Переключатель трогает только повтор: идущая запись в файл продолжается
+        // и при включении, и при выключении
         if (!Services.Engine.ReplayActive) SafeStartEngine();
-        else Services.Engine.Stop();
+        else Services.Engine.StopReplay();
     }
 
     /// <summary>
@@ -993,6 +1017,7 @@ public partial class App : Application
     /// </summary>
     public void ExitApp()
     {
+        Step("настройки", () => Services.Settings.FlushDeferred());
         Step("события системы", () => Services.Activity.Dispose());
         Step("слежение за папкой", () => Services.Storage.Dispose());
         Step("движок", () => Services.Engine.Dispose());

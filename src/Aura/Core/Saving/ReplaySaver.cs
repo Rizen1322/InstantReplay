@@ -74,6 +74,9 @@ public static class ReplaySaver
                 fileBytes = Mp4ProgressiveWriter.Write(stream, videoFormat, new SnapshotSource(video),
                                                        inputs, progress);
                 stream.Flush();
+                // До переименования данные должны быть на диске, а не в кэше: иначе
+                // при выключении питания остаётся файл с именем клипа и нулями внутри
+                file.Flush(flushToDisk: true);
             }
             written = true;
         }

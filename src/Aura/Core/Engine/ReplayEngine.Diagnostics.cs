@@ -535,6 +535,19 @@ public sealed partial class ReplayEngine
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool CloseDesktop(IntPtr desktop);
 
+    private static bool OnScreen((int X, int Y, int Width, int Height, double Scale)? screen, (int X, int Y) point) =>
+        screen is not { } r ||
+        point.X >= r.X && point.X < r.X + r.Width && point.Y >= r.Y && point.Y < r.Y + r.Height;
+
+    /// <summary>Окно на переднем плане стоит на записываемом мониторе (по центру окна).</summary>
+    private static bool ForegroundOnScreen((int X, int Y, int Width, int Height, double Scale)? screen)
+    {
+        if (screen is null) return true;
+        IntPtr hwnd = Aura.Core.Interop.NativeMethods.GetForegroundWindow();
+        if (hwnd == IntPtr.Zero || !Aura.Core.Interop.NativeMethods.GetWindowRectRaw(hwnd, out var rect)) return true;
+        return OnScreen(screen, ((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2));
+    }
+
     private static (int X, int Y) CursorPosition() =>
         GetCursorPos(out var p) ? (p.X, p.Y) : (int.MinValue, int.MinValue);
 
@@ -678,8 +691,14 @@ public sealed partial class ReplayEngine
                 // клавиатуры. Выключенный монитор без ввода тоже молчит законно;
                 // вернётся человек, сдвинет мышь — и если WGC не ожил, пересоберём.
                 bool cursorComposed = _settings.Current.RecordCursor;
-                bool cursorMoved = CursorPosition() != _wdCursor;
-                bool inputHappened = LastInputTick() != _wdInputTick;
+                var cursorNow = CursorPosition();
+                // Несколько мониторов: курсор, гуляющий по другому экрану, и ввод в
+                // окно на другом экране записываемый монитор не меняют. Раньше это
+                // считалось доказательством поломки, и захват пересобирался зря.
+                var screen = Aura.Core.Capture.MonitorLayout.For(_settings.Current.MonitorIndex);
+                bool cursorMoved = cursorNow != _wdCursor &&
+                                   (OnScreen(screen, cursorNow) || OnScreen(screen, _wdCursor));
+                bool inputHappened = LastInputTick() != _wdInputTick && ForegroundOnScreen(screen);
                 // Экран блокировки, UAC и Ctrl+Alt+Del живут на отдельном защищённом
                 // рабочем столе, и WGC его не отдаёт. Ввод PIN там выглядел как
                 // «клавиши жмут, а кадров нет» и пересобирал захват на ровном месте.

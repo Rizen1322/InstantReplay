@@ -361,9 +361,18 @@ public partial class MainWindow : Window
         foreach (var page in _pendingPages.ToList()) page.ApplyPending();
     }
 
-    private void ApplyRevert_Click(object sender, RoutedEventArgs e)
+    private void ApplyRevert_Click(object sender, RoutedEventArgs e) => RevertAllPending();
+
+    /// <summary>
+    /// Отбросить неприменённые правки на всех страницах. После сброса настроек
+    /// они иначе оставались на экране вместе с панелью «Применить», и одно
+    /// нажатие возвращало то, что человек только что сбросил.
+    /// </summary>
+    public void RevertAllPending()
     {
         foreach (var page in _pendingPages.ToList()) page.RevertPending();
+        _pendingPages.Clear();
+        HideApplyBar();
     }
 
     // ---------------- Шапка ----------------

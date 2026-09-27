@@ -189,7 +189,11 @@ public sealed class ManualRecorder : IDisposable
             {
                 try
                 {
-                    if (_error is null) Write(item);
+                    if (_error is null)
+                    {
+                        Write(item);
+                        CheckFreeSpace();
+                    }
                 }
                 catch (IOException ex) when (ReplaySaver.DiskFull(ex))
                 {
@@ -212,6 +216,25 @@ public sealed class ManualRecorder : IDisposable
         finally
         {
             Close();
+        }
+    }
+
+    private long _nextSpaceCheck;
+
+    /// <summary>
+    /// Раз в 5 секунд смотрим, сколько осталось на диске. Кончается: запись
+    /// останавливается сама, пока в запасе ещё 256 МБ. Раньше она шла до полного
+    /// нуля, и вместе с ней на том же диске падали игра, браузер и сама система.
+    /// </summary>
+    private void CheckFreeSpace()
+    {
+        long now = Environment.TickCount64;
+        if (now < _nextSpaceCheck) return;
+        _nextSpaceCheck = now + 5000;
+        if (DiskSpace.FreeBytes(_filePath) is long free && free < DiskSpace.SafetyMarginBytes)
+        {
+            Log.Warn("Recorder", $"На диске осталось {free >> 20} МБ, запись остановлена");
+            Fail("на диске почти не осталось места, запись остановлена, записанное сохранено");
         }
     }
 

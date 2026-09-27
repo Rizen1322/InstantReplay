@@ -15,7 +15,10 @@ namespace Aura.Core.Audio;
 /// </summary>
 public sealed class Limiter
 {
-    private const float Threshold = 0.966f;     // −0.3 дБFS
+    // −1 дБFS. AAC при восстановлении волны даёт выбросы выше исходных пиков, и
+    // пик у самых −0.3 дБ после кодирования уходил за 0 и хрипел. AES TD1008 и
+    // площадки (Spotify, YouTube) советуют −1 дБ перед lossy-кодеком.
+    private const float Threshold = 0.891f;
     public const int LookaheadFrames = 96;      // 2 мс при 48 кГц
 
     private readonly int _channels;

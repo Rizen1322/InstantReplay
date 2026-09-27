@@ -48,6 +48,8 @@ public sealed class SettingsManager
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura");
     }
     private static string FilePath => Path.Combine(Dir, "settings.json");
+    /// <summary>Прошлая удачно записанная версия: File.Replace кладёт её сюда при каждом сохранении.</summary>
+    private static string BackupPath => Path.Combine(Dir, "settings.json.bak");
     private static string TempPath => Path.Combine(Dir, $"settings.json.{Environment.ProcessId}.tmp");
 
     /// <summary>Защищает файл настроек и подмену объекта Current.</summary>
@@ -66,7 +68,7 @@ public sealed class SettingsManager
             {
                 if (File.Exists(FilePath))
                 {
-                    Current = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOpts) ?? new();
+                    Current = ReadOrRecover();
                     Current.Normalize();
 
                     // Discord поднял лимит вложения с 10 МБ до 20. Настройку никто руками не
@@ -88,6 +90,43 @@ public sealed class SettingsManager
                 Current.SaveRootPath = new AppSettings().SaveRootPath;
                 Directory.CreateDirectory(Current.SaveRootPath);
             }
+        }
+    }
+
+    /// <summary>
+    /// Прочитать settings.json. Если он испорчен (обрыв питания посреди записи,
+    /// ручная правка с ошибкой), файл не пропадает: он откладывается рядом как
+    /// «settings.json.broken-…», а настройки берутся из прошлой удачной версии.
+    /// Раньше испорченный файл молча заменялся значениями по умолчанию при первом
+    /// же сохранении, и все настройки терялись насовсем.
+    /// </summary>
+    private static AppSettings ReadOrRecover()
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOpts)
+                   ?? throw new JsonException("файл пуст");
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or ArgumentException)
+        {
+            string broken = Path.Combine(Dir, $"settings.json.broken-{DateTime.Now:yyyyMMdd-HHmmss}");
+            try { File.Copy(FilePath, broken, overwrite: true); } catch { }
+            Log.Error("Settings", $"settings.json испорчен ({ex.Message}), копия: {Path.GetFileName(broken)}");
+            try
+            {
+                if (File.Exists(BackupPath) &&
+                    JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(BackupPath), JsonOpts) is { } backup)
+                {
+                    Log.Warn("Settings", "Настройки восстановлены из settings.json.bak");
+                    // Испорченный файл уже отложен. Иначе следующее сохранение
+                    // переложило бы его на место резервной копии.
+                    try { File.Copy(BackupPath, FilePath, overwrite: true); } catch { }
+                    return backup;
+                }
+            }
+            catch (Exception bex) { Log.Warn("Settings", $"settings.json.bak тоже не читается: {bex.Message}"); }
+            Log.Warn("Settings", "Резервной копии нет, использую значения по умолчанию");
+            return new AppSettings();
         }
     }
 
@@ -120,6 +159,38 @@ public sealed class SettingsManager
         Changed?.Invoke(changedGroup);
     }
 
+    /// <summary>
+    /// Как <see cref="Update"/>, но на диск пишется не сразу, а через 0.4 с после
+    /// последней правки. Для ползунков: при перетаскивании значение меняется
+    /// десятки раз в секунду, и каждый раз файл писался со сбросом на диск.
+    /// Движок видит новое значение сразу, через Changed.
+    /// </summary>
+    public void UpdateDeferred(Action<AppSettings> change, string changedGroup = "")
+    {
+        lock (_sync)
+        {
+            change(Current);
+            _deferredSave ??= new System.Threading.Timer(_ => FlushDeferred(), null, Timeout.Infinite, Timeout.Infinite);
+            _deferredSave.Change(400, Timeout.Infinite);
+            _savePending = true;
+        }
+        Changed?.Invoke(changedGroup);
+    }
+
+    private System.Threading.Timer? _deferredSave;
+    private bool _savePending;
+
+    /// <summary>Дописать отложенное сохранение. Зовётся и при выходе из приложения.</summary>
+    public void FlushDeferred()
+    {
+        lock (_sync)
+        {
+            if (!_savePending) return;
+            _savePending = false;
+            SaveLocked();
+        }
+    }
+
     public void Save(string changedGroup = "")
     {
         lock (_sync)
@@ -134,6 +205,7 @@ public sealed class SettingsManager
 
     private void SaveLocked()
     {
+        _savePending = false;
         string tmp = TempPath;
         try
         {
@@ -147,7 +219,7 @@ public sealed class SettingsManager
                 file.Flush(flushToDisk: true);
             }
 
-            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null);
+            if (File.Exists(FilePath)) File.Replace(tmp, FilePath, BackupPath, ignoreMetadataErrors: true);
             else File.Move(tmp, FilePath);
         }
         catch (Exception ex)

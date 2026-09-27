@@ -86,7 +86,9 @@ public sealed class WasapiSource : IDisposable
         _timeline = timeline;
         ProcessId = processId;
         _name = $"loopback процесса {processName} ({processId})";
-        _format = new WaveFormat(48000, 16, 2);
+        // float32, а не 16 бит: система всё равно сводит звук во float, и перевод
+        // в 16 бит только добавлял шум квантования на тихих местах.
+        var floatFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
         _inChannels = 2;
         _matrix = BuildMatrix(_inChannels, timeline.Channels);
 
@@ -96,19 +98,39 @@ public sealed class WasapiSource : IDisposable
         // Поэтому всё общение с клиентом идёт в MTA: пул потоков и наш поток захвата.
         var flags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.Loopback |
                     AudioClientStreamFlags.AutoConvertPcm | AudioClientStreamFlags.SrcDefaultQuality;
-        (_client, _capture) = InMta(() =>
+        (_client, _capture, _format) = InMta(() =>
+        {
+            // float32 не принят (на старых сборках бывает): тот же клиент заново
+            // не инициализировать, поэтому новый и 16 бит, как раньше
+            try { return Open(floatFormat); }
+            catch (Exception ex) when (ex is COMException or ArgumentException)
+            {
+                Log.Warn("Audio", $"Loopback процесса не принял float32 ({ex.Message}), беру 16 бит");
+                return Open(new WaveFormat(48000, 16, 2));
+            }
+        });
+
+        (AudioClient, AudioCaptureClient, WaveFormat) Open(WaveFormat format)
         {
             var client = ProcessLoopback.Activate(processId, TimeSpan.FromSeconds(5));
-            client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, _format, Guid.Empty);
-            client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
-            return (client, client.AudioCaptureClient);
-        });
+            try
+            {
+                client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, format, Guid.Empty);
+                client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
+                return (client, client.AudioCaptureClient, format);
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
 
         _thread = new Thread(Loop) { IsBackground = true, Name = "Audio.Process", Priority = ThreadPriority.Highest };
         _thread.SetApartmentState(ApartmentState.MTA);
         InMta(() => { _client.Start(); return 0; });
         _thread.Start();
-        Log.Info("Audio", $"Источник запущен: {_name} (48000 Гц, 2 кан., pcm16)");
+        Log.Info("Audio", $"Источник запущен: {_name} (48000 Гц, 2 кан., {Describe(_format)})");
     }
 
     /// <summary>Выполнить в MTA: уже в нём — сразу, иначе в пуле потоков.</summary>

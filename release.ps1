@@ -235,6 +235,21 @@ if ($signRelease) {
     Remove-Item $sigDer -Force
     $assets += $sigFile
     Write-Host "   Подпись: $([IO.Path]::GetFileName($sigFile))"
+
+    # Вторая подпись: версия и слепок вместе (UpdateVerification.VersionMessage).
+    # Без неё старый честно подписанный установщик можно выложить под новым
+    # номером и откатить всех на версию с уже исправленной дырой. Текст обязан
+    # совпадать с приложением байт в байт: UTF-8 без BOM, один перевод строки.
+    $versionMessage = Join-Path $env:TEMP 'aura-release-version.txt'
+    [IO.File]::WriteAllText($versionMessage, "Aura release $new`n$sha", $utf8)
+    $sig2Der = Join-Path $env:TEMP 'aura-release-signature2.der'
+    & $openssl dgst -sha256 -sign $signKey -out $sig2Der $versionMessage
+    if ($LASTEXITCODE -ne 0) { Fail "openssl не смог подписать версию" }
+    $sig2File = "$setupExe.sig2"
+    [IO.File]::WriteAllText($sig2File, [Convert]::ToBase64String([IO.File]::ReadAllBytes($sig2Der)), $utf8)
+    Remove-Item $sig2Der, $versionMessage -Force
+    $assets += $sig2File
+    Write-Host "   Подпись версии: $([IO.Path]::GetFileName($sig2File))"
 }
 
 & $gh release create $tag @assets --title $tag --notes $Notes

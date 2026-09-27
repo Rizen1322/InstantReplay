@@ -175,9 +175,20 @@ public sealed partial class ReplayEngine
     /// <summary>Закрыть текущий файл записи и сразу начать следующий.</summary>
     private void SplitRecordingLocked()
     {
-        StopRecordingLocked(wait: false);
-        if (_continuousRecordingRequested) StartRecordingLocked();
+        _splittingRecording = true;
+        try
+        {
+            StopRecordingLocked(wait: false);
+            if (_continuousRecordingRequested) StartRecordingLocked();
+        }
+        finally { _splittingRecording = false; }
     }
+
+    /// <summary>
+    /// Запись переходит в следующий файл. Для человека это одна запись: без
+    /// «Запись сохранена» и «Запись началась» посреди игры, таймер не сбрасывается.
+    /// </summary>
+    private bool _splittingRecording;
 
     private void StartRecordingLocked()
     {
@@ -240,7 +251,7 @@ public sealed partial class ReplayEngine
         _recorderDetached = false;
         _recorderSequenceHeader = _bufferSequenceHeader;
         _recorderStream = (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps);
-        RecordingChanged?.Invoke(true);
+        if (!_splittingRecording) RecordingChanged?.Invoke(true);
     }
 
     /// <summary>
@@ -286,7 +297,8 @@ public sealed partial class ReplayEngine
         _recorderFrameHandler = null;
         _recorderDetached = false;
         _audio.FrameEncoded -= recorder.OnAudio;
-        RecordingChanged?.Invoke(false);
+        bool part = _splittingRecording;
+        if (!part) RecordingChanged?.Invoke(false);
 
         var finish = Task.Run(() =>
         {
@@ -300,7 +312,8 @@ public sealed partial class ReplayEngine
                 if (result.Ok)
                 {
                     foreach (var file in result.Files) _storage.RegisterSaved(file);
-                    RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
+                    if (part) RecordingPartSaved?.Invoke(result.Files[0]);
+                    else RecordingSaved?.Invoke(result.Files[0], Math.Max(result.Seconds, 1));
                     // Записанное целое, но запись оборвалась раньше (кончилось место) —
                     // человек должен узнать, почему файл короче.
                     if (result.Error is { } error) Warning?.Invoke($"Запись остановилась раньше: {error}");

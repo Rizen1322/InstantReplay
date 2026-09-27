@@ -18,6 +18,9 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] internal static partial IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetClientRect(IntPtr hwnd, out RECT rect);
+    /// <summary>Прямоугольник окна с тенью; для «на каком мониторе окно» этого хватает.</summary>
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowRect")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetWindowRectRaw(IntPtr hwnd, out RECT rect);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool ClientToScreen(IntPtr hwnd, ref POINT point);
     [LibraryImport("user32.dll", SetLastError = true)]

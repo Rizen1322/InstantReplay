@@ -98,6 +98,26 @@ internal sealed class CaptureHealthPolicy
         }
     }
 
+    /// <summary>
+    /// Замолчавший способ захвата отстраняется с нарастанием: 15 минут, потом
+    /// час, и только с третьего раза до конца сеанса. Раньше WGC запрещался до
+    /// перезапуска с первого же раза, хотя замолкал он обычно из-за одной
+    /// конкретной игры или разовой заминки драйвера, и дальше весь день
+    /// писался заметно более тяжёлый Desktop Duplication.
+    /// </summary>
+    private void QuarantineStalled(CaptureBackend backend, DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            int stalls = _stalls.TryGetValue(backend, out int n) ? n + 1 : 1;
+            _stalls[backend] = stalls;
+            if (stalls >= 3) _sessionQuarantine.Add(backend);
+            else _transientQuarantine[backend] = now + (stalls == 1 ? TimeSpan.FromMinutes(15) : TimeSpan.FromHours(1));
+        }
+    }
+
+    private readonly Dictionary<CaptureBackend, int> _stalls = [];
+
     public bool CanUse(CaptureBackend backend, DateTimeOffset now)
     {
         lock (_sync)
@@ -134,10 +154,8 @@ internal sealed class CaptureHealthPolicy
             return CanUse(preferred, now) ? preferred : active;
         }
 
-        Quarantine(active, now,
-            failureKind == CaptureFailureKind.BackendStalled
-                ? CaptureQuarantine.ProcessSession
-                : CaptureQuarantine.Transient);
+        if (failureKind == CaptureFailureKind.BackendStalled) QuarantineStalled(active, now);
+        else Quarantine(active, now, CaptureQuarantine.Transient);
         CaptureBackend alternative = CaptureBackendPolicy.Alternative(active);
         bool mayTryAlternative = CanUse(alternative, now) ||
                                  failureKind == CaptureFailureKind.BackendStalled;

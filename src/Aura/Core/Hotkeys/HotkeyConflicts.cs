@@ -71,6 +71,24 @@ public static class HotkeyConflicts
     }
 
     /// <summary>
+    /// Сочетания оверлея NVIDIA (GeForce Experience и NVIDIA App) по умолчанию.
+    /// Оверлей ловит их своим хуком, а не регистрацией в системе, поэтому проверка
+    /// через RegisterHotKey их не видит. Низкоуровневые хуки вызываются от
+    /// последнего поставленного к первому: если оверлей запустился после Aura, он
+    /// получает нажатие первым и может его съесть.
+    /// </summary>
+    private static readonly string[] NvidiaOverlayDefaults =
+        ["Alt+Z", "Alt+F9", "Alt+F10", "Alt+Shift+F10", "Alt+F1", "Alt+R", "Ctrl+Alt+M"];
+
+    /// <summary>Занято ли сочетание оверлеем NVIDIA по умолчанию.</summary>
+    public static bool UsedByNvidiaOverlay(string combo)
+    {
+        string key = HotkeyParser.Normalize(combo);
+        return key.Length > 0 && NvidiaOverlayDefaults.Any(d =>
+            HotkeyParser.Normalize(d).Equals(key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// Предупреждение о сочетании, которое лучше не назначать (null — всё в порядке).
     /// Это не запрет: пользователь может настоять, просто должен понимать последствия.
     /// </summary>

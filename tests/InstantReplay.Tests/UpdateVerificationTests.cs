@@ -233,6 +233,62 @@ public class UpdateVerificationTests
         finally { File.Delete(original); File.Delete(tampered); }
     }
 
+    // ---------------- Подпись, привязанная к версии ----------------
+
+    [Fact]
+    public void ПодписьВерсииПроходитСВернойВерсией()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        string publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        string file = FakeInstaller();
+        try
+        {
+            string digest = UpdateVerification.Sha256File(file);
+            byte[] signature = key.SignHash(Convert.FromHexString(digest));
+            // Как openssl dgst -sha256 -sign: DER-последовательность над SHA-256 текста
+            byte[] versionSignature = key.SignData(UpdateVerification.VersionMessage("2.0.11", digest),
+                HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+
+            using var held = UpdateVerification.OpenVerified(file, digest, signature, "2.0.11", versionSignature, publicKey);
+            Assert.Equal(0, held.Position);
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public void СтарыйУстановщикПодНовымНомеромНеПроходит()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        string publicKey = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo());
+        string file = FakeInstaller();
+        try
+        {
+            string digest = UpdateVerification.Sha256File(file);
+            byte[] signature = key.SignHash(Convert.FromHexString(digest));
+            // Честная подпись старого релиза 2.0.5, а выложен он как 9.9.9
+            byte[] oldVersionSignature = key.SignData(UpdateVerification.VersionMessage("2.0.5", digest),
+                HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                UpdateVerification.OpenVerified(file, digest, signature, "9.9.9", oldVersionSignature, publicKey));
+            Assert.Contains("9.9.9", ex.Message);
+
+            // Без второй подписи вовсе тоже нельзя
+            Assert.Throws<InvalidOperationException>(() =>
+                UpdateVerification.OpenVerified(file, digest, signature, "9.9.9", null, publicKey));
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public void ТекстПодписиВерсииСовпадаетСоСкриптомРелиза()
+    {
+        // release.ps1 пишет ровно "Aura release $new`n$sha" в UTF-8 без BOM
+        byte[] message = UpdateVerification.VersionMessage("2.0.11", new string('A', 64));
+        Assert.Equal("Aura release 2.0.11\n" + new string('a', 64), System.Text.Encoding.UTF8.GetString(message));
+        Assert.NotEqual(0xEF, message[0]);
+    }
+
     // ---------------- Удерживаемый хендл (защита от подмены после проверки) ----------------
 
     [Fact]

@@ -75,8 +75,51 @@ public sealed partial class ReplayEngine
                 if (was is null || was.FormatDiffers(now))
                 {
                     Log.Info("Engine", "Формат видео изменился — пересобираю конвейер с нуля");
-                    StopLocked();
-                    StartWithFallbackLocked(preserveBuffers: false);
+                    // Запись в файл продолжается в новом файле: старый с другим
+                    // разрешением или кодеком дописать нельзя. Раньше смена формата
+                    // молча обрывала запись, а в режиме записи без повтора конвейер
+                    // после этого крутился вхолостую с выключенным повтором.
+                    bool wasRecording = _recorder is not null || _continuousRecordingRequested;
+                    bool recordingOnly = _recordingOnly;
+                    DateTime? startedAt = RecordingStartedUtc;
+                    _splittingRecording = wasRecording;
+                    try { StopLocked(); }
+                    finally { _splittingRecording = false; }
+                    if (recordingOnly && !wasRecording)
+                    {
+                        _recordingOnly = false;
+                        return;
+                    }
+                    _recordingOnly = recordingOnly;
+                    try
+                    {
+                        StartWithFallbackLocked(preserveBuffers: false);
+                        if (wasRecording && _state != EngineState.Stopped)
+                        {
+                            _continuousRecordingRequested = true;
+                            RecordingStartedUtc = startedAt;
+                            _splittingRecording = true;
+                            try { ResumeRecordingLocked(); }
+                            finally { _splittingRecording = false; }
+                        }
+                    }
+                    finally
+                    {
+                        // Запись не продолжилась (конвейер не поднялся, нет места):
+                        // интерфейс должен узнать, что она кончилась. Закрытие
+                        // первой части об этом не сообщало, оно считалось продолжением.
+                        if (wasRecording && _recorder is null)
+                        {
+                            _continuousRecordingRequested = false;
+                            RecordingStartedUtc = null;
+                            RecordingChanged?.Invoke(false);
+                            if (_recordingOnly)
+                            {
+                                _recordingOnly = false;
+                                if (_state != EngineState.Stopped) StopLocked();
+                            }
+                        }
+                    }
                     return;
                 }
 

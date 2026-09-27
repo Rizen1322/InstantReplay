@@ -90,6 +90,18 @@ public sealed class AudioMixerEngine : IDisposable
     /// <summary>Имя exe игры, чей звук пишется; null — весь звук устройства вывода.</summary>
     private string? _gameProcess;
     private System.Threading.Timer? _processWatch;
+    private const long ProcessRetryMs = 30_000;
+    private long _processRetryAfter;
+    private bool _processFallbackWarned;
+    private int _processFailures;
+
+    /// <summary>
+    /// Смена источника звука игры идёт по одному: слежение за процессом (раз в
+    /// 2 с) и пересоздание после смены устройства раньше могли идти разом, и на
+    /// миг на шкалу писали два источника, звук удваивался. А открытие loopback
+    /// процесса ждёт систему до 5 с, дольше периода таймера, и вызовы наслаивались.
+    /// </summary>
+    private readonly object _gameSwitch = new();
     private bool _processMissingLogged;
     private MMDeviceEnumerator? _deviceWatchEnumerator;
     private DefaultDeviceWatcher? _deviceWatcher;
@@ -137,6 +149,9 @@ public sealed class AudioMixerEngine : IDisposable
         _renderDeviceId = renderDeviceId; _captureDeviceId = captureDeviceId;
         _gameProcess = string.IsNullOrWhiteSpace(gameProcess) ? null : gameProcess.Trim();
         _processMissingLogged = false;
+        _processRetryAfter = 0;
+        _processFallbackWarned = false;
+        _processFailures = 0;
         if (!captureGame && !captureMic) return;
 
         long origin = NowTicks();
@@ -214,10 +229,17 @@ public sealed class AudioMixerEngine : IDisposable
             }
             catch (Exception ex)
             {
-                // Старая Windows 10 без loopback процесса: лучше весь звук, чем никакого
-                Log.Warn("Audio", $"Звук только из {processName} недоступен ({ex.Message}), пишу весь звук");
-                Warning?.Invoke("Звук отдельной игры на этой Windows недоступен, пишется весь звук компьютера");
-                _gameProcess = null;
+                // Звук одной игры не открылся. Пишем весь звук, чтобы запись не
+                // осталась немой, но от выбора не отказываемся: раньше одна неудача
+                // (например, игра ещё только запускалась) до перезапуска навсегда
+                // переключала на весь звук. Теперь через полминуты пробуем снова.
+                Volatile.Write(ref _processRetryAfter, Environment.TickCount64 + ProcessRetryMs);
+                if (++_processFailures is 1 or 2 or 10 or 100)
+                    Log.Warn("Audio", $"Звук только из {processName} не открылся ({ex.Message}), " +
+                                      $"пока пишу весь звук, повторю через 30 с ({_processFailures}-й раз)");
+                if (!_processFallbackWarned)
+                    Warning?.Invoke("Звук выбранной игры не открылся, пока пишется весь звук компьютера");
+                _processFallbackWarned = true;
             }
         }
         try
@@ -243,14 +265,24 @@ public sealed class AudioMixerEngine : IDisposable
     /// <summary>Подхватить игру, которая запустилась, перезапустилась или закрылась.</summary>
     private void SyncGameProcess(int generation)
     {
+        if (!Monitor.TryEnter(_gameSwitch)) return;   // прошлая сверка ещё идёт
         try
         {
             string? name = _gameProcess;
             if (!_running || name is null || generation != Volatile.Read(ref _generation)) return;
             int? wanted = ProcessLoopback.FindProcess(name);
             int? current;
-            lock (_sync) current = _game?.ProcessId;
-            if (wanted == current) return;
+            bool fallback;
+            lock (_sync)
+            {
+                current = _game?.ProcessId;
+                fallback = _game is not null && _game.ProcessId is null;
+            }
+            // Весь звук вместо закрывшейся игры не оставляем: до её запуска тишина
+            if (wanted == current && !(fallback && wanted is null)) return;
+            // Сейчас пишется весь звук после неудачи: новую попытку не раньше срока
+            if (fallback && wanted is not null &&
+                Environment.TickCount64 < Volatile.Read(ref _processRetryAfter)) return;
 
             WasapiSource? replacement = wanted is null ? null : OpenSource(loopback: true);
             WasapiSource? old;
@@ -260,11 +292,17 @@ public sealed class AudioMixerEngine : IDisposable
                 old = _game;
                 _game = replacement;
             }
-            if (replacement is not null) Log.Info("Audio", $"Звук игры: подключился к {name} ({wanted})");
-            else if (old is not null) Log.Info("Audio", $"Звук игры: {name} закрылась, пишу тишину до её запуска");
+            if (replacement?.ProcessId is not null)
+            {
+                Log.Info("Audio", $"Звук игры: подключился к {name} ({wanted})");
+                _processFallbackWarned = false;
+            }
+            else if (old is not null && replacement is null)
+                Log.Info("Audio", $"Звук игры: {name} закрылась, пишу тишину до её запуска");
             old?.Dispose();
         }
         catch (Exception ex) { Log.Warn("Audio", $"Слежение за процессом игры: {ex.Message}"); }
+        finally { Monitor.Exit(_gameSwitch); }
     }
 
     private void Emit(AudioTrackKind kind, ReadOnlySpan<byte> frame, long pts)
@@ -308,28 +346,49 @@ public sealed class AudioMixerEngine : IDisposable
         bool loopback = flow == DataFlow.Render;
         Task.Run(() =>
         {
-            // Windows шлёт уведомление до того, как новое устройство готово
-            Thread.Sleep(300);
-            if (!_running || generation != Volatile.Read(ref _generation)) return;
-
-            WasapiSource? replacement = OpenSource(loopback);
-            if (replacement is null) return;
-
-            WasapiSource? old;
-            lock (_sync)
+            // Windows шлёт уведомление до того, как новое устройство готово. А
+            // выдернутые наушники или засыпающий USB-микрофон бывают недоступны
+            // дольше: раньше одна неудачная попытка оставляла запись без звука до
+            // перезапуска. Теперь пробуем ещё несколько раз с растущей паузой.
+            int[] delays = [300, 1000, 2000, 4000, 8000, 15000, 30000];
+            foreach (int delay in delays)
             {
-                if (!_running || generation != _generation)
+                Thread.Sleep(delay);
+                if (!_running || generation != Volatile.Read(ref _generation)) return;
+
+                WasapiSource? replacement;
+                WasapiSource? old;
+                // Источник игры меняем под тем же замком, что и слежение за процессом
+                if (loopback) Monitor.Enter(_gameSwitch);
+                try
                 {
-                    replacement.Dispose();
-                    return;
+                    replacement = OpenSource(loopback);
+                    if (replacement is null)
+                    {
+                        // Звук одной игры и игра не запущена: это не сбой, слежение
+                        // за процессом подключит её само
+                        if (loopback && _gameProcess is not null) return;
+                        continue;
+                    }
+                    lock (_sync)
+                    {
+                        if (!_running || generation != _generation)
+                        {
+                            replacement.Dispose();
+                            return;
+                        }
+                        if (loopback) { old = _game; _game = replacement; }
+                        else { old = _mic; _mic = replacement; }
+                    }
                 }
-                if (loopback) { old = _game; _game = replacement; }
-                else { old = _mic; _mic = replacement; }
+                finally { if (loopback) Monitor.Exit(_gameSwitch); }
+                Log.Info("Audio", loopback
+                    ? "Устройство вывода сменилось — источник звука игры пересоздан"
+                    : "Устройство ввода сменилось — микрофон пересоздан");
+                old?.Dispose();
+                return;
             }
-            Log.Info("Audio", loopback
-                ? "Устройство вывода сменилось — источник звука игры пересоздан"
-                : "Устройство ввода сменилось — микрофон пересоздан");
-            old?.Dispose();
+            Log.Warn("Audio", $"{(loopback ? "Звук игры" : "Микрофон")}: устройство так и не стало доступно");
         });
     }
 
@@ -376,6 +435,7 @@ public sealed class AudioMixerEngine : IDisposable
             ? "Шумодав RNNoise: библиотека не загрузилась, микрофон пишется без него"
             : $"Шумодав RNNoise: готов, {(MicNeuralDenoise ? "включён" : "выключен в настройках")}");
         bool denoiseWas = MicNeuralDenoise;
+        float micGain = 1f;
         long block = 0;
         int report = 0;
 
@@ -426,7 +486,15 @@ public sealed class AudioMixerEngine : IDisposable
                 if (denoise) denoiser?.ProcessBlock(mic);
                 float g = MicNoiseGate ? gate.Process(mic, MicGateThresholdDb) : 1f;
                 float k = g * mv;
-                if (k != 1f) for (int i = 0; i < mic.Length; i++) mic[i] *= k;
+                // Усиление плавно ведём от прошлого блока к новому внутри блока.
+                // Раньше оно менялось ступенькой раз в 10 мс, и гейт на открытии и
+                // закрытии давал щелчки.
+                if (k != 1f || micGain != 1f)
+                {
+                    float step = (k - micGain) / mic.Length;
+                    for (int i = 0; i < mic.Length; i++) mic[i] *= micGain + step * (i + 1);
+                }
+                micGain = k;
             }
 
             // Смесь считается до лимитеров отдельных дорожек: у неё свой лимитер

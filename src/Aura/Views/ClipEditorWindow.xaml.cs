@@ -191,6 +191,11 @@ public partial class ClipEditorWindow : Window
         PreviewLoading.Visibility = Visibility.Collapsed;
         // Громкость, заданная до начала воспроизведения, LibVLC может не применить
         ApplyMuteState();
+        if (_seekWhenPlaying is { } restartAt && _player is not null)
+        {
+            _seekWhenPlaying = null;
+            _player.Time = (long)Math.Round(restartAt * 1000);
+        }
         if (_reopenRestore is { } restore)
         {
             // Файл только что переоткрыт со сведённым звуком: возвращаем позицию и
@@ -216,11 +221,39 @@ public partial class ClipEditorWindow : Window
     private void Player_Paused(object? sender, EventArgs e) =>
         Dispatcher.BeginInvoke(() => SetPlayIcon(playing: false));
 
+    /// <summary>
+    /// LibVLC после конца файла переходит в «Ended», и в этом состоянии перемотка
+    /// не действует. Раньше здесь ставилась позиция начала выделения, она
+    /// терялась, и следующее «Воспроизведение» начинало файл с нуля, а не с
+    /// начала выделения. Теперь запоминаем, что файл кончился, и при следующем
+    /// запуске или перемотке переоткрываем воспроизведение с нужного места.
+    /// </summary>
     private void Player_EndReached(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
+        _ended = true;
         SetPlayIcon(playing: false);
-        Seek(_startSeconds);
+        UpdatePlayhead(_endSeconds);
     });
+
+    private bool _ended;
+
+    /// <summary>Куда перемотать, как только плеер снова заиграет после конца файла.</summary>
+    private double? _seekWhenPlaying;
+
+    /// <summary>Перезапустить закончившийся файл с позиции <paramref name="seconds"/>.</summary>
+    private void RestartAfterEnd(double seconds, bool play)
+    {
+        if (_player is null) return;
+        _ended = false;
+        _seekWhenPlaying = seconds;
+        _pauseOnFirstFrame = !play;
+        _seekTarget = seconds;
+        _seekTick = Environment.TickCount64;
+        UpdatePlayhead(seconds);
+        UpdatePreviewTime(seconds);
+        _player.Stop();
+        _player.Play();
+    }
 
     private void SetPlayIcon(bool playing)
     {
@@ -334,6 +367,11 @@ public partial class ClipEditorWindow : Window
             _player.SetPause(true);
             return;
         }
+        if (_ended)
+        {
+            RestartAfterEnd(_startSeconds, play: true);
+            return;
+        }
         double position = LogicalSeconds;
         if (position < _startSeconds || position >= _endSeconds - 0.02) Seek(_startSeconds);
         _player.Play();
@@ -391,6 +429,11 @@ public partial class ClipEditorWindow : Window
     {
         if (_player is null || _durationSeconds <= 0) return;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
+        if (_ended)
+        {
+            RestartAfterEnd(seconds, play: false);
+            return;
+        }
         _seekTarget = seconds;
         _seekTick = Environment.TickCount64;
         _player.Time = (long)Math.Round(seconds * 1000);

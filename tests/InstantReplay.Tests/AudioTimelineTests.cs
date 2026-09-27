@@ -95,7 +95,7 @@ public class AudioTimelineTests
             limiter.Process(block, 480);
             if (b > 2) maxOut = Math.Max(maxOut, block.Max(MathF.Abs));
         }
-        Assert.InRange(maxOut, 0.9f, 1.0f);
+        Assert.InRange(maxOut, 0.85f, 0.9f);   // потолок −1 дБFS (0.891) под AAC
         Assert.True(limiter.MinGain < 0.6f);
     }
 }

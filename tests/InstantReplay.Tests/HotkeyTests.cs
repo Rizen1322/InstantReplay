@@ -165,4 +165,13 @@ public class MouseHotkeyTests
         Assert.True(HotkeyParser.TryParse("Alt+F10", out var key));
         Assert.False(HotkeyParser.IsMouseButton(key.vk));
     }
+
+    [Theory]
+    [InlineData("Alt+F10", true)]
+    [InlineData("alt+shift+f10", true)]
+    [InlineData("Alt+Z", true)]
+    [InlineData("Ctrl+Shift+F9", false)]
+    [InlineData("", false)]
+    public void ЗнаетСочетанияОверлеяNvidia(string combo, bool taken) =>
+        Assert.Equal(taken, HotkeyConflicts.UsedByNvidiaOverlay(combo));
 }

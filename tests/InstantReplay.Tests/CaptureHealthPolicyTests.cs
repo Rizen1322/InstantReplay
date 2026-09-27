@@ -208,7 +208,7 @@ public sealed class CaptureHealthPolicyTests
     }
 
     [Fact]
-    public void SoftStallSelectsAlternativeAndQuarantinesWgcForProcessSession()
+    public void SoftStallSelectsAlternativeAndQuarantinesWgcWithEscalation()
     {
         var policy = new CaptureHealthPolicy();
 
@@ -217,6 +217,19 @@ public sealed class CaptureHealthPolicyTests
             backendForced: false, Now);
 
         Assert.Equal(CaptureBackend.DesktopDuplication, selected);
+        // Первый раз: 15 минут, а не до конца сеанса
+        Assert.False(policy.CanUse(CaptureBackend.Wgc, Now.AddMinutes(14)));
+        Assert.True(policy.CanUse(CaptureBackend.Wgc, Now.AddMinutes(16)));
+
+        // Второй раз: час
+        policy.SelectAfterFailure(CaptureBackend.Wgc, CaptureFailureKind.BackendStalled,
+                                  backendForced: false, Now.AddMinutes(20));
+        Assert.False(policy.CanUse(CaptureBackend.Wgc, Now.AddMinutes(70)));
+        Assert.True(policy.CanUse(CaptureBackend.Wgc, Now.AddMinutes(81)));
+
+        // Третий: до конца сеанса
+        policy.SelectAfterFailure(CaptureBackend.Wgc, CaptureFailureKind.BackendStalled,
+                                  backendForced: false, Now.AddMinutes(90));
         Assert.False(policy.CanUse(CaptureBackend.Wgc, Now.AddDays(30)));
     }
 

@@ -246,6 +246,13 @@ public sealed partial class ReplayEngine : IDisposable
     /// <summary>Успешное завершение обычной записи: путь + длительность (сек).</summary>
     public event Action<string, int>? RecordingSaved;
 
+    /// <summary>
+    /// Закрыта часть записи, которая продолжается следующим файлом (сменился
+    /// формат видео или поток кодека). Уведомлять человека не о чем: запись для
+    /// него одна и идёт дальше. Нужна только библиотеке.
+    /// </summary>
+    public event Action<string>? RecordingPartSaved;
+
     public ReplayEngine(SettingsManager settings, StorageManager storage)
     {
         _settings = settings;
@@ -849,6 +856,32 @@ public sealed partial class ReplayEngine : IDisposable
             Interlocked.Exchange(ref _recovering, 0);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Выключить повтор по кнопке человека. Если при этом идёт запись в файл, она
+    /// продолжается: конвейер остаётся жить ради неё, как у записи, начатой без
+    /// повтора, и гаснет вместе с её остановкой. Раньше переключатель повтора
+    /// обрывал и запись, хотя человек выключал только повтор.
+    /// </summary>
+    public void StopReplay()
+    {
+        lock (_lifecycle)
+        {
+            if (!_recordingOnly && _state != EngineState.Stopped &&
+                (_recorder is not null || _continuousRecordingRequested))
+            {
+                _recordingOnly = true;
+                Interlocked.Exchange(ref _pendingSave, 0);
+                // Запись без повтора держит буфер на диске, а не в памяти
+                try { ApplyBufferSize(PipelineConfig.From(_settings.Current)); }
+                catch (Exception ex) { Log.Warn("Engine", $"Буфер не перенесён на диск: {ex.Message}"); }
+                Log.Info("Engine", "Повтор выключен, запись в файл продолжается");
+                StateChanged?.Invoke(_state);
+                return;
+            }
+        }
+        Stop();
     }
 
     public void Stop()

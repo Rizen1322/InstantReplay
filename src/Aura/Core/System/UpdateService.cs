@@ -16,7 +16,7 @@ namespace Aura.Core.SystemIntegration;
 /// </summary>
 public sealed record UpdateInfo(
     string Version, string DownloadUrl, string ReleaseUrl,
-    string? DigestUrl = null, string? SignatureUrl = null);
+    string? DigestUrl = null, string? SignatureUrl = null, string? VersionSignatureUrl = null);
 
 /// <summary>
 /// Проверенный установщик, который нельзя подменить: пока этот объект жив,
@@ -129,9 +129,10 @@ public sealed class UpdateService
                 n.EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
             string? digest = AssetUrl(release, n => n.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase));
             string? signature = AssetUrl(release, n => n.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
+            string? versionSignature = AssetUrl(release, n => n.EndsWith(".sig2", StringComparison.OrdinalIgnoreCase));
 
             Available = new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "",
-                                       digest, signature);
+                                       digest, signature, versionSignature);
             return Available;
         }
         catch (Exception ex)
@@ -206,9 +207,11 @@ public sealed class UpdateService
         {
             string? digest = await TryGetTextAsync(update.DigestUrl, ct);
             byte[]? signature = DecodeSignature(await TryGetBytesAsync(update.SignatureUrl, ct));
+            byte[]? versionSignature = DecodeSignature(await TryGetBytesAsync(update.VersionSignatureUrl, ct));
             // Проверяем ровно те байты, которые останутся под замком, и замок берём
             // до возврата: с этого момента подменить файл уже нельзя
-            installer = new VerifiedInstaller(file, UpdateVerification.OpenVerified(file, digest, signature));
+            installer = new VerifiedInstaller(file, UpdateVerification.OpenVerified(
+                file, digest, signature, update.Version, versionSignature));
         }
         catch
         {

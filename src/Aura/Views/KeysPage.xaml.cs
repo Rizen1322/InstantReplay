@@ -91,22 +91,28 @@ public partial class KeysPage : PageBase
         TakenList.Children.Clear();
         TakenList.RowDefinitions.Clear();
         int checkedCount = 0, row = 0;
+        bool nvidia = NvidiaOverlayRunning();
         foreach (var binding in bindings)
         {
             if (!HotkeyParser.TryParse(binding.Combo, out var key) || HotkeyParser.IsMouseButton(key.vk)) continue;
             checkedCount++;
-            uint mods = (key.alt ? 1u : 0) | (key.ctrl ? 2u : 0) | (key.shift ? 4u : 0) | (key.win ? 8u : 0) | 0x4000;
-            const int probeId = 0xB10C;
-            bool free = RegisterHotKey(IntPtr.Zero, probeId, mods, key.vk);
-            int error = free ? 0 : System.Runtime.InteropServices.Marshal.GetLastWin32Error();
-            if (free) { UnregisterHotKey(IntPtr.Zero, probeId); continue; }
-            if (error != 1409) continue;   // ERROR_HOTKEY_ALREADY_REGISTERED
+            // Оверлей NVIDIA держит свои сочетания хуком, регистрация его не видит
+            bool takenByNvidia = nvidia && HotkeyConflicts.UsedByNvidiaOverlay(binding.Combo);
+            if (!takenByNvidia)
+            {
+                uint mods = (key.alt ? 1u : 0) | (key.ctrl ? 2u : 0) | (key.shift ? 4u : 0) | (key.win ? 8u : 0) | 0x4000;
+                const int probeId = 0xB10C;
+                bool free = RegisterHotKey(IntPtr.Zero, probeId, mods, key.vk);
+                int error = free ? 0 : System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                if (free) { UnregisterHotKey(IntPtr.Zero, probeId); continue; }
+                if (error != 1409) continue;   // ERROR_HOTKEY_ALREADY_REGISTERED
+            }
 
             TakenList.RowDefinitions.Add(new RowDefinition());
             var name = new TextBlock { Text = binding.Title, Style = (Style)FindResource("KvKey"), TextTrimming = TextTrimming.CharacterEllipsis };
             var combo = new TextBlock
             {
-                Text = binding.Combo,
+                Text = takenByNvidia ? $"{binding.Combo} (NVIDIA)" : binding.Combo,
                 Style = (Style)FindResource("KvVal"),
                 Foreground = (System.Windows.Media.Brush)FindResource("OrangeBrush")
             };
@@ -118,6 +124,19 @@ public partial class KeysPage : PageBase
         TakenSummary.Text = checkedCount == 0 ? "Клавиатурных сочетаний не задано."
             : row == 0 ? "Все сочетания свободны: их не держит ни одна другая программа."
             : "Эти сочетания уже держит другая программа. Нажатие может уйти ей, а не Aura:";
+    }
+
+    /// <summary>Запущен ли оверлей NVIDIA (GeForce Experience или NVIDIA App).</summary>
+    private static bool NvidiaOverlayRunning()
+    {
+        foreach (string name in new[] { "NVIDIA Overlay", "nvsphelper64", "NVIDIA Share" })
+        {
+            var found = System.Diagnostics.Process.GetProcessesByName(name);
+            bool any = found.Length > 0;
+            foreach (var p in found) p.Dispose();
+            if (any) return true;
+        }
+        return false;
     }
 
     private void Field_Click(object sender, RoutedEventArgs e)

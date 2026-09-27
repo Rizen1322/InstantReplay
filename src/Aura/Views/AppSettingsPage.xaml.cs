@@ -232,7 +232,7 @@ public partial class AppSettingsPage : PageBase
     {
         DurationValue.Text = $"{Duration.Value:0.#} с".Replace('.', ',');
         if (_loading) return;
-        Services.Settings.Update(s => s.NotificationDurationSeconds = Duration.Value, "ui");
+        Services.Settings.UpdateDeferred(s => s.NotificationDurationSeconds = Duration.Value, "ui");
     }
 
     private void Position_Click(object sender, RoutedEventArgs e)
@@ -412,6 +412,7 @@ public partial class AppSettingsPage : PageBase
                 "Все настройки вернутся к исходным. Клипы и скриншоты останутся на месте.", "Сбросить")) return;
 
         Services.Settings.Reset();
+        (Window.GetWindow(this) as MainWindow)?.RevertAllPending();
         App.ApplyTheme(Services.Settings.Current.Theme);
         (Window.GetWindow(this) as MainWindow)?.ApplyUiScale(Services.Settings.Current.UiScale);
         Load();

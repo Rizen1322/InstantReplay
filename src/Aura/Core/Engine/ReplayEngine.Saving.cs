@@ -59,6 +59,15 @@ public sealed partial class ReplayEngine
             return;
         }
 
+        // Конвейер поднят только ради записи в файл. Буфер при этом копится лишь
+        // для непрерывности записи, и клип из него человек не заказывал: раньше
+        // хоткей молча сохранял «повтор», которого в интерфейсе нет.
+        if (_recordingOnly)
+        {
+            SaveFailed?.Invoke("Повтор выключен. Идёт запись в файл, она сохранится по кнопке «Стоп»");
+            return;
+        }
+
         // Прошлый клип ещё пишется. Раньше нажатие здесь молча терялось, и человек
         // думал, что хоткей не сработал. Теперь оно ставится в очередь и выполнится
         // сразу после текущей записи.
@@ -87,7 +96,11 @@ public sealed partial class ReplayEngine
 
         // Место проверяем ДО снимка: снимок очищает буфер, и если файл потом не
         // поместится, клип пропадёт. При нехватке буфер остаётся нетронутым.
-        long estimate = _videoBuffer.TotalBytes + _audioBuffer.TotalBytes;
+        // По длине, которую сохраняем: «последние 30 секунд» из пятиминутного
+        // буфера раньше требовали места под все пять минут и отказывали зря.
+        int clipSeconds = secondsOverride ?? s.ReplayLengthSeconds;
+        long estimate = Math.Min(_videoBuffer.TotalBytes + _audioBuffer.TotalBytes,
+                                 DiskSpace.ReplayClipBytes(s.BitrateBps, clipSeconds));
         try { DiskSpace.Require(s.SaveRootPath, estimate, "клипа"); }
         catch (InsufficientDiskSpaceException ex)
         {

@@ -158,10 +158,54 @@ public partial class AudioPage : PageBase
     /// </summary>
     private void FillProcesses(string? selected)
     {
+        // Сначала сразу только выбранная игра: список всех процессов собирается в
+        // фоне. Раньше он собирался в потоке интерфейса (обход всех процессов и
+        // их модулей), и страница «Звук» открывалась с заметной задержкой.
+        int generation = ++_processFill;
+        var database = Core.GameDetection.GameDatabase.Load();
+        var initial = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (selected is not null)
+            initial[selected] = database.TryGetGame(selected, out var t0) ? $"{t0} ({selected})" : selected;
+        ShowProcesses(initial, selected, database, final: false);
+
+        _ = Task.Run(() => CollectProcesses(database)).ContinueWith(task =>
+        {
+            if (generation != _processFill || task.Result is not { } names) return;
+            // Человек мог выбрать другую игру, пока шёл сбор
+            string? current = (GameProcess.SelectedItem as ComboBoxItem)?.Tag as string ?? selected;
+            ShowProcesses(names, current, database, final: true);
+        }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
+    private int _processFill;
+
+    private void ShowProcesses(SortedDictionary<string, string> names, string? selected,
+                               Core.GameDetection.GameDatabase database, bool final)
+    {
         bool wasLoading = _loading;
         _loading = true;
+        if (final && selected is not null && !names.ContainsKey(selected))
+            names[selected] = database.TryGetGame(selected, out var t) ? $"{t} ({selected}), не запущена" : $"{selected}, не запущена";
+
+        GameProcess.Items.Clear();
+        foreach (var (exe, title) in names)
+            GameProcess.Items.Add(new ComboBoxItem { Content = title, Tag = exe });
+        foreach (ComboBoxItem item in GameProcess.Items)
+            if (string.Equals((string)item.Tag, selected, StringComparison.OrdinalIgnoreCase)) GameProcess.SelectedItem = item;
+        if (final)
+            GameProcessSub.Text = names.Count == 0
+                ? "Запусти игру и нажми обновить: она появится в списке"
+                : "Пока игра не запущена, звук игры не пишется";
+        _loading = wasLoading;
+    }
+
+    /// <summary>
+    /// Программы, из которых можно писать звук: те, у кого сейчас есть звуковой
+    /// сеанс (хоть раз что-то играли), и запущенные программы с окном. Идёт в фоне.
+    /// </summary>
+    private static SortedDictionary<string, string>? CollectProcesses(Core.GameDetection.GameDatabase database)
+    {
         var names = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var database = Core.GameDetection.GameDatabase.Load();
         string self = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
 
         void Add(string exe)
@@ -203,19 +247,7 @@ public partial class AudioPage : PageBase
                     Add(p.ProcessName);
                 }
                 catch { }
-
-        if (selected is not null && !names.ContainsKey(selected))
-            names[selected] = database.TryGetGame(selected, out var t) ? $"{t} ({selected}), не запущена" : $"{selected}, не запущена";
-
-        GameProcess.Items.Clear();
-        foreach (var (exe, title) in names)
-            GameProcess.Items.Add(new ComboBoxItem { Content = title, Tag = exe });
-        foreach (ComboBoxItem item in GameProcess.Items)
-            if (string.Equals((string)item.Tag, selected, StringComparison.OrdinalIgnoreCase)) GameProcess.SelectedItem = item;
-        GameProcessSub.Text = names.Count == 0
-            ? "Запусти игру и нажми обновить: она появится в списке"
-            : "Пока игра не запущена, звук игры не пишется";
-        _loading = wasLoading;
+        return names;
     }
 
     private void Audio_Changed(object sender, RoutedEventArgs e)
@@ -239,7 +271,7 @@ public partial class AudioPage : PageBase
     {
         ShowGate();
         if (_loading) return;
-        Services.Settings.Update(s => s.MicNoiseGateDb = (float)Gate.Value, "audio-live");
+        Services.Settings.UpdateDeferred(s => s.MicNoiseGateDb = (float)Gate.Value, "audio-live");
     }
 
     private void NeuralDenoise_Changed(object sender, RoutedEventArgs e)
@@ -254,7 +286,7 @@ public partial class AudioPage : PageBase
         ShowVolumes();
         if (_loading) return;
         int game = (int)GameVolume.Value, mic = (int)MicVolume.Value;
-        Services.Settings.Update(s =>
+        Services.Settings.UpdateDeferred(s =>
         {
             s.GameVolumePercent = game;
             s.MicVolumePercent = mic;

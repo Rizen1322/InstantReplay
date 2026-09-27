@@ -139,6 +139,42 @@ internal static class UpdateVerification
     }
 
     /// <summary>
+    /// Текст, подписанный второй подписью релиза: версия и слепок установщика вместе.
+    ///
+    /// ЗАЧЕМ. Первая подпись (.sig) заверяет только байты установщика. Угнав
+    /// аккаунт GitHub, можно выложить релиз «9.9.9» со СТАРЫМ, честно подписанным
+    /// установщиком, в котором есть уже исправленная дыра, и Aura послушно
+    /// откатилась бы на него. Вторая подпись (.sig2) связывает слепок с номером
+    /// версии: старый установщик под новым номером её не пройдёт, а подделать её
+    /// без ключа нельзя.
+    /// </summary>
+    public static byte[] VersionMessage(string version, string digestHex) =>
+        System.Text.Encoding.UTF8.GetBytes($"Aura release {version}\n{digestHex.ToLowerInvariant()}");
+
+    /// <summary>Проверить вторую подпись: версия плюс слепок (см. <see cref="VersionMessage"/>).</summary>
+    public static bool VerifyVersionSignature(string publicKeyBase64, string version, string digestHex,
+                                              byte[] signature, out string error)
+    {
+        error = "";
+        if (publicKeyBase64.Length == 0) { error = "открытый ключ не заведён"; return false; }
+        try
+        {
+            using var ecdsa = ECDsa.Create();
+            ecdsa.ImportSubjectPublicKeyInfo(Convert.FromBase64String(publicKeyBase64), out _);
+            byte[] message = VersionMessage(version, digestHex);
+            if (ecdsa.VerifyData(message, signature, HashAlgorithmName.SHA256)) return true;
+            if (ecdsa.VerifyData(message, signature, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence)) return true;
+            error = "подпись не соответствует версии и слепку";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Полная проверка скачанного установщика. Бросает, если файл нельзя запускать.
     ///
     /// <paramref name="publishedDigest"/> и <paramref name="signature"/> — содержимое
@@ -171,6 +207,36 @@ internal static class UpdateVerification
     /// </summary>
     public static FileStream OpenVerified(string filePath, string? publishedDigest, byte[]? signature) =>
         OpenVerified(filePath, publishedDigest, signature, PublicKeyBase64);
+
+    /// <summary>
+    /// То же с обязательной второй подписью, привязанной к версии: так проверяет
+    /// само обновление (см. <see cref="VersionMessage"/>).
+    /// </summary>
+    public static FileStream OpenVerified(string filePath, string? publishedDigest, byte[]? signature,
+                                          string version, byte[]? versionSignature, string? publicKeyBase64 = null)
+    {
+        string key = publicKeyBase64 ?? PublicKeyBase64;
+        var stream = OpenVerified(filePath, publishedDigest, signature, key);
+        try
+        {
+            if (key.Length == 0) return stream;
+            if (versionSignature is null || versionSignature.Length == 0)
+                throw new InvalidOperationException(
+                    "В релизе нет подписи, привязанной к версии, — обновление отменено.");
+            string actual = Sha256Stream(stream);
+            stream.Position = 0;
+            if (!VerifyVersionSignature(key, version, actual, versionSignature, out string error))
+                throw new InvalidOperationException(
+                    $"Подпись версии {version} недействительна ({error}) — обновление отменено.");
+            Log.Info("Update", $"Подпись версии {version} верна");
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
 
     /// <summary>То же с явным ключом — для тестов.</summary>
     public static FileStream OpenVerified(string filePath, string? publishedDigest, byte[]? signature, string publicKeyBase64)

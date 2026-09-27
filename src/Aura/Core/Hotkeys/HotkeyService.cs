@@ -88,9 +88,16 @@ public sealed class HotkeyService : IDisposable
         Log.Info("Hotkeys", "Глобальный хук клавиатуры установлен" +
                             (_mouseHook != IntPtr.Zero ? " (и мыши)" : ""));
 
+        _lastKeyboardEvent = Environment.TickCount64;
+        using var watchdog = new System.Threading.Timer(_ =>
+        {
+            if (_threadId != 0) PostThreadMessageW(_threadId, WmCheckHook, IntPtr.Zero, IntPtr.Zero);
+        }, null, 5000, 5000);
+
         while (GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
             if (msg.message == WmUpdateMouseHook) { UpdateMouseHook(); continue; }
+            if (msg.message == WmCheckHook) { CheckHookAlive(); continue; }
             TranslateMessage(ref msg);
             DispatchMessageW(ref msg);
         }
@@ -101,6 +108,64 @@ public sealed class HotkeyService : IDisposable
 
     [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")]
     private static extern uint GetCurrentThreadIdNative();
+
+    /// <summary>Своё сообщение потоку хука: проверить, не снят ли хук системой.</summary>
+    private const uint WmCheckHook = 0x8000 + 0x52; // WM_APP + 0x52
+
+    /// <summary>Когда хук клавиатуры последний раз получал событие (TickCount64).</summary>
+    private long _lastKeyboardEvent;
+    private long _lastReinstall;
+
+    /// <summary>
+    /// Windows молча снимает низкоуровневый хук, если его обработчик не уложился
+    /// в LowLevelHooksTimeout: так бывает под тяжёлой игрой, после сна или
+    /// блокировки. Узнать об этом нельзя, горячие клавиши просто перестают
+    /// работать до перезапуска Aura. Признак: человек что-то вводил (GetLastInputInfo
+    /// новее), а наш хук давно ничего не видел. Тогда ставим хук заново: сначала
+    /// новый, потом снимаем старый, чтобы не остаться без хука ни на миг.
+    /// Ввод бывает и одной мышью, поэтому переустановка не чаще раза в минуту.
+    /// </summary>
+    private void CheckHookAlive()
+    {
+        long now = Environment.TickCount64;
+        long lastKeyboard = Interlocked.Read(ref _lastKeyboardEvent);
+        if (now - lastKeyboard < 60_000 || now - _lastReinstall < 60_000) return;
+
+        var info = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref info)) return;
+        // Тики GetLastInputInfo 32-битные: сравниваем возраст ввода, а не значения
+        long inputAge = (uint)Environment.TickCount - info.Time;
+        if (inputAge >= 5000) return;               // человек сейчас ничего не вводит
+
+        _lastReinstall = now;
+        IntPtr fresh = SetWindowsHookExW(WH_KEYBOARD_LL, _hookProc!, IntPtr.Zero, 0);
+        if (fresh == IntPtr.Zero)
+        {
+            Log.Warn("Hotkeys", $"Переустановка хука клавиатуры не удалась: {Marshal.GetLastWin32Error()}");
+            return;
+        }
+        IntPtr old = _hook;
+        _hook = fresh;
+        if (old != IntPtr.Zero) UnhookWindowsHookEx(old);
+        if (_mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+            UpdateMouseHook();
+        }
+        _keysDown.Clear();
+        _consumedKeys.Clear();
+        if (Interlocked.Increment(ref _reinstalls) is 1 or 10 or 100)
+            Log.Info("Hotkeys", $"Хук клавиатуры переустановлен: давно не видел ввода ({_reinstalls}-й раз)");
+    }
+
+    private long _reinstalls;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LastInputInfo { public uint Size; public uint Time; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LastInputInfo info);
 
     /// <summary>Своё сообщение потоку хука: пересмотреть, нужен ли хук мыши.</summary>
     private const uint WmUpdateMouseHook = 0x8000 + 0x51; // WM_APP + 0x51
@@ -141,6 +206,7 @@ public sealed class HotkeyService : IDisposable
             // Разбор всей структуры через PtrToStructure давал объект в куче на
             // каждое нажатие клавиши, а этот колбэк обязан возвращаться за <1 мс.
             uint vk = (uint)Marshal.ReadInt32(lParam);
+            _lastKeyboardEvent = Environment.TickCount64;
 
             if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
             {

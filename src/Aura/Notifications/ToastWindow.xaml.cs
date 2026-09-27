@@ -88,6 +88,10 @@ public partial class ToastWindow : Window
         {
             Opacity = 0;
             Show();
+            // Ещё раз после показа: скрытое окно WPF при Show ставит по своим
+            // Left/Top, а поправку масштаба другого монитора получает только
+            // видимое. Окно пока прозрачное, перестановку не видно.
+            Place(position);
         }
         if (!wasVisible) AppearAnimation();
 
@@ -198,18 +202,58 @@ public partial class ToastWindow : Window
         CardScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(1, 0.97, TimeSpan.FromSeconds(0.28)));
     }
 
+    /// <summary>
+    /// Уведомление на том мониторе, где сейчас игра (окно на переднем плане), а не
+    /// всегда на основном. С двумя мониторами оно раньше появлялось на втором
+    /// экране, куда во время игры никто не смотрит.
+    ///
+    /// Координаты в физических пикселях монитора. Сначала окно переносится на
+    /// нужный монитор без смены размера: если там другой масштаб, WPF сам
+    /// пересчитает размер по WM_DPICHANGED. Потом ставится в угол уже с размером
+    /// в масштабе этого монитора. Одним вызовом с готовым размером нельзя:
+    /// система масштабирует его ещё раз по своей подсказке.
+    /// </summary>
+    private bool PlaceOnForegroundMonitor(bool top, bool left, bool center)
+    {
+        try
+        {
+            IntPtr hwnd = new WindowInteropHelper(this).EnsureHandle();
+            IntPtr foreground = GetForegroundWindow();
+            IntPtr monitor = MonitorFromWindow(foreground, MonitorDefaultToPrimary);
+            var info = new MONITORINFO { cbSize = System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+            if (monitor == IntPtr.Zero || !GetMonitorInfoW(monitor, ref info)) return false;
+            double scale = GetDpiForMonitor(monitor, 0, out uint dpi, out _) == 0 && dpi > 0 ? dpi / 96.0 : 1.0;
+
+            var work = info.rcWork;
+            SetWindowPos(hwnd, IntPtr.Zero, work.Left, work.Top, 0, 0, SwpNoSize | SwpNoZOrder | SwpNoActivate);
+
+            int width = (int)Math.Round(Width * scale), height = (int)Math.Round(Height * scale);
+            int x = center ? work.Left + (work.Right - work.Left - width) / 2
+                  : left ? work.Left : work.Right - width;
+            int y = top ? work.Top : work.Bottom - height;
+            SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SwpNoSize | SwpNoZOrder | SwpNoActivate);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private const uint MonitorDefaultToPrimary = 1;
+    private const uint SwpNoSize = 0x0001, SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010;
+
     /// <summary>Окно прижимается к нужному углу рабочего стола, карточка к тому же углу внутри.</summary>
 
     private void Place(NotificationPosition position)
     {
-        var area = SystemParameters.WorkArea;
-
         bool top = position is NotificationPosition.TopLeft or NotificationPosition.TopRight or NotificationPosition.TopCenter;
         bool left = position is NotificationPosition.TopLeft or NotificationPosition.BottomLeft;
         bool center = position is NotificationPosition.TopCenter;
 
-        Left = center ? area.Left + (area.Width - Width) / 2 : left ? area.Left : area.Right - Width;
-        Top = top ? area.Top : area.Bottom - Height;
+        if (!PlaceOnForegroundMonitor(top, left, center))
+        {
+            var area = SystemParameters.WorkArea;
+            Left = center ? area.Left + (area.Width - Width) / 2 : left ? area.Left : area.Right - Width;
+            Top = top ? area.Top : area.Bottom - Height;
+        }
 
         Card.VerticalAlignment = top ? VerticalAlignment.Top : VerticalAlignment.Bottom;
         Card.HorizontalAlignment = center ? HorizontalAlignment.Center
