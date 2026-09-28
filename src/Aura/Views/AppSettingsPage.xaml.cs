@@ -85,7 +85,7 @@ public partial class AppSettingsPage : PageBase
 
         CheckUpdates.IsChecked = s.CheckForUpdates;
         DriverWatch.IsChecked = s.CheckNvidiaDriver;
-        VersionText.Text = $"Версия {typeof(App).Assembly.GetName().Version?.ToString(3)}";
+        VersionText.Text = $"Версия {typeof(App).Assembly.GetName().Version?.ToString(3)} · что нового";
         // Обновление могли уже найти при запуске — показываем его сразу, вместе
         // с кнопкой установки. Иначе переход по карточке «Есть обновление»
         // приводил на страницу, где ничего про обновление не сказано.
@@ -353,6 +353,10 @@ public partial class AppSettingsPage : PageBase
         Install_Click(InstallButton, new RoutedEventArgs());
     }
 
+    /// <summary>Все прошлые изменения, от новой версии к старой.</summary>
+    private void Version_Click(object sender, System.Windows.Input.MouseButtonEventArgs e) =>
+        Dialogs.ShowChangelog(Core.SystemIntegration.Changelog.Entries);
+
     private async void Install_Click(object sender, RoutedEventArgs e)
     {
         if (InstallButton.Tag is not Core.SystemIntegration.UpdateInfo info) return;
@@ -371,8 +375,10 @@ public partial class AppSettingsPage : PageBase
 
             // Установщик сам погасит приложение, обновит файлы и запустит новую версию
             string? root = Core.SystemIntegration.UpdateService.InstallRoot;
-            if (root is null || !Core.SystemIntegration.UpdateService.LaunchInstaller(installer, root))
-                throw new InvalidOperationException("не удалось запустить установщик");
+            // В фоне: запуск ждёт до 2.5 с, не упал ли установщик сразу
+            if (root is null || !await Task.Run(() => Core.SystemIntegration.UpdateService.LaunchInstaller(installer, root)))
+                throw new InvalidOperationException("не удалось запустить установщик. Скачай его вручную: " +
+                                                    "github.com/Rizen1322/InstantReplay/releases");
 
             // Закрываемся сами и штатно: запись в файл дописывается, настройки
             // сохраняются. Установщик ждёт выхода, а не убивает процесс.

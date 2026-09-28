@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Security.AccessControl;
@@ -340,10 +340,27 @@ public sealed class UpdateService
                 return false;
             }
 
-            var psi = new ProcessStartInfo(installer.Path) { UseShellExecute = true };
+            // CreateProcess, а не ShellExecute. У Aura есть package identity, и
+            // ShellExecute из такого процесса запускает программу через проводник,
+            // с его обычными правами, а не с правами Aura. Установщик тогда не мог
+            // даже прочитать собственный файл (папка загрузки открыта только
+            // администраторам) и молча падал: «Failed to resolve full path of the
+            // current executable». CreateProcess передаёт ему права Aura как есть.
+            var psi = new ProcessStartInfo(installer.Path)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = Path.GetDirectoryName(installer.Path)!
+            };
             psi.ArgumentList.Add("/update");
             psi.ArgumentList.Add(installRoot);
-            Process.Start(psi);
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("процесс установщика не создан");
+            // Упал сразу — говорим об этом, а не закрываемся молча
+            if (process.WaitForExit(2500))
+            {
+                Log.Error("Update", $"Установщик завершился сразу, код {process.ExitCode}");
+                return false;
+            }
             Log.Info("Update", $"Запущен установщик обновления для {installRoot}");
             return true;
         }

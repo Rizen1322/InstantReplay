@@ -250,6 +250,8 @@ public partial class App : Application
             Window target = clipArg >= 0 && clipArg + 1 < e.Args.Length
                 ? Views.ClipEditorWindow.CreateForSnapshot(e.Args[clipArg + 1])
                 : e.Args.Contains("--toast") ? SnapshotToast()
+                : e.Args.Contains("--whatsnew") && Views.WhatsNewVideo.FileFor(Core.SystemIntegration.UpdateService.CurrentVersion) is { } whatsNew
+                    ? Views.WhatsNewVideo.Create(whatsNew)
                 : e.Args.Contains("--changelog")
                     ? Views.Dialogs.CreateChangelogWindow(Core.SystemIntegration.Changelog.Entries.Take(1).ToList())
                     : _main;
@@ -627,10 +629,16 @@ public partial class App : Application
 
         if (last is null)
         {
+            // Первая установка: ролик «что нового» только для тех, кто обновился
+            Views.WhatsNewVideo.DeleteAll();
             Services.Settings.Update(x => x.LastSeenVersion = current.ToString(3), "app");
             return;
         }
-        if (last >= current) return;
+        if (last >= current)
+        {
+            Views.WhatsNewVideo.DeleteAll();   // уже показан или не нужен
+            return;
+        }
 
         var entries = Core.SystemIntegration.Changelog.Between(last, current);
         if (entries.Count == 0)
@@ -661,6 +669,14 @@ public partial class App : Application
     {
         if (_changelogVisible) return;
         _changelogVisible = true;
+
+        // Сначала ролик, если он приложен к этой версии, потом обычный список
+        if (Views.WhatsNewVideo.FileFor(current) is { } video)
+        {
+            try { Views.WhatsNewVideo.Show(video); }
+            catch (Exception ex) { Log.Warn("App", $"Ролик «что нового»: {ex.Message}"); }
+        }
+        Views.WhatsNewVideo.DeleteAll();
 
         Log.Info("App", $"Показываю список изменений до версии {current}");
         try { Views.Dialogs.ShowChangelog(entries); }

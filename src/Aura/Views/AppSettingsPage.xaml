@@ -144,7 +144,10 @@
                     <StackPanel>
                         <c:AdaptiveRow Margin="16,12,16,12">
                             <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
-                                <TextBlock x:Name="VersionText" Style="{StaticResource RowLabel}"/>
+                                <!-- Щелчок по версии открывает список изменений всех версий -->
+                                <TextBlock x:Name="VersionText" Style="{StaticResource RowLabel}" Cursor="Hand"
+                                           ToolTip="Что нового во всех версиях"
+                                           MouseLeftButtonUp="Version_Click"/>
                                 <TextBlock x:Name="UpdateStatus" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal">
