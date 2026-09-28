@@ -278,6 +278,17 @@ public sealed class ManualRecorder : IDisposable
         _file = null;
         if (writer is null || file is null) return;
 
+        if (_discard)
+        {
+            // Запись выбрасывается (выход ради обновления): не дописываем и не
+            // публикуем, недописанный файл просто удаляется
+            try { writer.Dispose(); } catch { }
+            file.Dispose();
+            try { File.Delete(_filePath + PartSuffix); } catch { }
+            Log.Info("Recorder", $"Запись выброшена без сохранения: {Path.GetFileName(_filePath)}");
+            return;
+        }
+
         bool closed = false;
         long bytes = 0;
         try
@@ -336,6 +347,21 @@ public sealed class ManualRecorder : IDisposable
     }
 
     // ---------------- Завершение ----------------
+
+    private volatile bool _discard;
+
+    /// <summary>
+    /// Остановить запись без сохранения и удалить файл. Для выхода ради
+    /// обновления: человек сам нажал «Обновить» и знает, что запись оборвётся.
+    /// </summary>
+    public void Discard()
+    {
+        if (_finished) return;
+        _discard = true;
+        _finished = true;
+        _queue.CompleteAdding();
+        _writerThread.Join(TimeSpan.FromSeconds(10));
+    }
 
     public Result Finish()
     {

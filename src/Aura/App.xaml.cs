@@ -141,7 +141,8 @@ public partial class App : Application
         // Снимок вёрстки и самопроверка идут рядом с настоящей Aura: перехватывать
         // её сочетания клавиш им нельзя.
         bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record") ||
-                        e.Args.Contains("--selftest-replay");
+                        e.Args.Contains("--selftest-replay") || e.Args.Contains("--whatsnew-test") ||
+                        e.Args.Contains("--editor-seek-test");
         if (!(dev && headless)) Services.Hotkeys.Start();
         else Services.Notifications.Muted = true;
 
@@ -203,6 +204,15 @@ public partial class App : Application
                                          $"запись идёт {Services.Engine.IsRecordingToFile}");
                     await Task.Delay(selfTestSeconds * 333);
                 }
+                else if (e.Args.Contains("--selftest-discard"))
+                {
+                    // Выход ради обновления: запись выбрасывается, файла быть не должно
+                    await Task.Delay(selfTestSeconds * 1000);
+                    Current.Dispatcher.Invoke(() => Services.Engine.DiscardRecordingForExit());
+                    Log.Info("SelfTest", $"запись выброшена: запись идёт {Services.Engine.IsRecordingToFile}");
+                    Current.Dispatcher.Invoke(ExitApp);
+                    return;
+                }
                 else if (e.Args.Contains("--selftest-format-change"))
                 {
                     // Смена разрешения посреди записи: запись продолжается новым файлом
@@ -238,6 +248,38 @@ public partial class App : Application
                 Log.Info("SelfTest", $"повтор сохранён: {result}");
                 Current.Dispatcher.Invoke(ExitApp);
             });
+        }
+
+        // --editor-seek-test файл папка: перемотки в редакторе за пределами экрана
+        int seekTest = Array.IndexOf(e.Args, "--editor-seek-test");
+        if (dev && seekTest >= 0 && seekTest + 2 < e.Args.Length)
+        {
+            string clip = e.Args[seekTest + 1], outDir = e.Args[seekTest + 2];
+            Services.Ui.Enqueue(() =>
+            {
+                try { Views.ClipEditorWindow.RunSeekSelfTest(clip, outDir); }
+                catch (Exception ex) { Log.Error("SelfTest", ex); }
+                ExitApp();
+            });
+            return;
+        }
+
+        // --whatsnew-test: проиграть ролик «что нового» за пределами экрана без звука
+        if (dev && e.Args.Contains("--whatsnew-test"))
+        {
+            Services.Ui.Enqueue(() =>
+            {
+                if (Views.WhatsNewVideo.FileFor(Core.SystemIntegration.UpdateService.CurrentVersion) is { } clip)
+                {
+                    var started = DateTime.UtcNow;
+                    var w = Views.WhatsNewVideo.Create(clip, offscreenTest: true);
+                    w.ShowDialog();
+                    Log.Info("SelfTest", $"ролик закрыт через {(DateTime.UtcNow - started).TotalSeconds:F1} с");
+                }
+                else Log.Info("SelfTest", "ролика нет");
+                ExitApp();
+            });
+            return;
         }
 
         // --snapshot файл.png — снимок вёрстки без экрана: окно открывается за его

@@ -380,8 +380,9 @@ public partial class AppSettingsPage : PageBase
                 throw new InvalidOperationException("не удалось запустить установщик. Скачай его вручную: " +
                                                     "github.com/Rizen1322/InstantReplay/releases");
 
-            // Закрываемся сами и штатно: запись в файл дописывается, настройки
-            // сохраняются. Установщик ждёт выхода, а не убивает процесс.
+            // Закрываемся сами и штатно, настройки сохраняются. Идущая запись в
+            // файл при этом выбрасывается: человек сам нажал «Обновить».
+            Services.Engine.DiscardRecordingForExit();
             (Application.Current as App)?.ExitApp();
         }
         catch (Exception ex)

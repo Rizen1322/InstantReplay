@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -114,6 +114,39 @@ public partial class ClipEditorWindow : Window
     internal static Window CreateForSnapshot(string path) =>
         new ClipEditorWindow(new ClipItem(path, Path.GetDirectoryName(path) ?? "")) { _snapshotOnly = true };
 
+    /// <summary>
+    /// Проверка в --dev: редактор за пределами экрана без звука. Щелчок по шкале
+    /// сразу после открытия, потом перемотки на паузе. После каждой снимается
+    /// кадр, который реально на экране (TakeSnapshot), чтобы было видно, обновился ли он.
+    /// </summary>
+    internal static void RunSeekSelfTest(string path, string outDir)
+    {
+        var w = new ClipEditorWindow(new ClipItem(path, Path.GetDirectoryName(path) ?? ""))
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = -30000, Top = -30000, ShowActivated = false
+        };
+        w._isMuted = true;
+        w.Loaded += async (_, _) =>
+        {
+            // Щелчок по шкале, пока файл ещё открывается
+            await Task.Delay(150);
+            w.Seek(8);
+            for (int i = 0; i < 100 && (w._pauseOnFirstFrame || w._player is null); i++) await Task.Delay(100);
+            await Task.Delay(800);
+            double[] points = [8, 3, 12, 17, 5];
+            for (int i = 0; i < points.Length; i++)
+            {
+                if (i > 0) w.Seek(points[i]);
+                await Task.Delay(700);
+                w._player?.TakeSnapshot(0, Path.Combine(outDir, $"seek_{i}_{points[i]:00}.png"), 480, 270);
+                Log.Info("SelfTest", $"перемотка на {points[i]} с: плеер на {w.CurrentSeconds:F2} с, играет {w._player?.IsPlaying}");
+            }
+            w.Close();
+        };
+        w.ShowDialog();
+    }
+
     /// <summary>Снимок вёрстки: плеер не поднимаем, чтобы не играл звук.</summary>
     private bool _snapshotOnly;
 
@@ -148,8 +181,10 @@ public partial class ClipEditorWindow : Window
                 // VideoLAN.LibVLC.Windows нет soxr, и по умолчанию берётся «ugly»:
                 // искажения около −26 дБ и зеркальные частоты, звук «как у робота».
                 // С speex тот же тест даёт −59 дБ, как без пересчёта.
+                // --no-avcodec-hurry-up: при отставании декодер иначе пропускает
+                // работу над кадрами, и после частых перемоток картинка идёт кашей
                 var engine = new LibVLC("--no-video-title-show", "--quiet",
-                    "--audio-resampler=speex_resampler");
+                    "--audio-resampler=speex_resampler", "--no-avcodec-hurry-up");
                 var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = true };
                 var media = new VlcMedia(engine, new Uri(_item.FullPath));
                 return (engine, player, media);
@@ -213,6 +248,12 @@ public partial class ClipEditorWindow : Window
         {
             _pauseOnFirstFrame = false;
             _player?.SetPause(true);
+            // Щелчок по шкале, пока файл открывался: перематываем теперь
+            if (_pendingSeek is { } early)
+            {
+                _pendingSeek = null;
+                Seek(early);
+            }
             return;
         }
         SetPlayIcon(playing: true);
@@ -436,9 +477,68 @@ public partial class ClipEditorWindow : Window
         }
         _seekTarget = seconds;
         _seekTick = Environment.TickCount64;
-        _player.Time = (long)Math.Round(seconds * 1000);
         UpdatePlayhead(seconds);
         UpdatePreviewTime(seconds);
+
+        // Пока первый кадр не показан, LibVLC ещё открывает файл. Перемотки в этот
+        // момент давали кашу из артефактов: декодер начинал не с ключевого кадра.
+        // Запоминаем цель и применяем, как только плеер встанет на первом кадре.
+        if (_pauseOnFirstFrame)
+        {
+            _pendingSeek = seconds;
+            return;
+        }
+
+        // Протягивание по шкале шлёт десятки перемоток в секунду. LibVLC на таком
+        // потоке не успевает декодировать и показывает мусор, поэтому применяем не
+        // чаще раза в 60 мс, а последнюю цель дотягиваем таймером.
+        _pendingSeek = seconds;
+        if (Environment.TickCount64 - _lastSeekApplied >= SeekIntervalMs) ApplyPendingSeek();
+        else
+        {
+            _seekFlush ??= CreateSeekFlush();
+            _seekFlush.Start();
+        }
+    }
+
+    private const int SeekIntervalMs = 60;
+    private double? _pendingSeek;
+    private long _lastSeekApplied;
+    private DispatcherTimer? _seekFlush, _frameRefresh;
+
+    private DispatcherTimer CreateSeekFlush()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(SeekIntervalMs) };
+        timer.Tick += (_, _) => { timer.Stop(); ApplyPendingSeek(); };
+        return timer;
+    }
+
+    private void ApplyPendingSeek()
+    {
+        if (_player is null || _pendingSeek is not { } target || _disposed) return;
+        _pendingSeek = null;
+        _lastSeekApplied = Environment.TickCount64;
+        _player.Time = (long)Math.Round(target * 1000);
+        if (_player.IsPlaying) return;
+
+        // Известная беда LibVLC: перемотка на паузе не выводит новый кадр, картинка
+        // стоит, пока не нажмёшь «плей» и «паузу» (VLC #22456). Когда перемотка
+        // улеглась, просим один кадр вперёд: он декодируется и показывается сразу.
+        _frameRefresh ??= CreateFrameRefresh();
+        _frameRefresh.Stop();
+        _frameRefresh.Start();
+    }
+
+    private DispatcherTimer CreateFrameRefresh()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(90) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (_player is null || _disposed || _player.IsPlaying || _pendingSeek is not null) return;
+            _player.NextFrame();
+        };
+        return timer;
     }
 
     private void Mute_Click(object sender, RoutedEventArgs e)
@@ -696,6 +796,8 @@ public partial class ClipEditorWindow : Window
         if (!_scrubbing) return;
         _scrubbing = false;
         Timeline.ReleaseMouseCapture();
+        // Последняя точка протягивания применяется сразу, без ожидания таймера
+        if (!_pauseOnFirstFrame) { _seekFlush?.Stop(); ApplyPendingSeek(); }
     }
 
     private void Timeline_MouseMove(object sender, MouseEventArgs e)
@@ -949,6 +1051,8 @@ public partial class ClipEditorWindow : Window
         if (_disposed) return;
         _disposed = true;
         _timer.Stop();
+        _seekFlush?.Stop();
+        _frameRefresh?.Stop();
         _exportCancellation?.Cancel();
         _previewMixCancellation.Cancel();
         Preview.MediaPlayer = null;

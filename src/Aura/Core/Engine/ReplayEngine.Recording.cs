@@ -1,4 +1,4 @@
-using Vortice.MediaFoundation;
+﻿using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -282,6 +282,32 @@ public sealed partial class ReplayEngine
                 StopLocked();
             }
             return file;
+        }
+    }
+
+    /// <summary>
+    /// Оборвать запись в файл без сохранения: Aura закрывается ради обновления.
+    /// Человек сам нажал «Обновить», дописывать и показывать «Запись сохранена»
+    /// незачем, недописанный файл удаляется.
+    /// </summary>
+    public void DiscardRecordingForExit()
+    {
+        lock (_lifecycle)
+        {
+            _continuousRecordingRequested = false;
+            RecordingStartedUtc = null;
+            var recorder = _recorder;
+            if (recorder is null) return;
+            _recorder = null;
+            var encoder = _encoder;
+            if (encoder is not null && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
+            _recorderFrameHandler = null;
+            _recorderDetached = false;
+            _audio.FrameEncoded -= recorder.OnAudio;
+            recorder.Discard();
+            try { recorder.Dispose(); } catch { }
+            ReleaseFilePath(recorder.FilePath);
+            RecordingChanged?.Invoke(false);
         }
     }
 

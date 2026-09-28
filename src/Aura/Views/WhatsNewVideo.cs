@@ -66,48 +66,56 @@ public static class WhatsNewVideo
         var window = Create(path);
         Log.Info("App", $"Показываю ролик «что нового»: {Path.GetFileName(path)}");
         window.ShowDialog();
+        // LibVLC освобождается в фоне; файл можно удалить, только когда он отпущен
+        if (window.Tag is Task released) released.Wait(TimeSpan.FromSeconds(3));
     }
 
-    /// <summary>Окно ролика; отдельно от показа, чтобы снимать вёрстку в --dev.</summary>
-    internal static Window Create(string path)
+    /// <summary>
+    /// Окно ролика; отдельно от показа, чтобы снимать вёрстку в --dev.
+    ///
+    /// Играет LibVLC, как предпросмотр в редакторе, а не WPF MediaElement: тот
+    /// работает только через Windows Media Player, которого нет в Windows LTSC и
+    /// редакциях N («Windows Media Player version 10 or later is required»).
+    /// Окно без прозрачности: VideoView из LibVLC это отдельное окно Win32, и в
+    /// прозрачном окне WPF оно не рисуется.
+    /// </summary>
+    internal static Window Create(string path, bool offscreenTest = false)
     {
         var app = Application.Current;
         var owner = app.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible);
         bool canClose = false;
+        const double width = 1000;
 
         var window = new Window
         {
             WindowStyle = WindowStyle.None,
-            AllowsTransparency = true,
-            Background = Brushes.Transparent,
             ResizeMode = ResizeMode.NoResize,
+            Background = (Brush)app.FindResource("CanvasBrush"),
+            BorderBrush = (Brush)app.FindResource("HairBrush"),
+            BorderThickness = new Thickness(1),
             ShowInTaskbar = owner is null,
-            Width = 1000,
+            Width = width,
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = owner is null ? WindowStartupLocation.CenterScreen : WindowStartupLocation.CenterOwner
         };
-        if (owner is not null)
+        if (owner is not null && !offscreenTest)
             try { window.Owner = owner; } catch { window.WindowStartupLocation = WindowStartupLocation.CenterScreen; }
+        if (offscreenTest)
+        {
+            // Проверка в --dev: окно за пределами экрана, без звука и само закрывается
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Left = -30000;
+            window.Top = -30000;
+            window.ShowActivated = false;
+        }
 
-        var media = new MediaElement
+        var view = new LibVLCSharp.WPF.VideoView
         {
-            Source = new Uri(path),
-            LoadedBehavior = MediaState.Manual,
-            UnloadedBehavior = MediaState.Close,
-            Stretch = Stretch.Uniform,
-            Volume = 0.6
-        };
-        var video = new Border
-        {
-            CornerRadius = new CornerRadius(12),
-            Background = Brushes.Black,
-            ClipToBounds = true,
-            Height = (1000 - 24 - 32) * 9.0 / 16,
-            Child = media
+            Height = (width - 2 - 32) * 9.0 / 16,
+            Background = Brushes.Black
         };
 
-        // --- громкость ---
-        var volumeIcon = new TextBlock
+        var volumeLabel = new TextBlock
         {
             Text = "Громкость",
             Style = (Style)app.FindResource("RowSub"),
@@ -116,21 +124,13 @@ public static class WhatsNewVideo
         var volume = new Slider
         {
             Minimum = 0,
-            Maximum = 1,
-            Value = media.Volume,
+            Maximum = 100,
+            Value = offscreenTest ? 0 : 60,
             Width = 180,
             Margin = new Thickness(12, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
-        volume.ValueChanged += (_, e) => media.Volume = e.NewValue;
-
-        var progress = new ProgressBar
-        {
-            Maximum = 1,
-            Height = 4,
-            Margin = new Thickness(0, 12, 0, 0)
-        };
-
+        var progress = new ProgressBar { Maximum = 1, Height = 4, Margin = new Thickness(0, 12, 0, 0) };
         var button = new Button
         {
             Content = "Досмотри до конца",
@@ -157,71 +157,91 @@ public static class WhatsNewVideo
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition());
-        bar.Children.Add(volumeIcon);
+        bar.Children.Add(volumeLabel);
         Grid.SetColumn(volume, 1);
         bar.Children.Add(volume);
         Grid.SetColumn(button, 2);
         bar.Children.Add(button);
 
         var panel = new StackPanel { Margin = new Thickness(16) };
-        panel.Children.Add(video);
+        panel.Children.Add(view);
         panel.Children.Add(progress);
         panel.Children.Add(bar);
-
-        window.Content = new Border
-        {
-            Background = (Brush)app.FindResource("CanvasBrush"),
-            BorderBrush = (Brush)app.FindResource("HairBrush"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(16),
-            Margin = new Thickness(12),
-            Effect = (System.Windows.Media.Effects.Effect)app.FindResource("ToastShadow"),
-            Child = panel
-        };
+        window.Content = panel;
 
         // Ни Esc, ни Alt+F4 не закрывают ролик раньше конца
         window.Closing += (_, e) => { if (!canClose) e.Cancel = true; };
         window.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) window.DragMove(); };
 
+        LibVLCSharp.Shared.LibVLC? engine = null;
+        LibVLCSharp.Shared.MediaPlayer? player = null;
+        LibVLCSharp.Shared.Media? media = null;
+
         var tick = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         tick.Tick += (_, _) =>
         {
-            if (media.NaturalDuration.HasTimeSpan && media.NaturalDuration.TimeSpan.TotalSeconds > 0)
-                progress.Value = media.Position.TotalSeconds / media.NaturalDuration.TimeSpan.TotalSeconds;
+            if (player is { } p && p.Length > 0) progress.Value = Math.Clamp(p.Position, 0, 1);
         };
-
-        media.MediaEnded += (_, _) =>
-        {
-            progress.Value = 1;
-            AllowClose("Отлично");
-        };
-        media.MediaFailed += (_, e) =>
-        {
-            Log.Warn("App", $"Ролик «что нового» не проигрывается: {e.ErrorException?.Message}");
-            AllowClose("Закрыть");
-            window.Close();
-        };
+        volume.ValueChanged += (_, e) => { if (player is not null) player.Volume = (int)e.NewValue; };
 
         // Страховка: ролик 20 секунд. Если конец так и не пришёл (плеер завис),
         // через минуту окно всё равно можно закрыть.
         var safety = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         safety.Tick += (_, _) => { safety.Stop(); AllowClose("Закрыть"); };
 
-        window.Loaded += (_, _) =>
+        void Fail(string why)
         {
-            window.Activate();
-            window.Opacity = 0;
-            window.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, TimeSpan.FromSeconds(0.2)));
-            media.Play();
-            tick.Start();
+            Log.Warn("App", $"Ролик «что нового» не проигрывается: {why}");
+            AllowClose("Закрыть");
+            window.Close();
+        }
+
+        window.Loaded += async (_, _) =>
+        {
+            if (!offscreenTest) window.Activate();
             safety.Start();
+            try
+            {
+                // Загрузка модулей LibVLC ощутима, окну она мешать не должна
+                (engine, player, media) = await Task.Run(() =>
+                {
+                    LibVLCSharp.Shared.Core.Initialize();
+                    var e = new LibVLCSharp.Shared.LibVLC("--no-video-title-show", "--quiet",
+                                                          "--audio-resampler=speex_resampler");
+                    var p = new LibVLCSharp.Shared.MediaPlayer(e) { EnableHardwareDecoding = true };
+                    return (e, p, new LibVLCSharp.Shared.Media(e, new Uri(path)));
+                });
+                if (!window.IsVisible) return;
+                player.EndReached += (_, _) => window.Dispatcher.BeginInvoke(() =>
+                {
+                    progress.Value = 1;
+                    Log.Info("App", "Ролик «что нового» досмотрен до конца");
+                    AllowClose("Отлично");
+                    if (offscreenTest) window.Close();
+                });
+                player.EncounteredError += (_, _) => window.Dispatcher.BeginInvoke(() => Fail("ошибка LibVLC"));
+                player.Playing += (_, _) => window.Dispatcher.BeginInvoke(() => player.Volume = (int)volume.Value);
+                view.MediaPlayer = player;
+                if (!player.Play(media)) { Fail("LibVLC не принял файл"); return; }
+                tick.Start();
+            }
+            catch (Exception ex) { Fail(ex.Message); }
         };
+
         window.Closed += (_, _) =>
         {
             tick.Stop();
             safety.Stop();
-            media.Stop();
-            media.Close();
+            view.MediaPlayer = null;
+            // Остановка LibVLC в фоне: из потока окна она может подвиснуть (см. редактор)
+            var (e, p, m) = (engine, player, media);
+            window.Tag = Task.Run(() =>
+            {
+                try { p?.Stop(); } catch { }
+                m?.Dispose();
+                p?.Dispose();
+                e?.Dispose();
+            });
         };
 
         return window;
