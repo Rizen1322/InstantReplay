@@ -51,6 +51,9 @@ public sealed class FragmentedMp4Writer : IDisposable
     private readonly Mp4Defragment.TrackIndex _videoIndex = new();
     private Mp4Defragment.TrackIndex[] _audioIndex = [];
     private long _headerMoovOffset = -1;
+
+    /// <summary>Заглушка «free» на 16 байт сразу за ftyp (см. Mp4Defragment.Finalize).</summary>
+    private long _placeholderOffset = -1;
     private readonly List<long> _moofOffsets = [];
     private long _mfraOffset = -1;
 
@@ -96,6 +99,15 @@ public sealed class FragmentedMp4Writer : IDisposable
         _ctsShift = firstCts;   // для диагностики: сдвиг ушёл в edts
         var w = new BoxWriter();
         Mp4Boxes.Ftyp(w, fragmented: true, _video.Codec);
+
+        // Гибридный MP4, как у OBS: место под заголовок одного большого mdat.
+        // Пока запись идёт, это просто пустой блок, и файл остаётся обычным
+        // фрагментированным MP4, который переживает падение. При закрытии заглушка
+        // становится mdat на весь файл до нового оглавления в конце.
+        _placeholderOffset = _out.Position + w.Length;
+        w.U32(16);
+        w.Bytes("free"u8);
+        w.U64(0);
 
         _headerMoovOffset = _out.Position + w.Length;
         w.Begin("moov");
@@ -412,11 +424,10 @@ public sealed class FragmentedMp4Writer : IDisposable
         _out.Position = end;
         _out.Flush();
 
-        // Фрагментированный файл по умолчанию и остаётся таким: так его понимают
-        // плееры, DaVinci и Premiere. Vegas же не открывает его, когда звуковая
-        // дорожка одна (например, микрофон выключен), а с двумя открывает. Только в
-        // этом случае делаем файл обычным; любой другой можно переделать из меню клипа.
-        if (_audio.Count < 2) ConvertToProgressive();
+        // Гибридный MP4: закрытый файл всегда обычный, его открывает любой
+        // редактор, включая Vegas. Фрагментированным он остаётся только пока
+        // идёт запись и если она оборвалась.
+        ConvertToProgressive();
     }
 
     /// <summary>
@@ -439,7 +450,7 @@ public sealed class FragmentedMp4Writer : IDisposable
             tracks.Add(new(i + 2, true, format.SampleRate, 0, 0, format.Name,
                            SampleDescription(w => format.WriteSampleEntry(w)), 0, _audioIndex[i]));
         }
-        Mp4Defragment.Finalize(_out, tracks, _headerMoovOffset, _moofOffsets, _mfraOffset);
+        Mp4Defragment.Finalize(_out, tracks, _headerMoovOffset, _moofOffsets, _mfraOffset, _placeholderOffset);
     }
 
     private static byte[] SampleDescription(Action<BoxWriter> entry)

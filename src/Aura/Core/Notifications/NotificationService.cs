@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -25,9 +25,16 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
     /// <summary>Кадр для превью берётся у работающего захвата; выключен — превью не будет.</summary>
     public Capture.LiveFrameProvider? PreviewSource { get; set; }
 
+    /// <summary>
+    /// Без окон и звуков: самопроверки отладочной копии идут, пока человек может
+    /// быть в игре, и уведомления с их звуками ему там не нужны.
+    /// </summary>
+    public bool Muted { get; set; }
+
     /// <summary>Разовое уведомление: заголовок и необязательная вторая строка.</summary>
     public void Show(NotificationKind kind, string message, string? detail = null)
     {
+        if (Muted) return;
         var s = settings.Current;
         if (kind is NotificationKind.Saved or NotificationKind.Screenshot)
             NotificationSounds.Play(s.SaveSound, s.CustomSaveSoundPath);
@@ -54,6 +61,7 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
     /// </summary>
     public void ShowSaving(string busyTitle, double maxWaitSeconds = 10)
     {
+        if (Muted) return;
         var s = settings.Current;
         if (!s.ShowNotifications) return;
 
@@ -70,6 +78,7 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
     /// <summary>Второй этап: файл дописан — капсула разворачивается в карточку.</summary>
     public void CompleteSaving(string title, string? detail)
     {
+        if (Muted) return;
         var s = settings.Current;
         NotificationSounds.Play(s.SaveSound, s.CustomSaveSoundPath);
         if (!s.ShowNotifications) return;

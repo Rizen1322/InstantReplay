@@ -217,7 +217,7 @@ public class Mp4MuxerTests
         {
             File.WriteAllBytes(path, fragmented);
             Assert.True(Mp4Defragment.IsFragmented(path));
-            Assert.True(Mp4Defragment.NeedsVegasFix(path));   // звуковых дорожек меньше двух
+            Assert.True(Mp4Defragment.NeedsVegasFix(path));   // старый фрагментированный файл
             Assert.True(Mp4Defragment.ConvertFile(path));
             Assert.False(Mp4Defragment.IsFragmented(path));
             Assert.False(Mp4Defragment.NeedsVegasFix(path));
@@ -237,6 +237,80 @@ public class Mp4MuxerTests
             Assert.True(nal + 4 <= firstSize);
         }
         finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Hybrid_recording_with_two_audio_tracks_closes_as_plain_mp4()
+    {
+        // Раньше запись с двумя дорожками звука оставалась фрагментированной.
+        // Гибридный MP4, как у OBS: снаружи только ftyp, один mdat и moov.
+        var frames = H264Clip(300);
+        var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1280, 720, [], frames[0].Item1)
+                     with { FrameRate = 60 };
+        var game = new Mp4AudioFormat(48000, 2, Mp4AudioFormat.AacLcConfig(48000, 2), 192000, "Game audio");
+        var mic = new Mp4AudioFormat(48000, 1, Mp4AudioFormat.AacLcConfig(48000, 1), 128000, "Microphone");
+        var ms = new MemoryStream();
+        byte[] whileRecording;
+        using (var writer = new FragmentedMp4Writer(ms, format, [game, mic]))
+        {
+            var aac = new byte[300];
+            for (int i = 0; i < frames.Count; i++)
+            {
+                writer.WriteVideo(frames[i].Item1, i * 166_666, i * 166_666, frames[i].Item2);
+                long audioPts = i * 166_666L;
+                writer.WriteAudio(0, aac, audioPts);
+                writer.WriteAudio(1, aac, audioPts);
+            }
+            whileRecording = ms.ToArray();
+            writer.Finish(166_666);
+        }
+        byte[] file = ms.ToArray();
+
+        // Пока пишется: заглушка «free» сразу за ftyp, дальше обычный фрагментированный файл
+        Assert.Equal(1, CountTopLevel(whileRecording, "free"));
+        Assert.True(Find(whileRecording, "moov/mvex").Offset > 0);
+
+        var top = TopLevelTypes(file);
+        Assert.Equal(["ftyp", "mdat", "moov"], top);
+        var moov = Find(file, "moov");
+        Assert.Equal(-1, Find(file, "mvex", moov.Offset + 8, moov.Offset + moov.Size).Offset);
+        Assert.Equal(3, CountChildren(file, moov.Offset, moov.Size, "trak"));
+        Assert.Equal("mp42", System.Text.Encoding.ASCII.GetString(file, 24, 4));
+
+        // Кадры на месте: первый кусок оглавления указывает на NAL внутри mdat
+        var stsz = Find(file, "moov/trak/mdia/minf/stbl/stsz");
+        var stco = Find(file, "moov/trak/mdia/minf/stbl/stco");
+        uint firstChunk = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stco.Offset + 16));
+        uint firstSize = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsz.Offset + 20));
+        uint nal = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan((int)firstChunk));
+        Assert.True(nal + 4 <= firstSize);
+    }
+
+    private static List<string> TopLevelTypes(byte[] file)
+    {
+        var types = new List<string>();
+        for (int pos = 0; pos + 8 <= file.Length;)
+        {
+            long size = BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(pos));
+            if (size == 1) size = (long)BinaryPrimitives.ReadUInt64BigEndian(file.AsSpan(pos + 8));
+            if (size < 8) break;
+            types.Add(System.Text.Encoding.ASCII.GetString(file, pos + 4, 4));
+            pos += (int)size;
+        }
+        return types;
+    }
+
+    private static int CountChildren(byte[] file, int offset, int size, string type)
+    {
+        int count = 0;
+        for (int pos = offset + 8; pos + 8 <= offset + size;)
+        {
+            int child = (int)BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(pos));
+            if (child < 8) break;
+            if (System.Text.Encoding.ASCII.GetString(file, pos + 4, 4) == type) count++;
+            pos += child;
+        }
+        return count;
     }
 
     /// <summary>Фрагментированная запись без хвоста — как после падения процесса.</summary>

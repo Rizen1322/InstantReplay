@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using TextEncoding = System.Text.Encoding;
 
 namespace Aura.Core.Saving.Mp4;
@@ -142,8 +142,17 @@ public static class Mp4Defragment
     /// Дописать обычный moov и спрятать фрагментную разметку. Поток должен стоять
     /// где угодно; после вызова позиция — в конце файла.
     /// </summary>
+    /// <param name="placeholderOffset">
+    /// Заглушка «free» на 16 байт перед старым moov (записи с 2.0.14), -1 — её нет.
+    /// С ней файл закрывается как гибридный MP4 у OBS: заглушка становится
+    /// заголовком ОДНОГО mdat, который накрывает всё от неё до нового moov, со
+    /// старым оглавлением, moof и mfra внутри. Снаружи остаются только ftyp, mdat
+    /// и moov: так выглядит самый обычный MP4, и строгие программы не спотыкаются
+    /// о десятки блоков mdat и free подряд. Без заглушки (старые записи) moof и
+    /// старый moov переименовываются в «free», как раньше.
+    /// </param>
     internal static void Finalize(Stream file, IReadOnlyList<Track> tracks, long headerMoovOffset,
-                                  IEnumerable<long> moofOffsets, long mfraOffset)
+                                  IEnumerable<long> moofOffsets, long mfraOffset, long placeholderOffset = -1)
     {
         long end = file.Length;
         bool co64 = end > uint.MaxValue - (1L << 26);
@@ -152,9 +161,34 @@ public static class Mp4Defragment
         file.Write(moov);
         file.Flush();
 
-        Rename(file, headerMoovOffset);
-        foreach (long moof in moofOffsets) Rename(file, moof);
-        if (mfraOffset >= 0) Rename(file, mfraOffset);
+        // Только после того как новое оглавление целиком на диске. Упади здесь —
+        // у файла будут оба оглавления, и фрагментированное по-прежнему читается.
+        if (placeholderOffset >= 0)
+        {
+            long span = end - placeholderOffset;
+            var header = new byte[16];
+            if (span <= uint.MaxValue)
+            {
+                // Обычный 32-битный размер: его понимают все. Оставшиеся 8 байт
+                // заглушки просто становятся данными внутри mdat.
+                BinaryPrimitives.WriteUInt32BigEndian(header, (uint)span);
+                "mdat"u8.CopyTo(header.AsSpan(4));
+            }
+            else
+            {
+                BinaryPrimitives.WriteUInt32BigEndian(header, 1);
+                "mdat"u8.CopyTo(header.AsSpan(4));
+                BinaryPrimitives.WriteUInt64BigEndian(header.AsSpan(8), (ulong)span);
+            }
+            file.Position = placeholderOffset;
+            file.Write(header);
+        }
+        else
+        {
+            Rename(file, headerMoovOffset);
+            foreach (long moof in moofOffsets) Rename(file, moof);
+            if (mfraOffset >= 0) Rename(file, mfraOffset);
+        }
         // Совместимые марки «iso5/iso6» в ftyp обещают фрагменты; файл теперь обычный
         if (file.Length >= 32)
         {
@@ -200,35 +234,12 @@ public static class Mp4Defragment
     }
 
     /// <summary>
-    /// Нужна ли записи правка для Vegas: фрагментированный файл, где меньше двух
-    /// звуковых дорожек. С двумя дорожками Vegas такой файл открывает, а записи с
-    /// одной дорожкой начиная с 2.0.8 Aura делает обычными сама.
-    /// Смотрит только заголовок в начале файла, поэтому быстрая.
+    /// Нужна ли записи переделка в обычный MP4: любая старая фрагментированная
+    /// запись. С 2.0.14 закрытая запись всегда обычная (гибридный MP4), а старые
+    /// с двумя дорожками раньше оставались фрагментированными, и часть программ
+    /// их не понимает. Смотрит только заголовок в начале файла, поэтому быстрая.
     /// </summary>
-    public static bool NeedsVegasFix(string path)
-    {
-        try
-        {
-            using var file = File.OpenRead(path);
-            foreach (var box in TopLevel(file))
-            {
-                if (box.Type != "moov") continue;
-                long start = box.Offset + box.Header, end = box.Offset + box.Size;
-                if (FindChild(file, start, end, "mvex") < 0) return false;
-                int audio = 0;
-                foreach (var trak in Children(file, start, end).Where(c => c.Type == "trak"))
-                {
-                    if (trak.Size > 1 << 20) continue;
-                    byte[] bytes = Read(file, trak.Offset, (int)trak.Size);
-                    var hdlr = Find(bytes, "mdia/hdlr");
-                    if (hdlr.Offset >= 0 && TextEncoding.ASCII.GetString(bytes, hdlr.Offset + 16, 4) == "soun") audio++;
-                }
-                return audio < 2;
-            }
-        }
-        catch { }
-        return false;
-    }
+    public static bool NeedsVegasFix(string path) => IsFragmented(path);
 
     /// <summary>
     /// Превратить готовый фрагментированный файл в обычный. false — файл уже обычный
@@ -311,7 +322,11 @@ public static class Mp4Defragment
                                     kv.Value.Name, kv.Value.Stsd, kv.Value.Audio ? 0 : kv.Value.MediaStart, indexes[kv.Key]))
             .ToList();
         long mfra = boxes.FirstOrDefault(b => b.Type == "mfra") is { Type: not null } m ? m.Offset : -1;
-        Finalize(file, tracks, moovBox.Offset, moofs, mfra);
+        // Заглушка гибридного MP4 (записи с 2.0.14): «free» на 16 байт прямо перед moov
+        long placeholder = boxes.FirstOrDefault(b => b.Type == "free" && b.Size == 16 &&
+                                                     b.Offset + b.Size == moovBox.Offset) is { Type: not null } f
+            ? f.Offset : -1;
+        Finalize(file, tracks, moovBox.Offset, moofs, mfra, placeholder);
         return true;
     }
 
@@ -362,7 +377,10 @@ public static class Mp4Defragment
             if (end < file.Length) file.SetLength(end);
             file.Flush(flushToDisk: true);
         }
-        if (NeedsVegasFix(partPath)) ConvertFile(partPath);
+        // Как у закрытой записи: гибридный файл становится обычным MP4. Не вышло —
+        // остаётся фрагментированным, он тоже играется.
+        try { ConvertFile(partPath); }
+        catch (Exception ex) { Aura.Core.Logging.Log.Warn("Recorder", $"Восстановленная запись осталась фрагментированной: {ex.Message}"); }
 
         string final = partPath[..^".part".Length];
         string stem = Path.Combine(Path.GetDirectoryName(final)!, Path.GetFileNameWithoutExtension(final) + " (восстановлено)");

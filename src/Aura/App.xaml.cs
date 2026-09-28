@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -143,6 +143,7 @@ public partial class App : Application
         bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record") ||
                         e.Args.Contains("--selftest-replay");
         if (!(dev && headless)) Services.Hotkeys.Start();
+        else Services.Notifications.Muted = true;
 
         // Приложение живёт в трее, но выходить обязано только по своей команде.
         // Иначе, если значок не создался, а окно спрятано, WPF гасит процесс сам
@@ -256,8 +257,14 @@ public partial class App : Application
             return;
         }
 
-        if (!minimized) _main.Show();
-        ShowChangelogIfUpdated();
+        // Самопроверки (--selftest-*) идут без окон: их запускают, пока человек
+        // может быть в игре, и ни главное окно, ни список изменений не должны
+        // всплывать у него на экране.
+        if (!(dev && headless))
+        {
+            if (!minimized) _main.Show();
+            ShowChangelogIfUpdated();
+        }
 
         if (Services.Settings.Current.AutoStartReplayBuffer) SafeStartEngine();
         if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
