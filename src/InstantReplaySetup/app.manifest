@@ -4,11 +4,13 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <!-- Установка в Program Files и закрытие прав на папку требуют
-             администратора. Сама Aura тоже работает от администратора, поэтому
-             её файлы обязаны лежать там, куда обычная программа писать не может:
-             иначе подменённый Aura.exe получил бы права без запроса UAC. -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <!-- asInvoker, а права администратора установщик просит сам при запуске
+             (App.EnsureElevated). С requireAdministrator обновление из Aura падало
+             с «Отказано в доступе»: у Aura есть package identity (sparse-пакет),
+             а упакованному процессу Windows не даёт запускать exe, которые требуют
+             повышения, без capability allowElevation. Aura и так работает от
+             администратора, поэтому при обновлении права просто наследуются. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

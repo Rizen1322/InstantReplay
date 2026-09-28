@@ -29,6 +29,24 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // Права администратора просим сами, а не манифестом (см. app.manifest)
+        using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+            if (!new System.Security.Principal.WindowsPrincipal(identity)
+                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator))
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true, Verb = "runas" };
+                    foreach (string arg in args) psi.ArgumentList.Add(arg);
+                    Process.Start(psi);
+                    return 0;
+                }
+                catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+                {
+                    return 1;   // отказ в окне UAC
+                }
+            }
+
         if (!UninstallLayout.TryResolveInstallRoot(Environment.ProcessPath, out string root) ||
             !File.Exists(Path.Combine(root, InstallMarkerName)))
         {

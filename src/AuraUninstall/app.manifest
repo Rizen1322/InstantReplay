@@ -4,9 +4,11 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <!-- Файлы Aura лежат в Program Files, а задача автозапуска создана с
-             наивысшими правами: удалить и то и другое может только администратор. -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <!-- Удалить файлы из Program Files и задачу автозапуска может только
+             администратор. Но права программа просит сама при запуске (см. Main),
+             а не манифестом: exe с requireAdministrator нельзя запустить из
+             процесса с package identity, каким бывает Aura. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>
