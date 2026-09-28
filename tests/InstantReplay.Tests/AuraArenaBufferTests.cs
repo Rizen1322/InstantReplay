@@ -71,15 +71,15 @@ public class AuraArenaBufferTests
     [Fact]
     public void Frames_survive_block_boundaries_and_wraparound()
     {
-        // Арена на 176 МБ (50 Мбит/с × 16 с ≈ 105 МБ плюс 64 МБ запаса под
-        // сохранение, округлённые до блоков по 16 МБ), а пишем 300 МБ: это и
-        // переходы через границы блоков, и почти два оборота по кругу. Вытеснение
+        // Арена на 240 МБ (50 Мбит/с × 16 с × 1.7 на пиковый битрейт ≈ 170 МБ
+        // плюс 64 МБ запаса под сохранение, округлённые до блоков по 16 МБ), а
+        // пишем 300 МБ: это и переходы через границы блоков, и оборот по кругу. Вытеснение
         // по времени намеренно отключено (час), чтобы работал только механизм
         // освобождения места.
         var buffer = new ReplayVideoBuffer();
         buffer.Allocate(50 * Megabit, seconds: 1);
         buffer.MaxDurationTicks = 3600 * Second;
-        Assert.Equal(176L * 1024 * 1024, buffer.CapacityBytes);
+        Assert.Equal(240L * 1024 * 1024, buffer.CapacityBytes);
 
         const int frameSize = 200 * 1024;
         for (int i = 0; i < 1500; i++)

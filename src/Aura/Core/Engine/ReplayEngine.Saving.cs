@@ -100,7 +100,7 @@ public sealed partial class ReplayEngine
         // буфера раньше требовали места под все пять минут и отказывали зря.
         int clipSeconds = secondsOverride ?? s.ReplayLengthSeconds;
         long estimate = Math.Min(_videoBuffer.TotalBytes + _audioBuffer.TotalBytes,
-                                 DiskSpace.ReplayClipBytes(s.BitrateBps, clipSeconds));
+                                 (long)(DiskSpace.ReplayClipBytes(s.BitrateBps, clipSeconds) * ReplayVideoBuffer.PeakFactor));
         try { DiskSpace.Require(s.SaveRootPath, estimate, "клипа"); }
         catch (InsufficientDiskSpaceException ex)
         {

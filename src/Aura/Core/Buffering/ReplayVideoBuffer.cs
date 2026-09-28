@@ -1,4 +1,4 @@
-using Aura.Core.Logging;
+﻿using Aura.Core.Logging;
 
 namespace Aura.Core.Buffering;
 
@@ -279,8 +279,17 @@ public sealed class ReplayVideoBuffer
                                "буфер будет короче заданного");
     }
 
+    /// <summary>
+    /// Во сколько раз средний битрейт в игре бывает выше заданного. Энкодер пишет с
+    /// переменным битрейтом (пик вдвое выше заданного), и в динамичной игре среднее
+    /// уходит вверх: в логе CS2 при заданных 30 Мбит/с арена на три минуты (800 МБ)
+    /// заполнялась за две, около 50 Мбит/с. Кольцо выбрасывало старые кадры, и
+    /// повтор упирался в 2:00 вместо 3:00. Арена считается с запасом под такой поток.
+    /// </summary>
+    internal const double PeakFactor = 1.7;
+
     public static long RequiredCapacityBytes(long bitrateBps, int seconds) =>
-        (long)(Math.Max(1, bitrateBps) / 8.0 * (Math.Max(0, seconds) + SlackSeconds) * 1.05)
+        (long)(Math.Max(1, bitrateBps) / 8.0 * (Math.Max(0, seconds) + SlackSeconds) * PeakFactor)
         + SaveHeadroomBytes(bitrateBps);
 
     public static long AllocatedCapacityBytes(long bitrateBps, int seconds, bool onDisk = false)
@@ -294,7 +303,7 @@ public sealed class ReplayVideoBuffer
     {
         long cap = onDisk ? MaximumDiskCapacityBytes : MaximumCapacityBytes;
         double usable = Math.Max(0, cap - SaveHeadroomBytes(bitrateBps));
-        double seconds = usable * 8 / Math.Max(1, bitrateBps) / 1.05 - SlackSeconds;
+        double seconds = usable * 8 / Math.Max(1, bitrateBps) / PeakFactor - SlackSeconds;
         return Math.Max(5, (int)Math.Floor(seconds));
     }
 
