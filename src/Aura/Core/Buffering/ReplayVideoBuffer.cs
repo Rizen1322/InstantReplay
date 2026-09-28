@@ -284,9 +284,11 @@ public sealed class ReplayVideoBuffer
     /// переменным битрейтом (пик вдвое выше заданного), и в динамичной игре среднее
     /// уходит вверх: в логе CS2 при заданных 30 Мбит/с арена на три минуты (800 МБ)
     /// заполнялась за две, около 50 Мбит/с. Кольцо выбрасывало старые кадры, и
-    /// повтор упирался в 2:00 вместо 3:00. Арена считается с запасом под такой поток.
+    /// повтор упирался в 2:00 вместо 3:00. С запасом 1.7 три минуты CS2 заняли
+    /// 1246 МБ из 1264, почти впритык, поэтому считаем по потолку VBR: выше
+    /// двукратного битрейт не поднимается вовсе.
     /// </summary>
-    internal const double PeakFactor = 1.7;
+    internal const double PeakFactor = 2.0;
 
     public static long RequiredCapacityBytes(long bitrateBps, int seconds) =>
         (long)(Math.Max(1, bitrateBps) / 8.0 * (Math.Max(0, seconds) + SlackSeconds) * PeakFactor)
