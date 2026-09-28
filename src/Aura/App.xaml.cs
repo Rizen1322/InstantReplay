@@ -671,7 +671,8 @@ public partial class App : Application
         _changelogVisible = true;
 
         // Сначала ролик, если он приложен к этой версии, потом обычный список
-        if (Views.WhatsNewVideo.FileFor(current) is { } video)
+        var lastSeen = Core.SystemIntegration.Changelog.Parse(Services.Settings.Current.LastSeenVersion) ?? new Version(0, 0);
+        if (Views.WhatsNewVideo.FileBetween(lastSeen, current) is { } video)
         {
             try { Views.WhatsNewVideo.Show(video); }
             catch (Exception ex) { Log.Warn("App", $"Ролик «что нового»: {ex.Message}"); }

@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using System.Windows.Media;
@@ -147,6 +147,13 @@ public partial class ToastWindow : Window
         Art.Width = 36;
         Art.CornerRadius = new CornerRadius(10);
         Shot.Source = null;
+        // Сначала снять анимации прошлого уведомления. Кадр сохранения гасит значок
+        // анимацией до нуля, и она держит своё значение сколько угодно: простое
+        // присваивание Opacity её не перебивает. Раньше после первого же
+        // «Повтор сохранён» у всех следующих уведомлений значка не было, только
+        // пустая цветная плитка.
+        Shot.BeginAnimation(OpacityProperty, null);
+        ArtIcon.BeginAnimation(OpacityProperty, null);
         Shot.Opacity = 0;
         ArtIcon.Opacity = busy ? 0 : 1;
         Spin.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;

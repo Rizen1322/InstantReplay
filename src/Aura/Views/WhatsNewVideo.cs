@@ -24,10 +24,27 @@ public static class WhatsNewVideo
     private static string Folder => Path.Combine(AppContext.BaseDirectory, "Assets");
 
     /// <summary>Ролик для этой версии; null — его нет.</summary>
-    public static string? FileFor(Version version)
+    public static string? FileFor(Version version) => FileBetween(new Version(0, 0), version);
+
+    /// <summary>
+    /// Самый свежий ролик из версий после <paramref name="last"/> и не новее
+    /// <paramref name="current"/>. Ролик едет и в следующих сборках: кто обновился
+    /// сразу через несколько версий, тоже его увидит. null — роликов нет.
+    /// </summary>
+    public static string? FileBetween(Version last, Version current)
     {
-        string path = Path.Combine(Folder, $"whatsnew-{version.ToString(3)}.mp4");
-        return File.Exists(path) ? path : null;
+        try
+        {
+            if (!Directory.Exists(Folder)) return null;
+            return Directory.EnumerateFiles(Folder, "whatsnew-*.mp4")
+                .Select(f => (File: f, Version: Version.TryParse(
+                    Path.GetFileNameWithoutExtension(f)["whatsnew-".Length..], out var v) ? v : null))
+                .Where(x => x.Version is not null && x.Version > last && x.Version <= current)
+                .OrderByDescending(x => x.Version)
+                .Select(x => x.File)
+                .FirstOrDefault();
+        }
+        catch { return null; }
     }
 
     /// <summary>Удалить все ролики: показанный, старые и не нужные этой установке.</summary>
