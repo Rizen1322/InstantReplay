@@ -273,6 +273,7 @@ internal static partial class NativeMethods
     // Под 100% загрузкой GPU игрой наши Blt/Copy/NVENC-команды иначе стоят в общей
     // очереди планировщика — кадры записи опаздывают и дропаются.
     internal const int D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH = 4;
+    internal const int D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME = 5;
 
     [DllImport("gdi32.dll")]
     internal static extern int D3DKMTSetProcessSchedulingPriorityClass(IntPtr hProcess, int priorityClass);

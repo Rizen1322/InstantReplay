@@ -58,6 +58,27 @@ public sealed partial class ReplayEngine
     /// </summary>
     private Aura.Core.Hardware.GpuEngineLoad? _gpuLoad;
 
+    private static bool _hagsAdvised;
+    private static bool? _hags;
+
+    /// <summary>
+    /// Запись проседает, потому что игра забрала видеокарту, а поднять Aura выше
+    /// игры мешает включённый HAGS (см. App.RaiseGpuPriority). Один раз за запуск
+    /// говорим, что поможет: выключить HAGS в настройках Windows.
+    /// </summary>
+    private void AdviseHagsIfStarved(FreezeStats freezes, (double Graphics, double Encode)? gpu)
+    {
+        if (_hagsAdvised || gpu is not { } load || load.Graphics < 85 || freezes.Over100 < 10) return;
+        _hags ??= Aura.Core.Hardware.GpuScheduling.HagsEnabled();
+        if (_hags != true) return;
+        _hagsAdvised = true;
+        Log.Warn("Engine", $"Игра заняла видеокарту на {load.Graphics:F0}%, стоп-кадров дольше 100 мс за минуту: " +
+                           $"{freezes.Over100}. Включён HAGS, поэтому Aura не может встать в очередь впереди игры");
+        Warning?.Invoke("Игра забирает видеокарту, и запись проседает. Выключи «Планирование графического процессора " +
+                        "с аппаратным ускорением» в Параметры → Дисплей → Графика и перезагрузи ПК: тогда Aura " +
+                        "получит приоритет выше игры");
+    }
+
     private void DumpStats(string label)
     {
         var enc = _encoder;
@@ -135,6 +156,7 @@ public sealed partial class ReplayEngine
         _gpuLoad ??= new Aura.Core.Hardware.GpuEngineLoad();
         Log.Info("Engine", $"Плавность: {freezes}; очередь энкодера до {queue.MaxDepth} кадров, самый старый ждал {queue.MaxAgeMs:F0} мс" +
                            (gpuLoad is { } g ? $"; загрузка GPU: 3D {g.Graphics:F0}%, Video Encode {g.Encode:F0}%" : ""));
+        AdviseHagsIfStarved(freezes, gpuLoad);
         if (submitLatency.Count > 0)
             Log.Info("Engine", $"NVENC: отправка кадра {submitLatency}; до выхода {encodeLatency} " +
                                "(с B-кадрами 30–50 мс это буферизация, не перегруз)" +

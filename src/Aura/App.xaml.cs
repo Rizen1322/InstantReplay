@@ -445,15 +445,30 @@ public partial class App : Application
                                     $"Переключил на {(fallback == Core.Settings.VideoCodec.HEVC ? "HEVC" : "H.264")}");
     }
 
-    /// <summary>GPU-приоритет повыше: команды записи не ждут в очереди за игрой.</summary>
+    /// <summary>Включено ли аппаратное планирование GPU (HAGS); null — не узнали.</summary>
+    public static bool? HagsEnabled { get; private set; }
+
+    /// <summary>
+    /// GPU-приоритет повыше: команды записи не ждут в очереди за игрой.
+    ///
+    /// Как у OBS: REALTIME, если HAGS выключен. Под Split Fiction (видеокарта 95%)
+    /// с HIGH кадры ждали в очереди Aura до двух секунд, хотя сам NVENC был занят
+    /// на треть: наши копии кадра стояли на видеокарте за игрой. При включённом HAGS
+    /// остаёмся на HIGH: у NVIDIA описаны зависания NVENC при REALTIME вместе с HAGS.
+    /// </summary>
     private static void RaiseGpuPriority()
     {
         try
         {
+            HagsEnabled = Core.Hardware.GpuScheduling.HagsEnabled();
+            bool realtime = HagsEnabled == false;
             int st = Core.Interop.NativeMethods.D3DKMTSetProcessSchedulingPriorityClass(
                 Core.Interop.NativeMethods.GetCurrentProcess(),
-                Core.Interop.NativeMethods.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH);
-            Log.Info("App", st == 0 ? "GPU-приоритет процесса: HIGH" : $"GPU-приоритет не применился (0x{st:X8})");
+                realtime ? Core.Interop.NativeMethods.D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME
+                         : Core.Interop.NativeMethods.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH);
+            string hags = HagsEnabled switch { true => "HAGS включён", false => "HAGS выключен", _ => "HAGS не определён" };
+            Log.Info("App", st == 0 ? $"GPU-приоритет процесса: {(realtime ? "REALTIME" : "HIGH")} ({hags})"
+                                    : $"GPU-приоритет не применился (0x{st:X8}, {hags})");
         }
         catch { }
     }

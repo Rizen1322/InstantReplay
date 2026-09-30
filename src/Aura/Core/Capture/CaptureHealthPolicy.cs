@@ -1,4 +1,4 @@
-namespace Aura.Core.Capture;
+﻿namespace Aura.Core.Capture;
 
 internal enum CaptureQuarantine
 {
@@ -38,6 +38,22 @@ internal sealed class CaptureHealthPolicy
     private readonly HashSet<CaptureBackend> _sessionQuarantine = [];
     private readonly Queue<DateTimeOffset> _switches = [];
     private int _badWgcSamples;
+
+    /// <summary>
+    /// Пересборки захвата из-за «голода» подряд. Под тяжёлой игрой (Split Fiction,
+    /// видеокарта 95%) WGC честно отдаёт 28–34 кадра в секунду: игра сама не рисует
+    /// больше или DWM не успевает. Пересборка это не лечит, а каждая даёт дыру в
+    /// записи до двух секунд, и сторож повторял её каждые 1–3 минуты. Теперь каждая
+    /// неудачная попытка удваивает, сколько «голода» нужно для следующей: 10 с,
+    /// 20, 40… до 10 минут. После 15 минут без пересборок счёт сбрасывается.
+    /// </summary>
+    private int _starvationSwitches;
+    private DateTimeOffset _lastStarvationSwitch = DateTimeOffset.MinValue;
+    private static readonly TimeSpan StarvationMemory = TimeSpan.FromMinutes(15);
+    private const int MaxBadWgcSamples = 600;
+
+    private int RequiredStarvationSamples =>
+        Math.Min(MaxBadWgcSamples, RequiredBadWgcSamples << Math.Min(_starvationSwitches, 6));
     private int _frozenDdaSamples;
 
     public CaptureHealthDecision Observe(CaptureHealthSample sample, DateTimeOffset now)
@@ -62,12 +78,17 @@ internal sealed class CaptureHealthPolicy
             if (starvedWgc)
             {
                 _frozenDdaSamples = 0;
+                if (now - _lastStarvationSwitch > StarvationMemory) _starvationSwitches = 0;
                 _badWgcSamples++;
-                if (_badWgcSamples < RequiredBadWgcSamples)
+                int required = RequiredStarvationSamples;
+                if (_badWgcSamples < required)
                     return CaptureHealthDecision.Healthy;
 
                 _badWgcSamples = 0;
-                return new(true, $"WGC голодает {RequiredBadWgcSamples} секунд подряд");
+                _starvationSwitches++;
+                _lastStarvationSwitch = now;
+                return new(true, $"WGC голодает {required} секунд подряд" +
+                                 (_starvationSwitches > 1 ? $" (пересборка №{_starvationSwitches} за 15 мин, дальше реже)" : ""));
             }
 
             if (frozenDda)

@@ -1,4 +1,4 @@
-using Aura.Core.Capture;
+﻿using Aura.Core.Capture;
 using Xunit;
 
 namespace InstantReplay.Tests;
@@ -270,4 +270,21 @@ public sealed class CaptureHealthPolicyTests
         FramesDuplicated: 59,
         GameForeground: true,
         Uptime: TimeSpan.FromSeconds(20));
+
+    [Fact]
+    public void Repeated_starvation_switches_wait_longer_each_time()
+    {
+        var policy = new CaptureHealthPolicy();
+        int FirstSwitch(DateTimeOffset start)
+        {
+            for (int i = 1; i <= 700; i++)
+                if (policy.Observe(StarvedWgc(), start.AddSeconds(i)).SwitchBackend) return i;
+            return -1;
+        }
+        Assert.Equal(10, FirstSwitch(Now));
+        Assert.Equal(20, FirstSwitch(Now.AddMinutes(1)));    // не помогло: вдвое дольше
+        Assert.Equal(40, FirstSwitch(Now.AddMinutes(2)));
+        // 15 минут без пересборок: снова обычные 10 секунд
+        Assert.Equal(10, FirstSwitch(Now.AddMinutes(30)));
+    }
 }
