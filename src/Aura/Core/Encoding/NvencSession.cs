@@ -103,6 +103,11 @@ internal sealed partial class NvencSession : IDisposable
     {
         double pixelRate = (double)width * height * fps;           // пикселей в секунду
         bool heavy = pixelRate > 2560.0 * 1440 * 60 * 1.05;        // больше 1440p60
+        // B-кадры и второй проход — только ниже 1440p60. На 2560×1440@60 рядом с
+        // CS2 NVENC с ними не успевал: отправка кадра в среднем 5–11 мс, пики до
+        // 350 мс, и за полчаса игры 51 провал записи до 33–60 кадров. Без них в
+        // том же разрешении 27.09 за 8 часов не было ни одного.
+        bool extras = pixelRate < 2560.0 * 1440 * 60 * 0.95;
         bool veryHeavy = pixelRate > 3840.0 * 2160 * 60 * 1.05;    // больше 4K60
 
         return WithOverrides(new Config
@@ -131,13 +136,13 @@ internal sealed partial class NvencSession : IDisposable
             // четверть разрешения: так по умолчанию кодирует OBS, и это почти всё
             // качество, которое NVENC вообще может дать при том же битрейте. Работу
             // делает отдельный блок NVENC, шейдеры игры он не отнимает. На потоках
-            // тяжелее 1440p60 не включаем: там NVENC и так на пределе темпа.
+            // 1440p60 и тяжелее не включаем: там NVENC рядом с игрой на пределе темпа.
             // Переменные AURA_NVENC_BFRAMES / AURA_NVENC_MULTIPASS для проверок.
-            BFrames = heavy ? 0 : 2,
+            BFrames = extras ? 2 : 0,
             SpatialAq = 1,
             TemporalAq = 0,
             AqStrength = 8,
-            Multipass = heavy ? 0 : 1,
+            Multipass = extras ? 1 : 0,
             BufferCount = 0,                                         // прослойка посчитает сама
         });
     }
