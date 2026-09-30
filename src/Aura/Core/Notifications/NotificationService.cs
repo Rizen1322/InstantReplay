@@ -36,7 +36,9 @@ public sealed class NotificationService(SettingsManager settings, UiDispatcher d
     {
         if (Muted) return;
         var s = settings.Current;
-        if (kind is NotificationKind.Saved or NotificationKind.Screenshot)
+        // Скриншот без звука: его делают часто и посреди игры, щелчок на каждый
+        // только мешает. Звук остаётся у сохранения повтора и записи.
+        if (kind is NotificationKind.Saved)
             NotificationSounds.Play(s.SaveSound, s.CustomSaveSoundPath);
         if (!s.ShowNotifications) return;
 

@@ -219,7 +219,12 @@ public partial class RegionCaptureWindow : Window
             _open = new RegionCaptureWindow(bitmap, x, y, w, h, folder, returnFocus);
             _open.Show();
             _open.Activate();
+            // Activate не всегда выводит окно вперёд, пока фокус у игры: клавиши
+            // (Ctrl+A, Esc) уходили бы ей. Просим систему явно; право есть,
+            // оверлей открыт нажатием, которое только что поймал наш хук.
+            NativeMethods.SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(_open).Handle);
             _open.Focus();
+            Keyboard.Focus(_open);
         }
         finally
         {
@@ -501,7 +506,17 @@ public partial class RegionCaptureWindow : Window
     private static bool IsCtrl(Key key) => key is Key.LeftCtrl or Key.RightCtrl;
 
     /// <summary>Зажат ли Ctrl — им включается поиск областей.</summary>
-    private static bool SnapArmed => (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+    private static bool SnapArmed => CtrlDown;
+
+    /// <summary>
+    /// Зажат ли Ctrl на самом деле. Keyboard.Modifiers у WPF знает только о
+    /// нажатиях, пришедших в его окно: Ctrl, зажатый, пока фокус был у игры,
+    /// оверлей не видел, и Ctrl+A срабатывал как просто A (инструмент «Стрелка»).
+    /// GetAsyncKeyState спрашивает саму клавиатуру.
+    /// </summary>
+    private static bool CtrlDown =>
+        (NativeMethods.GetAsyncKeyState(0x11) & 0x8000) != 0 ||
+        (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 
     private void SetCandidate(Rect? value)
     {
@@ -757,7 +772,7 @@ public partial class RegionCaptureWindow : Window
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
-        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        bool ctrl = CtrlDown;
 
         // Пока набирается подпись, клавиши принадлежат ей: Esc отменяет ввод,
         // Enter заканчивает, всё остальное — обычный набор текста.
