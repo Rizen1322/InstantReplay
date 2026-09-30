@@ -1,4 +1,4 @@
-using Vortice.MediaFoundation;
+﻿using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -864,6 +864,9 @@ public sealed partial class ReplayEngine : IDisposable
     /// повтора, и гаснет вместе с её остановкой. Раньше переключатель повтора
     /// обрывал и запись, хотя человек выключал только повтор.
     /// </summary>
+    /// <summary>Проверка в --dev: снять второй проход и AQ у NVENC посреди работы.</summary>
+    internal void ReconfigureNvencForTest(int multipass, bool aq) => _encoder?.RequestReconfigureForTest(multipass, aq);
+
     /// <summary>Push-to-talk зажата или отпущена в момент <paramref name="ticks"/> (QPC, 100 нс).</summary>
     public void SetPushToTalk(bool held, long ticks) => _audio.PushToTalk.Set(held, ticks);
 

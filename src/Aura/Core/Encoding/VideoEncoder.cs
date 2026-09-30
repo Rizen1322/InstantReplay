@@ -361,6 +361,44 @@ public sealed class VideoEncoder : IDisposable
 
     private NvencSession? _nvenc;
     private readonly Queue<long> _nvencInputPts = new();
+
+    /// <summary>Когда кадр ушёл в NVENC (QPC), в том же порядке, что и _nvencInputPts.</summary>
+    private readonly Queue<long> _nvencSubmitQpc = new();
+
+    /// <summary>Сколько длится вызов отправки кадра в NVENC: окно контроллера нагрузки и минута статистики.</summary>
+    private readonly LatencyStats _submitWindow = new(), _submitMinute = new();
+
+    /// <summary>От отправки кадра до готового выхода, за минуту статистики.</summary>
+    private readonly LatencyStats _encodeMinute = new();
+    internal LatencyStats.Summary TakeSubmitLatency() => _submitMinute.Take();
+    internal LatencyStats.Summary TakeEncodeLatency() => _encodeMinute.Take();
+
+    /// <summary>
+    /// Самая длинная серия дубликатов подряд: столько кадров картинка в записи
+    /// стояла на месте. Нулевые ошибки ничего не говорят о плавности, а это прямой
+    /// признак фриза в файле.
+    /// </summary>
+    private int _duplicateRun;
+    private int _longestDuplicateRun;
+    public int TakeLongestFreezeFrames() => Interlocked.Exchange(ref _longestDuplicateRun, 0);
+
+    private NvencLoadAdapter? _nvencAdapter;
+    private (int Multipass, bool Aq)? _pendingReconfigure;
+
+    /// <summary>Настройки NVENC сейчас, коротко для строки провала; пусто — кодирует MFT.</summary>
+    public string NvencDescription
+    {
+        get
+        {
+            if (_nvenc is not { } session) return "";
+            var (multipass, aq) = _nvencAdapter?.Current ?? (session.Settings.Multipass, session.Settings.SpatialAq == 1);
+            return $"NVENC, B-кадров {session.Settings.BFrames}, второй проход {(multipass > 0 ? "вкл" : "выкл")}, " +
+                   $"AQ {(aq ? "вкл" : "выкл")}";
+        }
+    }
+
+    /// <summary>Ступень снижения нагрузки NVENC для логов: «полное качество», «без второго прохода»…</summary>
+    public string NvencLoadLevel => _nvencAdapter is { CanAdapt: true } a ? a.LevelName : "";
     private long _nvencLastDts = long.MinValue;
     private byte[]? _nvencHeader;
     private ID3D11Device? _nvencDevice;
@@ -451,6 +489,8 @@ public sealed class VideoEncoder : IDisposable
             var pool = new EncoderTexturePool(device, encoderDevice, width, height, tenBit, slots: 24);
 
             _nvenc = session;
+            _nvencAdapter = new NvencLoadAdapter(fps, session.Settings.Multipass, session.Settings.SpatialAq == 1);
+            _pendingReconfigure = null;
             _nvencDevice = encoderDevice;
             _nvencContext = encoderContext;
             _nvencInputs = inputs;
@@ -604,21 +644,50 @@ public sealed class VideoEncoder : IDisposable
         bool forceIdr = _keyframeRequested;
         if (forceIdr) _keyframeRequested = false;
 
+        // Ступень нагрузки меняется здесь, с потока отправки: API NVENC не терпит
+        // перенастройку параллельно с кодированием
+        if (_pendingReconfigure is { } wanted)
+        {
+            _pendingReconfigure = null;
+            int status = session.Reconfigure(wanted.Multipass, wanted.Aq);
+            Log.Info("Encoder", status == 0
+                ? $"NVENC перенастроен на ходу: второй проход {(wanted.Multipass > 0 ? "вкл" : "выкл")}, AQ {(wanted.Aq ? "вкл" : "выкл")}"
+                : $"NVENC не перенастроился ({NvencSession.StatusName(-status)}), оставляю как было");
+        }
+
+        // Серия дубликатов подряд = картинка в записи стоит
+        if (item.IsDuplicate)
+        {
+            int run = ++_duplicateRun;
+            int longest;
+            while (run > (longest = Volatile.Read(ref _longestDuplicateRun)))
+                if (Interlocked.CompareExchange(ref _longestDuplicateRun, run, longest) == longest) break;
+        }
+        else _duplicateRun = 0;
+
         int result;
         for (int busyRetries = 0; ; busyRetries++)
         {
-            lock (_nvencInputPts) _nvencInputPts.Enqueue(item.Ticks);
+            long submitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            lock (_nvencInputPts)
+            {
+                _nvencInputPts.Enqueue(item.Ticks);
+                _nvencSubmitQpc.Enqueue(submitStart);
+            }
             int inFlight = Interlocked.Increment(ref _inFlight);
             long peak;
             while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
                 if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
 
             result = session.Encode(input.NativePointer, item.Ticks, forceIdr);
+            double submitMs = System.Diagnostics.Stopwatch.GetElapsedTime(submitStart).TotalMilliseconds;
+            _submitWindow.Add(submitMs);
+            _submitMinute.Add(submitMs);
             if (result >= 0) break;
 
             // Кадр не ушёл: прослойка уже сняла отображение входа, выходной буфер не
             // занят. Снимаем его метку, чтобы очередь меток совпадала с выходами.
-            lock (_nvencInputPts) RemoveLast(_nvencInputPts);
+            lock (_nvencInputPts) { RemoveLast(_nvencInputPts); RemoveLast(_nvencSubmitQpc); }
             Interlocked.Decrement(ref _inFlight);
             if (-result != NvencSession.StatusEncoderBusy) break;
 
@@ -650,7 +719,7 @@ public sealed class VideoEncoder : IDisposable
         if (result == 0)
         {
             // Буфер занят — так быть не должно (поток сам считает свободные). Кадр теряем честно.
-            lock (_nvencInputPts) RemoveLast(_nvencInputPts);
+            lock (_nvencInputPts) { RemoveLast(_nvencInputPts); RemoveLast(_nvencSubmitQpc); }
             Interlocked.Decrement(ref _inFlight);
             Interlocked.Increment(ref FramesDroppedRealQueue);
             Interlocked.Increment(ref NvencStats.DroppedInputFrames);
@@ -706,7 +775,14 @@ public sealed class VideoEncoder : IDisposable
     private void DeliverNvenc(ArraySegment<byte> data, long pts, int pictureType, long reorderTicks)
     {
         long inputPts;
-        lock (_nvencInputPts) inputPts = _nvencInputPts.Count > 0 ? _nvencInputPts.Dequeue() : pts;
+        long submittedAt = 0;
+        lock (_nvencInputPts)
+        {
+            inputPts = _nvencInputPts.Count > 0 ? _nvencInputPts.Dequeue() : pts;
+            if (_nvencSubmitQpc.Count > 0) submittedAt = _nvencSubmitQpc.Dequeue();
+        }
+        if (submittedAt != 0)
+            _encodeMinute.Add(System.Diagnostics.Stopwatch.GetElapsedTime(submittedAt).TotalMilliseconds);
         Interlocked.Decrement(ref _inFlight);
         if (pictureType == NvencSession.SkippedPicture)
         {
@@ -1505,6 +1581,7 @@ public sealed class VideoEncoder : IDisposable
                            Interlocked.Read(ref FramesSubmitted),
                            Interlocked.Read(ref PacerBlocked),
                            Interlocked.Read(ref FramesDroppedRealQueue));
+            TickNvencAdapter();
             lock (_cfrLock)
             {
                 if (_copyPool?.Latest is null || _cfrBase < 0 || _context is null) continue;
@@ -1546,6 +1623,31 @@ public sealed class VideoEncoder : IDisposable
             }
         }
     }
+
+    private readonly System.Diagnostics.Stopwatch _adapterClock = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>Раз в окно спросить контроллер нагрузки NVENC, не пора ли сменить ступень.</summary>
+    private void TickNvencAdapter()
+    {
+        var adapter = _nvencAdapter;
+        if (adapter is null || _nvenc is null) return;
+        long now = _adapterClock.ElapsedMilliseconds;
+        // Окно замеров снимаем только когда контроллер реально смотрит
+        if (now < _nextAdapterCheck) return;
+        _nextAdapterCheck = now + NvencLoadAdapter.WindowMs;
+        var window = _submitWindow.Take();
+        int? level = adapter.Tick(now, Interlocked.Read(ref FramesEncoded),
+                                  Interlocked.Read(ref FramesSubmitted) + Interlocked.Read(ref FramesDuplicated),
+                                  Interlocked.Read(ref FramesDroppedRealQueue), window.P95, out string reason);
+        if (level is null) return;
+        _pendingReconfigure = adapter.Current;
+        Log.Warn("Encoder", $"Нагрузка NVENC: ступень {level}/{adapter.MaxLevel} «{adapter.LevelName}» ({reason})");
+    }
+
+    private long _nextAdapterCheck = NvencLoadAdapter.WindowMs;
+
+    /// <summary>Проверка в --dev: перенастроить NVENC на ходу, как это сделал бы контроллер нагрузки.</summary>
+    internal void RequestReconfigureForTest(int multipass, bool aq) => _pendingReconfigure = (multipass, aq);
 
     /// <summary>
     /// Цикл событий асинхронного MFT. Блокирующий GetEvent — нулевая задержка реакции.

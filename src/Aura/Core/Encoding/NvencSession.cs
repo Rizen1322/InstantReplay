@@ -61,6 +61,9 @@ internal sealed partial class NvencSession : IDisposable
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_destroy")]
     private static partial void Destroy(IntPtr session);
 
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_reconfigure")]
+    private static partial int ReconfigureNative(IntPtr session, int multipass, int spatialAq);
+
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_trace")]
     private static unsafe partial int TraceNative(IntPtr session, byte* buffer, int capacity);
 
@@ -207,6 +210,17 @@ internal sealed partial class NvencSession : IDisposable
     /// </summary>
     public int Encode(IntPtr texture, long pts, bool forceIdr) =>
         EncodeNative(_session, texture, pts, forceIdr ? 1 : 0);
+
+    /// <summary>
+    /// Второй проход (0 нет, 1 в четверть разрешения, 2 полный) и пространственный AQ
+    /// на ходу, без новой сессии и без ключевого кадра. Звать с потока отправки кадров.
+    /// 0 — применено, иначе минус NVENCSTATUS.
+    /// </summary>
+    public int Reconfigure(int multipass, bool spatialAq)
+    {
+        try { return _session == IntPtr.Zero ? -1 : ReconfigureNative(_session, multipass, spatialAq ? 1 : 0); }
+        catch (EntryPointNotFoundException) { return -1; }   // старая прослойка
+    }
 
     // NVENCSTATUS из nvEncodeAPI.h (порядковые значения перечисления)
     public const int StatusLockBusy = 13;

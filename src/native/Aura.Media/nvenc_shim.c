@@ -109,6 +109,8 @@ typedef struct Session {
     TraceEntry trace[TRACE_SIZE];
     volatile LONG traceNext;
     char lastError[256];
+    NV_ENC_CONFIG config;          // настройки, с которыми сессия работает сейчас
+    NV_ENC_INITIALIZE_PARAMS init; // init.encodeConfig указывает на config выше
     uint8_t* out;              // копия последнего выхода: растёт под самый большой кадр
     int outCapacity;
 } Session;
@@ -411,6 +413,10 @@ AURA_EXPORT int aura_nvenc_create(void* d3d11Device, const AuraNvencConfig* cfg,
         applied->bFrameRef = bFrames > 1 && bRefMode ? 1 : 0;
         applied->tenBit = tenBit;
     }
+    // Для перенастройки на ходу (aura_nvenc_reconfigure) нужны те же параметры
+    s->config = config;
+    s->init = init;
+    s->init.encodeConfig = &s->config;
     *out = s;
     return 1;
 }
@@ -440,6 +446,34 @@ static NV_ENC_REGISTERED_PTR register_texture(Session* s, void* texture) {
 }
 
 // Сколько выходных буферов свободно: подавать кадр можно, только если > 0.
+// Снизить или вернуть нагрузку на ходу, без новой сессии: второй проход и
+// пространственный AQ меняются через nvEncReconfigureEncoder. Структура GOP
+// (B-кадры) так не меняется, это запрещено API. Звать с потока, который
+// отправляет кадры, между вызовами aura_nvenc_encode. 0 — применено, иначе
+// минус NVENCSTATUS.
+AURA_EXPORT int aura_nvenc_reconfigure(void* handle, int multipass, int spatialAq) {
+    Session* s = (Session*)handle;
+    if (!s || !s->encoder) return -1;
+    NV_ENC_CONFIG config = s->config;
+    config.rcParams.multiPass = multipass == 2 ? NV_ENC_TWO_PASS_FULL_RESOLUTION
+                              : multipass == 1 ? NV_ENC_TWO_PASS_QUARTER_RESOLUTION
+                              : NV_ENC_MULTI_PASS_DISABLED;
+    config.rcParams.enableAQ = spatialAq ? 1 : 0;
+
+    NV_ENC_RECONFIGURE_PARAMS params = { 0 };
+    params.version = NV_ENC_RECONFIGURE_PARAMS_VER;
+    params.reInitEncodeParams = s->init;
+    params.reInitEncodeParams.encodeConfig = &config;
+    params.resetEncoder = 0;   // счётчики битрейта не сбрасываем, GOP не ломаем
+    params.forceIDR = 0;
+
+    EnterCriticalSection(&s->apiLock);
+    NVENCSTATUS st = s->api.nvEncReconfigureEncoder(s->encoder, &params);
+    if (st == NV_ENC_SUCCESS) s->config = config;
+    LeaveCriticalSection(&s->apiLock);
+    return st == NV_ENC_SUCCESS ? 0 : -(int)st;
+}
+
 AURA_EXPORT int aura_nvenc_free_slots(void* handle) {
     Session* s = (Session*)handle;
     EnterCriticalSection(&s->lock);

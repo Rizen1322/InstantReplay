@@ -1,4 +1,4 @@
-using Vortice.MediaFoundation;
+﻿using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -119,6 +119,17 @@ public sealed partial class ReplayEngine
         }
 
         // Где именно уходит бюджет кадра (16.7 мс при 60 fps)
+        // NVENC: сколько длится отправка кадра и путь до готового выхода, и самый
+        // долгий стоп-кадр за минуту. Ноль ошибок в логе ничего не говорит о
+        // плавности; эти цифры говорят.
+        var submitLatency = enc.TakeSubmitLatency();
+        var encodeLatency = enc.TakeEncodeLatency();
+        int freeze = enc.TakeLongestFreezeFrames();
+        if (submitLatency.Count > 0)
+            Log.Info("Engine", $"NVENC: отправка кадра {submitLatency}; до выхода {encodeLatency}; " +
+                               $"самый долгий стоп-кадр {freeze} кадр. ({freeze * 1000.0 / Math.Max(1, enc.Fps):F0} мс)" +
+                               (enc.NvencLoadLevel is { Length: > 0 } level ? $"; ступень «{level}»" : ""));
+
         string probe = Diagnostics.PipelineProbe.TakeReport();
         if (probe.Length > 0) Log.Info("Engine", probe);
 
@@ -408,6 +419,13 @@ public sealed partial class ReplayEngine
                 _probeEpisode = true;
                 Log.Warn("Probe", "Провал записи — посекундная диагностика (кадры/с: получено, закодировано, " +
                                   "запросов MFT, дублей, дропов | backend/broker/cursor | очередь | видеопамять)");
+                // Чем кодировали в момент провала: без этого по логу не понять,
+                // виноваты настройки энкодера или нагрузка игры
+                if (_encoder is { } e)
+                    Log.Warn("Probe", $"Энкодер при провале: {e.Width}x{e.Height}@{e.Fps}, " +
+                                      $"{(e.NvencDescription is { Length: > 0 } d ? d : "MFT")}" +
+                                      $"{(e.NvencLoadLevel is { Length: > 0 } l ? $", ступень нагрузки «{l}»" : "")}, " +
+                                      $"буфер {_videoBuffer.TotalBytes >> 20} МБ");
             }
 
             string vram = GpuInfo.Usage(cap.D3DDevice) is { } v

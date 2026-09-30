@@ -35,6 +35,7 @@
     <Compile Include="..\..\src\Aura\Core\Storage\FileNaming.cs" Link="App\FileNaming.cs" />
     <Compile Include="..\..\src\Aura\Core\Library\ClipGrouping.cs" Link="App\ClipGrouping.cs" />
     <Compile Include="..\..\src\Aura\Core\Buffering\ReplayBuffers.cs" Link="App\ReplayBuffers.cs" />
+    <Compile Include="..\..\src\Aura\Core\Encoding\NvencLoadAdapter.cs" Link="App\NvencLoadAdapter.cs" />
     <Compile Include="..\..\src\Aura\Core\Buffering\ReplayVideoBuffer.cs" Link="App\ReplayVideoBuffer.cs" />
     <Compile Include="..\..\src\Aura\Core\Buffering\ArenaStorage.cs" Link="App\ArenaStorage.cs" />
     <Compile Include="..\..\src\Aura\Core\Saving\Mp4\*.cs" Link="App\Mp4\%(Filename)%(Extension)" />

@@ -115,6 +115,23 @@ public partial class App : Application
         RaiseGpuPriority();
 
         Services.Settings.Load();
+        // Отладочная копия со своей папкой данных пишет только туда же. Если её
+        // settings.json пропал, настройки по умолчанию указали бы на настоящую
+        // папку записей человека, и тестовые ролики смешались бы с его клипами.
+        if (e.Args.Contains("--dev") && e.Args.Contains("--data-dir"))
+        {
+            string sandbox = Path.Combine(SettingsManager.Dir, "out");
+            var current = Services.Settings.Current;
+            if (!current.SaveRootPath.StartsWith(SettingsManager.Dir, StringComparison.OrdinalIgnoreCase) ||
+                !current.ScreenshotFolder.StartsWith(SettingsManager.Dir, StringComparison.OrdinalIgnoreCase))
+            {
+                Directory.CreateDirectory(sandbox);
+                current.SaveRootPath = sandbox;
+                current.ScreenshotFolder = sandbox;
+                current.AutoStartReplayBuffer = false;
+                Log.Info("App", $"Отладочная копия: записи только в {sandbox}");
+            }
+        }
         Loc.Lang = Services.Settings.Current.Language;
         // --theme dark|deep|light|system — примерить тему, не трогая настройки.
         // Рядом с --page и --dev: примерка оформления не должна переписывать
@@ -203,6 +220,15 @@ public partial class App : Application
                     Log.Info("SelfTest", $"повтор выключен: повтор {Services.Engine.ReplayActive}, " +
                                          $"запись идёт {Services.Engine.IsRecordingToFile}");
                     await Task.Delay(selfTestSeconds * 333);
+                }
+                else if (e.Args.Contains("--selftest-reconfig"))
+                {
+                    // Контроллер нагрузки NVENC: посреди записи снять второй проход, потом AQ
+                    await Task.Delay(selfTestSeconds * 333);
+                    Services.Engine.ReconfigureNvencForTest(0, true);
+                    await Task.Delay(selfTestSeconds * 333);
+                    Services.Engine.ReconfigureNvencForTest(0, false);
+                    await Task.Delay(selfTestSeconds * 334);
                 }
                 else if (e.Args.Contains("--selftest-discard"))
                 {
