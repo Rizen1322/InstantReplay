@@ -13,10 +13,11 @@ public sealed class NvencLoadAdapterTests
     private sealed class Run(NvencLoadAdapter adapter)
     {
         private long _now, _encoded, _submitted, _dropped;
-        public int? Window(int encoded, double p95, int dropped = 0, int submitted = PerWindow)
+        public int? Window(int encoded, double p99, int dropped = 0, int submitted = PerWindow,
+                           double pendingAgeMs = 20, int queueGrowth = 0)
         {
             _now += NvencLoadAdapter.WindowMs; _encoded += encoded; _submitted += submitted; _dropped += dropped;
-            return adapter.Tick(_now, _encoded, _submitted, _dropped, p95, out _);
+            return adapter.Tick(_now, _encoded, _submitted, _dropped, p99, pendingAgeMs, queueGrowth, out _);
         }
         public void Calm(int windows) { for (int i = 0; i < windows; i++) Window(PerWindow, 2); }
     }
@@ -26,21 +27,32 @@ public sealed class NvencLoadAdapterTests
     {
         var adapter = new NvencLoadAdapter(Fps, baseMultipass: 1, baseAq: true);
         var run = new Run(adapter);
-        Assert.Equal(1, run.Window(encoded: 220, p95: 40));
+        Assert.Equal(1, run.Window(encoded: 220, p99: 40));
         Assert.Equal((0, true), adapter.Current);
-        Assert.Equal(2, run.Window(encoded: 250, p95: 30));
+        Assert.Equal(2, run.Window(encoded: 250, p99: 30));
         Assert.Equal((0, false), adapter.Current);
-        Assert.Null(run.Window(encoded: 200, p95: 50));        // ниже некуда
+        Assert.Null(run.Window(encoded: 200, p99: 50));        // ниже некуда
         Assert.Equal(2, adapter.Level);
     }
 
     [Fact]
-    public void Slow_submit_alone_is_overload()
+    public void Stalled_submit_old_frames_or_growing_queue_are_overload()
     {
+        // Все кадры закодированы, но вызов отправки подвисает
+        Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(encoded: PerWindow, p99: 30));
+        // Самый старый кадр ждёт в очереди дольше 100 мс
+        Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(PerWindow, 2, pendingAgeMs: 150));
+        // Очередь растёт
+        Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(PerWindow, 2, queueGrowth: 6));
+    }
+
+    [Fact]
+    public void Slow_completion_with_b_frames_is_not_overload()
+    {
+        // Отправка быстрая, всё кодируется, очередь пуста: 17 мс p99 это ещё не повод
         var adapter = new NvencLoadAdapter(Fps, 1, true);
-        var run = new Run(adapter);
-        // Все кадры закодированы, но отправка дольше целого кадра: очередь на подходе
-        Assert.Equal(1, run.Window(encoded: PerWindow, p95: 25));
+        Assert.Null(new Run(adapter).Window(PerWindow, 17));
+        Assert.Equal(0, adapter.Level);
     }
 
     [Fact]
@@ -48,7 +60,7 @@ public sealed class NvencLoadAdapterTests
     {
         var adapter = new NvencLoadAdapter(Fps, 1, true);
         var run = new Run(adapter);
-        Assert.Null(run.Window(encoded: 150, p95: 40, submitted: 150));
+        Assert.Null(run.Window(encoded: 150, p99: 40, submitted: 150));
         Assert.Equal(0, adapter.Level);
     }
 
@@ -103,5 +115,39 @@ public sealed class NvencLoadAdapterTests
         Assert.Equal(99, summary.P99);
         Assert.Equal(100, summary.Max);
         Assert.Equal(0, stats.Take().Count);                  // окно начинается заново
+    }
+
+    [Fact]
+    public void Freeze_gaps_between_real_frames_are_counted_with_cause()
+    {
+        var f = new FreezeStats();
+        const long ms = 10_000;
+        double frame = 1000.0 / 60;
+        f.Add(0, false, 0, frame);
+        f.Add(17 * ms, false, 0, frame);
+        f.Add(33 * ms, true, 0, frame);            // дубль не считается настоящим
+        f.Add(117 * ms, false, 0, frame);          // 100 мс без новых кадров: захват
+        f.Add(417 * ms, false, 3, frame);          // 300 мс и потеряно 3 кадра: конвейер
+        var minute = f.TakeAndReset();
+        Assert.Equal(2, minute.Over50);
+        Assert.Equal(1, minute.Over100);           // 100 мс ровно не больше 100
+        Assert.Equal(1, minute.Over250);
+        Assert.Equal(1, minute.PipelineFreezes);
+        Assert.Equal(300, minute.LongestMs);
+        Assert.Equal("конвейер", minute.LongestCause);
+        Assert.Equal(4, minute.RealFrames);
+        Assert.Equal(1, minute.Duplicates);
+        Assert.Equal(0, f.TakeAndReset().Frames);
+    }
+
+    [Fact]
+    public void Session_histogram_percentiles()
+    {
+        var h = new LatencyHistogram();
+        for (int i = 1; i <= 1000; i++) h.Add(i / 10.0);   // 0.1..100 мс
+        var s = h.Summary();
+        Assert.InRange(s.P50, 49.5, 50.5);
+        Assert.InRange(s.P99, 98.5, 99.5);
+        Assert.Equal(100, s.Max);
     }
 }

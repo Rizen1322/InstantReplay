@@ -119,7 +119,8 @@ public sealed class VideoEncoder : IDisposable
     private readonly record struct EncoderInputFrame(
         ID3D11Texture2D Texture,
         long Ticks,
-        bool IsDuplicate);
+        bool IsDuplicate,
+        long EnqueuedQpc = 0);
 
     private readonly Queue<EncoderInputFrame> _inputQueue = new();
     private readonly object _queueLock = new();
@@ -373,14 +374,49 @@ public sealed class VideoEncoder : IDisposable
     internal LatencyStats.Summary TakeSubmitLatency() => _submitMinute.Take();
     internal LatencyStats.Summary TakeEncodeLatency() => _encodeMinute.Take();
 
+    /// <summary>Стоп-кадры за минуту статистики и за весь сеанс энкодера (см. FreezeStats).</summary>
+    private readonly FreezeStats _freezeMinute = new(), _freezeSession = new();
+    internal FreezeStats TakeFreezeMinute()
+    {
+        var minute = _freezeMinute.TakeAndReset();
+        minute.MergeInto(_freezeSession);
+        return minute;
+    }
+
+    /// <summary>Задержки за весь сеанс: для итоговой строки REPLAY_HEALTH.</summary>
+    private readonly LatencyHistogram _submitSession = new(), _encodeSession = new();
+
+    // Очередь энкодера: глубина и возраст самого старого ждущего кадра. Пейсер
+    // смотрит раз в 4 мс; окно — для контроллера нагрузки, минута — для лога.
+    private int _queueDepthWindowStart, _maxQueueDepthMinute, _maxQueueDepthSession;
+    private double _maxPendingAgeWindow, _maxPendingAgeMinute, _maxPendingAgeSession;
+    internal (int MaxDepth, double MaxAgeMs) TakeQueueMinute()
+    {
+        var r = (_maxQueueDepthMinute, _maxPendingAgeMinute);
+        _maxQueueDepthMinute = 0; _maxPendingAgeMinute = 0;
+        return r;
+    }
+
+    private int _adapterMaxLevel, _adapterDowngrades;
+    private readonly System.Diagnostics.Stopwatch _sessionClock = System.Diagnostics.Stopwatch.StartNew();
+
     /// <summary>
-    /// Самая длинная серия дубликатов подряд: столько кадров картинка в записи
-    /// стояла на месте. Нулевые ошибки ничего не говорят о плавности, а это прямой
-    /// признак фриза в файле.
+    /// Итог работы энкодера одной строкой: главный показатель — сколько картинка
+    /// стояла, а не число ошибок. Цель: самый долгий стоп-кадр в один кадр, ни
+    /// одного длиннее 100 мс.
     /// </summary>
-    private int _duplicateRun;
-    private int _longestDuplicateRun;
-    public int TakeLongestFreezeFrames() => Interlocked.Exchange(ref _longestDuplicateRun, 0);
+    internal string HealthReport()
+    {
+        TakeFreezeMinute();   // дособрать хвост минуты
+        var f = _freezeSession;
+        var submit = _submitSession.Summary();
+        var encode = _encodeSession.Summary();
+        return $"REPLAY_HEALTH длительность {_sessionClock.Elapsed:hh\\:mm\\:ss}, {Width}x{Height}@{Fps}, " +
+               $"{(NvencDescription is { Length: > 0 } d ? d : "MFT")}; {f}; " +
+               $"отправка в NVENC p50/p95/p99 {submit.P50:F1}/{submit.P95:F1}/{submit.P99:F1} мс (макс {submit.Max:F0}), " +
+               $"до выхода p95 {encode.P95:F0} мс; очередь до {_maxQueueDepthSession} кадров, " +
+               $"самый старый ждал {_maxPendingAgeSession:F0} мс; ступень нагрузки до {_adapterMaxLevel}, снижений {_adapterDowngrades}";
+    }
 
     private NvencLoadAdapter? _nvencAdapter;
     private (int Multipass, bool Aq)? _pendingReconfigure;
@@ -612,6 +648,7 @@ public sealed class VideoEncoder : IDisposable
         {
             if (_inputQueue.Count == 0) return false;
             item = _inputQueue.Dequeue();
+            NoteDequeued(item);
         }
         Interlocked.Increment(ref InputRequests);
         return true;
@@ -655,16 +692,6 @@ public sealed class VideoEncoder : IDisposable
                 : $"NVENC не перенастроился ({NvencSession.StatusName(-status)}), оставляю как было");
         }
 
-        // Серия дубликатов подряд = картинка в записи стоит
-        if (item.IsDuplicate)
-        {
-            int run = ++_duplicateRun;
-            int longest;
-            while (run > (longest = Volatile.Read(ref _longestDuplicateRun)))
-                if (Interlocked.CompareExchange(ref _longestDuplicateRun, run, longest) == longest) break;
-        }
-        else _duplicateRun = 0;
-
         int result;
         for (int busyRetries = 0; ; busyRetries++)
         {
@@ -683,6 +710,7 @@ public sealed class VideoEncoder : IDisposable
             double submitMs = System.Diagnostics.Stopwatch.GetElapsedTime(submitStart).TotalMilliseconds;
             _submitWindow.Add(submitMs);
             _submitMinute.Add(submitMs);
+            _submitSession.Add(submitMs);
             if (result >= 0) break;
 
             // Кадр не ушёл: прослойка уже сняла отображение входа, выходной буфер не
@@ -782,7 +810,11 @@ public sealed class VideoEncoder : IDisposable
             if (_nvencSubmitQpc.Count > 0) submittedAt = _nvencSubmitQpc.Dequeue();
         }
         if (submittedAt != 0)
-            _encodeMinute.Add(System.Diagnostics.Stopwatch.GetElapsedTime(submittedAt).TotalMilliseconds);
+        {
+            double encodeMs = System.Diagnostics.Stopwatch.GetElapsedTime(submittedAt).TotalMilliseconds;
+            _encodeMinute.Add(encodeMs);
+            _encodeSession.Add(encodeMs);
+        }
         Interlocked.Decrement(ref _inFlight);
         if (pictureType == NvencSession.SkippedPicture)
         {
@@ -1477,7 +1509,7 @@ public sealed class VideoEncoder : IDisposable
                 Interlocked.Increment(ref FramesDroppedQueue);
             }
 
-            _inputQueue.Enqueue(new EncoderInputFrame(tex, pts, isDuplicate));
+            _inputQueue.Enqueue(new EncoderInputFrame(tex, pts, isDuplicate, System.Diagnostics.Stopwatch.GetTimestamp()));
             Diagnostics.PipelineProbe.ReportQueueDepth(_inputQueue.Count);
         }
         _inputAvailable.Release();
@@ -1581,6 +1613,7 @@ public sealed class VideoEncoder : IDisposable
                            Interlocked.Read(ref FramesSubmitted),
                            Interlocked.Read(ref PacerBlocked),
                            Interlocked.Read(ref FramesDroppedRealQueue));
+            SampleQueue();
             TickNvencAdapter();
             lock (_cfrLock)
             {
@@ -1636,15 +1669,47 @@ public sealed class VideoEncoder : IDisposable
         if (now < _nextAdapterCheck) return;
         _nextAdapterCheck = now + NvencLoadAdapter.WindowMs;
         var window = _submitWindow.Take();
+        int depthNow = QueueDepth;
+        int growth = depthNow - _queueDepthWindowStart;
+        _queueDepthWindowStart = depthNow;
+        double maxAge = _maxPendingAgeWindow;
+        _maxPendingAgeWindow = 0;
+        int before = adapter.Level;
         int? level = adapter.Tick(now, Interlocked.Read(ref FramesEncoded),
                                   Interlocked.Read(ref FramesSubmitted) + Interlocked.Read(ref FramesDuplicated),
-                                  Interlocked.Read(ref FramesDroppedRealQueue), window.P95, out string reason);
+                                  Interlocked.Read(ref FramesDroppedRealQueue), window.P99, maxAge, growth,
+                                  out string reason);
         if (level is null) return;
+        if (level > before) _adapterDowngrades++;
+        if (level > _adapterMaxLevel) _adapterMaxLevel = level.Value;
         _pendingReconfigure = adapter.Current;
         Log.Warn("Encoder", $"Нагрузка NVENC: ступень {level}/{adapter.MaxLevel} «{adapter.LevelName}» ({reason})");
     }
 
     private long _nextAdapterCheck = NvencLoadAdapter.WindowMs;
+
+    private void NoteDequeued(EncoderInputFrame item) =>
+        _freezeMinute.Add(item.Ticks, item.IsDuplicate,
+                          Interlocked.Read(ref FramesDroppedRealQueue) + Interlocked.Read(ref FramesDroppedLate),
+                          1000.0 / Math.Max(1, Fps));
+
+    /// <summary>Глубина очереди и возраст самого старого кадра в ней; зовётся пейсером раз в 4 мс.</summary>
+    private void SampleQueue()
+    {
+        int depth;
+        long oldest = 0;
+        lock (_queueLock)
+        {
+            depth = _inputQueue.Count;
+            if (depth > 0) oldest = _inputQueue.Peek().EnqueuedQpc;
+        }
+        double age = oldest == 0 ? 0 : System.Diagnostics.Stopwatch.GetElapsedTime(oldest).TotalMilliseconds;
+        if (depth > _maxQueueDepthMinute) _maxQueueDepthMinute = depth;
+        if (depth > _maxQueueDepthSession) _maxQueueDepthSession = depth;
+        if (age > _maxPendingAgeWindow) _maxPendingAgeWindow = age;
+        if (age > _maxPendingAgeMinute) _maxPendingAgeMinute = age;
+        if (age > _maxPendingAgeSession) _maxPendingAgeSession = age;
+    }
 
     /// <summary>Проверка в --dev: перенастроить NVENC на ходу, как это сделал бы контроллер нагрузки.</summary>
     internal void RequestReconfigureForTest(int multipass, bool aq) => _pendingReconfigure = (multipass, aq);
@@ -1720,6 +1785,7 @@ public sealed class VideoEncoder : IDisposable
                         continue;
                     }
                     item = _inputQueue.Dequeue();
+                    NoteDequeued(item);
                 }
 
                 int inFlight = Interlocked.Increment(ref _inFlight);

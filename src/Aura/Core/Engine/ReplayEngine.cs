@@ -1108,6 +1108,9 @@ public sealed partial class ReplayEngine : IDisposable
             intent, continuousRecordingActive: _recorder is not null, formatCompatible: true);
         Interlocked.Increment(ref _captureGeneration); // все колбэки старого источника больше не действуют
         DumpStats("на выключении");
+        // Итог работы энкодера: главное — сколько картинка стояла
+        if (_encoder is { } finishing)
+            try { Log.Info("Engine", finishing.HealthReport()); } catch { }
         // Дожидаемся уже начатых колбэков: обычный Dispose возвращается сразу, и
         // вотчдог продолжал работать параллельно сносу — вплоть до попытки поднять
         // захват на уже освобождённом источнике.

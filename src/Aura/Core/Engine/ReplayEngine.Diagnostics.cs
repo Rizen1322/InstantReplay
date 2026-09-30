@@ -41,6 +41,8 @@ public sealed partial class ReplayEngine
             _lastSuppressedDuplicates = _lastDuplicated = _lastReceived = _lastAccepted = 0;
         _lastRequests = _lastPacerBlocked = _lastSkippedBeforeConvert = _lastSkippedSameSlot = 0;
         _statsWindowStart = DateTime.UtcNow;
+        // Счётчики загрузки GPU заводим сразу: первое значение появится к первой минуте
+        _gpuLoad ??= new Aura.Core.Hardware.GpuEngineLoad();
         _statsTimer?.Dispose();
         _statsTimer = new System.Threading.Timer(_ => DumpStats("за минуту"),
             null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
@@ -54,6 +56,8 @@ public sealed partial class ReplayEngine
     /// сохранил, выключил) до минутного тика не доживали, и разбирать провал fps
     /// было не по чему.
     /// </summary>
+    private Aura.Core.Hardware.GpuEngineLoad? _gpuLoad;
+
     private void DumpStats(string label)
     {
         var enc = _encoder;
@@ -124,10 +128,16 @@ public sealed partial class ReplayEngine
         // плавности; эти цифры говорят.
         var submitLatency = enc.TakeSubmitLatency();
         var encodeLatency = enc.TakeEncodeLatency();
-        int freeze = enc.TakeLongestFreezeFrames();
+        var freezes = enc.TakeFreezeMinute();
+        var queue = enc.TakeQueueMinute();
+        // Счётчик меряет между двумя замерами: при первом создании значения ещё нет
+        var gpuLoad = _gpuLoad?.Sample();
+        _gpuLoad ??= new Aura.Core.Hardware.GpuEngineLoad();
+        Log.Info("Engine", $"Плавность: {freezes}; очередь энкодера до {queue.MaxDepth} кадров, самый старый ждал {queue.MaxAgeMs:F0} мс" +
+                           (gpuLoad is { } g ? $"; загрузка GPU: 3D {g.Graphics:F0}%, Video Encode {g.Encode:F0}%" : ""));
         if (submitLatency.Count > 0)
-            Log.Info("Engine", $"NVENC: отправка кадра {submitLatency}; до выхода {encodeLatency}; " +
-                               $"самый долгий стоп-кадр {freeze} кадр. ({freeze * 1000.0 / Math.Max(1, enc.Fps):F0} мс)" +
+            Log.Info("Engine", $"NVENC: отправка кадра {submitLatency}; до выхода {encodeLatency} " +
+                               "(с B-кадрами 30–50 мс это буферизация, не перегруз)" +
                                (enc.NvencLoadLevel is { Length: > 0 } level ? $"; ступень «{level}»" : ""));
 
         string probe = Diagnostics.PipelineProbe.TakeReport();

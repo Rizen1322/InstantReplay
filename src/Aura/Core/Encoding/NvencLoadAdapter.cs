@@ -37,6 +37,131 @@ internal sealed class LatencyStats
 }
 
 /// <summary>
+/// Гистограмма задержек за весь сеанс: перцентили без хранения каждого замера.
+/// Шаг 0.1 мс до 100 мс, дальше 1 мс до 2 с; всё длиннее в последнюю корзину.
+/// </summary>
+internal sealed class LatencyHistogram
+{
+    private readonly long[] _buckets = new long[1000 + 1900 + 1];
+    private long _count;
+    private double _max;
+    private readonly object _sync = new();
+
+    private static int Bucket(double ms) =>
+        ms < 100 ? (int)Math.Max(0, ms * 10) : ms < 2000 ? 1000 + (int)(ms - 100) : 2900;
+
+    private static double Value(int bucket) =>
+        bucket < 1000 ? (bucket + 0.5) / 10 : bucket < 2900 ? 100 + (bucket - 1000) + 0.5 : 2000;
+
+    public void Add(double ms)
+    {
+        lock (_sync)
+        {
+            _buckets[Bucket(ms)]++;
+            _count++;
+            if (ms > _max) _max = ms;
+        }
+    }
+
+    public LatencyStats.Summary Summary()
+    {
+        lock (_sync)
+        {
+            if (_count == 0) return default;
+            double At(double q)
+            {
+                long need = (long)Math.Ceiling(q * _count), seen = 0;
+                for (int i = 0; i < _buckets.Length; i++)
+                    if ((seen += _buckets[i]) >= need) return Value(i);
+                return _max;
+            }
+            return new LatencyStats.Summary((int)Math.Min(_count, int.MaxValue), At(0.5), At(0.95), At(0.99), _max);
+        }
+    }
+}
+
+/// <summary>
+/// Стоп-кадры: сколько картинка в записи на самом деле стояла.
+///
+/// Время в файле идёт по ровной сетке 1/fps, и там, где настоящего кадра не было,
+/// стоит повтор прошлого. ffprobe такой файл считает идеальным, а человек видит
+/// замершую игру. Поэтому считаем промежутки между НАСТОЯЩИМИ кадрами, дошедшими
+/// до энкодера, и разбираем причину:
+/// • «захват» — новых кадров не было вовсе (завис захват или на экране ничего не
+///   менялось: статичный рабочий стол и меню тоже сюда);
+/// • «конвейер» — кадры были, но потерялись по дороге (очередь энкодера, опоздание).
+/// </summary>
+internal sealed class FreezeStats
+{
+    private readonly object _sync = new();
+    private long _lastRealTicks = -1;
+    private long _lastLost;
+
+    public long Frames, RealFrames, Duplicates;
+    public int Over50, Over100, Over250;
+    public int PipelineFreezes;          // из них с потерей кадров по дороге
+    public double LongestMs, FrozenMs;
+    public string LongestCause = "";
+
+    /// <summary>Кадр пошёл в энкодер. lostSoFar — счётчик потерянных настоящих кадров.</summary>
+    public void Add(long ticks, bool duplicate, long lostSoFar, double frameMs)
+    {
+        lock (_sync)
+        {
+            Frames++;
+            if (duplicate) { Duplicates++; return; }
+            RealFrames++;
+            if (_lastRealTicks >= 0)
+            {
+                double gap = (ticks - _lastRealTicks) / 10_000.0;
+                if (gap > 50)
+                {
+                    bool pipeline = lostSoFar > _lastLost;
+                    Over50++;
+                    if (gap > 100) Over100++;
+                    if (gap > 250) Over250++;
+                    if (pipeline) PipelineFreezes++;
+                    FrozenMs += gap - frameMs;
+                    if (gap > LongestMs) { LongestMs = gap; LongestCause = pipeline ? "конвейер" : "захват"; }
+                }
+            }
+            _lastRealTicks = ticks;
+            _lastLost = lostSoFar;
+        }
+    }
+
+    public FreezeStats TakeAndReset()
+    {
+        lock (_sync)
+        {
+            var copy = (FreezeStats)MemberwiseClone();
+            Frames = RealFrames = Duplicates = 0;
+            Over50 = Over100 = Over250 = PipelineFreezes = 0;
+            LongestMs = FrozenMs = 0;
+            LongestCause = "";
+            return copy;
+        }
+    }
+
+    public void MergeInto(FreezeStats total)
+    {
+        lock (total._sync)
+        {
+            total.Frames += Frames; total.RealFrames += RealFrames; total.Duplicates += Duplicates;
+            total.Over50 += Over50; total.Over100 += Over100; total.Over250 += Over250;
+            total.PipelineFreezes += PipelineFreezes; total.FrozenMs += FrozenMs;
+            if (LongestMs > total.LongestMs) { total.LongestMs = LongestMs; total.LongestCause = LongestCause; }
+        }
+    }
+
+    public override string ToString() =>
+        $"стоп-кадров >50 мс {Over50} (>100: {Over100}, >250: {Over250}, из них по вине конвейера {PipelineFreezes}), " +
+        $"самый долгий {LongestMs:F0} мс{(LongestCause.Length > 0 ? $" ({LongestCause})" : "")}, " +
+        $"всего стояло {FrozenMs / 1000:F1} с, настоящих кадров {RealFrames} из {Frames} " +
+        $"({(Frames == 0 ? 0 : RealFrames * 100.0 / Frames):F0}%)";
+}
+
+/// <summary>
 /// Снижение нагрузки на NVENC на ходу, когда игра забирает видеокарту.
 ///
 /// ЗАЧЕМ. На 2560×1440@60 рядом с CS2 NVENC с B-кадрами и вторым проходом не
@@ -87,9 +212,15 @@ internal sealed class NvencLoadAdapter
 
     /// <summary>
     /// Раз в окно решает, менять ли ступень. Возвращает новую ступень или null.
-    /// submitP95Ms — 95-й перцентиль времени отправки кадра в NVENC за окно.
+    ///
+    /// Судим по пропускной способности, а не по задержке выхода: с B-кадрами кадр
+    /// законно выходит через 30–50 мс, это буферизация, а не перегруз. Перегруз —
+    /// когда поданное не успевает кодироваться: закодировано меньше поданного,
+    /// кадры теряются, очередь растёт, самый старый ждущий кадр старше 100 мс или
+    /// сам вызов отправки подвисает (p99 дольше 25 мс).
     /// </summary>
-    public int? Tick(long nowMs, long encoded, long submitted, long dropped, double submitP95Ms, out string reason)
+    public int? Tick(long nowMs, long encoded, long submitted, long dropped, double submitP99Ms,
+                     double maxPendingAgeMs, int queueGrowth, out string reason)
     {
         reason = "";
         if (nowMs < _nextCheckMs) return null;
@@ -100,13 +231,12 @@ internal sealed class NvencLoadAdapter
         if (!CanAdapt) return null;
 
         double target = _fps * (WindowMs / 1000.0);
-        double frameMs = 1000.0 / _fps;
         // Кадры до энкодера должны были дойти: если голодает захват, NVENC не виноват
         bool fed = dSubmitted >= target * 0.9;
-        bool behind = dEncoded < target * 0.95 || dDropped > 0;
-        bool slowSubmit = submitP95Ms > frameMs;         // отправка дольше целого кадра
-        bool overloaded = fed && (behind || slowSubmit);
-        bool calm = !behind && submitP95Ms < frameMs * 0.4;
+        bool behind = dEncoded < Math.Min(dSubmitted, target) * 0.95 || dDropped > 0;
+        bool stalled = submitP99Ms > 25 || maxPendingAgeMs > 100 || queueGrowth >= 5;
+        bool overloaded = fed && (behind || stalled);
+        bool calm = !behind && submitP99Ms < 8 && maxPendingAgeMs < 50 && queueGrowth <= 1;
         if (_sinceRecovery < int.MaxValue) _sinceRecovery++;
 
         if (overloaded)
@@ -118,7 +248,8 @@ internal sealed class NvencLoadAdapter
             if (Level >= MaxLevel) return null;
             Level++;
             reason = $"энкодер не успевает: закодировано {dEncoded / (WindowMs / 1000.0):F0} из {_fps} кадр/с, " +
-                     $"отправка p95 {submitP95Ms:F1} мс, потеряно {dDropped}";
+                     $"потеряно {dDropped}, отправка p99 {submitP99Ms:F1} мс, самый старый кадр в очереди " +
+                     $"{maxPendingAgeMs:F0} мс, рост очереди {queueGrowth}";
             return Level;
         }
 
