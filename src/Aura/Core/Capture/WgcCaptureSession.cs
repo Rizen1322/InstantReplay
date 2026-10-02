@@ -31,13 +31,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private volatile bool _prepared;
     private bool _started;
     private long _minFrameIntervalTicks;
-    private long _nextFrameDeadline;
-
-    /// <summary>
-    /// Насколько раньше своего слота кадр ещё принимается. Ноль, пока система сама
-    /// шлёт кадры с избытком (как на Windows 10): там лишние есть всегда.
-    /// </summary>
-    private long _earlyToleranceTicks;
+    private long _lastAcceptedTicks;
     private long _framesReceived;
     private long _framesAccepted;
     private int _callbacksInFlight;
@@ -106,12 +100,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             _prepared = false;
             _started = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
-            _nextFrameDeadline = 0;
-            // Четверть кадра допуска нужна всегда, а не только при MinUpdateInterval:
-            // на 60 Гц мониторе при записи в 60 кадров метки гуляют на доли
-            // миллисекунды, и кадр, пришедший на 0.1 мс раньше дедлайна, выбрасывался.
-            // Следующий приходил только через период, и частота падала вдвое.
-            _earlyToleranceTicks = _minFrameIntervalTicks / 4;
+            _lastAcceptedTicks = 0;
             Interlocked.Exchange(ref _framesReceived, 0);
             Interlocked.Exchange(ref _framesAccepted, 0);
             Interlocked.Exchange(ref _closedReported, 0);
@@ -187,17 +176,12 @@ internal sealed class WgcCaptureSession : IScreenCapture
             // 120 Гц интервал совпадает с двумя периодами впритык, и любой джиттер
             // выбрасывал бы кадр без замены. С половиной интервала система отдаёт с
             // запасом (на 144 Гц — 72 кадра вместо 144, то есть вдвое меньше работы
-            // для DWM), а ровно 60 из них выбирает программный отбор ниже.
+            // для DWM), а ровно 60 из них выбирает энкодер по своей сетке слотов.
             long wanted = 10_000_000L / targetFps / 2;
             TimeSpan? accepted = Interop.CaptureInterop.TrySetMinUpdateInterval(
                 _session, TimeSpan.FromTicks(wanted));
             if (accepted is { } interval)
             {
-                // Когда кадров приходит впритык, их метки времени гуляют вокруг сетки на
-                // доли периода. Четверть кадра допуска не даёт выбросить кадр, пришедший
-                // чуть раньше своего слота: средняя частота выше заданной всё равно не
-                // поднимется — дедлайн каждый раз сдвигается на целый интервал.
-                _earlyToleranceTicks = _minFrameIntervalTicks / 4;
                 Log.Info("Capture", $"{_sourceName}: система ограничена интервалом " +
                                     $"{interval.TotalMilliseconds:F2} мс (MinUpdateInterval), " +
                                     $"точную частоту {targetFps} кадров/с держит программный отбор");
@@ -309,11 +293,10 @@ internal sealed class WgcCaptureSession : IScreenCapture
             RecordArrivalLag(ticks);
             if (_minFrameIntervalTicks > 0)
             {
-                if (_nextFrameDeadline == 0) _nextFrameDeadline = ticks;
-                if (ticks < _nextFrameDeadline - _earlyToleranceTicks) continue;
-                _nextFrameDeadline += _minFrameIntervalTicks;
-                if (ticks - _nextFrameDeadline > _minFrameIntervalTicks * 4)
-                    _nextFrameDeadline = ticks + _minFrameIntervalTicks;
+                // Слот сетки выбирает энкодер, здесь только предел в два кадра на слот:
+                // см. EncoderCfrPolicy.CaptureTooSoon
+                if (Encoding.EncoderCfrPolicy.CaptureTooSoon(ticks, _lastAcceptedTicks, _targetFps)) continue;
+                _lastAcceptedTicks = ticks;
             }
 
             Interlocked.Increment(ref _framesAccepted);

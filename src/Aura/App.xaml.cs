@@ -78,6 +78,12 @@ public partial class App : Application
             return;
         }
 
+        // --dev --capture wgc|dda: источник захвата для проверки. Переменная окружения
+        // INSTANTREPLAY_CAPTURE до копии с правами администратора не доходит.
+        int captureArg = Array.IndexOf(e.Args, "--capture");
+        if (dev && captureArg >= 0 && captureArg + 1 < e.Args.Length)
+            Environment.SetEnvironmentVariable("INSTANTREPLAY_CAPTURE", e.Args[captureArg + 1]);
+
         // Копия --dev пишет в свой файл: она работает рядом с обычной, а лог открыт
         // на общий доступ — в один файл две копии писали бы вперемешку.
         Log.Init(fileSuffix: dev ? "-dev" : "");

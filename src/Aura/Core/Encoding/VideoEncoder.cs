@@ -147,6 +147,7 @@ public sealed class VideoEncoder : IDisposable
     // Пауза меряется как (wallNow - _lastRealArrivalWall) — разность НАШИХ часов,
     // а цель заполнения строится от pts кадра: смещение эпох WGC/Stopwatch сокращается.
     private long _lastRealPts;
+    private long _lastRealTicks;          // исходное время захвата того же кадра
     private long _lastRealArrivalWall;
 
     // Статистика для диагностики (скидывается в лог движком)
@@ -1336,6 +1337,9 @@ public sealed class VideoEncoder : IDisposable
     // закрывает пейсер в реальном времени.
     private const int MaxBackfillSlots = 8;
 
+    /// <summary>Следующий слот сетки: по номеру слота, см. EncoderCfrPolicy.SlotPts.</summary>
+    private long NextSlot(long pts) => EncoderCfrPolicy.NextSlot(pts, _cfrBase, Fps);
+
     /// <summary>
     /// Кадр попадает в тот же слот сетки 1/fps, что и прошлый настоящий кадр.
     ///
@@ -1344,18 +1348,17 @@ public sealed class VideoEncoder : IDisposable
     /// NV12 и копировался в пул, а потом всё равно сдвигался в следующий слот или
     /// выбрасывался. Это до двух лишних проходов видеокарты на кадр как раз тогда,
     /// когда игра грузит её сильнее всего. Слот уже представлен кадром, поэтому
-    /// второй можно пропустить ещё до преобразования.
+    /// второй можно пропустить ещё до преобразования. Кроме кадра, пришедшего у
+    /// самой границы слота: см. EncoderCfrPolicy.RedundantInSlot.
     /// </summary>
-    /// <summary>Следующий слот сетки: по номеру слота, см. EncoderCfrPolicy.SlotPts.</summary>
-    private long NextSlot(long pts) => EncoderCfrPolicy.NextSlot(pts, _cfrBase, Fps);
-
     public bool SameSlotAsLastFrame(long ticks)
     {
         lock (_cfrLock)
         {
             if (_cfrBase < 0 || Fps <= 0) return false;
             long natural = EncoderCfrPolicy.NaturalSlot(ticks, _cfrBase, Fps);
-            if (natural != _lastRealPts) return false;
+            if (!EncoderCfrPolicy.RedundantInSlot(ticks, natural, _lastCfrPts, _lastRealTicks, Fps))
+                return false;
             // Экран жив: пейсер не должен считать это паузой
             _lastRealArrivalWall = NowQpcTicks();
             return true;
@@ -1389,6 +1392,7 @@ public sealed class VideoEncoder : IDisposable
                     // следующих повторов, а время для пейсера — настоящее.
                     _copyPool!.KeepLatest(nv12PoolTexture, _context!);
                     _lastRealPts = natural;
+                    _lastRealTicks = ticks;
                     _lastRealArrivalWall = NowQpcTicks();
                     Interlocked.Increment(ref FramesDroppedLate);
                     return;
@@ -1454,6 +1458,7 @@ public sealed class VideoEncoder : IDisposable
             // шёл сдвинутый вперёд слот, повторы строились от него, и сдвиг видео
             // относительно звука не рассасывался никогда.
             _lastRealPts = natural;
+            _lastRealTicks = ticks;
             _lastRealArrivalWall = NowQpcTicks();
             Interlocked.Increment(ref FramesSubmitted);
             if (!Enqueue(copy, pts, isDuplicate: false, encoderBehind: false)) _copyPool!.Release(copy);

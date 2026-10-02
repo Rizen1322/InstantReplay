@@ -151,4 +151,68 @@ public sealed class EncoderCfrPolicyTests
         Assert.Equal(-1, EncoderCfrPolicy.SlotIndex(-S(1), 0, Fps));
         Assert.Equal(0, EncoderCfrPolicy.SlotIndex(-S(1) / 3, 0, Fps));
     }
+
+    [Fact]
+    public void Capture_limits_to_two_frames_per_slot()
+    {
+        const long interval = 10_000_000 / 60;
+        Assert.False(EncoderCfrPolicy.CaptureTooSoon(5_000_000, 0, 60));
+        Assert.True(EncoderCfrPolicy.CaptureTooSoon(5_000_000 + interval / 4, 5_000_000, 60));
+        Assert.False(EncoderCfrPolicy.CaptureTooSoon(5_000_000 + interval / 2, 5_000_000, 60));
+    }
+
+    [Fact]
+    public void Frame_near_slot_border_is_not_redundant()
+    {
+        const long interval = 10_000_000 / 60;
+        Assert.True(EncoderCfrPolicy.RedundantInSlot(1_000 + interval / 3, 0, 0, 1_000, 60));
+        Assert.False(EncoderCfrPolicy.RedundantInSlot(interval * 2 / 5, 0, 0, interval * 2 / 5 - interval * 4 / 5, 60));
+        Assert.True(EncoderCfrPolicy.RedundantInSlot(interval / 10, 0, 0, interval / 10 - interval * 4 / 5, 60));
+        Assert.False(EncoderCfrPolicy.RedundantInSlot(1_000, interval, 0, 1_000, 60));
+    }
+
+    /// <summary>
+    /// Игра чаще частоты записи, сетка энкодера сдвинута на полслота от первого кадра
+    /// захвата (так было у друга в L4D2: 65% настоящих кадров). Каждый слот должен
+    /// получить настоящий кадр, и видео не уезжает вперёд больше чем на слот.
+    /// </summary>
+    [Theory]
+    [InlineData(75.0)]
+    [InlineData(90.0)]
+    [InlineData(144.0)]
+    [InlineData(240.0)]
+    [InlineData(59.94)]
+    [InlineData(114.0)]
+    [InlineData(60.0)]
+    public void Every_slot_gets_a_real_frame_when_game_is_faster(double gameFps)
+    {
+        const int fps = 60;
+        const long interval = 10_000_000 / fps;
+        var random = new Random(7);
+        long start = 1_000_000_000;
+        long baseTicks = start + interval / 2;
+        long lastAccepted = 0, lastPts = long.MinValue, lastRealTicks = 0;
+        long leadSum = 0;
+        var filled = new HashSet<long>();
+        for (int i = 0; i < (int)(gameFps * 30); i++)
+        {
+            long ticks = start + (long)(i * 10_000_000 / gameFps) + random.Next(-3_000, 3_000);
+            if (EncoderCfrPolicy.CaptureTooSoon(ticks, lastAccepted, fps)) continue;
+            lastAccepted = ticks;
+            long natural = EncoderCfrPolicy.NaturalSlot(ticks, baseTicks, fps);
+            if (EncoderCfrPolicy.RedundantInSlot(ticks, natural, lastPts, lastRealTicks, fps)) continue;
+            long? placed = lastPts == long.MinValue
+                ? natural
+                : EncoderCfrPolicy.QuantizePts(ticks, baseTicks, lastPts, fps);
+            lastRealTicks = ticks;
+            if (placed is not long pts) continue;
+            Assert.True(pts - natural <= interval + 1, "видео ушло вперёд больше чем на слот");
+            leadSum += pts - ticks;
+            filled.Add(EncoderCfrPolicy.SlotIndex(pts, baseTicks, fps));
+            lastPts = pts;
+        }
+        long span = filled.Max() - filled.Min() + 1;
+        Assert.True(filled.Count >= span - 2, $"настоящих кадров {filled.Count} из {span}");
+        Assert.True(leadSum / filled.Count < interval / 2, "видео постоянно позже звука на слот");
+    }
 }

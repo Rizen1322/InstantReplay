@@ -55,7 +55,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     private readonly object _sync = new();
 
     private long _minFrameIntervalTicks;
-    private long _nextFrameDeadline;
+    private long _lastAcceptedTicks;
     private bool _firstFrameSinceStart;
     private readonly DdaLifecycleMonitor _lifecycle = new(
         TimeSpan.FromSeconds(2),
@@ -81,7 +81,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             _captureCursor = captureCursor;
             _prepared = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
-            _nextFrameDeadline = 0;
+            _lastAcceptedTicks = 0;
             _firstFrameSinceStart = true;
             _lifecycle.Reset();
             _resetCursorOnNextFrame = 1;
@@ -311,9 +311,12 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // (в тестах: 1000 дропнутых кадров в минуту против нуля).
                 // Desktop Duplication накапливает обновления и отдаёт самый свежий кадр,
                 // так что ожидание ничего не теряет.
-                if (_minFrameIntervalTicks > 0 && _nextFrameDeadline > 0)
+                if (_minFrameIntervalTicks > 0 && _lastAcceptedTicks > 0)
                 {
-                    long waitTicks = _nextFrameDeadline - QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
+                    // Полинтервала от прошлого кадра: ближе к нему кадр всё равно
+                    // лишний (см. EncoderCfrPolicy.CaptureTooSoon)
+                    long waitTicks = _lastAcceptedTicks + _minFrameIntervalTicks / 2 - 10_000 -
+                                     QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
                     if (waitTicks > 5_000) timer.Wait(waitTicks);
                 }
 
@@ -382,19 +385,9 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     ? QpcToTicks(frameInfo.LastPresentTime)
                     : QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
 
-                // Отбор по абсолютным дедлайнам — как в WGC-пути (без биений)
-                if (_minFrameIntervalTicks > 0)
-                {
-                    if (_nextFrameDeadline == 0) _nextFrameDeadline = ticks;
-                    // Четверть кадра допуска, как в WGC: иначе кадр, пришедший на
-                    // долю миллисекунды раньше, выбрасывается, и при частоте монитора,
-                    // равной частоте записи, fps падает вдвое. Средняя частота выше
-                    // заданной не поднимется: дедлайн сдвигается на целый интервал.
-                    if (ticks < _nextFrameDeadline - _minFrameIntervalTicks / 4) continue;
-                    _nextFrameDeadline += _minFrameIntervalTicks;
-                    if (ticks - _nextFrameDeadline > _minFrameIntervalTicks * 4)
-                        _nextFrameDeadline = ticks + _minFrameIntervalTicks;
-                }
+                // Слот сетки выбирает энкодер, здесь только предел в два кадра на слот
+                if (Encoding.EncoderCfrPolicy.CaptureTooSoon(ticks, _lastAcceptedTicks, _targetFps)) continue;
+                _lastAcceptedTicks = ticks;
 
                 Interlocked.Increment(ref _framesAccepted);
 
