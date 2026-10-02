@@ -142,6 +142,15 @@ public partial class ClipEditorWindow : Window
                 w._player?.TakeSnapshot(0, Path.Combine(outDir, $"seek_{i}_{points[i]:00}.png"), 480, 270);
                 Log.Info("SelfTest", $"перемотка на {points[i]} с: плеер на {w.CurrentSeconds:F2} с, играет {w._player?.IsPlaying}");
             }
+            // Воспроизведение: сторож предпросмотра не должен сработать зря
+            w.Seek(2);
+            w.TogglePlayback();
+            for (int i = 0; i < 4; i++)
+            {
+                await Task.Delay(1000);
+                var st = w._media?.Statistics;
+                Log.Info("SelfTest", $"играет {w._player?.IsPlaying} на {w.CurrentSeconds:F2} с, показано кадров {st?.DisplayedPictures}");
+            }
             w.Close();
         };
         w.ShowDialog();
@@ -185,7 +194,7 @@ public partial class ClipEditorWindow : Window
                 // работу над кадрами, и после частых перемоток картинка идёт кашей
                 var engine = new LibVLC("--no-video-title-show", "--quiet",
                     "--audio-resampler=speex_resampler", "--no-avcodec-hurry-up");
-                var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = true };
+                var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = !_preferSoftwareDecoding };
                 var media = new VlcMedia(engine, new Uri(_item.FullPath));
                 return (engine, player, media);
             });
@@ -247,20 +256,29 @@ public partial class ClipEditorWindow : Window
         if (_pauseOnFirstFrame)
         {
             _pauseOnFirstFrame = false;
+            // Щелчок по шкале, пока файл открывался: перемотаем, когда пауза
+            // действительно наступит (Player_Paused). SetPause асинхронная, и
+            // перемотка сразу за ней иногда терялась: плеер оставался на нуле.
+            _seekAfterFirstPause = _pendingSeek;
+            _pendingSeek = null;
             _player?.SetPause(true);
-            // Щелчок по шкале, пока файл открывался: перематываем теперь
-            if (_pendingSeek is { } early)
-            {
-                _pendingSeek = null;
-                Seek(early);
-            }
             return;
         }
         SetPlayIcon(playing: true);
     });
 
+    private double? _seekAfterFirstPause;
+
     private void Player_Paused(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(() => SetPlayIcon(playing: false));
+        Dispatcher.BeginInvoke(() =>
+        {
+            SetPlayIcon(playing: false);
+            if (_seekAfterFirstPause is { } early)
+            {
+                _seekAfterFirstPause = null;
+                Seek(early);
+            }
+        });
 
     /// <summary>
     /// LibVLC после конца файла переходит в «Ended», и в этом состоянии перемотка
@@ -421,6 +439,7 @@ public partial class ClipEditorWindow : Window
     private void Timer_Tick(object? sender, EventArgs e)
     {
         if (_player is null || _durationSeconds <= 0) return;
+        WatchPreview();
         double position = CurrentSeconds;
         if (_player.IsPlaying && position >= _endSeconds)
         {
@@ -434,6 +453,66 @@ public partial class ClipEditorWindow : Window
         position = LogicalSeconds;
         UpdatePlayhead(position);
         UpdatePreviewTime(position);
+    }
+
+    // ---------------- Сторож предпросмотра ----------------
+
+    /// <summary>
+    /// После первого зависания до конца запуска Aura декодируем программно: раз
+    /// аппаратный декодер на этой видеокарте однажды встал, встанет и снова.
+    /// </summary>
+    private static bool _preferSoftwareDecoding;
+
+    private long _watchNext, _watchSince, _watchShown = -1;
+    private int _recoveries;
+
+    /// <summary>
+    /// Картинка застыла, хотя плеер играет: время идёт, звук есть, а новых кадров
+    /// на экране нет. Так у LibVLC бывает с аппаратным декодированием HEVC на части
+    /// видеокарт и после частых перемоток (vlcj #658). Узнаём по счётчику реально
+    /// показанных кадров: если он две секунды не растёт, переоткрываем файл с того
+    /// же места и уже без аппаратного декодирования.
+    /// </summary>
+    private void WatchPreview()
+    {
+        long now = Environment.TickCount64;
+        if (_player is not { IsPlaying: true } player || _media is null || _ended || _scrubbing || _seekWhenPlaying is not null)
+        {
+            _watchShown = -1;
+            return;
+        }
+        if (now < _watchNext) return;
+        _watchNext = now + 500;
+
+        LibVLCSharp.Shared.MediaStats stats;
+        try { stats = _media.Statistics; }
+        catch { return; }
+        long shown = stats.DisplayedPictures;
+        if (_watchShown < 0 || shown != _watchShown)
+        {
+            _watchShown = shown;
+            _watchSince = now;
+            return;
+        }
+        if (now - _watchSince < 2000) return;
+
+        _watchShown = -1;
+        if (++_recoveries > 3) return;   // не помогает — не крутим по кругу
+        double at = CurrentSeconds;
+        Log.Warn("Editor", $"Предпросмотр застыл на {at:F1} с: плеер играет, а новых кадров 2 с нет " +
+                           $"(декодировано {stats.DecodedVideo}, показано {shown}, потеряно {stats.LostPictures}, " +
+                           $"аппаратное декодирование {(player.EnableHardwareDecoding ? "вкл" : "выкл")}). Переоткрываю");
+        _preferSoftwareDecoding = true;
+        player.EnableHardwareDecoding = false;
+        _seekWhenPlaying = at;
+        _pauseOnFirstFrame = false;
+        var media = _media;
+        // Остановка ждёт потоки LibVLC: не на потоке окна (см. DisposePlayer)
+        _ = Task.Run(() =>
+        {
+            try { player.Stop(); player.Play(media); }
+            catch (Exception ex) { Log.Warn("Editor", $"Не переоткрылся: {ex.Message}"); }
+        });
     }
 
     private void PreviousFrame_Click(object sender, RoutedEventArgs e) => Step(-FrameStep);
