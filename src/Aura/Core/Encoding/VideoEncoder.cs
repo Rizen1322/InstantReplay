@@ -1488,7 +1488,8 @@ public sealed class VideoEncoder : IDisposable
                 _inputQueue.Count,
                 _maxInputQueue,
                 encoderBehind,
-                firstDuplicate);
+                firstDuplicate,
+                OldestQueuedAgeMillisecondsLocked());
             if (admission == EncoderQueueAdmission.RejectDuplicate)
             {
                 Interlocked.Increment(ref FramesSuppressedDuplicates);
@@ -1525,9 +1526,14 @@ public sealed class VideoEncoder : IDisposable
                 queueDepth: _inputQueue.Count,
                 maximumDepth: _maxInputQueue,
                 encoderBehind: encoderBehind,
-                firstDuplicateIndex: -1) == EncoderQueueAdmission.Append;
+                firstDuplicateIndex: -1,
+                oldestAgeMs: OldestQueuedAgeMillisecondsLocked()) == EncoderQueueAdmission.Append;
         }
     }
+
+    private double OldestQueuedAgeMillisecondsLocked() => _inputQueue.Count == 0
+        ? 0
+        : System.Diagnostics.Stopwatch.GetElapsedTime(_inputQueue.Peek().EnqueuedQpc).TotalMilliseconds;
 
     private void RemoveQueuedFrameAt(int removalIndex)
     {

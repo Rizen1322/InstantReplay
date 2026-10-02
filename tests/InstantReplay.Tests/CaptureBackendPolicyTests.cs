@@ -87,6 +87,17 @@ public sealed class CaptureBackendPolicyTests
         Assert.Equal(CaptureBackend.Wgc, selection.Backend);
     }
 
+    [Fact]
+    public void Failed_minecraft_hook_does_not_proactively_enable_wgc_where_it_is_disallowed()
+    {
+        var target = Target("javaw", "Minecraft", revision: 4);
+        var episode = CaptureEpisode.ForTarget(target).Quarantine(CaptureBackend.MinecraftOpenGl);
+        var selection = CaptureBackendPolicy.SelectForForeground(CaptureBackend.DesktopDuplication,
+            null, target, false, episode, allowWgc: false);
+        Assert.False(selection.RestartRequired);
+        Assert.Equal(CaptureBackend.DesktopDuplication, selection.Backend);
+    }
+
     [Theory]
     [InlineData(22000)]
     [InlineData(22621)]

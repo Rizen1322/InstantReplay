@@ -61,7 +61,7 @@ public sealed class CaptureRecoveryPolicyTests
     }
 
     [Fact]
-    public void Minecraft_hook_failure_holds_same_target_instead_of_exposing_monitor()
+    public void Minecraft_hook_failure_uses_window_capture_instead_of_reinjecting_failed_hook()
     {
         GameCaptureTarget target = Minecraft(revision: 11);
 
@@ -73,10 +73,10 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.ForTarget(target),
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.HoldForGameWindow, decision.Action);
-        Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
+        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
+        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
         Assert.Equal(11, decision.TargetRevision);
-        Assert.True(decision.RetryDelay > TimeSpan.Zero);
+        Assert.True(decision.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
     }
 
     [Fact]

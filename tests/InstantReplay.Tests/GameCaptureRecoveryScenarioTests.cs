@@ -121,6 +121,77 @@ public sealed class GameCaptureRecoveryScenarioTests
         preferredMonitorBackend: CaptureBackend.Wgc,
         forcedBackend: false);
 
+    [Fact]
+    public void Failed_hook_is_not_reselected_after_later_monitor_failure_in_same_game()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.ObserveTarget(Minecraft(revision: 6));
+        coordinator.TryDecide(CaptureBackend.MinecraftOpenGl,
+            CaptureFailureKind.BackendUnavailable, out CaptureRecoveryDecision fallback);
+        Assert.Equal(CaptureBackend.WgcWindow, fallback.Backend);
+
+        var foreground = CaptureBackendPolicy.SelectForForeground(CaptureBackend.WgcWindow,
+            coordinator.Target, coordinator.Target, false, coordinator.Episode);
+        Assert.False(foreground.RestartRequired);
+        Assert.Equal(CaptureBackend.WgcWindow, foreground.Backend);
+
+        coordinator.TryDecide(CaptureBackend.Wgc,
+            CaptureFailureKind.BackendStalled, out CaptureRecoveryDecision retry);
+        Assert.Equal(CaptureBackend.WgcWindow, retry.Backend);
+
+        coordinator.TryDecide(CaptureBackend.WgcWindow,
+            CaptureFailureKind.BackendStalled, out CaptureRecoveryDecision hold);
+        Assert.Equal(CaptureBackend.WgcWindow, hold.Backend);
+        Assert.Equal(CaptureRecoveryAction.HoldForGameWindow, hold.Action);
+        Assert.True(hold.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
+    }
+
+    [Fact]
+    public void Alt_tab_and_geometry_revision_do_not_reinject_failed_hook_in_same_process()
+    {
+        var coordinator = CreateCoordinator();
+        var game = Minecraft(revision: 6);
+        coordinator.ObserveTarget(game);
+        coordinator.TryDecide(CaptureBackend.MinecraftOpenGl,
+            CaptureFailureKind.BackendUnavailable, out _);
+        coordinator.ObserveTarget(null);
+        coordinator.TryDecide(CaptureBackend.WgcWindow,
+            CaptureFailureKind.CaptureTargetClosed, out var desktop);
+        Assert.Equal(CaptureBackend.Wgc, desktop.Backend);
+
+        game = game with { Revision = 7 };
+        coordinator.ObserveTarget(game);
+        var selection = CaptureBackendPolicy.SelectForForeground(CaptureBackend.Wgc,
+            null, game, false, coordinator.Episode);
+        Assert.True(selection.RestartRequired);
+        Assert.Equal(CaptureBackend.WgcWindow, selection.Backend);
+        Assert.True(coordinator.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
+
+        var replacement = game with { ProcessStartTicks = 88_000 };
+        coordinator.ObserveTarget(replacement);
+        selection = CaptureBackendPolicy.SelectForForeground(CaptureBackend.Wgc,
+            null, replacement, false, coordinator.Episode);
+        Assert.True(selection.RestartRequired);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, selection.Backend);
+    }
+
+    [Fact]
+    public void User_resume_allows_a_fresh_hook_attempt_after_previous_failure()
+    {
+        var coordinator = CreateCoordinator();
+        var game = Minecraft(revision: 6);
+        coordinator.ObserveTarget(game);
+        coordinator.TryDecide(CaptureBackend.MinecraftOpenGl,
+            CaptureFailureKind.BackendUnavailable, out _);
+        coordinator.Stop();
+        coordinator.Resume();
+        coordinator.ObserveTarget(game);
+        var selection = CaptureBackendPolicy.SelectForForeground(CaptureBackend.Wgc,
+            null, game, false, coordinator.Episode);
+        Assert.True(selection.RestartRequired);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, selection.Backend);
+    }
+
     private static GameCaptureTarget Minecraft(long revision) => new(
         Hwnd: (nint)42,
         ProcessId: 501,

@@ -60,4 +60,24 @@ public sealed class EncoderQueueAdmissionPolicyTests
             EncoderQueueAdmission.Append,
             EncoderQueueAdmissionPolicy.Decide(false, 32, 33, false, 4));
     }
+
+    [Theory]
+    [InlineData(1, 150, false)]
+    [InlineData(8, 1100, false)]
+    [InlineData(1, 99, true)]
+    [InlineData(0, 0, true)]
+    public void Stale_queue_does_not_receive_more_gpu_copies_of_duplicate_frames(
+        int depth, double ageMs, bool append)
+    {
+        Assert.Equal(append ? EncoderQueueAdmission.Append : EncoderQueueAdmission.RejectDuplicate,
+            EncoderQueueAdmissionPolicy.Decide(true, depth, 20,
+            false, -1, oldestAgeMs: ageMs));
+    }
+
+    [Fact]
+    public void Real_frames_are_still_admitted_when_duplicate_generation_is_suspended()
+    {
+        Assert.Equal(EncoderQueueAdmission.Append,
+            EncoderQueueAdmissionPolicy.Decide(false, 8, 20, true, -1, oldestAgeMs: 1100));
+    }
 }

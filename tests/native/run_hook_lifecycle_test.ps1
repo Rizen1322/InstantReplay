@@ -9,7 +9,7 @@ $hookOutput = Join-Path $repoRoot "artifacts\native\win-x64\Release"
 $testOutput = Join-Path $repoRoot "artifacts\native-tests"
 New-Item -ItemType Directory -Path $testOutput -Force | Out-Null
 
-& (Join-Path $repoRoot "packaging\build_game_capture_hook.ps1") -OutputDir $hookOutput -RunProtocolTests
+& (Join-Path $repoRoot "packaging\build_game_capture_hook.ps1") -OutputDir $hookOutput -RunProtocolTests -RunGlTests
 if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { throw "hook build failed" }
 
 $fixture = Join-Path $testOutput "OpenGlCaptureFixture.exe"

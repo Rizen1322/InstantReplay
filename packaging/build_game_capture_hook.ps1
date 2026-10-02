@@ -1,6 +1,7 @@
 param(
     [string]$OutputDir,
-    [switch]$RunProtocolTests
+    [switch]$RunProtocolTests,
+    [switch]$RunGlTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +41,14 @@ Push-Location $nativeRoot
 try {
     if ($RunProtocolTests) {
         & $zigExe build test --prefix $OutputDir
-        if ($LASTEXITCODE -ne 0) { throw "protocol_layout_test не прошёл" }
+        if ($LASTEXITCODE -ne 0) { throw "IPC/retirement native tests не прошли" }
+    }
+
+    # CI/сборка установщика не обязаны иметь аппаратный OpenGL. Проверка PBO
+    # включается явно только в native-тесте на машине с видеодрайвером.
+    if ($RunGlTests) {
+        & $zigExe build test-gl --prefix $OutputDir
+        if ($LASTEXITCODE -ne 0) { throw "OpenGL cleanup test не прошёл" }
     }
 
     & $zigExe build --prefix $OutputDir --release=fast

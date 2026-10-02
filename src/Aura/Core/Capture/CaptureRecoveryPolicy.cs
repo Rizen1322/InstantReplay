@@ -135,7 +135,10 @@ internal static class CaptureRecoveryPolicy
         }
 
         episode = episode.Quarantine(context.ActiveBackend);
-        if (context.ActiveBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
+        if (context.ActiveBackend == CaptureBackend.MinecraftOpenGl)
+            return Restart(CaptureBackend.WgcWindow, target.Revision, episode);
+
+        if (context.ActiveBackend == CaptureBackend.WgcWindow)
         {
             return new CaptureRecoveryDecision(
                 CaptureRecoveryAction.HoldForGameWindow,
@@ -145,7 +148,8 @@ internal static class CaptureRecoveryPolicy
                 episode);
         }
 
-        CaptureBackend targetBackend = CaptureBackendPolicy.IsMinecraftOpenGlTarget(target)
+        CaptureBackend targetBackend = CaptureBackendPolicy.IsMinecraftOpenGlTarget(target) &&
+            !episode.IsQuarantined(CaptureBackend.MinecraftOpenGl)
             ? CaptureBackend.MinecraftOpenGl
             : CaptureBackend.WgcWindow;
         return Restart(targetBackend, target.Revision, episode);

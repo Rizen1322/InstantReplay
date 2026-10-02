@@ -189,6 +189,7 @@ internal sealed class NvencLoadAdapter
     private readonly int _fps;
     private readonly List<(string Name, int Multipass, bool Aq)> _levels = [];
     private long _nextCheckMs = WindowMs;
+    private long _lastCheckMs;
     private long _lastEncoded, _lastSubmitted, _lastDropped;
     private int _calm;
     private int _recoveryNeeded = RecoveryWindows;
@@ -224,19 +225,23 @@ internal sealed class NvencLoadAdapter
     {
         reason = "";
         if (nowMs < _nextCheckMs) return null;
+        double elapsedSeconds = Math.Max(1, nowMs - _lastCheckMs) / 1000.0;
+        _lastCheckMs = nowMs;
         _nextCheckMs = nowMs + WindowMs;
 
         long dEncoded = encoded - _lastEncoded, dSubmitted = submitted - _lastSubmitted, dDropped = dropped - _lastDropped;
         _lastEncoded = encoded; _lastSubmitted = submitted; _lastDropped = dropped;
         if (!CanAdapt) return null;
 
-        double target = _fps * (WindowMs / 1000.0);
-        // Кадры до энкодера должны были дойти: если голодает захват, NVENC не виноват
+        double target = _fps * elapsedSeconds;
+        // Низкая подача без очереди может быть статичным экраном. Но старая
+        // очередь/дропы — backpressure, который сам уже мог ограничить подачу.
         bool fed = dSubmitted >= target * 0.9;
         bool behind = dEncoded < Math.Min(dSubmitted, target) * 0.95 || dDropped > 0;
-        bool stalled = submitP99Ms > 25 || maxPendingAgeMs > 100 || queueGrowth >= 5;
-        bool overloaded = fed && (behind || stalled);
-        bool calm = !behind && submitP99Ms < 8 && maxPendingAgeMs < 50 && queueGrowth <= 1;
+        bool backpressure = maxPendingAgeMs > 100 || queueGrowth >= 5 || dDropped > 0;
+        bool overloaded = backpressure || (fed && (behind || submitP99Ms > 25));
+        bool calm = fed && dEncoded >= target * 0.95 && !behind &&
+                    submitP99Ms < 8 && maxPendingAgeMs < 50 && queueGrowth <= 1;
         if (_sinceRecovery < int.MaxValue) _sinceRecovery++;
 
         if (overloaded)
@@ -247,7 +252,7 @@ internal sealed class NvencLoadAdapter
             _sinceRecovery = int.MaxValue;
             if (Level >= MaxLevel) return null;
             Level++;
-            reason = $"энкодер не успевает: закодировано {dEncoded / (WindowMs / 1000.0):F0} из {_fps} кадр/с, " +
+            reason = $"энкодер не успевает: закодировано {dEncoded / elapsedSeconds:F0} из {_fps} кадр/с, " +
                      $"потеряно {dDropped}, отправка p99 {submitP99Ms:F1} мс, самый старый кадр в очереди " +
                      $"{maxPendingAgeMs:F0} мс, рост очереди {queueGrowth}";
             return Level;

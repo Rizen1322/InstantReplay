@@ -29,6 +29,9 @@ void aura_gl_capture_request_release(void);
 /* Освободило ли кольцо PBO после aura_gl_capture_request_release. */
 bool aura_gl_capture_release_done(void);
 
+/* Cleanup must be allowed through the present gate even after STOP/IDLE. */
+bool aura_gl_capture_release_pending(void);
+
 void aura_gl_capture_abandon(void);
 
 #endif

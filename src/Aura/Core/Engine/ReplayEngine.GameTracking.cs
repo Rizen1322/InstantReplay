@@ -69,7 +69,9 @@ public sealed partial class ReplayEngine
                         _captureBackend,
                         ActiveCaptureTarget(),
                         foregroundTarget,
-                        _captureBackendForced);
+                        _captureBackendForced,
+                        _gameCaptureRecovery.Episode,
+                        ScreenCaptureFactory.WgcAllowed);
                 if (targetSelection.RestartRequired)
                     RequestProactiveCaptureTransition(targetSelection);
 
@@ -112,6 +114,7 @@ public sealed partial class ReplayEngine
         in CaptureBackendTargetSelection selection)
     {
         if (selection.Target is not GameCaptureTarget target ||
+            _gameCaptureRecovery.Episode.Align(target).IsQuarantined(selection.Backend) ||
             !_pipelineOpen || _stopRequested ||
             Interlocked.CompareExchange(ref _recovering, 1, 0) != 0)
         {

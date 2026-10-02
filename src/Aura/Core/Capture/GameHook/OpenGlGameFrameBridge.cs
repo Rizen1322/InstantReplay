@@ -104,12 +104,22 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             generation,
             initialRouteEpoch);
 
-        CreateSharedObjects(maximumWidth, maximumHeight, targetFps, initialRouteEpoch);
         _readerThread = new Thread(ReadLoop)
         {
             IsBackground = true,
             Name = "Aura OpenGL game frame reader"
         };
+        try
+        {
+            CreateSharedObjects(maximumWidth, maximumHeight, targetFps, initialRouteEpoch);
+        }
+        catch
+        {
+            // Незавершённый конструктор не попадёт в Dispose владельца provider.
+            // В частности, AcquirePointer удерживает view даже после GC.
+            ReleaseResources();
+            throw;
+        }
         _waitHandles = [_frameReadyEvent!, _stopEvent];
     }
 
@@ -216,10 +226,7 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         int targetFps,
         long initialRouteEpoch)
     {
-        _bootstrapMapping = MemoryMappedFile.CreateNew(
-            _names.BootstrapMapping,
-            GameHookProtocol.BootstrapHeaderSize,
-            MemoryMappedFileAccess.ReadWrite);
+        _bootstrapMapping = _names.OpenBootstrapMapping();
         _bootstrapView = _bootstrapMapping.CreateViewAccessor(
             0,
             GameHookProtocol.BootstrapHeaderSize,
@@ -238,10 +245,9 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         _frameReadyEvent = new EventWaitHandle(false, EventResetMode.AutoReset, _names.FrameReadyEvent);
         _controlEvent = new EventWaitHandle(false, EventResetMode.AutoReset, _names.ControlEvent);
 
-        Unsafe.InitBlockUnaligned(_bootstrapPointer, 0, GameHookProtocol.BootstrapHeaderSize);
         var bootstrap = new GameHookBootstrapHeader
         {
-            Magic = GameHookProtocol.BootstrapMagic,
+            Magic = 0,
             Version = GameHookProtocol.Version,
             HeaderSize = GameHookProtocol.BootstrapHeaderSize,
             ControllerPid = Environment.ProcessId,
@@ -252,8 +258,6 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         };
         for (int index = 0; index < 32; ++index)
             bootstrap.Nonce[index] = (byte)_names.Nonce[index];
-        Unsafe.WriteUnaligned(ref *_bootstrapPointer, bootstrap);
-
         Unsafe.InitBlockUnaligned(_framePointer, 0, checked((uint)_mappingSize));
         var header = new GameHookHeader
         {
@@ -281,6 +285,14 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             SlotStride = _slotStride
         };
         Unsafe.WriteUnaligned(ref *_framePointer, header);
+
+        // Публикуем discovery только после готовности новой памяти кадров/событий.
+        // Magic — release-barrier для native читателя; старый nonce не ведёт
+        // к ещё не инициализированному заголовку нового поколения.
+        Volatile.Write(ref ((GameHookBootstrapHeader*)_bootstrapPointer)->Magic, 0);
+        Unsafe.WriteUnaligned(ref *_bootstrapPointer, bootstrap);
+        Volatile.Write(ref ((GameHookBootstrapHeader*)_bootstrapPointer)->Magic,
+            GameHookProtocol.BootstrapMagic);
     }
 
     private void ReadLoop()
@@ -464,10 +476,15 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         // Dispose() таймера не ждёт уже идущий обратный вызов, а тот читает общую
         // память, которую ниже освобождаем: чтение освобождённой памяти роняет
         // процесс без шанса поймать исключение. Ждём, пока вызов закончится.
+        ManualResetEvent? callbacksStopped = null;
         if (_heartbeatTimer is { } timer)
         {
-            using var done = new ManualResetEvent(false);
-            if (timer.Dispose(done)) done.WaitOne(TimeSpan.FromSeconds(2));
+            callbacksStopped = new ManualResetEvent(false);
+            if (!timer.Dispose(callbacksStopped))
+            {
+                callbacksStopped.Dispose();
+                callbacksStopped = null;
+            }
         }
         _heartbeatTimer = null;
         if (_framePointer is not null)
@@ -479,15 +496,29 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             _controlEvent?.Set();
         }
         _stopEvent.Set();
-        if (_readerThread.IsAlive && !_readerThread.Join(TimeSpan.FromSeconds(2)))
+        bool readerStopped = !_readerThread.IsAlive || _readerThread.Join(TimeSpan.FromSeconds(2));
+        bool timerStopped = callbacksStopped is null || callbacksStopped.WaitOne(TimeSpan.FromSeconds(2));
+        if (!readerStopped || !timerStopped)
         {
-            // Поток чтения ещё внутри общей памяти или текстур: освободить их под
-            // ним значит уронить процесс. Оставляем их сборщику и системе, это
-            // единичная утечка при зависшем драйвере, а не падение.
-            Aura.Core.Logging.Log.Warn("Capture", "Поток чтения кадров Minecraft не остановился за 2 с, память моста оставлена");
+            // Не освобождаем память из-под reader/таймера, но и не теряем её
+            // навсегда: отдельный фоновый поток освободит её после выхода обоих.
+            Aura.Core.Logging.Log.Warn("Capture", "Minecraft bridge ещё занят: очистка ресурсов отложена до остановки потоков");
+            new Thread(() =>
+            {
+                callbacksStopped?.WaitOne();
+                if (_readerThread.IsAlive) _readerThread.Join();
+                ReleaseResources();
+                callbacksStopped?.Dispose();
+            }) { IsBackground = true, Name = "Aura OpenGL bridge cleanup" }.Start();
             return;
         }
 
+        ReleaseResources();
+        callbacksStopped?.Dispose();
+    }
+
+    private void ReleaseResources()
+    {
         _frameTexture?.Dispose();
         _uploadTexture?.Dispose();
         if (_frameView is not null && _framePointer is not null)

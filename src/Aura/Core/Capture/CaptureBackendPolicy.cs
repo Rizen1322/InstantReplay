@@ -50,10 +50,20 @@ internal static class CaptureBackendPolicy
         CaptureBackend activeBackend,
         GameCaptureTarget? activeTarget,
         GameCaptureTarget? foregroundTarget,
-        bool forcedBackend)
+        bool forcedBackend,
+        CaptureEpisode episode = default,
+        bool allowWgc = true)
     {
         if (forcedBackend)
             return new(activeBackend, activeTarget, RestartRequired: false);
+
+        if (foregroundTarget is GameCaptureTarget quarantined && episode.Matches(quarantined) &&
+            episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
+        {
+            if (!allowWgc || activeBackend == CaptureBackend.WgcWindow)
+                return new(activeBackend, activeTarget, RestartRequired: false);
+            return new(CaptureBackend.WgcWindow, quarantined, RestartRequired: true);
+        }
 
         if (activeBackend == CaptureBackend.MinecraftOpenGl)
         {

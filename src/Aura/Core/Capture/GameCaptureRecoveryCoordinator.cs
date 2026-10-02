@@ -9,6 +9,7 @@ internal sealed class GameCaptureRecoveryCoordinator
     private readonly object _sync = new();
     private GameCaptureTarget? _target;
     private CaptureEpisode _episode;
+    private CaptureEpisode _lastHookFailure;
     private bool _stopped;
 
     public GameCaptureRecoveryCoordinator(
@@ -40,6 +41,7 @@ internal sealed class GameCaptureRecoveryCoordinator
             _stopped = false;
             _target = null;
             _episode = CaptureEpisode.Empty;
+            _lastHookFailure = CaptureEpisode.Empty;
         }
     }
 
@@ -56,6 +58,13 @@ internal sealed class GameCaptureRecoveryCoordinator
             _episode = target is GameCaptureTarget current
                 ? _episode.Align(current)
                 : CaptureEpisode.Empty;
+            // Alt-Tab сбрасывает мониторный эпизод, но не лечит отказавший хук.
+            // Ревизия геометрии тоже не означает перезапуск javaw/его DLL.
+            if (target is GameCaptureTarget returned &&
+                _lastHookFailure.TargetHwnd == returned.Hwnd &&
+                _lastHookFailure.TargetProcessId == returned.ProcessId &&
+                _lastHookFailure.TargetProcessStartTicks == returned.ProcessStartTicks)
+                _episode = _episode.Quarantine(CaptureBackend.MinecraftOpenGl);
         }
     }
 
@@ -81,6 +90,8 @@ internal sealed class GameCaptureRecoveryCoordinator
                 _preferredMonitorBackend,
                 _allowWgc));
             _episode = decision.Episode;
+            if (_episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
+                _lastHookFailure = _episode;
             return true;
         }
     }

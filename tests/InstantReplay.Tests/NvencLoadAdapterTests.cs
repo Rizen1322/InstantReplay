@@ -64,6 +64,44 @@ public sealed class NvencLoadAdapterTests
         Assert.Equal(0, adapter.Level);
     }
 
+    [Theory]
+    [InlineData(1100, 0, 0)]
+    [InlineData(20, 6, 0)]
+    [InlineData(20, 0, 15)]
+    public void Backpressure_still_reduces_load_when_it_has_already_starved_submission(
+        double pendingAgeMs, int queueGrowth, int dropped)
+    {
+        var adapter = new NvencLoadAdapter(Fps, 0, true);
+        Assert.Equal(1, new Run(adapter).Window(150, 2, submitted: 150,
+            pendingAgeMs: pendingAgeMs, queueGrowth: queueGrowth, dropped: dropped));
+        Assert.Equal((0, false), adapter.Current);
+    }
+
+    [Fact]
+    public void Low_frame_delivery_does_not_count_as_a_calm_minute_for_quality_recovery()
+    {
+        var adapter = new NvencLoadAdapter(Fps, 0, true);
+        var run = new Run(adapter);
+        run.Window(200, 40);
+        for (int i = 0; i < 24; i++)
+            Assert.Null(run.Window(150, 2, submitted: 150));
+        Assert.Equal(1, adapter.Level);
+        run.Calm(11);
+        Assert.Equal(1, adapter.Level);
+        Assert.Equal(0, run.Window(PerWindow, 2));
+    }
+
+    [Fact]
+    public void Delayed_poll_uses_actual_elapsed_time_instead_of_mistaking_30fps_for_60fps()
+    {
+        var adapter = new NvencLoadAdapter(Fps, 0, true);
+        Assert.Equal(1, adapter.Tick(5000, 200, 300, 0, 40, 20, 0, out _));
+        for (int i = 1; i <= 12; i++)
+            Assert.Null(adapter.Tick(5000 + i * 10000, 200 + i * 300, 300 + i * 300,
+                0, 2, 20, 0, out _));
+        Assert.Equal(1, adapter.Level);
+    }
+
     [Fact]
     public void Recovers_one_level_after_a_calm_minute()
     {

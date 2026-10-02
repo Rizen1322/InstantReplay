@@ -74,11 +74,15 @@ DWORD WINAPI aura_hook_control_thread(void *module_pointer)
     // Поток отрисовки игры может застрять внутри нашего обработчика надолго:
     // SwapBuffers с vsync, свёрнутое окно, драйвер ждёт видеокарту. Раньше через
     // 200 мс код выгружался в любом случае, и поток возвращался в освобождённую
-    // память: игра падала. Теперь, если за 2 секунды он не вышел, DLL остаётся в
-    // процессе навсегда (так делает и OBS): перехват выключен, вреда от неё нет.
+    // память: игра падала. Если за 2 секунды он не вышел, DLL оставляем в
+    // процессе: перехват уже выключен. Но IPC и стек этого потока тоже ещё
+    // принадлежат обработчику! Их закрываем только после его реального выхода.
     if (aura_present_hooks_active_callbacks() != 0) {
         aura_hook_ipc_set_state(&ipc, AURA_GAME_HOOK_STATE_STOPPED, AURA_GAME_HOOK_ERROR_NONE);
         aura_hook_ipc_heartbeat(&ipc);
+        while (aura_present_hooks_active_callbacks() != 0) {
+            Sleep(50);
+        }
         aura_hook_ipc_close(&ipc);
         ExitThread(3);
     }

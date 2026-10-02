@@ -13,6 +13,15 @@ static LRESULT CALLBACK fixture_window_proc(HWND hwnd, UINT message, WPARAM wpar
     return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
+static bool resize_client(HWND window, int width, int height)
+{
+    RECT bounds = {0, 0, width, height};
+    if (!AdjustWindowRectEx(&bounds, (DWORD)GetWindowLongPtrW(window, GWL_STYLE),
+            FALSE, (DWORD)GetWindowLongPtrW(window, GWL_EXSTYLE))) return false;
+    return SetWindowPos(window, NULL, 0, 0, bounds.right - bounds.left,
+        bounds.bottom - bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+}
+
 static uint64_t slot_stride(int width, int height)
 {
     uint64_t bytes = (uint64_t)width * (uint64_t)height * UINT64_C(4);
@@ -88,7 +97,7 @@ int wmain(int argc, wchar_t **argv)
         0,
         window_class.lpszClassName,
         L"Aura OpenGL Hook Fixture",
-        WS_OVERLAPPEDWINDOW,
+        WS_POPUP,
         0,
         0,
         128,
@@ -98,6 +107,7 @@ int wmain(int argc, wchar_t **argv)
         instance,
         NULL);
     if (window == NULL) return 4;
+    if (!resize_client(window, 64, 64)) return 4;
 
     HDC dc = GetDC(window);
     PIXELFORMATDESCRIPTOR pfd = {0};
@@ -286,6 +296,8 @@ int wmain(int argc, wchar_t **argv)
     }
 
     if (!observed) {
+        RECT failed_client;
+        GetClientRect(window, &failed_client);
         fwprintf(
             stderr,
             L"hook did not become live: state=%ld error=%ld issued=%lld heartbeat=%lld\n",
@@ -293,6 +305,9 @@ int wmain(int argc, wchar_t **argv)
             header->error,
             header->frames_issued,
             header->hook_heartbeat_100ns);
+        fwprintf(stderr, L"client=%ldx%ld header=%ldx%ld stride=%lld GL=%hs\n",
+            failed_client.right, failed_client.bottom, header->width, header->height,
+            header->slot_stride, glGetString(GL_VERSION));
         goto cleanup;
     }
 
@@ -320,18 +335,17 @@ int wmain(int argc, wchar_t **argv)
 
     LONG64 published_before_resize = InterlockedCompareExchange64(
         (volatile LONG64 *)&header->frames_published, 0, 0);
-    header->width = 32;
-    header->height = 32;
-    header->stride = 32 * 4;
+    if (!resize_client(window, 32, 32)) goto cleanup;
     InterlockedExchange((volatile LONG *)&header->command, AURA_GAME_HOOK_COMMAND_CAPTURE);
     deadline = GetTickCount64() + 3000;
     bool resized = false;
     while (GetTickCount64() < deadline) {
-        render_pattern(header->width, header->height);
+        render_pattern(32, 32);
         SwapBuffers(dc);
         LONG64 published = InterlockedCompareExchange64(
             (volatile LONG64 *)&header->frames_published, 0, 0);
-        if (published > published_before_resize && validate_latest_frame(header)) {
+        if (published > published_before_resize && header->width == 32 &&
+            header->height == 32 && validate_latest_frame(header)) {
             resized = true;
             break;
         }
@@ -347,6 +361,8 @@ int wmain(int argc, wchar_t **argv)
     deadline = GetTickCount64() + 5000;
     bool stopped = false;
     while (GetTickCount64() < deadline) {
+        render_pattern(32, 32);
+        SwapBuffers(dc); // The render thread must service the STOP cleanup request.
         LONG state = InterlockedCompareExchange((volatile LONG *)&header->state, 0, 0);
         if (state == AURA_GAME_HOOK_STATE_STOPPED) {
             stopped = true;

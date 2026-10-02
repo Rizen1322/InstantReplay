@@ -64,6 +64,53 @@ pub fn build(b: *std.Build) void {
         .root_module = protocol_module,
     });
     const run_protocol_test = b.addRunArtifact(protocol_test);
-    const test_step = b.step("test", "Compile and run cross-process ABI assertions");
+    const test_step = b.step("test", "Compile and run IPC ABI and retirement assertions");
     test_step.dependOn(&run_protocol_test.step);
+
+    const cleanup_module = b.createModule(.{
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    cleanup_module.addIncludePath(b.path("."));
+    cleanup_module.addIncludePath(b.path("../../../third_party/minhook/include"));
+    cleanup_module.addCSourceFiles(.{
+        .files = &.{
+            "present_cleanup_test.c",
+            "../../../third_party/minhook/src/buffer.c",
+            "../../../third_party/minhook/src/hook.c",
+            "../../../third_party/minhook/src/trampoline.c",
+            "../../../third_party/minhook/src/hde/hde64.c",
+        },
+        .flags = &.{ "-std=c11", "-DNDEBUG", "-DWIN32_LEAN_AND_MEAN", "-DNOMINMAX" },
+    });
+    cleanup_module.linkSystemLibrary("kernel32", .{});
+    cleanup_module.linkSystemLibrary("user32", .{});
+    cleanup_module.linkSystemLibrary("gdi32", .{});
+    cleanup_module.linkSystemLibrary("opengl32", .{});
+    const cleanup_test = b.addExecutable(.{
+        .name = "present_cleanup_test",
+        .root_module = cleanup_module,
+    });
+    const run_cleanup_test = b.addRunArtifact(cleanup_test);
+    const gl_test_step = b.step("test-gl", "Run hardware-backed OpenGL cleanup assertions");
+    gl_test_step.dependOn(&run_cleanup_test.step);
+
+    const retirement_module = b.createModule(.{
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    retirement_module.addIncludePath(b.path("."));
+    retirement_module.addCSourceFiles(.{
+        .files = &.{"hook_retirement_test.c"},
+        .flags = &.{ "-std=c11", "-Wall", "-Wextra", "-Werror" },
+    });
+    retirement_module.linkSystemLibrary("kernel32", .{});
+    const retirement_test = b.addExecutable(.{
+        .name = "hook_retirement_test",
+        .root_module = retirement_module,
+    });
+    const run_retirement_test = b.addRunArtifact(retirement_test);
+    test_step.dependOn(&run_retirement_test.step);
 }

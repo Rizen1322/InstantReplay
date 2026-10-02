@@ -417,6 +417,11 @@ bool aura_gl_capture_release_done(void)
     return InterlockedCompareExchange(&g_release_done, 0, 0) != 0;
 }
 
+bool aura_gl_capture_release_pending(void)
+{
+    return InterlockedCompareExchange(&g_release_requested, 0, 0) != 0;
+}
+
 void aura_gl_capture_abandon(void)
 {
     AcquireSRWLockExclusive(&g_capture_lock);
