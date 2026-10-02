@@ -30,6 +30,18 @@ public sealed class DdaLifecycleMonitorTests
     }
 
     [Fact]
+    public void Frames_keep_flowing_after_single_invalidation()
+    {
+        var monitor = CreateMonitor();
+        DdaLifecycleState state = monitor.RecordInvalidation(TimeSpan.Zero);
+
+        Assert.True(DdaLifecycleMonitor.PublishesFrames(state));
+        Assert.True(DdaLifecycleMonitor.PublishesFrames(
+            monitor.ObserveUsefulFrame(TimeSpan.FromMilliseconds(16))));
+        Assert.False(DdaLifecycleMonitor.PublishesFrames(DdaLifecycleState.Storm));
+    }
+
+    [Fact]
     public void Three_invalidations_within_two_seconds_form_a_storm()
     {
         var monitor = CreateMonitor();

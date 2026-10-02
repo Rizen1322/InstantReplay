@@ -355,7 +355,12 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 frameHeld = true;
 
                 if (resource is null) continue;
-                if (_lifecycle.ObserveUsefulFrame(LifecycleNow()) != DdaLifecycleState.Stable)
+                // Кадры после пересоздания идут в запись сразу. Раньше после каждой
+                // потери дупликации они две секунды выбрасывались «до стабилизации»:
+                // у друга в TF2 и L4D2 это давало стоп-кадры ровно по 2 с на каждом
+                // Alt+Tab и оверлее. Устаревший первый кадр и так отсекает
+                // DiscardStaleFirstFrame, а окно в 2 с нужно только для счёта шторма.
+                if (!DdaLifecycleMonitor.PublishesFrames(_lifecycle.ObserveUsefulFrame(LifecycleNow())))
                     continue;
                 // AccumulatedFrames == 0 — обновился только курсор, картинка та же.
                 // Но ПЕРВЫЙ кадр после старта отдаём всегда: на статичном экране

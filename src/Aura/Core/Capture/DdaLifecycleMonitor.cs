@@ -10,6 +10,8 @@ internal enum DdaLifecycleState
 /// <summary>
 /// Отделяет одиночную смену режима от цикла, в котором DDA постоянно теряет
 /// duplication-сессию. Время передаёт вызывающий, поэтому политика детерминирована.
+/// TransitionHold значит только «недавно была потеря»: кадры в это время в запись
+/// идут, состояние нужно, чтобы считать потери подряд и распознать шторм.
 /// </summary>
 internal sealed class DdaLifecycleMonitor
 {
@@ -37,6 +39,12 @@ internal sealed class DdaLifecycleMonitor
     }
 
     public DdaLifecycleState State { get; private set; } = DdaLifecycleState.Stable;
+
+    /// <summary>
+    /// Идут ли кадры в запись. Только шторм их останавливает: после одиночной
+    /// потери удержание в 2 с давало в записи стоп-кадр в 2 с на каждый Alt+Tab.
+    /// </summary>
+    public static bool PublishesFrames(DdaLifecycleState state) => state != DdaLifecycleState.Storm;
     public int InvalidationsInWindow => _invalidations.Count;
 
     public DdaLifecycleState RecordInvalidation(TimeSpan timestamp)
