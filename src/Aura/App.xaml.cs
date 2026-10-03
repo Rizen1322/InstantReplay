@@ -272,7 +272,9 @@ public partial class App : Application
                 await Task.Delay(1000);
                 Current.Dispatcher.Invoke(SafeStartEngine);
                 await Task.Delay(replayTestSeconds * 1000);
-                var saved = new TaskCompletionSource<string>();
+                // Продолжение не в потоке сохранения: иначе выход ждал бы сохранение,
+                // которое само ждёт выход
+                var saved = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
                 Services.Engine.ReplaySaved += (file, _) => saved.TrySetResult(file);
                 Services.Engine.SaveFailed += msg => saved.TrySetResult("ошибка: " + msg);
                 Current.Dispatcher.Invoke(() => Services.Engine.SaveReplay());

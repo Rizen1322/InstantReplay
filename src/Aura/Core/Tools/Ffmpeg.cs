@@ -170,9 +170,18 @@ public static class Ffmpeg
         // консоли stdin — унаследованный дескриптор приложения, и чтение из него
         // может встать намертво: ffmpeg ждёт ввода, мы ждём ffmpeg.
         psi.ArgumentList.Add("-nostdin");
-        psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(Seconds(start));
+        // Копия видео может начаться только с ключевого кадра, и ffmpeg с -ss перед
+        // входом берёт его ДО точки старта, а звук режет ровно по точке: в начале
+        // фрагмента была секунда-другая картинки без звука. Поэтому старт ставим
+        // на сам ключевой кадр (чуть после него, чтобы поиск попал именно в него),
+        // и звук идёт с того же места.
+        TimeSpan from = start;
+        if (Saving.Mp4.Mp4Keyframes.StartFor(Saving.Mp4.Mp4Keyframes.Read(input),
+                start.TotalSeconds, end.TotalSeconds) is double key)
+            from = TimeSpan.FromSeconds(key) + TimeSpan.FromMilliseconds(1);
+        psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(Seconds(from));
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
-        psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(Seconds(end - start));
+        psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(Seconds(end - from));
 
         bool mixAudio = audioTrackIndex < 0 && audioTrackCount > 1;
         if (mixAudio)
@@ -202,7 +211,8 @@ public static class Ffmpeg
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mp4");
         psi.ArgumentList.Add(partPath);
 
-        Log.Info("Editor", $"Быстрый экспорт {Path.GetFileName(input)}: {start} — {end}, audio={audioTrackIndex}");
+        Log.Info("Editor", $"Быстрый экспорт {Path.GetFileName(input)}: {start} — {end} " +
+                           $"(с ключевого кадра {from}), audio={audioTrackIndex}");
         try
         {
             using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
