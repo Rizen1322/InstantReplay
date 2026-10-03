@@ -516,6 +516,47 @@ public sealed partial class ReplayEngine
     private int _wedgeCount;
     private long _wdEncoded;
     private DateTime _wdEncodedAt;
+    private long _wdLastTickMs;
+    private int _wdFrozenStreak;
+
+    /// <summary>
+    /// Сторож проснулся с опозданием: значит, стоял не энкодер, а весь процесс
+    /// (система не давала работать: нехватка памяти, подкачка, зависание
+    /// драйвера целиком). У друга в Project Zomboid так замирало всё сразу на 5–20 с:
+    /// микшер звука отставал на столько же, а вызовы NVENC шли ещё за 12 мс до
+    /// проверки. Сторож считал это зависанием видеокарты, пересобирал конвейер, а
+    /// на втором разе выключал повтор. Теперь после такой паузы отсчёт тишины
+    /// энкодера начинается заново.
+    /// </summary>
+    private bool ProcessWasFrozen(out double frozenSeconds)
+    {
+        long now = Environment.TickCount64;
+        long last = Interlocked.Exchange(ref _wdLastTickMs, now);
+        frozenSeconds = last == 0 ? 0 : (now - last) / 1000.0;
+        if (frozenSeconds <= 2.5) { _wdFrozenStreak = 0; return false; }
+        // Сторож опаздывает раз за разом: пул потоков задушен самим зависанием
+        // видеокарты. Тогда проверку энкодера не откладываем бесконечно.
+        return ++_wdFrozenStreak <= 3;
+    }
+
+    /// <summary>Свободная физическая память системы и подкачка, для строки в логе.</summary>
+    private static string SystemMemory()
+    {
+        var status = new MemoryStatusEx { Length = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MemoryStatusEx>() };
+        if (!GlobalMemoryStatusEx(ref status)) return "память системы неизвестна";
+        return $"свободно {status.AvailPhys >> 20} из {status.TotalPhys >> 20} МБ памяти, " +
+               $"занято {status.MemoryLoad}%, свободно подкачки {status.AvailPageFile >> 20} МБ";
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MemoryStatusEx
+    {
+        public uint Length, MemoryLoad;
+        public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx status);
 
     /// <summary>Порог молчания энкодера, после которого конвейер считается вставшим.</summary>
     private const double EncoderWedgeSeconds = 4;
@@ -638,10 +679,23 @@ public sealed partial class ReplayEngine
         _wdInputTick = LastInputTick();
         _wdEncoded = -1;
         _wdEncodedAt = DateTime.UtcNow;
+        _wdLastTickMs = 0;
+        _wdFrozenStreak = 0;
         _watchdog = new System.Threading.Timer(_ =>
         {
             var cap = _capture;
+            bool frozen = ProcessWasFrozen(out double frozenSeconds);
             if (cap is null || !_pipelineOpen || _stopRequested) return;
+
+            if (frozen)
+            {
+                Log.Warn("Engine", $"Процесс Aura стоял {frozenSeconds:F1} с целиком (система не давала работать; " +
+                                   $"{SystemMemory()}) — это не зависание энкодера, проверку начинаю заново");
+                _wdEncoded = -1;
+                _wdEncodedAt = DateTime.UtcNow;
+                _wdLastActivity = DateTime.UtcNow;
+                return;
+            }
 
             if (EncoderWedged(out double stuck))
             {
@@ -650,7 +704,7 @@ public sealed partial class ReplayEngine
                 // зависшей не оживёт.
                 if (_encoder is { DirectNvenc: true } wedgedEncoder)
                 {
-                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
+                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
                     VideoEncoder.DirectNvencDisabled = true;
                     Interlocked.Increment(ref NvencStats.FatalErrors);
                 }

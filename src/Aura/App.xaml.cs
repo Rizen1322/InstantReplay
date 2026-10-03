@@ -193,6 +193,13 @@ public partial class App : Application
         // а кнопку на панели задач рисует именно иконка окна.
         ApplyThemeIcons(theme);
 
+        // --selftest-freeze N: через N секунд остановить все потоки процесса на 7 с,
+        // как при зависании системы (сторож энкодера не должен принять это за NVENC)
+        int freezeArg = Array.IndexOf(e.Args, "--selftest-freeze");
+        if (dev && freezeArg >= 0 && freezeArg + 1 < e.Args.Length &&
+            int.TryParse(e.Args[freezeArg + 1], out int freezeAfter))
+            new Thread(() => Core.Diagnostics.ProcessFreeze.Run(freezeAfter * 1000, 7000)) { IsBackground = true }.Start();
+
         // --selftest-record N: записать N секунд в файл без повтора и выйти. Только
         // для проверки конвейера записи без рук (--dev и своя папка данных).
         int selfTestArg = Array.IndexOf(e.Args, "--selftest-record");
