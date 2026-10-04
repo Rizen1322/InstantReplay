@@ -184,7 +184,7 @@ static int handle_attach(void) {
 
 static int handle_encode(void) {
     int slot = (int)arg(0);
-    if (!g_session || slot < 0 || slot >= g_slotCount) return ENCODE_BAD_SLOT;
+    if (!g_session || g_inputCount <= 0 || slot < 0 || slot >= g_slotCount) return ENCODE_BAD_SLOT;
     ID3D11Texture2D* input = g_inputs[g_accepted % g_inputCount];
     // Повтор после ENCODER_BUSY: кадр уже скопирован в этот вход, слот отдан
     if (!arg(3)) {

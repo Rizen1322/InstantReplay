@@ -647,11 +647,20 @@ public sealed class VideoEncoder : IDisposable
     {
         if (_nvenc is not RemoteNvencSession remote) return;
         if (countFailure) NoteHostFailure();
-        remote.Kill(reason);
+        remote.Kill(reason, expected: true);
     }
+
+    /// <summary>Когда хост отказал последний раз (Environment.TickCount64).</summary>
+    private static long s_lastHostFailure;
+
+    /// <summary>Полчаса без отказов — прошлые отказы забываются: долгая сессия не копит их до MFT.</summary>
+    private const long HostFailureMemoryMs = 30 * 60 * 1000;
 
     private static void NoteHostFailure()
     {
+        long now = Environment.TickCount64;
+        long last = Interlocked.Exchange(ref s_lastHostFailure, now);
+        if (last != 0 && now - last > HostFailureMemoryMs) Interlocked.Exchange(ref s_hostFailures, 0);
         int failures = Interlocked.Increment(ref s_hostFailures);
         if (failures >= MaxHostFailures)
         {
@@ -753,7 +762,7 @@ public sealed class VideoEncoder : IDisposable
                 }
                 if (session is RemoteNvencSession { Dead: true } deadHost)
                 {
-                    FailNvencHost(deadHost.DeathReason);
+                    FailNvencHost(deadHost, deadHost.DeathReason);
                     continue;
                 }
                 // Проверка в --dev: энкодер один раз замолкает, как при зависании
@@ -900,7 +909,12 @@ public sealed class VideoEncoder : IDisposable
             else
                 Thread.Sleep(1);
         }
-        if (result == RemoteNvencSession.HostDead) { FailNvencHost(session.DeathReason); return; }
+        if (result is RemoteNvencSession.HostDead or RemoteNvencSession.EncodeSlotTimeout or RemoteNvencSession.EncodeSlotAbandoned)
+        {
+            if (forceIdr) _keyframeRequested = true;         // просьба ключевого кадра не теряется
+            Diagnostics.PipelineProbe.ProcessInput.Add(start, Diagnostics.PipelineProbe.Now());
+        }
+        if (result == RemoteNvencSession.HostDead) { FailNvencHost(session, session.DeathReason); return; }
         if (result == RemoteNvencSession.EncodeSlotTimeout)
         {
             Interlocked.Increment(ref FramesDroppedRealQueue);
@@ -1046,11 +1060,11 @@ public sealed class VideoEncoder : IDisposable
     /// Хост NVENC умер или не ответил. NVENC при этом не запрещается: конвейер
     /// пересобирается с новым хостом (см. <see cref="NoteHostFailure"/>).
     /// </summary>
-    private void FailNvencHost(string reason)
+    private void FailNvencHost(RemoteNvencSession session, string reason)
     {
         if (_nvencFailed) return;
         _nvencFailed = true;
-        if (!reason.Contains("убит сторожем", StringComparison.Ordinal)) NoteHostFailure();
+        if (!session.ExpectedDeath) NoteHostFailure();
         Log.Error("Encoder", $"NVENC: {reason} — пересобираю конвейер с новым хостом");
         var handler = Failed;
         if (handler is not null) _ = Task.Run(() => handler(reason));
@@ -1058,6 +1072,16 @@ public sealed class VideoEncoder : IDisposable
 
     private void FailNvenc(string reason)
     {
+        // Ошибка NVENC в хосте: свежий процесс с новой сессией может и подняться,
+        // поэтому не запрещаем NVENC навсегда, а перезапускаем хост (после трёх
+        // отказов NoteHostFailure сам переведёт на MFT)
+        if (_nvenc is RemoteNvencSession remote)
+        {
+            Log.Error("Encoder", $"NVENC в хосте: {reason}. Состояние NVENC:\n{remote.Trace()}");
+            remote.Kill(reason);
+            FailNvencHost(remote, reason);
+            return;
+        }
         if (_nvencFailed) return;
         _nvencFailed = true;
         DirectNvencDisabled = true;
@@ -1161,7 +1185,7 @@ public sealed class VideoEncoder : IDisposable
             // Поток ждёт ответа хоста. Убитый хост отвечать перестаёт, вызов сразу
             // возвращается, и разбирать в Aura нечего бросать: видеопамять хоста
             // освобождает система.
-            stuckHost.Kill("поток NVENC не завершился при закрытии");
+            stuckHost.Kill("поток NVENC не завершился при закрытии", expected: true);
             loopExited = _eventThread?.Join(3000) ?? true;
         }
         if (!loopExited)
@@ -2152,6 +2176,17 @@ public sealed class VideoEncoder : IDisposable
         try { sample = tracked.Prepare(item.Texture, item.Ticks, _frameDurationTicks); }
         catch (Exception ex)
         {
+            if (tracked.ReleasedCount > 0 || tracked.SampleCount > 1)
+            {
+                // Отслеживание уже работало: в MFT есть кадры, слоты которых вернёт
+                // только обработчик. Переход на учёт по выходам посреди потока
+                // перепутал бы слоты — пересобираем конвейер.
+                _copyPool?.Release(item.Texture);
+                Log.Error("Encoder", $"Отслеживаемый образец MFT не подготовлен посреди работы ({ex.Message}) — пересобираю конвейер");
+                var handler = Failed;
+                if (handler is not null) _ = Task.Run(() => handler($"образец MFT: {ex.Message}"));
+                return true;
+            }
             Log.Warn("Encoder", $"Отслеживаемый образец MFT не подготовлен ({ex.Message}) — дальше слот по выходу");
             _mftTracked = null;
             tracked.Dispose();

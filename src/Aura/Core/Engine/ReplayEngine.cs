@@ -458,6 +458,8 @@ public sealed partial class ReplayEngine : IDisposable
             // видит, что она уже не текущая. Прошлая к этому моменту разобрана
             // или брошена целиком (StopLocked).
             var session = new PipelineSession(generation);
+            if (!_pipeline.IsEmpty)
+                Log.Warn("Engine", $"Новый конвейер поверх неразобранного: {_pipeline}");
             _pipeline = session;
             _pipeline.Capture = ScreenCaptureFactory.Create(CaptureSourceRequest.Create(
                 _captureBackend,

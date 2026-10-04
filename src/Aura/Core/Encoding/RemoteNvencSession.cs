@@ -82,6 +82,12 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     /// <summary>Почему хост мёртв — для лога.</summary>
     public string DeathReason { get; private set; } = "";
 
+    /// <summary>
+    /// Хост убила сама Aura по своей причине (сторож, бросание конвейера, закрытие),
+    /// а не он умер или завис сам. Такая смерть уже учтена или отказом не считается.
+    /// </summary>
+    public bool ExpectedDeath { get; private set; }
+
     public int ProcessId { get; }
 
     private RemoteNvencSession(MemoryMappedFile mapping, MemoryMappedViewAccessor view, EventWaitHandle request,
@@ -320,11 +326,12 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     }
 
     /// <summary>Убить хост: зависший драйвер в нём не мешает Aura, а память освободит Windows.</summary>
-    public void Kill(string reason)
+    public void Kill(string reason, bool expected = false)
     {
         if (_dead) return;
         _dead = true;
         DeathReason = reason;
+        ExpectedDeath = expected;
         Log.Warn("Encoder", $"{reason} — хост NVENC (PID {ProcessId}) убит, его видеопамять освободит система");
         try { if (!_process.HasExited) _process.Kill(); } catch { }
     }
