@@ -274,9 +274,19 @@ internal sealed partial class NvencSession : IDisposable
     /// один раз и копирует его в свой буфер: повторная блокировка того же выхода
     /// вешала драйвер на крупных ключевых кадрах (см. aura_nvenc_get).
     /// </summary>
+    /// <summary>NVENC не отпустил буфер выхода или вход (см. журнал вызовов): сессия непригодна.</summary>
+    public bool ReleaseFailed { get; private set; }
+
     public (ArraySegment<byte> Data, long Pts, int PictureType)? TryGet(uint timeoutMs)
     {
         int result = Get(_session, timeoutMs, out IntPtr data, out int size, out long pts, out int type);
+        if (result == 2)
+        {
+            // Кадр цел, но NVENC не отпустил буфер выхода или вход: слот больше
+            // нельзя переиспользовать, сессию надо пересоздать
+            ReleaseFailed = true;
+            result = 1;
+        }
         if (result == 1)
         {
             if (_output.Length < size) _output = new byte[Math.Max(size, _output.Length * 2)];

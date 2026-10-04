@@ -112,20 +112,25 @@ public sealed class PushToTalkGate
         }
     }
 
-    /// <summary>Открыт ли микрофон в момент <paramref name="ticks"/> с учётом задержки отпускания.</summary>
-    public bool IsOpenAt(long ticks) => HeldAt(ticks) || HeldAt(ticks - ReleaseHoldTicks);
-
-    private bool HeldAt(long ticks)
+    /// <summary>
+    /// Открыт ли микрофон в момент <paramref name="ticks"/>: клавиша зажата или
+    /// отпущена меньше <see cref="ReleaseHoldTicks"/> назад.
+    ///
+    /// Раньше было «зажата сейчас или 200 мс назад». Для короткого нажатия это
+    /// не хвост после отпускания: при нажатии 100 мс и отпускании 150 мс микрофон
+    /// закрывался на 175–225 мс и снова открывался на 300–325 мс (те моменты, где
+    /// 200 мс назад клавиша была зажата). Хвост считается от самого отпускания.
+    /// </summary>
+    public bool IsOpenAt(long ticks)
     {
         lock (_sync)
         {
-            bool held = false;
-            foreach (var (at, down) in _events)
-            {
-                if (at > ticks) break;
-                held = down;
-            }
-            return held;
+            int last = -1;
+            for (int i = 0; i < _events.Count && _events[i].Ticks <= ticks; i++) last = i;
+            if (last < 0) return false;
+            var (at, down) = _events[last];
+            // Хвост только у настоящего отпускания: перед ним было нажатие
+            return down || (last > 0 && ticks - at < ReleaseHoldTicks);
         }
     }
 

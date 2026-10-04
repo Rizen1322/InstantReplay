@@ -215,8 +215,17 @@ public sealed class FragmentedMp4Writer : IDisposable
             // записанное кадр пропускаем.
             long gap = position - _audioNextDts[track];
             if (gap < -Mp4AudioFormat.FrameSamples / 2) return;
+            // Раньше тишиной закрывались только разрывы до минуты, а после более
+            // длинного кадр ложился сразу за прошлым: весь звук дальше шёл раньше
+            // своего видео на длину разрыва. Кадр тишины AAC — десяток байт, так что
+            // и час разрыва стоит меньше двух мегабайт.
             byte[]? silence = _audio[track].SilentFrame;
-            if (gap > Mp4AudioFormat.FrameSamples / 2 && silence is not null && gap <= 60L * rate)
+            if (gap > Mp4AudioFormat.FrameSamples / 2 && silence is null)
+            {
+                // Нечем заполнить: хотя бы ставим кадр на его время, а не вплотную
+                _audioNextDts[track] = position;
+            }
+            else if (gap > Mp4AudioFormat.FrameSamples / 2 && silence is not null && gap <= 6L * 3600 * rate)
             {
                 long missing = (gap + Mp4AudioFormat.FrameSamples / 2) / Mp4AudioFormat.FrameSamples;
                 for (long m = 0; m < missing; m++)

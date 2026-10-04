@@ -365,22 +365,31 @@ public static class Mp4Defragment
     /// Спасти запись, которая осталась «.part» после падения или отключения
     /// питания: обрезать по последнему целому фрагменту, при одной звуковой
     /// дорожке сделать обычным MP4 (для Vegas) и переименовать в «… (восстановлено).mp4».
-    /// null — это не фрагментированная запись или в ней нет ни одного целого фрагмента.
+    /// Готовый обычный MP4 под именем «.part» (сбой между финализацией и
+    /// переименованием) тоже публикуется, а не удаляется.
+    /// null — ни целого фрагмента, ни готового файла.
     /// </summary>
     public static string? RecoverPart(string partPath)
     {
-        if (!partPath.EndsWith(".part", StringComparison.OrdinalIgnoreCase) || !IsFragmented(partPath)) return null;
-        using (var file = new FileStream(partPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        if (!partPath.EndsWith(".part", StringComparison.OrdinalIgnoreCase)) return null;
+        if (IsFragmented(partPath))
         {
-            var (end, fragments) = CompletePrefix(file);
-            if (fragments == 0) return null;
-            if (end < file.Length) file.SetLength(end);
-            file.Flush(flushToDisk: true);
+            using (var file = new FileStream(partPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                var (end, fragments) = CompletePrefix(file);
+                if (fragments == 0) return null;
+                if (end < file.Length) file.SetLength(end);
+                file.Flush(flushToDisk: true);
+            }
+            // Как у закрытой записи: гибридный файл становится обычным MP4. Не вышло —
+            // остаётся фрагментированным, он тоже играется.
+            try { ConvertFile(partPath); }
+            catch (Exception ex) { Aura.Core.Logging.Log.Warn("Recorder", $"Восстановленная запись осталась фрагментированной: {ex.Message}"); }
         }
-        // Как у закрытой записи: гибридный файл становится обычным MP4. Не вышло —
-        // остаётся фрагментированным, он тоже играется.
-        try { ConvertFile(partPath); }
-        catch (Exception ex) { Aura.Core.Logging.Log.Warn("Recorder", $"Восстановленная запись осталась фрагментированной: {ex.Message}"); }
+        else if (!IsCompleteProgressive(partPath))
+        {
+            return null;
+        }
 
         string final = partPath[..^".part".Length];
         string stem = Path.Combine(Path.GetDirectoryName(final)!, Path.GetFileNameWithoutExtension(final) + " (восстановлено)");
@@ -388,6 +397,42 @@ public static class Mp4Defragment
         for (int n = 2; File.Exists(target); n++) target = $"{stem} {n}.mp4";
         File.Move(partPath, target);
         return target;
+    }
+
+    /// <summary>
+    /// Обычный MP4 целиком: есть ftyp, moov с ключевыми кадрами видео и mdat,
+    /// и ни один верхний блок не выходит за конец файла.
+    /// </summary>
+    internal static bool IsCompleteProgressive(string path)
+    {
+        using (var file = File.OpenRead(path))
+        {
+            bool ftyp = false, moov = false, mdat = false;
+            long end = 0;
+            foreach (var box in TopLevel(file))
+            {
+                if (box.Type == "ftyp") ftyp = true;
+                else if (box.Type == "moov") moov = true;
+                else if (box.Type == "mdat") mdat = true;
+                end = box.Offset + box.Size;
+            }
+            if (!ftyp || !moov || !mdat || end > file.Length) return false;
+        }
+        return Mp4Keyframes.Read(path).Count > 0;
+    }
+
+    /// <summary>
+    /// Незавершённый файл точно пустой: ни целого фрагмента, ни готового MP4.
+    /// Только такой можно удалить; ошибка чтения не доказывает бесполезность.
+    /// </summary>
+    public static bool IsUnrecoverablePart(string path)
+    {
+        if (IsFragmented(path))
+        {
+            using var file = File.OpenRead(path);
+            return CompletePrefix(file).Fragments == 0;
+        }
+        return !IsCompleteProgressive(path);
     }
 
     private static bool ReadTraf(byte[] data, int start, int size,

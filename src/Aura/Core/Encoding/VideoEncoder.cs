@@ -548,6 +548,13 @@ public sealed class VideoEncoder : IDisposable
             // Общий пул нужен только на время от копии захвата до переноса на
             // устройство энкодера — очередь плюс запас.
             var pool = new EncoderTexturePool(device, encoderDevice, width, height, tenBit, slots: 24);
+            // Пул сломан, а не NVENC: пересобираем конвейер, прямой NVENC не запрещаем
+            pool.Corrupted += reason =>
+            {
+                if (_nvencFailed) return;
+                _nvencFailed = true;
+                Failed?.Invoke(reason);
+            };
 
             _nvenc = session;
             _nvencAdapter = new NvencLoadAdapter(fps, session.Settings.Multipass, session.Settings.SpatialAq == 1);
@@ -625,6 +632,11 @@ public sealed class VideoEncoder : IDisposable
                     if (TakeInput(20, out var dropped)) _copyPool?.Release(dropped.Texture);
                     continue;
                 }
+                if (session.ReleaseFailed)
+                {
+                    FailNvenc("NVENC не отпустил буфер выхода или вход (UnlockBitstream/UnmapInputResource)");
+                    continue;
+                }
                 // Проверка в --dev: энкодер один раз замолкает, как при зависании
                 if (Interlocked.Exchange(ref TestStallMs, 0) is int stallMs and > 0) Thread.Sleep(stallMs);
                 bool worked = false;
@@ -632,6 +644,11 @@ public sealed class VideoEncoder : IDisposable
                 {
                     DeliverNvenc(done.Data, done.Pts, done.PictureType, reorderTicks);
                     worked = true;
+                    if (session.ReleaseFailed)
+                    {
+                        FailNvenc("NVENC не отпустил буфер выхода или вход (UnlockBitstream/UnmapInputResource)");
+                        break;
+                    }
                 }
                 if (session.PendingCount < buffers && TakeInput(0, out var item))
                 {
@@ -2029,7 +2046,9 @@ public sealed class VideoEncoder : IDisposable
 
         _needInput.Release(4);      // будим питателя, если ждал запрос
         _inputAvailable.Release(4); // и если ждал кадр
-        _feedThread?.Join(2000);
+        // Питатель мог встать внутри ProcessInput: тогда он держит и MFT, и
+        // текстуры пула. Таймаут не разрешение их освобождать (см. ниже).
+        bool feedExited = _feedThread?.Join(2000) ?? true;
 
         // Пейсер держит КОНТЕКСТ захвата и текстуры пула: пока он жив, ни то ни
         // другое трогать нельзя. Секунды мало ровно в том сценарии, где он и
@@ -2039,19 +2058,28 @@ public sealed class VideoEncoder : IDisposable
         bool exited = _eventThread?.Join(2000) ?? true;
         lock (_queueLock) _inputQueue.Clear();
 
-        if (pacerExited) { _copyPool?.Dispose(); _copyPool = null; }
+        // Брошенное держим до конца процесса, а не отдаём сборщику: финализатор
+        // COM-объекта на зависшем устройстве повесил бы поток финализаторов, а с
+        // ним сборку мусора во всём приложении.
+        if (pacerExited && feedExited) { _copyPool?.Dispose(); _copyPool = null; }
         else
         {
-            Log.Warn("Encoder", "Пейсер не завершился за 5 секунд — пул текстур оставлен сборщику");
+            Log.Warn("Encoder", $"{(pacerExited ? "Питатель MFT" : "Пейсер")} не завершился — пул текстур брошен, не освобождён");
+            lock (s_abandonedNvenc) if (_copyPool is not null) s_abandonedNvenc.Add(_copyPool);
             _copyPool = null;
         }
-        if (!exited)
+        bool mftAbandoned = !exited || !feedExited;
+        if (mftAbandoned)
         {
-            // Поток так и висит в GetEvent — освобождать COM-объекты под ним нельзя
-            // (это и был краш при выключении). Утечка одного MFT безопаснее.
-            Log.Warn("Encoder", "Event-поток не завершился за 2 сек — MFT оставлен GC");
+            // Поток так и висит в GetEvent или ProcessInput — освобождать COM-объекты
+            // под ним нельзя (это и был краш при выключении). Утечка одного MFT безопаснее.
+            Log.Warn("Encoder", $"{(exited ? "Питатель" : "Event-поток")} MFT не завершился за 2 сек — MFT брошен, не освобождён");
+            lock (s_abandonedNvenc)
+                s_abandonedNvenc.AddRange(new object?[] { _eventGen, _transform, _deviceManager }
+                    .Where(o => o is not null).Cast<object>());
             _eventGen = null;
             _transform = null;
+            _deviceManager = null;
             _codecApi?.Abandon();   // отпускать нельзя: MFT ещё используется висящим потоком
         }
         else

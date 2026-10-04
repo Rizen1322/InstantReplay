@@ -623,6 +623,10 @@ AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t**
     t = trace_begin(s, API_UNLOCK, s->got);
     st = s->api.nvEncUnlockBitstream(s->encoder, slot->bitstream);
     trace_end(s, t, st);
+    // Неуспешное освобождение — не разрешение переиспользовать буфер и вход:
+    // данные кадра отдаём (они уже скопированы), но сообщаем, что сессия
+    // непригодна (2), и вызывающий её пересоздаёт
+    int releaseFailed = st != NV_ENC_SUCCESS;
 
     // Вход этого порядкового номера NVENC больше не держит
     EnterCriticalSection(&s->apiLock);
@@ -630,9 +634,11 @@ AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t**
         t = trace_begin(s, API_UNMAP, s->got);
         st = s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
         trace_end(s, t, st);
+        if (st != NV_ENC_SUCCESS) releaseFailed = 1;
         slot->mapped = NULL;
     }
     LeaveCriticalSection(&s->apiLock);
+    if (releaseFailed && result == 1) result = 2;
     EnterCriticalSection(&s->lock);
     s->got++;
     LeaveCriticalSection(&s->lock);

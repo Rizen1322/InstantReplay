@@ -591,6 +591,11 @@ public sealed partial class ReplayEngine : IDisposable
             _encodedStreamReady = !awaitingRestartKeyframe;
             encoder.FrameEncoded += frame =>
             {
+                // Пакет брошенного энкодера: после пересборки зависшая цепочка
+                // остаётся жить (см. AbandonWedgedPipeline) и может выдать кадр уже
+                // в новый повтор, подменив заголовок кодека. В буфер пишет только
+                // текущий энкодер.
+                if (!ReferenceEquals(Volatile.Read(ref _encoder), encoder)) return;
                 // До первого keyframe нового MFT кадры не добавляем: их
                 // нельзя декодировать от старого GOP. На keyframe уже доступен
                 // sequence header и можно безопасно решить, сохранять ли хвост.
@@ -792,7 +797,8 @@ public sealed partial class ReplayEngine : IDisposable
         }
     }
 
-    private void StopFrameWorker()
+    /// <summary>Остановить обработчик кадров. false — он не вышел и может ещё работать.</summary>
+    private bool StopFrameWorker()
     {
         FrameWorkerToken? token = _frameWorkerToken;
         _frameWorkerToken = null;
@@ -805,11 +811,12 @@ public sealed partial class ReplayEngine : IDisposable
         if (!stopped)
         {
             Log.Warn("Engine", "Обработчик кадра не завершился за 5 секунд");
-            return;
+            return false;
         }
 
         _frameReady?.Dispose();
         _frameReady = null;
+        return true;
     }
 
     /// <summary>Источник остановился или подтверждённо голодает.</summary>
@@ -925,9 +932,14 @@ public sealed partial class ReplayEngine : IDisposable
         _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
         {
             if (_stopRequested) return;
+            // Проверка и пауза под одним замком: иначе между ними возвращение
+            // человека снимало причину, а повтор создавал её заново уже после
+            // закончившегося события, и повтор вставал на паузу без причины
             lock (_lifecycle)
+            {
                 if (!_systemSuspendReasons.Contains(reason)) return;   // причину уже сняли
-            SuspendForSystem(reason);
+                SuspendForSystem(reason);
+            }
         }, TaskScheduler.Default);
     }
 
@@ -1147,8 +1159,12 @@ public sealed partial class ReplayEngine : IDisposable
         }
         _captureFrameHandler = null;
         _captureFailureHandler = null;
-        StopFrameWorker();
-        DrainFramesInFlight();
+        // Обработчик кадров, не вышедший за таймаут, всё ещё может сидеть внутри
+        // Convert или SubmitFrame. Таймаут не разрешение освобождать то, чем он
+        // пользуется: такой конвейер бросаем целиком, как и при зависшем захвате.
+        bool workerStopped = StopFrameWorker();
+        bool framesDrained = DrainFramesInFlight();
+        if (!workerStopped || !framesDrained) wedged = true;
 
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
@@ -1277,14 +1293,15 @@ public sealed partial class ReplayEngine : IDisposable
     /// энкодера: сносить конвейер силой рискованно, но зависнуть навсегда хуже.
     /// Раньше ожидания не было вовсе, так что даже с таймаутом это строго лучше.
     /// </summary>
-    private void DrainFramesInFlight()
+    private bool DrainFramesInFlight()
     {
         if (_frameGate.TryEnterWriteLock(TimeSpan.FromSeconds(5)))
         {
             _frameGate.ExitWriteLock();
-            return;
+            return true;
         }
-        Log.Warn("Engine", "Кадр не досчитался за 5 секунд — сношу конвейер не дожидаясь его");
+        Log.Warn("Engine", "Кадр не досчитался за 5 секунд — конвейер бросаю, не освобождая его объекты");
+        return false;
     }
 
     /// <summary>

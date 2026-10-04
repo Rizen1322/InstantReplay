@@ -286,6 +286,51 @@ public class Mp4MuxerTests
         Assert.True(nal + 4 <= firstSize);
     }
 
+    [Fact]
+    public void Long_audio_gap_is_filled_so_sound_stays_with_its_video()
+    {
+        // Разрыв звука в 90 с: раньше тишиной закрывалось только до минуты, и звук
+        // после разрыва ложился вплотную к прошлому, на 90 с раньше своего видео
+        var frames = H264Clip(960);                       // 96 с по 100 мс
+        var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1280, 720, [], frames[0].Item1)
+                     with { FrameRate = 10 };
+        var game = new Mp4AudioFormat(48000, 2, Mp4AudioFormat.AacLcConfig(48000, 2), 192000, "Game audio")
+                   { SilentFrame = [0x21, 0x10, 0x04, 0x60, 0x8C, 0x1C] };
+        var ms = new MemoryStream();
+        long frameTicks = 1024L * 10_000_000 / 48000;
+        long nextAudio = 0;
+        using (var writer = new FragmentedMp4Writer(ms, format, [game]))
+        {
+            var aac = new byte[300];
+            for (int i = 0; i < frames.Count; i++)
+            {
+                long pts = i * 1_000_000L;
+                writer.WriteVideo(frames[i].Item1, pts, pts, frames[i].Item2);
+                for (; nextAudio <= pts; nextAudio += frameTicks)
+                    if (nextAudio < 2 * 10_000_000L || nextAudio >= 92 * 10_000_000L)
+                        writer.WriteAudio(0, aac, nextAudio);
+            }
+            writer.Finish(1_000_000);
+        }
+        byte[] file = ms.ToArray();
+
+        // Дорожка звука — вторая: число кадров в её stsz покрывает все 96 с
+        var moov = Find(file, "moov");
+        int pos = moov.Offset + 8, audioSamples = -1, trak = 0;
+        while (pos < moov.Offset + moov.Size)
+        {
+            int size = (int)BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(pos));
+            if (System.Text.Encoding.ASCII.GetString(file, pos + 4, 4) == "trak" && ++trak == 2)
+            {
+                var stsz = Find(file, "mdia/minf/stbl/stsz", pos + 8, pos + size);
+                audioSamples = (int)BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsz.Offset + 16));
+            }
+            pos += size;
+        }
+        double seconds = audioSamples * 1024 / 48000.0;
+        Assert.InRange(seconds, 94, 98);
+    }
+
     private static List<string> TopLevelTypes(byte[] file)
     {
         var types = new List<string>();
@@ -368,6 +413,35 @@ public class Mp4MuxerTests
             string junk = Path.Combine(dir, "Clip.mp4.part");
             File.WriteAllBytes(junk, new byte[4096]);
             Assert.Null(Mp4Defragment.RecoverPart(junk));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void Finished_clip_left_as_part_is_published_not_deleted()
+    {
+        // Сбой между финализацией и переименованием: готовый обычный MP4 под «.part»
+        string dir = Path.Combine(Path.GetTempPath(), $"aura-done-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string done = Path.Combine(dir, "Clip.mp4");
+            File.WriteAllBytes(done, CrashedRecording(400));
+            Assert.True(Mp4Defragment.ConvertFile(done));
+            Assert.False(Mp4Defragment.IsFragmented(done));
+            Assert.NotEmpty(Mp4Keyframes.Read(done));
+
+            string part = done + ".part";
+            File.Move(done, part);
+            Assert.False(Mp4Defragment.IsUnrecoverablePart(part));
+            string? saved = Mp4Defragment.RecoverPart(part);
+            Assert.NotNull(saved);
+            Assert.True(File.Exists(saved));
+            Assert.NotEmpty(Mp4Keyframes.Read(saved!));
+
+            string junk = Path.Combine(dir, "Junk.mp4.part");
+            File.WriteAllBytes(junk, new byte[4096]);
+            Assert.True(Mp4Defragment.IsUnrecoverablePart(junk));
         }
         finally { Directory.Delete(dir, recursive: true); }
     }

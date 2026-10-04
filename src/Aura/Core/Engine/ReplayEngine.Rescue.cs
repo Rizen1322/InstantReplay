@@ -12,26 +12,40 @@ namespace Aura.Core.Engine;
 /// ЗАЧЕМ. Если NVENC по-настоящему умер и конвейер пересобран на MFT, новый поток
 /// описан другим заголовком кодека, и склеить его со старыми кадрами в один файл
 /// нельзя. Раньше старая часть буфера просто стиралась: минуты повтора пропадали
-/// ровно тогда, когда в игре что-то случилось. Теперь она сразу пишется в фоне во
-/// временный файл рядом с буфером. Нажал «сохранить», пока эта часть ещё в окне
-/// повтора — она ляжет в библиотеку отдельным клипом «(до сбоя)». Не нажал —
-/// файл удаляется, как удалились бы и сами кадры, выйдя за окно.
+/// ровно тогда, когда в игре что-то случилось.
+///
+/// Теперь старая часть остаётся в ПАМЯТИ отдельным снимком со своим заголовком
+/// кодека. На диск до нажатия «Сохранить» не пишется ничего: в 2.0.35 она сразу
+/// писалась во временный файл, а повтор не должен оставлять видео на диске без
+/// команды человека. Нажал «Сохранить», пока часть ещё в окне повтора, — она
+/// ложится в библиотеку отдельным клипом «(до сбоя)». Вышла за окно или повтор
+/// выключен — снимок отпускается вместе со старой ареной.
+///
+/// Цена: пока снимок жив, старая арена занимает память рядом с новой. Это одна
+/// арена и не дольше длины повтора.
 /// </summary>
 public sealed partial class ReplayEngine
 {
-    private sealed record RescuedPart(string Path, long EndTicks, int Seconds, string Game, DateTime CapturedAt);
+    private sealed record RescuedPart(
+        VideoSnapshot Video,
+        SnapshotLease Lease,
+        Mp4VideoFormat Format,
+        List<(AudioTrackKind, Mp4AudioFormat)> AudioTracks,
+        long StartTicks,
+        long EndTicks,
+        int Seconds,
+        string Game,
+        DateTime CapturedAt);
 
     private readonly object _rescueSync = new();
     private RescuedPart? _rescued;
-
-    private static string RescueDirectory() => Path.Combine(ReplayVideoBuffer.DiskDirectory, "rescue");
 
     private static long NowTicks() =>
         (long)(System.Diagnostics.Stopwatch.GetTimestamp() * (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
 
     /// <summary>
-    /// Забрать из буфера всё, что накоплено старым энкодером, и записать в фоне.
-    /// Буфер после этого пустой и копит уже кадры нового энкодера.
+    /// Отделить всё, что накоплено старым энкодером. Буфер после этого пустой и
+    /// копит уже кадры нового энкодера; старые кадры живут в снимке.
     /// </summary>
     private void RescueBufferBeforeFormatChange(byte[]? sequenceHeader, VideoCodec codec, int width, int height, int fps)
     {
@@ -64,41 +78,27 @@ public sealed partial class ReplayEngine
         var audioTracks = new List<(AudioTrackKind, Mp4AudioFormat)>();
         foreach (var kind in ReplaySaver.TracksFor(s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone))
             if (_audio.FormatOf(kind) is { } audioFormat) audioTracks.Add((kind, audioFormat));
-        string game = GameForClip();
-        DateTime capturedAt = DateTime.Now;
 
-        Log.Warn("Engine", $"Энкодер сменился — {seconds} с повтора до сбоя сохраняю отдельно, чтобы не потерять");
-        _ = Task.Run(() =>
+        var part = new RescuedPart(video, lease, format, audioTracks, start, end, seconds, GameForClip(), DateTime.Now);
+        lock (_rescueSync)
         {
-            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
-            try
-            {
-                string dir = RescueDirectory();
-                Directory.CreateDirectory(dir);
-                var audio = WaitAndSnapshotAudio(start, end);
-                string written = ReplaySaver.Save(Path.Combine(dir, Guid.NewGuid().ToString("N") + ".mp4"),
-                                                  video, format, audio, audioTracks, null, gentleIo: true);
-                lock (_rescueSync)
-                {
-                    DeleteRescuedLocked();
-                    _rescued = new RescuedPart(written, end, seconds, game, capturedAt);
-                }
-                Log.Info("Engine", $"Повтор до сбоя ждёт сохранения: {seconds} с");
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("Engine", $"Повтор до сбоя не записался: {ex.Message}");
-            }
-            finally
-            {
-                lease.Dispose();
-            }
-        });
+            _rescued?.Lease.Dispose();
+            _rescued = part;
+        }
+        Log.Warn("Engine", $"Энкодер сменился — {seconds} с повтора до сбоя держу в памяти отдельно до сохранения " +
+                           $"({video.TotalBytes / (1024 * 1024)} МБ)");
+    }
+
+    /// <summary>Есть ли часть до сбоя, ещё входящая в окно повтора.</summary>
+    private bool HasRescued(long windowTicks)
+    {
+        lock (_rescueSync) return _rescued is { } part && NowTicks() - part.EndTicks <= windowTicks;
     }
 
     /// <summary>
     /// Человек сохраняет повтор: часть до сбоя, если она ещё в окне
-    /// <paramref name="windowTicks"/>, уходит в библиотеку. Возвращает путь или null.
+    /// <paramref name="windowTicks"/>, записывается отдельным клипом. Зовётся из
+    /// фоновой задачи сохранения: запись файла идёт здесь же.
     /// </summary>
     private (string Path, int Seconds)? PublishRescued(long windowTicks)
     {
@@ -109,69 +109,66 @@ public sealed partial class ReplayEngine
             _rescued = null;
         }
         if (part is null) return null;
-        if (NowTicks() - part.EndTicks > windowTicks)
-        {
-            TryDelete(part.Path);
-            return null;
-        }
 
-        string target = ReserveFilePath(part.Game, "replay", part.CapturedAt);
+        string? reserved = null;
         try
         {
+            if (NowTicks() - part.EndTicks > windowTicks) return null;
+
+            reserved = ReserveFilePath(part.Game, "replay", part.CapturedAt);
             string named = Storage.FileNaming.NextAvailablePath(
-                Path.Combine(Path.GetDirectoryName(target)!,
-                             Path.GetFileNameWithoutExtension(target) + " (до сбоя)" + Path.GetExtension(target)),
+                Path.Combine(Path.GetDirectoryName(reserved)!,
+                             Path.GetFileNameWithoutExtension(reserved) + " (до сбоя)" + Path.GetExtension(reserved)),
                 File.Exists);
-            Directory.CreateDirectory(Path.GetDirectoryName(named)!);
-            File.Move(part.Path, named);
-            _storage.RegisterSaved(named);
-            Log.Info("Engine", $"Повтор до сбоя сохранён: {named}");
-            return (named, part.Seconds);
+            var audio = WaitAndSnapshotAudio(part.StartTicks, part.EndTicks);
+            bool inGame = !string.Equals(part.Game, "Desktop", StringComparison.OrdinalIgnoreCase);
+            string published = SaveWithRescue(named, part.Video, part.Format, audio, part.AudioTracks, inGame);
+            _storage.RegisterSaved(published);
+            Log.Info("Engine", $"Повтор до сбоя сохранён: {published}");
+            return (published, part.Seconds);
         }
         catch (Exception ex)
         {
-            Log.Warn("Engine", $"Повтор до сбоя не перенесён в библиотеку: {ex.Message}");
-            TryDelete(part.Path);
+            Log.Warn("Engine", $"Повтор до сбоя не сохранён: {ex.Message}");
             return null;
         }
         finally
         {
-            ReleaseFilePath(target);
+            part.Lease.Dispose();
+            if (reserved is not null) ReleaseFilePath(reserved);
         }
     }
 
-    /// <summary>Часть до сбоя вышла за окно повтора или повтор выключен: удалить.</summary>
+    /// <summary>Часть до сбоя вышла за окно повтора или повтор выключен: отпустить память.</summary>
     private void ExpireRescued(bool force)
     {
+        RescuedPart? expired = null;
         lock (_rescueSync)
         {
             if (_rescued is null) return;
             long window = TimeSpan.FromSeconds(_settings.Current.ReplayLengthSeconds).Ticks;
-            if (force || NowTicks() - _rescued.EndTicks > window) DeleteRescuedLocked();
+            if (force || NowTicks() - _rescued.EndTicks > window)
+            {
+                expired = _rescued;
+                _rescued = null;
+            }
         }
+        if (expired is null) return;
+        expired.Lease.Dispose();
+        Log.Info("Engine", "Повтор до сбоя вышел за окно повтора — память отпущена");
     }
 
-    private void DeleteRescuedLocked()
-    {
-        if (_rescued is null) return;
-        TryDelete(_rescued.Path);
-        _rescued = null;
-    }
-
-    /// <summary>Остатки прошлого запуска: их уже никто не сохранит.</summary>
+    /// <summary>
+    /// Остатки 2.0.35: тогда часть до сбоя писалась во временную папку на диске.
+    /// Теперь там ничего не появляется, а старые файлы убираются.
+    /// </summary>
     internal static void PurgeRescueLeftovers()
     {
         try
         {
-            string dir = RescueDirectory();
-            if (!Directory.Exists(dir)) return;
-            foreach (string file in Directory.EnumerateFiles(dir)) TryDelete(file);
+            string dir = Path.Combine(ReplayVideoBuffer.DiskDirectory, "rescue");
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
         catch { }
-    }
-
-    private static void TryDelete(string path)
-    {
-        try { File.Delete(path); } catch { }
     }
 }

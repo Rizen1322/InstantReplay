@@ -421,7 +421,13 @@ public partial class App : Application
 
                 string? saved = null;
                 try { saved = Core.Saving.Mp4.Mp4Defragment.RecoverPart(file); }
-                catch (Exception ex) { Log.Warn("App", $"Запись «{info.Name}» не восстановлена: {ex.Message}"); }
+                catch (Exception ex)
+                {
+                    // Ошибка чтения не доказывает, что файл бесполезен: не удаляем,
+                    // попробуем при следующем запуске
+                    Log.Warn("App", $"Запись «{info.Name}» не восстановлена, файл оставлен: {ex.Message}");
+                    continue;
+                }
                 if (saved is not null)
                 {
                     Services.Storage.RegisterSaved(saved);
@@ -430,6 +436,11 @@ public partial class App : Application
                     continue;
                 }
                 if (!File.Exists(file)) continue;
+                if (!Core.Saving.Mp4.Mp4Defragment.IsUnrecoverablePart(file))
+                {
+                    Log.Warn("App", $"Незавершённый файл «{info.Name}» не опознан, оставлен как есть");
+                    continue;
+                }
                 freed += info.Length;
                 File.Delete(file);
                 removed++;

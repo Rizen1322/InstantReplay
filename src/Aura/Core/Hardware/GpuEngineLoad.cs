@@ -64,6 +64,9 @@ internal sealed class GpuEngineLoad : IDisposable
             for (int i = 0; i < count; i++)
             {
                 var item = Marshal.PtrToStructure<PdhFmtCounterValueItemDouble>(buffer + i * itemSize);
+                // Недостоверное значение (процесс только что исчез, счётчик ещё не
+                // готов) не считаем: нулём или мусором оно исказило бы максимум
+                if (item.CStatus is not (PdhCstatusValidData or PdhCstatusNewData)) continue;
                 string name = Marshal.PtrToStringUni(item.Name) ?? "";
                 // «pid_1234_luid_0x…_phys_0_eng_3_engtype_3D»: движок — всё после pid
                 int luid = name.IndexOf("luid_", StringComparison.Ordinal);
@@ -82,6 +85,7 @@ internal sealed class GpuEngineLoad : IDisposable
     }
 
     private const uint PdhFmtDouble = 0x00000200;
+    private const uint PdhCstatusValidData = 0, PdhCstatusNewData = 1;
     private const int PdhMoreData = unchecked((int)0x800007D2);
 
     [StructLayout(LayoutKind.Sequential)]

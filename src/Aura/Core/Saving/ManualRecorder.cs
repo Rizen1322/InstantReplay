@@ -46,6 +46,23 @@ public sealed class ManualRecorder : IDisposable
     private readonly long _frameDurationTicks;
 
     private long _baseTicks = -1;
+    // Конец показа последнего принятого видеокадра (абсолютное время) и граница,
+    // после которой звук больше не нужен: видео уже остановлено (см. SealVideo)
+    private long _lastVideoEndTicks = long.MinValue;
+    private long _audioLimitTicks = long.MaxValue;
+
+    /// <summary>Конец показа последнего видеокадра записи; MinValue — кадров не было.</summary>
+    public long LastVideoEndTicks => Interlocked.Read(ref _lastVideoEndTicks);
+
+    /// <summary>
+    /// Видео записи закончилось: звук принимается только до конца последнего кадра.
+    ///
+    /// ЗАЧЕМ. Микшер сводит звук с отставанием в 200 мс. Раньше на «Стоп» запись
+    /// отписывалась от звука сразу вместе с видео, и последние 200 мс звука в файл
+    /// не попадали. Теперь видео отключается сразу, звук дожидается конца видео,
+    /// а всё, что позже, отбрасывается.
+    /// </summary>
+    public void SealVideo() => Interlocked.Exchange(ref _audioLimitTicks, LastVideoEndTicks);
     private volatile bool _finished;
     private volatile string? _error;
     private long _droppedFrames;
@@ -130,6 +147,9 @@ public sealed class ManualRecorder : IDisposable
             _droppingUntilKeyframe = false;
         }
 
+        long end = f.PtsTicks + Math.Max(0, f.DurationTicks);
+        if (end > Interlocked.Read(ref _lastVideoEndTicks)) Interlocked.Exchange(ref _lastVideoEndTicks, end);
+
         // Буфер кадра живёт только на время события энкодера — копируем себе.
         var copy = ArrayPool<byte>.Shared.Rent(f.Length);
         Buffer.BlockCopy(f.Data, f.Offset, copy, 0, f.Length);
@@ -142,6 +162,7 @@ public sealed class ManualRecorder : IDisposable
         if (_finished || _error is not null) return;
         long baseTicks = Volatile.Read(ref _baseTicks);
         if (baseTicks < 0) return;             // видео ещё не началось — звуку не от чего считать
+        if (ptsTicks >= Interlocked.Read(ref _audioLimitTicks)) return;   // видео уже кончилось
 
         int track = -1;
         for (int i = 0; i < _audio.Count; i++)
@@ -301,7 +322,9 @@ public sealed class ManualRecorder : IDisposable
         catch (Exception ex)
         {
             // Фрагменты, которые уже на диске, играются и без хвоста: файл оставляем.
+            // Но это не обычный успех: человек узнаёт, что конец записи потерян.
             Log.Error("Recorder", $"Хвост записи не дописался: {ex.Message}");
+            _partial = $"конец записи не дописался ({ex.Message}), сохранено то, что успело";
             try { bytes = file.Length; } catch { }
         }
         finally
@@ -334,6 +357,9 @@ public sealed class ManualRecorder : IDisposable
             Fail($"запись сохранена как «{_publishedPath}», переименовать не удалось: {ex.Message}");
         }
     }
+
+    /// <summary>Файл опубликован, но не целиком: пояснение для человека.</summary>
+    private volatile string? _partial;
 
     private void Fail(string message)
     {
@@ -382,7 +408,7 @@ public sealed class ManualRecorder : IDisposable
         // Кончилось место посреди записи — записанное всё равно целое и открывается:
         // отдаём его как сохранённое, но с пояснением.
         return new Result(exists && (_error is null || _error.StartsWith("на диске", StringComparison.Ordinal)),
-                          seconds, _error, exists ? [FilePath] : []);
+                          seconds, _error ?? _partial, exists ? [FilePath] : []);
     }
 
     private int Seconds => (int)Math.Round(Elapsed.Elapsed.TotalSeconds);

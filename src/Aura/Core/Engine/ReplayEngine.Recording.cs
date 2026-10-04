@@ -311,6 +311,16 @@ public sealed partial class ReplayEngine
         }
     }
 
+    /// <summary>Дождаться, пока микшер сведёт звук до <paramref name="ticks"/> (не дольше секунды).</summary>
+    private void WaitForAudioUpTo(long ticks)
+    {
+        if (ticks == long.MinValue || !_audio.IsRunning) return;
+        long need = ticks + ReplayAudioBuffer.FrameTicks * 2;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (_audio.IsRunning && _audio.MixedUpToTicks < need && clock.ElapsedMilliseconds < 1000)
+            Thread.Sleep(20);
+    }
+
     /// <summary>Счётчики NVENC в начале записи в файл: в конце печатаем разницу.</summary>
     private NvencStats.Snapshot _recorderNvencStats;
 
@@ -326,7 +336,9 @@ public sealed partial class ReplayEngine
         if (encoder is not null && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
         _recorderFrameHandler = null;
         _recorderDetached = false;
-        _audio.FrameEncoded -= recorder.OnAudio;
+        // Видео отключено. Звук сводится на 200 мс позже, поэтому от него запись
+        // отписывается только когда микшер дойдёт до конца последнего кадра
+        recorder.SealVideo();
         bool part = _splittingRecording;
         if (!part) RecordingChanged?.Invoke(false);
 
@@ -334,6 +346,8 @@ public sealed partial class ReplayEngine
         {
             try
             {
+                WaitForAudioUpTo(recorder.LastVideoEndTicks);
+                _audio.FrameEncoded -= recorder.OnAudio;
                 var result = recorder.Finish();
 
                 // Индекс наполняем ТОЛЬКО удачными файлами. Раньше RegisterSaved шёл до

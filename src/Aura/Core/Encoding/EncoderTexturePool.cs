@@ -179,7 +179,14 @@ internal sealed class EncoderTexturePool : IDisposable
             var shared = _shared[slot]!;
             // Свободный слот энкодер уже вернул ключом 0, так что ждать тут нечего;
             // таймаут — на случай сбоя, чтобы не повесить поток захвата.
-            if (AcquireSync(shared.CaptureLock, 0, 20) != 0)
+            int acquired = AcquireSync(shared.CaptureLock, 0, 20);
+            if (acquired == WaitAbandoned)
+            {
+                // Слот в карантин: в учёт не возвращаем, пиксели не трогаем
+                ReportAbandoned();
+                return null;
+            }
+            if (acquired != 0)
             {
                 // Слот свободен по учёту, но стоит на ключе 1 (вытеснение из очереди
                 // не смогло вернуть ключ). Возвращаем ключ сами, иначе слот потерян.
@@ -274,7 +281,9 @@ internal sealed class EncoderTexturePool : IDisposable
     {
         if (_shared is null || !TrySlotOf(capture, out int slot)) return null;
         var shared = _shared[slot]!;
-        return AcquireSync(shared.EncoderLock, 1, timeoutMs) == 0 ? shared.Encoder : null;
+        int acquired = AcquireSync(shared.EncoderLock, 1, timeoutMs);
+        if (acquired == WaitAbandoned) ReportAbandoned();
+        return acquired == 0 ? shared.Encoder : null;
     }
 
     /// <summary>Общий режим, поток энкодера: кадр скопирован — слот снова свободен (ключ 0).</summary>
@@ -298,6 +307,28 @@ internal sealed class EncoderTexturePool : IDisposable
         void** vtable = *(void***)mutex.NativePointer;
         var acquire = (delegate* unmanaged[Stdcall]<nint, ulong, uint, int>)vtable[8];
         return acquire(mutex.NativePointer, key, milliseconds);
+    }
+
+    /// <summary>
+    /// WAIT_ABANDONED: второе устройство отпустило общую текстуру, не вернув ключ
+    /// (его снесли посреди работы). По контракту DXGI текстура и ключ после этого
+    /// несогласованы, и перебор ключей их не чинит. Слот уходит в карантин, а
+    /// энкодер просит пересобрать пул на новых текстурах.
+    /// </summary>
+    private const int WaitAbandoned = 0x80;
+
+    private int _abandonedReported;
+
+    /// <summary>Общая текстура пула стала несогласованной: пул нужно пересоздать.</summary>
+    public event Action<string>? Corrupted;
+
+    private void ReportAbandoned()
+    {
+        if (Interlocked.Exchange(ref _abandonedReported, 1) != 0) return;
+        const string reason = "ключ общей текстуры пула брошен (WAIT_ABANDONED)";
+        Log.Error("Encoder", $"{reason} — пул нужно пересоздать");
+        var handler = Corrupted;
+        if (handler is not null) ThreadPool.QueueUserWorkItem(_ => handler(reason));
     }
 
     private bool TrySlotOf(ID3D11Texture2D texture, out int slot)

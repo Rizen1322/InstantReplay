@@ -235,17 +235,18 @@ public sealed class AudioMixerEngine : IDisposable
             }
             catch (Exception ex)
             {
-                // Звук одной игры не открылся. Пишем весь звук, чтобы запись не
-                // осталась немой, но от выбора не отказываемся: раньше одна неудача
-                // (например, игра ещё только запускалась) до перезапуска навсегда
-                // переключала на весь звук. Теперь через полминуты пробуем снова.
+                // Звук одной игры не открылся. Весь звук компьютера вместо неё НЕ
+                // пишем: человек выбрал одну игру, а в клип попали бы звонок, браузер
+                // и уведомления. Раньше так и было (с предупреждением). Теперь тишина
+                // и новая попытка через полминуту, как при не запущенной игре.
                 Volatile.Write(ref _processRetryAfter, Environment.TickCount64 + ProcessRetryMs);
                 if (++_processFailures is 1 or 2 or 10 or 100)
                     Log.Warn("Audio", $"Звук только из {processName} не открылся ({ex.Message}), " +
-                                      $"пока пишу весь звук, повторю через 30 с ({_processFailures}-й раз)");
+                                      $"пока пишу тишину, повторю через 30 с ({_processFailures}-й раз)");
                 if (!_processFallbackWarned)
-                    Warning?.Invoke("Звук выбранной игры не открылся, пока пишется весь звук компьютера");
+                    Warning?.Invoke("Звук выбранной игры не открылся. Пока он не пишется, Aura повторит попытку сама");
                 _processFallbackWarned = true;
+                return null;
             }
         }
         try
@@ -286,8 +287,9 @@ public sealed class AudioMixerEngine : IDisposable
             }
             // Весь звук вместо закрывшейся игры не оставляем: до её запуска тишина
             if (wanted == current && !(fallback && wanted is null)) return;
-            // Сейчас пишется весь звук после неудачи: новую попытку не раньше срока
-            if (fallback && wanted is not null &&
+            // После неудачи (сейчас тишина или старый общий источник) новую попытку
+            // не раньше срока
+            if ((fallback || current is null) && wanted is not null &&
                 Environment.TickCount64 < Volatile.Read(ref _processRetryAfter)) return;
 
             WasapiSource? replacement = wanted is null ? null : OpenSource(loopback: true);
@@ -335,7 +337,10 @@ public sealed class AudioMixerEngine : IDisposable
                 bool affectsGame = flow == DataFlow.Render && _wantGame && _renderDeviceId is null && _gameProcess is null;
                 bool affectsMic = flow == DataFlow.Capture && _wantMic && _captureDeviceId is null;
                 if (affectsGame || affectsMic) RestartSource(flow);
-            });
+            },
+            // Появилось или включилось устройство: если источник ждёт своё
+            // устройство, пробуем сразу, а не через минуту
+            () => _deviceArrived.Set());
             _deviceWatchEnumerator.RegisterEndpointNotificationCallback(_deviceWatcher);
         }
         catch (Exception ex) { Log.Warn("Audio", $"Слежение за устройствами недоступно: {ex.Message}"); }
@@ -355,11 +360,18 @@ public sealed class AudioMixerEngine : IDisposable
             // Windows шлёт уведомление до того, как новое устройство готово. А
             // выдернутые наушники или засыпающий USB-микрофон бывают недоступны
             // дольше: раньше одна неудачная попытка оставляла запись без звука до
-            // перезапуска. Теперь пробуем ещё несколько раз с растущей паузой.
-            int[] delays = [300, 1000, 2000, 4000, 8000, 15000, 30000];
-            foreach (int delay in delays)
+            // перезапуска. Теперь пробуем с растущей паузой, а потом раз в минуту,
+            // пока устройство не вернётся: выбранный USB-микрофон, воткнутый через
+            // пять минут, тоже должен подхватиться. Появление любого устройства
+            // будит попытку сразу.
+            int attempt = 0;
+            foreach (int delay in RecoveryDelays())
             {
-                Thread.Sleep(delay);
+                if (attempt++ == InitialRecoveryAttempts)
+                    Log.Warn("Audio", $"{(loopback ? "Звук игры" : "Микрофон")}: устройство пока недоступно, " +
+                                      "жду его появления");
+                if (delay <= 1000) Thread.Sleep(delay);
+                else _deviceArrived.WaitOne(delay);
                 if (!_running || generation != Volatile.Read(ref _generation)) return;
 
                 WasapiSource? replacement;
@@ -394,19 +406,33 @@ public sealed class AudioMixerEngine : IDisposable
                 old?.Dispose();
                 return;
             }
-            Log.Warn("Audio", $"{(loopback ? "Звук игры" : "Микрофон")}: устройство так и не стало доступно");
         });
     }
 
-    private sealed class DefaultDeviceWatcher(Action<DataFlow> onDefaultChanged) : IMMNotificationClient
+    private const int InitialRecoveryAttempts = 7;
+
+    /// <summary>Паузы между попытками: сначала быстро, потом раз в минуту без конца.</summary>
+    private static IEnumerable<int> RecoveryDelays()
+    {
+        foreach (int delay in new[] { 300, 1000, 2000, 4000, 8000, 15000, 30000 }) yield return delay;
+        while (true) yield return 60_000;
+    }
+
+    /// <summary>Будит ожидающее восстановление источника: в системе появилось устройство.</summary>
+    private readonly AutoResetEvent _deviceArrived = new(false);
+
+    private sealed class DefaultDeviceWatcher(Action<DataFlow> onDefaultChanged, Action onDeviceArrived) : IMMNotificationClient
     {
         public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
         {
             if (role == Role.Multimedia) onDefaultChanged(flow);
         }
 
-        public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
-        public void OnDeviceAdded(string pwstrDeviceId) { }
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState)
+        {
+            if (newState == DeviceState.Active) onDeviceArrived();
+        }
+        public void OnDeviceAdded(string pwstrDeviceId) => onDeviceArrived();
         public void OnDeviceRemoved(string deviceId) { }
         public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
     }

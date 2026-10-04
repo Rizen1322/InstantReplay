@@ -84,11 +84,18 @@ public sealed partial class ReplayEngine
         // восстановления терялось молча — ровно в тот момент, когда игра дёрнулась.
         if (_videoBuffer.TotalBytes == 0 || _bufferSequenceHeader is null && _bufferCodec != VideoCodec.AV1)
         {
-            // Новый энкодер ещё ничего не накопил, но часть до сбоя лежит готовой
-            if (PublishRescued(TimeSpan.FromSeconds(secondsOverride ?? _settings.Current.ReplayLengthSeconds).Ticks)
-                is { } rescuedOnly)
+            // Новый энкодер ещё ничего не накопил, но часть до сбоя лежит в памяти.
+            // Запись файла в фоне: здесь держится замок жизненного цикла.
+            long rescueWindow = TimeSpan.FromSeconds(secondsOverride ?? _settings.Current.ReplayLengthSeconds).Ticks;
+            if (HasRescued(rescueWindow))
             {
-                ReplaySaved?.Invoke(rescuedOnly.Path, rescuedOnly.Seconds);
+                _ = Task.Run(() =>
+                {
+                    if (PublishRescued(rescueWindow) is { } rescuedOnly)
+                        ReplaySaved?.Invoke(rescuedOnly.Path, rescuedOnly.Seconds);
+                    else
+                        SaveFailed?.Invoke("Буфер ещё пуст");
+                });
                 return;
             }
             SaveFailed?.Invoke(_state == EngineState.Recovering

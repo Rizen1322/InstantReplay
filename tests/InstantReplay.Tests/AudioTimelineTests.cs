@@ -128,6 +128,42 @@ public class AudioTimelineTests
     }
 
     [Fact]
+    public void Short_push_to_talk_tap_holds_continuously_without_reopening()
+    {
+        // Нажатие 100 мс, отпускание 150 мс: открыт непрерывно до 350 мс, потом закрыт
+        var gate = new PushToTalkGate();
+        const long ms = 10_000;
+        gate.Set(true, 100 * ms);
+        gate.Set(false, 150 * ms);
+        foreach (long t in new long[] { 100, 149, 175, 225, 300, 349 })
+            Assert.True(gate.IsOpenAt(t * ms), $"{t} мс");
+        foreach (long t in new long[] { 99, 350, 400, 500 })
+            Assert.False(gate.IsOpenAt(t * ms), $"{t} мс");
+    }
+
+    [Fact]
+    public void Overlapping_push_to_talk_taps_keep_one_tail()
+    {
+        var gate = new PushToTalkGate();
+        const long ms = 10_000;
+        gate.Set(true, 100 * ms);
+        gate.Set(false, 150 * ms);
+        gate.Set(true, 250 * ms);     // второе нажатие внутри хвоста первого
+        gate.Set(false, 260 * ms);
+        foreach (long t in new long[] { 200, 255, 300, 459 })
+            Assert.True(gate.IsOpenAt(t * ms), $"{t} мс");
+        Assert.False(gate.IsOpenAt(460 * ms));
+    }
+
+    [Fact]
+    public void Release_without_press_does_not_open()
+    {
+        var gate = new PushToTalkGate();
+        gate.Set(false, 10_000_000);
+        Assert.False(gate.IsOpenAt(10_000_000 + 50_000));
+    }
+
+    [Fact]
     public void Push_to_talk_orders_events_by_time_not_arrival()
     {
         var gate = new PushToTalkGate();

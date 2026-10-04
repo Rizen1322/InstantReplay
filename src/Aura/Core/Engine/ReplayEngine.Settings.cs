@@ -258,8 +258,19 @@ public sealed partial class ReplayEngine
             // Тот же источник не поднялся (окно игры закрылось и т. п.) — обычный
             // полный старт с выбором источника.
             Log.Warn("Engine", $"Пересборка с сохранением не удалась ({ex.Message}) — запускаю заново");
+            // Намерение человека переживает полный перезапуск: шла запись в файл —
+            // она продолжится новым файлом, а не оборвётся молча. Раньше обычный
+            // StopLocked закрывал запись, и после старта её уже никто не возобновлял.
+            bool keepRecording = _continuousRecordingRequested;
+            bool recordingOnly = _recordingOnly;
             if (_state != EngineState.Stopped) StopLocked();
             StartWithFallbackLocked(preserveBuffers: false);
+            _recordingOnly = recordingOnly;
+            if (keepRecording)
+            {
+                _continuousRecordingRequested = true;
+                ResumeRecordingLocked();
+            }
         }
     }
 }
