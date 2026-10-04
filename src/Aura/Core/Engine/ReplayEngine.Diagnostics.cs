@@ -558,8 +558,8 @@ public sealed partial class ReplayEngine
     [System.Runtime.InteropServices.DllImport("kernel32.dll")]
     private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx status);
 
-    /// <summary>Порог молчания энкодера, после которого конвейер считается вставшим.</summary>
-    private const double EncoderWedgeSeconds = 4;
+    /// <summary>До какого времени считать видеокарту занятой игрой (см. EncoderStallPolicy).</summary>
+    private DateTime _wdSlowUntil;
 
     /// <summary>
     /// Встал ли конвейер целиком. Главный признак жизни — закодированные кадры:
@@ -570,9 +570,10 @@ public sealed partial class ReplayEngine
     /// один замок). Раньше такой конвейер стоял до перезапуска программы: на DDA
     /// сторожа не было вовсе, а на WGC он смотрел только на кадры захвата.
     /// </summary>
-    private bool EncoderWedged(out double stuck)
+    private bool EncoderWedged(out double stuck, out bool starving)
     {
         stuck = 0;
+        starving = false;
         var encoder = _encoder;
         if (encoder is null || !_encodedStreamReady) { _wdEncoded = -1; return false; }
 
@@ -582,12 +583,16 @@ public sealed partial class ReplayEngine
         // статичном экране законно молчит с самого старта.
         if (encoded == 0 || encoded != _wdEncoded)
         {
+            if (_wdEncoded > 0 && EncoderStallPolicy.IsSlow(
+                    encoded - _wdEncoded, (now - _wdEncodedAt).TotalSeconds, encoder.Fps))
+                _wdSlowUntil = now.AddSeconds(EncoderStallPolicy.StarvationMemorySeconds);
             _wdEncoded = encoded;
             _wdEncodedAt = now;
             return false;
         }
         stuck = (now - _wdEncodedAt).TotalSeconds;
-        if (stuck < EncoderWedgeSeconds) return false;
+        starving = now < _wdSlowUntil;
+        if (stuck < EncoderStallPolicy.ThresholdSeconds(Volatile.Read(ref _wedgeCount), starving)) return false;
         _wdEncodedAt = now;   // один эпизод — одна пересборка
         return true;
     }
@@ -697,21 +702,27 @@ public sealed partial class ReplayEngine
                 return;
             }
 
-            if (EncoderWedged(out double stuck))
+            if (EncoderWedged(out double stuck, out bool starving))
             {
                 // Встал прямой NVENC: пишем, на каком вызове, и до перезапуска
                 // программы кодируем через MFT — новая сессия NVENC рядом с
-                // зависшей не оживёт.
+                // зависшей не оживёт. Но не при голодании: там NVENC жив, а
+                // переход на MFT только очистил бы буфер повтора.
                 if (_encoder is { DirectNvenc: true } wedgedEncoder)
                 {
-                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
-                    VideoEncoder.DirectNvencDisabled = true;
-                    Interlocked.Increment(ref NvencStats.FatalErrors);
+                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " после медленной работы (видеокарту занимает игра)" : "")}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
+                    if (!starving)
+                    {
+                        VideoEncoder.DirectNvencDisabled = true;
+                        Interlocked.Increment(ref NvencStats.FatalErrors);
+                    }
                 }
                 // Второй эпизод за сессию — видеокарта в этом процессе уже не
                 // оправится: каждая следующая пересборка вставала бы снова и
                 // оставляла брошенный конвейер (память и крутящийся в драйвере
                 // поток). Раньше так набегало 12 пересборок, 6 ГБ и 100% процессора.
+                // Сюда попадаем только после 20 с полной тишины (EncoderStallPolicy):
+                // энкодер, которого душит игра, столько не молчит.
                 if (Interlocked.Increment(ref _wedgeCount) > 1)
                 {
                     Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров) — видеокарта не отвечает, " +

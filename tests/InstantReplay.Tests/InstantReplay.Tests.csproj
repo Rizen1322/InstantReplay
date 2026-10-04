@@ -78,6 +78,7 @@
     <Compile Include="..\..\src\Aura\Core\Capture\HybridCaptureInput.cs" Link="App\HybridCaptureInput.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\CaptureHealthPolicy.cs" Link="App\CaptureHealthPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\PipelineRestartPolicy.cs" Link="App\PipelineRestartPolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Engine\EncoderStallPolicy.cs" Link="App\EncoderStallPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Engine\CaptureRecoveryBackoff.cs" Link="App\CaptureRecoveryBackoff.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DuplicationRecovery.cs" Link="App\DuplicationRecovery.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DdaDuplicationPolicy.cs" Link="App\DdaDuplicationPolicy.cs" />
