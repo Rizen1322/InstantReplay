@@ -44,3 +44,10 @@ if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) { throw "Zig не �
 $dllPath = Join-Path $OutputDir "Aura.Media64.dll"
 Copy-Item -LiteralPath $installed -Destination $dllPath -Force
 Write-Host "Aura.Media64: $dllPath"
+
+# Хост NVENC: отдельный процесс кодировщика (encoder_host.c)
+$hostInstalled = Join-Path $OutputDir "bin\Aura.EncoderHost.exe"
+if (-not (Test-Path -LiteralPath $hostInstalled -PathType Leaf)) { throw "Zig не создал $hostInstalled" }
+$hostPath = Join-Path $OutputDir "Aura.EncoderHost.exe"
+Copy-Item -LiteralPath $hostInstalled -Destination $hostPath -Force
+Write-Host "Aura.EncoderHost: $hostPath"

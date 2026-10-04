@@ -82,8 +82,8 @@ public sealed partial class ReplayEngine
     private void DumpStats(string label)
     {
         ExpireRescued(force: false);
-        var enc = _encoder;
-        var cap = _capture;
+        var enc = _pipeline.Encoder;
+        var cap = _pipeline.Capture;
         if (enc is null || State == EngineState.Stopped) return;
 
         long skipped = Interlocked.Read(ref enc.FramesSkippedBeforeConvert);
@@ -166,7 +166,7 @@ public sealed partial class ReplayEngine
         string probe = Diagnostics.PipelineProbe.TakeReport();
         if (probe.Length > 0) Log.Info("Engine", probe);
 
-        string gpu = _gpuTimer?.TakeReport() ?? "";
+        string gpu = _pipeline.GpuTimer?.TakeReport() ?? "";
         if (gpu.Length > 0) Log.Info("Engine", gpu);
 
         LogMemory();
@@ -305,7 +305,7 @@ public sealed partial class ReplayEngine
                 $"потоков {threads}, дескрипторов {handles}; LibVLC {(Diagnostics.MemoryMap.IsModuleLoaded("libvlc.dll") ? "загружен" : "не загружен")}");
 
             Log.Info("Memory",
-                $"Видеокарта: {Diagnostics.GpuResourceLedger.Summary()}; кодирование — {_encoder?.ResourceSummary() ?? "нет"}");
+                $"Видеокарта: {Diagnostics.GpuResourceLedger.Summary()}; кодирование — {_pipeline.Encoder?.ResourceSummary() ?? "нет"}");
         }
         catch (Exception ex) { Log.Warn("Memory", $"Раскладка памяти недоступна: {ex.Message}"); }
     }
@@ -381,8 +381,8 @@ public sealed partial class ReplayEngine
 
     private void ProbeCore()
     {
-        var cap = _capture;
-        var enc = _encoder;
+        var cap = _pipeline.Capture;
+        var enc = _pipeline.Encoder;
         long generation = Interlocked.Read(ref _captureGeneration);
         CaptureBackend backend = _captureBackend;
         if (cap is null || enc is null || !_pipelineOpen || _stopRequested) return;
@@ -454,7 +454,7 @@ public sealed partial class ReplayEngine
                                   "запросов MFT, дублей, дропов | backend/broker/cursor | очередь | видеопамять)");
                 // Чем кодировали в момент провала: без этого по логу не понять,
                 // виноваты настройки энкодера или нагрузка игры
-                if (_encoder is { } e)
+                if (_pipeline.Encoder is { } e)
                     Log.Warn("Probe", $"Энкодер при провале: {e.Width}x{e.Height}@{e.Fps}, " +
                                       $"{(e.NvencDescription is { Length: > 0 } d ? d : "MFT")}" +
                                       $"{(e.NvencLoadLevel is { Length: > 0 } l ? $", ступень нагрузки «{l}»" : "")}, " +
@@ -464,7 +464,7 @@ public sealed partial class ReplayEngine
             string vram = GpuInfo.Usage(cap.D3DDevice) is { } v
                 ? $"{v.UsedMb}/{v.BudgetMb} МБ"
                 : "нет данных";
-            var broker = _frameBroker?.GetDiagnostics(cap.InvalidCursorShapes)
+            var broker = _pipeline.FrameBroker?.GetDiagnostics(cap.InvalidCursorShapes)
                 ?? new Diagnostics.CaptureBrokerDiagnostics(
                     generation, 0, 0, 0, 0, 0, cap.InvalidCursorShapes);
             long now100Nanoseconds = (long)(sampleTimestamp *
@@ -580,7 +580,7 @@ public sealed partial class ReplayEngine
     {
         stuck = 0;
         starving = false;
-        var encoder = _encoder;
+        var encoder = _pipeline.Encoder;
         if (encoder is null || !_encodedStreamReady) { _wdEncoded = -1; return false; }
 
         long encoded = Interlocked.Read(ref encoder.FramesEncoded);
@@ -705,7 +705,7 @@ public sealed partial class ReplayEngine
         // DDA не присылает кадры, пока изображение рабочего стола не меняется —
         // это штатное поведение AcquireNextFrame, а не зависание. Тишину захвата
         // для него не проверяем, но живость энкодера — да (см. EncoderWedged).
-        bool checkCaptureSilence = _capture is not DesktopDuplicationSource;
+        bool checkCaptureSilence = _pipeline.Capture is not DesktopDuplicationSource;
 
         _wdLastReceived = -1;
         _wdLastRate = 0;
@@ -722,7 +722,7 @@ public sealed partial class ReplayEngine
         _wdSilentOurGpu = _wdSilentGraphics = -1;
         _watchdog = new System.Threading.Timer(_ =>
         {
-            var cap = _capture;
+            var cap = _pipeline.Capture;
             bool frozen = ProcessWasFrozen(out double frozenSeconds);
             if (cap is null || !_pipelineOpen || _stopRequested) return;
 
@@ -740,7 +740,7 @@ public sealed partial class ReplayEngine
             {
                 // Устройство удалено: это настоящая потеря видеокарты (Windows
                 // сбросила её через TDR), а не тишина. Пересборка на новом устройстве.
-                if (_encoder?.DeviceRemoved() is string removed)
+                if (_pipeline.Encoder?.DeviceRemoved() is string removed)
                 {
                     Log.Error("Engine", $"Энкодер молчит {stuck:F1} с, устройство удалено ({removed}) — пересобираю конвейер");
                     long lostGeneration = Interlocked.Read(ref _captureGeneration);
@@ -756,10 +756,18 @@ public sealed partial class ReplayEngine
                 // программы кодируем через MFT — новая сессия NVENC рядом с
                 // зависшей не оживёт. Но не при голодании: там NVENC жив, а
                 // переход на MFT только очистил бы буфер повтора.
-                if (_encoder is { DirectNvenc: true } wedgedEncoder)
+                bool remoteHost = _pipeline.Encoder is { RemoteNvenc: true };
+                if (_pipeline.Encoder is { DirectNvenc: true } wedgedEncoder)
                 {
                     Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
-                    if (!starving)
+                    if (remoteHost)
+                    {
+                        // NVENC в отдельном процессе: хост просто убивается, видеопамять
+                        // освобождает система, новый конвейер поднимет новый хост с тем
+                        // же NVENC — повтор не очищается. Голодание отказом не считается.
+                        wedgedEncoder.AbortHost($"энкодер молчит {stuck:F1} с — хост убит сторожем", countFailure: !starving);
+                    }
+                    else if (!starving)
                     {
                         VideoEncoder.DirectNvencDisabled = true;
                         Interlocked.Increment(ref NvencStats.FatalErrors);
@@ -771,7 +779,10 @@ public sealed partial class ReplayEngine
                 // поток). Раньше так набегало 12 пересборок, 6 ГБ и 100% процессора.
                 // Сюда попадаем только после 20 с полной тишины (EncoderStallPolicy):
                 // энкодер, которого душит игра, столько не молчит.
-                if (Interlocked.Increment(ref _wedgeCount) > 1)
+                // С хостом NVENC брошенных конвейеров нет: убитый хост ничего не
+                // оставляет в Aura. Повторы ограничивает счёт отказов хоста (после
+                // третьего MFT), а здесь останавливаемся только без хоста.
+                if (Interlocked.Increment(ref _wedgeCount) > 1 && !remoteHost)
                 {
                     Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров; {SilenceGpuReport()}) — видеокарта не отвечает, " +
                                         "повтор выключаю, чтобы не копить брошенные конвейеры");
@@ -901,7 +912,7 @@ public sealed partial class ReplayEngine
                 Log.Warn("Engine", $"Захват молчит {silent:F1} с: backend {captureName}, " +
                                    $"цель {(target is null ? "рабочий стол" : $"окно 0x{target.Value.Hwnd:X}/r{target.Value.Revision}")}, " +
                                    $"получено всего {received}, темп до тишины {_wdLastRate:F0} кадр/с, " +
-                                   $"очередь энкодера {_encoder?.QueueDepth ?? -1}, " +
+                                   $"очередь энкодера {_pipeline.Encoder?.QueueDepth ?? -1}, " +
                                    $"видеопамять {vram}; пересборка через {rebuildAfter - silent:F1} с");
             }
 

@@ -243,6 +243,15 @@ public sealed class VideoEncoder : IDisposable
 
         _copyPool = new EncoderTexturePool(device, width, height, TenBit);
         _maxInputQueue = Math.Max(8, _copyPool.Slots - 8); // запас на кадры в работе у MFT
+        // Слот входа возвращается в пул, только когда MFT сам отпустил образец (см.
+        // MftTrackedSamples). Не вышло завести отслеживание — прежний порядок по выходам.
+        try
+        {
+            var tracked = new MftTrackedSamples();
+            tracked.Released += texture => _copyPool?.Release(texture);
+            _mftTracked = tracked;
+        }
+        catch (Exception ex) { Log.Warn("Encoder", $"Отслеживание входов MFT недоступно ({ex.Message}) — слот по выходу"); }
 
         // DXGI device manager — чтобы MFT работал на нашем D3D-устройстве
         _deviceManager = MediaFactory.MFCreateDXGIDeviceManager();
@@ -361,7 +370,7 @@ public sealed class VideoEncoder : IDisposable
     // ПОТОК ОДИН. Подача, забор выхода и снятие отображения идут из одного потока,
     // как у OBS. Прежде подача и выдача шли из двух потоков параллельно.
 
-    private NvencSession? _nvenc;
+    private INvencSession? _nvenc;
     private readonly Queue<long> _nvencInputPts = new();
 
     /// <summary>Когда кадр ушёл в NVENC (QPC), в том же порядке, что и _nvencInputPts.</summary>
@@ -501,6 +510,11 @@ public sealed class VideoEncoder : IDisposable
         string adapter = AdapterDescriptionOf(device);
         if (!NvencSession.Available(adapter)) return false;
 
+        // Сначала отдельный процесс: зависший в нём драйвер не держит Aura (см.
+        // RemoteNvencSession). Не поднялся — кодируем в своём процессе, как раньше.
+        if (!RemoteHostDisabled && TryInitializeRemoteNvenc(device, width, height, fps, bitrateBps, codec))
+            return true;
+
         ID3D11Device? encoderDevice = null;
         ID3D11DeviceContext? encoderContext = null;
         NvencSession? session = null;
@@ -574,7 +588,15 @@ public sealed class VideoEncoder : IDisposable
             return false;
         }
 
-        _maxInputQueue = Math.Max(8, _copyPool.Slots - 4);
+        StartNvenc(session, width, height, fps, bitrateBps, codec, "своё устройство D3D11, один поток");
+        return true;
+    }
+
+    /// <summary>Общий хвост запуска NVENC: заголовок кодека, потоки, строки лога.</summary>
+    private void StartNvenc(INvencSession session, int width, int height, int fps, long bitrateBps,
+                            VideoCodec codec, string where)
+    {
+        _maxInputQueue = Math.Max(8, _copyPool!.Slots - 4);
         _nvencHeader = session.SequenceHeader();
 
         EncoderName = "NVIDIA NVENC (напрямую)";
@@ -588,12 +610,104 @@ public sealed class VideoEncoder : IDisposable
         _pacerThread.Start();
 
         long frameBytes = TenBit ? (long)width * height * 3 : (long)width * height * 3 / 2;
-        Log.Info("Encoder", $"HW-энкодер: NVENC напрямую (своё устройство D3D11, один поток), {codec}, " +
+        int inputs = session is RemoteNvencSession ? session.Settings.BufferCount : _nvencInputs.Length;
+        Log.Info("Encoder", $"HW-энкодер: NVENC напрямую ({where}), {codec}, " +
                             $"{width}x{height}@{fps}, {bitrateBps / 1_000_000} Мбит/с " +
                             $"(VBR, пик {bitrateBps * 2 / 1_000_000}); {session.Describe()}");
         Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров, общий пул {_copyPool.Slots} " +
-                            $"+ входов энкодера {_nvencInputs.Length} = " +
-                            $"{frameBytes * (_copyPool.Slots + _nvencInputs.Length) / (1024 * 1024)} МБ видеопамяти");
+                            $"+ входов энкодера {inputs} = " +
+                            $"{frameBytes * (_copyPool.Slots + inputs) / (1024 * 1024)} МБ видеопамяти");
+    }
+
+    // ---------------- NVENC в отдельном процессе ----------------
+
+    /// <summary>
+    /// Хост NVENC выключен: AURA_NVENC_INPROCESS=1 или хост уже не раз умирал за этот
+    /// запуск. Тогда NVENC работает в процессе Aura, как до выноса.
+    /// </summary>
+    internal static bool RemoteHostDisabled =>
+        Environment.GetEnvironmentVariable("AURA_NVENC_INPROCESS") == "1" || Volatile.Read(ref s_hostFailures) >= MaxHostFailures;
+
+    /// <summary>
+    /// Сколько раз хост NVENC умирал или зависал. Каждый раз Aura поднимает новый —
+    /// с тем же NVENC, поэтому повтор не очищается. После третьего раза видеокарта
+    /// явно не в порядке: дальше MFT, как раньше после первого зависания.
+    /// </summary>
+    private static int s_hostFailures;
+    private const int MaxHostFailures = 3;
+
+    /// <summary>NVENC работает в отдельном процессе.</summary>
+    public bool RemoteNvenc => _nvenc is RemoteNvencSession;
+
+    /// <summary>
+    /// Убить хост NVENC (сторож решил, что энкодер встал). Зависший вызов в Aura
+    /// сразу возвращается, конвейер разбирается штатно, без брошенных объектов.
+    /// </summary>
+    public void AbortHost(string reason, bool countFailure = true)
+    {
+        if (_nvenc is not RemoteNvencSession remote) return;
+        if (countFailure) NoteHostFailure();
+        remote.Kill(reason);
+    }
+
+    private static void NoteHostFailure()
+    {
+        int failures = Interlocked.Increment(ref s_hostFailures);
+        if (failures >= MaxHostFailures)
+        {
+            DirectNvencDisabled = true;
+            Log.Warn("Encoder", $"Хост NVENC отказал {failures} раза — до перезапуска Aura кодирую через MFT");
+        }
+    }
+
+    private static readonly Lazy<int> s_gpuPriorityClass = new(() =>
+        Hardware.GpuScheduling.HagsEnabled() == false
+            ? Interop.NativeMethods.D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME
+            : Interop.NativeMethods.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH);
+
+    private bool TryInitializeRemoteNvenc(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
+    {
+        if (AdapterLuidOf(device) is not long luid) return false;
+        var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit);
+        var session = RemoteNvencSession.TryStart(luid, s_gpuPriorityClass.Value, config, out string error);
+        if (session is null)
+        {
+            Log.Info("Encoder", $"Хост NVENC не поднялся ({error}) — NVENC в процессе Aura");
+            return false;
+        }
+
+        EncoderTexturePool? pool = null;
+        try
+        {
+            bool tenBit = session.Settings.TenBit == 1;
+            pool = new EncoderTexturePool(device, forHost: true, width, height, tenBit, slots: 24);
+            if (!session.Attach(pool.SharedHandles, out string attachError))
+                throw new InvalidOperationException(attachError);
+            pool.Corrupted += reason =>
+            {
+                if (_nvencFailed) return;
+                _nvencFailed = true;
+                Failed?.Invoke(reason);
+            };
+
+            _nvenc = session;
+            _nvencAdapter = new NvencLoadAdapter(fps, session.Settings.Multipass, session.Settings.SpatialAq == 1);
+            _pendingReconfigure = null;
+            _nvencDevice = null;
+            _nvencContext = null;
+            _nvencInputs = [];
+            _copyPool = pool;
+            TenBit = tenBit;
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Encoder", $"Хост NVENC не принял общие текстуры ({ex.Message}) — NVENC в процессе Aura");
+            pool?.Dispose();
+            session.Dispose();
+            return false;
+        }
+
+        StartNvenc(session, width, height, fps, bitrateBps, codec, $"отдельный процесс PID {session.ProcessId}, один поток");
         return true;
     }
 
@@ -635,6 +749,11 @@ public sealed class VideoEncoder : IDisposable
                 if (session.ReleaseFailed)
                 {
                     FailNvenc("NVENC не отпустил буфер выхода или вход (UnlockBitstream/UnmapInputResource)");
+                    continue;
+                }
+                if (session is RemoteNvencSession { Dead: true } deadHost)
+                {
+                    FailNvencHost(deadHost.DeathReason);
                     continue;
                 }
                 // Проверка в --dev: энкодер один раз замолкает, как при зависании
@@ -699,7 +818,102 @@ public sealed class VideoEncoder : IDisposable
     }
 
     /// <summary>Перенести кадр на устройство энкодера и отправить в NVENC.</summary>
-    private void SubmitNvenc(NvencSession session, EncoderInputFrame item)
+    private void SubmitNvenc(INvencSession session, EncoderInputFrame item)
+    {
+        if (session is RemoteNvencSession remote)
+        {
+            SubmitToHost(remote, item);
+            return;
+        }
+        SubmitInProcess((NvencSession)session, item);
+    }
+
+    /// <summary>
+    /// Отправка в хост NVENC: копию из общего слота в свой вход хост делает сам,
+    /// под ключом. Остальное — как в процессе Aura: метки времени, повторы при
+    /// ENCODER_BUSY, перенастройка ступени нагрузки.
+    /// </summary>
+    private void SubmitToHost(RemoteNvencSession session, EncoderInputFrame item)
+    {
+        var pool = _copyPool!;
+        int slot = pool.SlotIndexOf(item.Texture);
+        if (slot < 0)
+        {
+            pool.Release(item.Texture);
+            return;
+        }
+
+        bool forceIdr = _keyframeRequested;
+        if (forceIdr) _keyframeRequested = false;
+
+        if (_pendingReconfigure is { } wanted)
+        {
+            _pendingReconfigure = null;
+            int status = session.Reconfigure(wanted.Multipass, wanted.Aq);
+            Log.Info("Encoder", status == 0
+                ? $"NVENC перенастроен на ходу: второй проход {(wanted.Multipass > 0 ? "вкл" : "выкл")}, AQ {(wanted.Aq ? "вкл" : "выкл")}"
+                : $"NVENC не перенастроился ({NvencSession.StatusName(-status)}), оставляю как было");
+        }
+
+        long start = Diagnostics.PipelineProbe.Now();
+        int result;
+        bool slotHandled = false;
+        for (int busyRetries = 0; ; busyRetries++)
+        {
+            long submitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            lock (_nvencInputPts)
+            {
+                _nvencInputPts.Enqueue(item.Ticks);
+                _nvencSubmitQpc.Enqueue(submitStart);
+            }
+            int inFlight = Interlocked.Increment(ref _inFlight);
+            long peak;
+            while (inFlight > (peak = Interlocked.Read(ref MaxInFlight)))
+                if (Interlocked.CompareExchange(ref MaxInFlight, inFlight, peak) == peak) break;
+
+            result = session.EncodeSlot(slot, item.Ticks, forceIdr, retry: busyRetries > 0);
+            double submitMs = System.Diagnostics.Stopwatch.GetElapsedTime(submitStart).TotalMilliseconds;
+            _submitWindow.Add(submitMs);
+            _submitMinute.Add(submitMs);
+            _submitSession.Add(submitMs);
+
+            if (!slotHandled)
+            {
+                slotHandled = true;
+                if (result == RemoteNvencSession.EncodeSlotTimeout || result == RemoteNvencSession.HostDead)
+                    pool.Release(item.Texture);           // слот так и стоит на ключе 1 — вернём его
+                else if (result == RemoteNvencSession.EncodeSlotAbandoned)
+                    pool.ReportAbandonedFromHost();
+                else
+                    pool.ReleaseAfterHost(item.Texture);  // хост скопировал кадр и вернул ключ 0
+            }
+            if (result >= 0) break;
+
+            lock (_nvencInputPts) { RemoveLast(_nvencInputPts); RemoveLast(_nvencSubmitQpc); }
+            Interlocked.Decrement(ref _inFlight);
+            if (-result != NvencSession.StatusEncoderBusy) break;
+
+            Interlocked.Increment(ref NvencStats.BusyCount);
+            if (busyRetries >= NvencBusyRetries || !_running) break;
+            if (session.PendingCount > 0 && session.TryGet(1) is { } done)
+                DeliverNvenc(done.Data, done.Pts, done.PictureType, _nvencReorderTicks);
+            else
+                Thread.Sleep(1);
+        }
+        if (result == RemoteNvencSession.HostDead) { FailNvencHost(session.DeathReason); return; }
+        if (result == RemoteNvencSession.EncodeSlotTimeout)
+        {
+            Interlocked.Increment(ref FramesDroppedRealQueue);
+            Interlocked.Increment(ref NvencStats.DroppedInputFrames);
+            if (Interlocked.Increment(ref _nvencAcquireFailures) is 1 or 100)
+                Log.Warn("Encoder", $"NVENC: слот общего пула не получен хостом за 200 мс ({_nvencAcquireFailures} раз)");
+            return;
+        }
+        if (result == RemoteNvencSession.EncodeSlotAbandoned) return;
+        FinishSubmit(result, forceIdr, start);
+    }
+
+    private void SubmitInProcess(NvencSession session, EncoderInputFrame item)
     {
         var pool = _copyPool!;
         var shared = pool.AcquireForEncoder(item.Texture, 200);
@@ -774,6 +988,12 @@ public sealed class VideoEncoder : IDisposable
             else
                 Thread.Sleep(1);
         }
+        FinishSubmit(result, forceIdr, start);
+    }
+
+    /// <summary>Итог отправки кадра: учёт потерь, ключевых кадров и времени — общий для обоих путей.</summary>
+    private void FinishSubmit(int result, bool forceIdr, long start)
+    {
         if (result < 0)
         {
             Interlocked.Increment(ref FramesDroppedRealQueue);
@@ -821,6 +1041,20 @@ public sealed class VideoEncoder : IDisposable
     /// поэтому до ближайшего ключевого кадра ничего не отдаём (и просим его).
     /// </summary>
     private bool _nvencResync;
+
+    /// <summary>
+    /// Хост NVENC умер или не ответил. NVENC при этом не запрещается: конвейер
+    /// пересобирается с новым хостом (см. <see cref="NoteHostFailure"/>).
+    /// </summary>
+    private void FailNvencHost(string reason)
+    {
+        if (_nvencFailed) return;
+        _nvencFailed = true;
+        if (!reason.Contains("убит сторожем", StringComparison.Ordinal)) NoteHostFailure();
+        Log.Error("Encoder", $"NVENC: {reason} — пересобираю конвейер с новым хостом");
+        var handler = Failed;
+        if (handler is not null) _ = Task.Run(() => handler(reason));
+    }
 
     private void FailNvenc(string reason)
     {
@@ -922,6 +1156,14 @@ public sealed class VideoEncoder : IDisposable
         bool pacerExited = _pacerThread?.Join(5000) ?? true;
 
         var session = Interlocked.Exchange(ref _nvenc, null);
+        if (!loopExited && session is RemoteNvencSession stuckHost)
+        {
+            // Поток ждёт ответа хоста. Убитый хост отвечать перестаёт, вызов сразу
+            // возвращается, и разбирать в Aura нечего бросать: видеопамять хоста
+            // освобождает система.
+            stuckHost.Kill("поток NVENC не завершился при закрытии");
+            loopExited = _eventThread?.Join(3000) ?? true;
+        }
         if (!loopExited)
         {
             // Поток всё ещё внутри вызова NVENC. Уничтожить сессию, устройство или
@@ -1853,6 +2095,11 @@ public sealed class VideoEncoder : IDisposable
                 try
                 {
                     long piStart = Diagnostics.PipelineProbe.Now();
+                    if (_mftTracked is { } tracked && TrySubmitTracked(tracked, item))
+                    {
+                        Diagnostics.PipelineProbe.ProcessInput.Add(piStart, Diagnostics.PipelineProbe.Now());
+                        continue;
+                    }
                     using var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(
                         typeof(ID3D11Texture2D).GUID, item.Texture, 0, false);
                     using var sample = MediaFactory.MFCreateSample();
@@ -1889,6 +2136,30 @@ public sealed class VideoEncoder : IDisposable
                 Thread.Sleep(5);
             }
         }
+    }
+
+    /// <summary>Входы MFT, сообщающие об освобождении (см. MftTrackedSamples); null — по выходам.</summary>
+    private MftTrackedSamples? _mftTracked;
+
+    /// <summary>
+    /// Подать кадр отслеживаемым образцом. false — отслеживание сломалось, и кадр
+    /// нужно подать по-старому (отслеживание после этого выключается).
+    /// Исключение ProcessInput уходит наверх: слот при этом вернёт обработчик образца.
+    /// </summary>
+    private bool TrySubmitTracked(MftTrackedSamples tracked, EncoderInputFrame item)
+    {
+        IMFSample sample;
+        try { sample = tracked.Prepare(item.Texture, item.Ticks, _frameDurationTicks); }
+        catch (Exception ex)
+        {
+            Log.Warn("Encoder", $"Отслеживаемый образец MFT не подготовлен ({ex.Message}) — дальше слот по выходу");
+            _mftTracked = null;
+            tracked.Dispose();
+            return false;
+        }
+        try { _transform!.ProcessInput(0, sample, 0); }
+        finally { sample.Dispose(); }   // MFT не взял кадр — обработчик вернёт слот прямо здесь
+        return true;
     }
 
     /// <summary>
@@ -1989,7 +2260,8 @@ public sealed class VideoEncoder : IDisposable
         // он опускается ровно тогда, когда кадр действительно вышел наружу.
         if (hr.Failure) { ourSample?.Dispose(); return; }
         Interlocked.Decrement(ref _inFlight);
-        ReleaseSubmitted();
+        // С отслеживанием слот вернул сам MFT, отпустив образец
+        if (_mftTracked is null) ReleaseSubmitted();
 
         RefreshOutputTypeOnce();
 
@@ -2092,6 +2364,10 @@ public sealed class VideoEncoder : IDisposable
             _transform?.Dispose();
         }
         _codecApi = null;
+        if (_mftTracked is { } tracked)
+            Log.Info("Encoder", $"MFT вернул входных образцов: {tracked.ReleasedCount} (образцов на слоты: {tracked.SampleCount})");
+        _mftTracked?.Dispose();
+        _mftTracked = null;
         _deviceManager?.Dispose();
         OutputMediaType?.Dispose();
     }

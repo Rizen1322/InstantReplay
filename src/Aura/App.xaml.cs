@@ -84,6 +84,11 @@ public partial class App : Application
         if (dev && captureArg >= 0 && captureArg + 1 < e.Args.Length)
             Environment.SetEnvironmentVariable("INSTANTREPLAY_CAPTURE", e.Args[captureArg + 1]);
 
+        // --dev --force-mft: кодировать через MFT (проверка запасного пути)
+        if (dev && e.Args.Contains("--force-mft")) Core.Encoding.VideoEncoder.DirectNvencDisabled = true;
+        // --dev --nvenc-inprocess: NVENC в процессе Aura, без хоста (проверка запасного пути)
+        if (dev && e.Args.Contains("--nvenc-inprocess")) Environment.SetEnvironmentVariable("AURA_NVENC_INPROCESS", "1");
+
         // Копия --dev пишет в свой файл: она работает рядом с обычной, а лог открыт
         // на общий доступ — в один файл две копии писали бы вперемешку.
         Log.Init(fileSuffix: dev ? "-dev" : "");
@@ -164,7 +169,7 @@ public partial class App : Application
         // Снимок вёрстки и самопроверка идут рядом с настоящей Aura: перехватывать
         // её сочетания клавиш им нельзя.
         bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record") ||
-                        e.Args.Contains("--selftest-replay") || e.Args.Contains("--whatsnew-test") ||
+                        e.Args.Contains("--selftest-replay") || e.Args.Contains("--whatsnew-test") || e.Args.Contains("--selftest-saves") ||
                         e.Args.Contains("--editor-seek-test");
         if (!(dev && headless)) Services.Hotkeys.Start();
         else Services.Notifications.Muted = true;
@@ -209,6 +214,39 @@ public partial class App : Application
                 await Task.Delay(stallAfter * 1000);
                 Log.Info("SelfTest", "NVENC замолкает на 8 с");
                 Core.Encoding.VideoEncoder.TestStallMs = 8000;
+            });
+
+        // --selftest-kill-encoder N: через N секунд убить хост NVENC снаружи, как при
+        // падении драйвера: повтор обязан продолжиться с новым хостом
+        int killArg = Array.IndexOf(e.Args, "--selftest-kill-encoder");
+        if (dev && killArg >= 0 && killArg + 1 < e.Args.Length &&
+            int.TryParse(e.Args[killArg + 1], out int killAfter))
+            _ = Task.Run(async () =>
+            {
+                // --selftest-kill-repeat K: убить K раз с тем же шагом
+                int repeatArg = Array.IndexOf(e.Args, "--selftest-kill-repeat");
+                int repeats = repeatArg >= 0 && repeatArg + 1 < e.Args.Length && int.TryParse(e.Args[repeatArg + 1], out int r) ? r : 1;
+                for (int k = 0; k < repeats; k++)
+                {
+                await Task.Delay(killAfter * 1000);
+                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+                using (var self = System.Diagnostics.Process.GetCurrentProcess())
+                    Log.Info("SelfTest", $"перед убийством {k + 1}: частная память Aura {self.PrivateMemorySize64 >> 20} МБ, " +
+                                         $"куча {GC.GetTotalMemory(false) >> 20} МБ");
+                Core.Diagnostics.MemoryMap.Log($"перед убийством {k + 1}");
+                foreach (var host in System.Diagnostics.Process.GetProcessesByName("Aura.EncoderHost"))
+                    try
+                    {
+                        // Только свой хост: у рабочей Aura рядом может быть свой
+                        if (host.MainModule?.FileName is { } file &&
+                            file.StartsWith(AppContext.BaseDirectory, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Log.Info("SelfTest", $"убиваю хост NVENC PID {host.Id}");
+                            host.Kill();
+                        }
+                    }
+                    catch { }
+                }
             });
 
         // --selftest-record N: записать N секунд в файл без повтора и выйти. Только
@@ -276,6 +314,35 @@ public partial class App : Application
                 string? file = Current.Dispatcher.Invoke(() => Services.Engine.StopRecordingToFile(wait: true));
                 await Task.Delay(1500);
                 Log.Info("SelfTest", $"файл: {file}; конвейер после записи: {Services.Engine.State}");
+                Current.Dispatcher.Invoke(ExitApp);
+            });
+        }
+
+        // --selftest-saves N: повтор и N сохранений подряд раз в 4 с; после каждого
+        // память процесса и хоста NVENC — проверка, что сохранения выходят на плато
+        int savesArg = Array.IndexOf(e.Args, "--selftest-saves");
+        if (dev && savesArg >= 0 && savesArg + 1 < e.Args.Length &&
+            int.TryParse(e.Args[savesArg + 1], out int saveCount))
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1000);
+                Current.Dispatcher.Invoke(SafeStartEngine);
+                await Task.Delay(8000);
+                int saved = 0;
+                Services.Engine.ReplaySaved += (_, _) => Interlocked.Increment(ref saved);
+                for (int i = 1; i <= saveCount; i++)
+                {
+                    Current.Dispatcher.Invoke(() => Services.Engine.SaveReplay());
+                    await Task.Delay(4000);
+                    GC.Collect();
+                    using var self = System.Diagnostics.Process.GetCurrentProcess();
+                    long hostBytes = System.Diagnostics.Process.GetProcessesByName("Aura.EncoderHost")
+                        .Sum(h => { try { return h.PrivateMemorySize64; } catch { return 0L; } });
+                    Log.Info("SelfTest", $"сохранение {i}: сохранено {saved}, частная память Aura {self.PrivateMemorySize64 >> 20} МБ, " +
+                                         $"рабочий набор {self.WorkingSet64 >> 20} МБ, хост NVENC {hostBytes >> 20} МБ, " +
+                                         $"управляемая куча {GC.GetTotalMemory(false) >> 20} МБ");
+                }
                 Current.Dispatcher.Invoke(ExitApp);
             });
         }

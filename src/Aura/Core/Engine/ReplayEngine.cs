@@ -35,14 +35,11 @@ public sealed partial class ReplayEngine : IDisposable
     private readonly SettingsManager _settings;
     private readonly StorageManager _storage;
 
-    private IScreenCapture? _capture;
-    private VideoProcessorNv12? _processor;
-
-    /// <summary>Уменьшение кадра Ланцошем до видеопроцессора; null — размер не меняется.</summary>
-    private LanczosScaler? _scaler;
-
-    /// <summary>Время стадий по часам видеокарты. Диагностика, на запись не влияет.</summary>
-    private Diagnostics.GpuStageTimer? _gpuTimer;
+    /// <summary>
+    /// Текущий видеоконвейер целиком (см. <see cref="PipelineSession"/>). Пересборка
+    /// ставит сюда новый объект; старый разбирается или бросается целиком.
+    /// </summary>
+    private volatile PipelineSession _pipeline = new(0);
 
     /// <summary>
     /// Монитор и его размер, под которые собран текущий конвейер. По ним смена
@@ -51,8 +48,6 @@ public sealed partial class ReplayEngine : IDisposable
     /// </summary>
     private int _pipelineMonitorIndex;
     private (int Width, int Height)? _pipelineCanvas;
-    private VideoEncoder? _encoder;
-    private GpuCaptureFrameBroker? _frameBroker;
     private readonly AudioMixerEngine _audio = new();
     private readonly CaptureHealthPolicy _captureHealth = new();
     private readonly GameCaptureRecoveryCoordinator _gameCaptureRecovery;
@@ -147,23 +142,23 @@ public sealed partial class ReplayEngine : IDisposable
 
     /// <summary>Сколько видеопамяти занимает запись (МБ) и бюджет Windows. null — повтор выключен.</summary>
     public (long UsedMb, long BudgetMb)? VideoMemory =>
-        _capture is { } capture ? Core.Capture.GpuInfo.Usage(capture.D3DDevice) : null;
+        _pipeline.Capture is { } capture ? Core.Capture.GpuInfo.Usage(capture.D3DDevice) : null;
 
     /// <summary>Метка активного энкодера для шапки UI, напр. "h264_nvenc".</summary>
-    public string EncoderLabel => _encoder?.EncoderLabel ?? "";
+    public string EncoderLabel => _pipeline.Encoder?.EncoderLabel ?? "";
     /// <summary>Вендор активного энкодера (NVIDIA/AMD/Intel).</summary>
-    public string EncoderVendor => _encoder?.EncoderVendor ?? "";
+    public string EncoderVendor => _pipeline.Encoder?.EncoderVendor ?? "";
     public CaptureBackend ActiveCaptureBackend => _captureBackend;
     /// <summary>Живые пиковые уровни аудио (0..1) — для индикаторов.</summary>
     public (float Game, float Mic) AudioLevels => (_audio.GamePeak, _audio.MicPeak);
 
     /// <summary>Счётчики конвейера для панели «Обзор»: сколько кадров прошло каждую стадию.</summary>
     public (long Received, long Accepted, long Encoded, long Dropped, long Duplicated) FrameCounters =>
-        (_capture?.FramesReceived ?? 0, _capture?.FramesAccepted ?? 0,
-         _encoder?.FramesEncoded ?? 0, _encoder?.FramesDroppedRealQueue ?? 0, _encoder?.FramesDuplicated ?? 0);
+        (_pipeline.Capture?.FramesReceived ?? 0, _pipeline.Capture?.FramesAccepted ?? 0,
+         _pipeline.Encoder?.FramesEncoded ?? 0, _pipeline.Encoder?.FramesDroppedRealQueue ?? 0, _pipeline.Encoder?.FramesDuplicated ?? 0);
 
     /// <summary>Размер кадра, который реально уходит в энкодер (после масштабирования).</summary>
-    public (int Width, int Height) OutputSize => (_processor?.OutWidth ?? 0, _processor?.OutHeight ?? 0);
+    public (int Width, int Height) OutputSize => (_pipeline.Processor?.OutWidth ?? 0, _pipeline.Processor?.OutHeight ?? 0);
 
     /// <summary>Сколько занимает звуковая часть буфера повтора.</summary>
     public long BufferedAudioBytes => _audioBuffer.TotalBytes;
@@ -197,8 +192,8 @@ public sealed partial class ReplayEngine : IDisposable
         }
         try
         {
-            var cap = _capture;
-            var broker = _frameBroker;
+            var cap = _pipeline.Capture;
+            var broker = _pipeline.FrameBroker;
             long generation = Interlocked.Read(ref _captureGeneration);
             if (cap is null || broker is null || !_pipelineOpen)
             {
@@ -273,7 +268,7 @@ public sealed partial class ReplayEngine : IDisposable
         _audio.FrameEncoded += _audioBuffer.Add;
         // Буфер потерял кадр (или начался заново после сохранения) и ждёт ключевой —
         // просим его у энкодера сразу, а не через две секунды штатной группы.
-        _videoBuffer.KeyframeNeeded += () => _encoder?.RequestKeyframe();
+        _videoBuffer.KeyframeNeeded += () => _pipeline.Encoder?.RequestKeyframe();
         // Реакция на изменение настроек записи (см. ReplayEngine.Settings.cs)
         _settings.Changed += OnSettingsChanged;
         PurgeRescueLeftovers();
@@ -459,21 +454,26 @@ public sealed partial class ReplayEngine : IDisposable
             }
 
             long generation = Interlocked.Increment(ref _captureGeneration);
-            _capture = ScreenCaptureFactory.Create(CaptureSourceRequest.Create(
+            // Новый конвейер — новая сессия: всё, что держит ссылку на прошлую,
+            // видит, что она уже не текущая. Прошлая к этому моменту разобрана
+            // или брошена целиком (StopLocked).
+            var session = new PipelineSession(generation);
+            _pipeline = session;
+            _pipeline.Capture = ScreenCaptureFactory.Create(CaptureSourceRequest.Create(
                 _captureBackend,
                 s.MonitorIndex,
                 sourceTarget));
-            _capture.Prepare(s.MonitorIndex, s.Fps, s.RecordCursor, generation);
+            _pipeline.Capture.Prepare(s.MonitorIndex, s.Fps, s.RecordCursor, generation);
 
             lock (_captureTargetSync) _activeCaptureTarget = sourceTarget;
 
             WarnIfMonitorIsHdr(s.MonitorIndex);
 
             var monitorCanvas = MonitorLayout.For(s.MonitorIndex);
-            int canvasWidth = monitorCanvas?.Width ?? _capture.Width;
+            int canvasWidth = monitorCanvas?.Width ?? _pipeline.Capture.Width;
             _pipelineMonitorIndex = s.MonitorIndex;
             _pipelineCanvas = monitorCanvas is { } mc ? (mc.Width, mc.Height) : null;
-            int canvasHeight = monitorCanvas?.Height ?? _capture.Height;
+            int canvasHeight = monitorCanvas?.Height ?? _pipeline.Capture.Height;
 
             // Размер записи фиксируется по разрешению рабочего стола, а не по текущему
             // режиму экрана. Иначе игра, переключающая экран на своё разрешение, меняла
@@ -485,13 +485,13 @@ public sealed partial class ReplayEngine : IDisposable
             bool wantTenBit = VideoEncoder.SupportsTenBit(s.Codec) &&
                               s.BitDepth is VideoBitDepth.Auto or VideoBitDepth.Ten;
 
-            _gpuTimer?.Dispose();
-            _gpuTimer = new Diagnostics.GpuStageTimer(_capture.D3DDevice);
+            _pipeline.GpuTimer?.Dispose();
+            _pipeline.GpuTimer = new Diagnostics.GpuStageTimer(_pipeline.Capture.D3DDevice);
 
-            _processor = new VideoProcessorNv12(_capture.D3DDevice, _capture.D3DContext);
+            _pipeline.Processor = new VideoProcessorNv12(_pipeline.Capture.D3DDevice, _pipeline.Capture.D3DContext);
             try
             {
-                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, wantTenBit,
+                _pipeline.Processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, wantTenBit,
                                      outputBase);
             }
             catch (Exception ex) when (wantTenBit)
@@ -501,35 +501,35 @@ public sealed partial class ReplayEngine : IDisposable
                 // шаге. Запись важнее глубины цвета, поэтому молча берём восемь бит
                 // вместо того, чтобы не включиться вовсе.
                 Log.Warn("Capture", $"Десять бит не настроились ({ex.Message}) — беру восемь");
-                _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
+                _pipeline.Processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
                                      preferTenBit: false, outputBase);
             }
 
             // Уменьшение — своим фильтром Ланцоша, а видеопроцессору остаётся только
             // перевод цвета в том же размере (см. LanczosScaler).
-            _scaler?.Dispose();
-            _scaler = LanczosScaler.TryCreate(_capture.D3DDevice, _capture.D3DContext,
-                                              canvasWidth, canvasHeight, _processor.OutWidth, _processor.OutHeight);
-            if (_scaler is not null)
+            _pipeline.Scaler?.Dispose();
+            _pipeline.Scaler = LanczosScaler.TryCreate(_pipeline.Capture.D3DDevice, _pipeline.Capture.D3DContext,
+                                              canvasWidth, canvasHeight, _pipeline.Processor.OutWidth, _pipeline.Processor.OutHeight);
+            if (_pipeline.Scaler is not null)
             {
-                bool tenBit = _processor.TenBit;
+                bool tenBit = _pipeline.Processor.TenBit;
                 try
                 {
-                    _processor.Configure(_scaler.OutWidth, _scaler.OutHeight, _scaler.OutHeight, s.Fps, tenBit,
-                                         (_scaler.OutWidth, _scaler.OutHeight));
+                    _pipeline.Processor.Configure(_pipeline.Scaler.OutWidth, _pipeline.Scaler.OutHeight, _pipeline.Scaler.OutHeight, s.Fps, tenBit,
+                                         (_pipeline.Scaler.OutWidth, _pipeline.Scaler.OutHeight));
                 }
                 catch (Exception ex)
                 {
                     Log.Warn("Capture", $"Видеопроцессор не принял уменьшенный кадр ({ex.Message}) — масштабирует он сам");
-                    _scaler.Dispose();
-                    _scaler = null;
-                    _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, tenBit, outputBase);
+                    _pipeline.Scaler.Dispose();
+                    _pipeline.Scaler = null;
+                    _pipeline.Processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps, tenBit, outputBase);
                 }
             }
 
-            _frameBroker = new GpuCaptureFrameBroker(
-                _capture.D3DDevice,
-                _capture.D3DContext,
+            _pipeline.FrameBroker = new GpuCaptureFrameBroker(
+                _pipeline.Capture.D3DDevice,
+                _pipeline.Capture.D3DContext,
                 canvasWidth,
                 canvasHeight,
                 separateCursor: _captureBackend is
@@ -544,8 +544,8 @@ public sealed partial class ReplayEngine : IDisposable
             if (preserveBuffers)
             {
                 bool compatible = _bufferCodec == s.Codec &&
-                                  _bufferWidth == _processor.OutWidth &&
-                                  _bufferHeight == _processor.OutHeight &&
+                                  _bufferWidth == _pipeline.Processor.OutWidth &&
+                                  _bufferHeight == _pipeline.Processor.OutHeight &&
                                   _bufferFps == s.Fps;
                 if (!_videoBuffer.PrepareForCaptureRestart(compatible, s.BitrateBps, effectiveReplaySeconds))
                 {
@@ -559,7 +559,7 @@ public sealed partial class ReplayEngine : IDisposable
                 }
             }
 
-            var encoder = _encoder = new VideoEncoder();
+            var encoder = _pipeline.Encoder = new VideoEncoder();
             // Неисправимая ошибка энкодера: захват ни при чём, поэтому вид сбоя
             // DeviceLost — пересборка на том же захвате, энкодер будет уже MFT.
             encoder.Failed += reason => OnCaptureFailed(new CaptureFailure(
@@ -568,20 +568,20 @@ public sealed partial class ReplayEngine : IDisposable
                 $"энкодер: {reason}",
                 generation,
                 ActiveCaptureTarget()?.Revision ?? 0), generation);
-            encoder.Initialize(_capture.D3DDevice, _processor.OutWidth, _processor.OutHeight,
-                               s.Fps, s.BitrateBps, s.Codec, _processor.TenBit);
+            encoder.Initialize(_pipeline.Capture.D3DDevice, _pipeline.Processor.OutWidth, _pipeline.Processor.OutHeight,
+                               s.Fps, s.BitrateBps, s.Codec, _pipeline.Processor.TenBit);
 
             // Видеопроцессор согласился писать десять бит, а энкодер их не принял.
             // Форматы обязаны совпадать, поэтому переводим процессор обратно на NV12.
             // Случай редкий, но молча отдавать P010 в восьмибитный вход нельзя.
-            if (_processor.TenBit && !encoder.TenBit)
+            if (_pipeline.Processor.TenBit && !encoder.TenBit)
             {
                 Log.Info("Capture", "Возвращаю видеопроцессор на восемь бит вслед за энкодером");
-                if (_scaler is not null)
-                    _processor.Configure(_scaler.OutWidth, _scaler.OutHeight, _scaler.OutHeight, s.Fps,
-                                         preferTenBit: false, (_scaler.OutWidth, _scaler.OutHeight));
+                if (_pipeline.Scaler is not null)
+                    _pipeline.Processor.Configure(_pipeline.Scaler.OutWidth, _pipeline.Scaler.OutHeight, _pipeline.Scaler.OutHeight, s.Fps,
+                                         preferTenBit: false, (_pipeline.Scaler.OutWidth, _pipeline.Scaler.OutHeight));
                 else
-                    _processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
+                    _pipeline.Processor.Configure(canvasWidth, canvasHeight, s.VerticalResolution, s.Fps,
                                          preferTenBit: false, outputBase);
             }
             bool awaitingRestartKeyframe = validateSequenceHeader;
@@ -595,7 +595,7 @@ public sealed partial class ReplayEngine : IDisposable
                 // остаётся жить (см. AbandonWedgedPipeline) и может выдать кадр уже
                 // в новый повтор, подменив заголовок кодека. В буфер пишет только
                 // текущий энкодер.
-                if (!ReferenceEquals(Volatile.Read(ref _encoder), encoder)) return;
+                if (!ReferenceEquals(Volatile.Read(ref _pipeline.Encoder), encoder)) return;
                 // До первого keyframe нового MFT кадры не добавляем: их
                 // нельзя декодировать от старого GOP. На keyframe уже доступен
                 // sequence header и можно безопасно решить, сохранять ли хвост.
@@ -624,19 +624,19 @@ public sealed partial class ReplayEngine : IDisposable
                 _videoBuffer.Add(frame);
             };
             _bufferCodec = s.Codec;
-            _bufferWidth = _processor.OutWidth;
-            _bufferHeight = _processor.OutHeight;
+            _bufferWidth = _pipeline.Processor.OutWidth;
+            _bufferHeight = _pipeline.Processor.OutHeight;
             _bufferFps = s.Fps;
 
             // Сначала подписываем полностью готовый конвейер и только потом запускаем
             // источник: так не теряется единственный первый кадр статичного DDA-экрана.
             _captureFrameHandler = frame => OnCapturedSurface(frame, generation);
             _captureFailureHandler = failure => OnCaptureFailed(failure, generation);
-            _capture.FrameArrived += _captureFrameHandler;
-            _capture.Failed += _captureFailureHandler;
+            _pipeline.Capture.FrameArrived += _captureFrameHandler;
+            _pipeline.Capture.Failed += _captureFailureHandler;
             _pipelineOpen = true;
             StartFrameWorker(generation);
-            _capture.Start();
+            _pipeline.Capture.Start();
             // Источник сам не оживёт после потери устройства — пересобираем конвейер.
             // Для WGC это единственный путь: там кадры приходят в колбэк WinRT, из
             // которого исключение не выпустить, не уронив процесс.
@@ -673,9 +673,9 @@ public sealed partial class ReplayEngine : IDisposable
         if (!_frameGate.TryEnterReadLock(0)) return;
         try
         {
-            if (!_pipelineOpen || _frameBroker is null) return;
+            if (!_pipelineOpen || _pipeline.FrameBroker is null) return;
             long copyStart = Diagnostics.PipelineProbe.Now();
-            if (!_frameBroker.Publish(surface)) return;
+            if (!_pipeline.FrameBroker.Publish(surface)) return;
             Diagnostics.PipelineProbe.CaptureCopy.Add(
                 copyStart, Diagnostics.PipelineProbe.Now());
             _frameReady?.Set();
@@ -737,8 +737,8 @@ public sealed partial class ReplayEngine : IDisposable
 
         try
         {
-            if (!_pipelineOpen || _frameBroker is null ||
-                !_frameBroker.TryLeaseLatest(generation, out GpuCaptureFrameLease? lease)) return;
+            if (!_pipelineOpen || _pipeline.FrameBroker is null ||
+                !_pipeline.FrameBroker.TryLeaseLatest(generation, out GpuCaptureFrameLease? lease)) return;
 
             GpuCaptureFrameLease current = lease!;
             using (current)
@@ -746,14 +746,14 @@ public sealed partial class ReplayEngine : IDisposable
                 // Очередь энкодера забита — кадр всё равно вытеснит другой такой же.
                 // Тратить на него видеокарту, которая и так не справляется, незачем:
                 // см. VideoEncoder.InputQueueSaturated.
-                if (_encoder is { } saturatedCheck && saturatedCheck.InputQueueSaturated)
+                if (_pipeline.Encoder is { } saturatedCheck && saturatedCheck.InputQueueSaturated)
                 {
                     Interlocked.Increment(ref saturatedCheck.FramesSkippedBeforeConvert);
                     return;
                 }
 
                 // Слот сетки уже занят прошлым кадром: см. VideoEncoder.SameSlotAsLastFrame
-                if (_encoder is { } slotCheck && slotCheck.SameSlotAsLastFrame(current.Timestamp))
+                if (_pipeline.Encoder is { } slotCheck && slotCheck.SameSlotAsLastFrame(current.Timestamp))
                 {
                     Interlocked.Increment(ref slotCheck.FramesSkippedSameSlot);
                     return;
@@ -762,17 +762,17 @@ public sealed partial class ReplayEngine : IDisposable
                 // Метки видеокарты ставятся вокруг тех же двух стадий, что и
                 // секундомер потока. Сравнение этих двух цифр и есть весь смысл:
                 // процессор здесь только ставит команды в очередь.
-                var context = _capture!.D3DContext;
-                bool timed = _gpuTimer?.BeginFrame(context) == true;
+                var context = _pipeline.Capture!.D3DContext;
+                bool timed = _pipeline.GpuTimer?.BeginFrame(context) == true;
 
                 long t0 = Diagnostics.PipelineProbe.Now();
-                var input = _scaler?.Scale(current.Texture) ?? current.Texture;
-                var nv12 = _processor!.Convert(input);
+                var input = _pipeline.Scaler?.Scale(current.Texture) ?? current.Texture;
+                var nv12 = _pipeline.Processor!.Convert(input);
                 long t1 = Diagnostics.PipelineProbe.Now();
-                if (timed) _gpuTimer!.Mark(context);
+                if (timed) _pipeline.GpuTimer!.Mark(context);
 
-                _encoder!.SubmitFrame(nv12, current.Timestamp, context);
-                if (timed) { _gpuTimer!.Mark(context); _gpuTimer.EndFrame(context); }
+                _pipeline.Encoder!.SubmitFrame(nv12, current.Timestamp, context);
+                if (timed) { _pipeline.GpuTimer!.Mark(context); _pipeline.GpuTimer.EndFrame(context); }
 
                 Diagnostics.PipelineProbe.Convert.Add(t0, t1);
                 Diagnostics.PipelineProbe.Submit.Add(t1, Diagnostics.PipelineProbe.Now());
@@ -879,7 +879,7 @@ public sealed partial class ReplayEngine : IDisposable
     /// обрывал и запись, хотя человек выключал только повтор.
     /// </summary>
     /// <summary>Проверка в --dev: снять второй проход и AQ у NVENC посреди работы.</summary>
-    internal void ReconfigureNvencForTest(int multipass, bool aq) => _encoder?.RequestReconfigureForTest(multipass, aq);
+    internal void ReconfigureNvencForTest(int multipass, bool aq) => _pipeline.Encoder?.RequestReconfigureForTest(multipass, aq);
 
     /// <summary>Push-to-talk зажата или отпущена в момент <paramref name="ticks"/> (QPC, 100 нс).</summary>
     public void SetPushToTalk(bool held, long ticks) => _audio.PushToTalk.Set(held, ticks);
@@ -966,7 +966,7 @@ public sealed partial class ReplayEngine : IDisposable
     private void FallBackToEightBitIfContainerRefused(Exception error)
     {
         if (error is not NotSupportedException) return;
-        if (_encoder is not { TenBit: true }) return;
+        if (_pipeline.Encoder is not { TenBit: true }) return;
         if (_settings.Current.BitDepth == VideoBitDepth.Eight) return;
 
         // ГРУППА ОБЯЗАНА БЫТЬ "stats". Обработчик Changed на группу video берёт
@@ -1130,7 +1130,7 @@ public sealed partial class ReplayEngine : IDisposable
         Interlocked.Increment(ref _captureGeneration); // все колбэки старого источника больше не действуют
         DumpStats("на выключении");
         // Итог работы энкодера: главное — сколько картинка стояла
-        if (_encoder is { } finishing)
+        if (_pipeline.Encoder is { } finishing)
             try { Log.Info("Engine", finishing.HealthReport()); } catch { }
         // Дожидаемся уже начатых колбэков: обычный Dispose возвращается сразу, и
         // вотчдог продолжал работать параллельно сносу — вплоть до попытки поднять
@@ -1147,15 +1147,15 @@ public sealed partial class ReplayEngine : IDisposable
         // Гасим ворота и отписываемся: с этого момента новые кадры в конвейер не идут
         _pipelineOpen = false;
         _encodedStreamReady = false;
-        if (_capture is not null)
+        if (_pipeline.Capture is not null)
         {
             if (_captureFrameHandler is not null)
-                _capture.FrameArrived -= _captureFrameHandler;
+                _pipeline.Capture.FrameArrived -= _captureFrameHandler;
             if (_captureFailureHandler is not null)
-                _capture.Failed -= _captureFailureHandler;
+                _pipeline.Capture.Failed -= _captureFailureHandler;
             // Останавливаем поток захвата, но УСТРОЙСТВО НЕ ТРОГАЕМ: им ещё
             // пользуется пейсер энкодера, см. порядок разрушения ниже
-            wedged = !StopCaptureBounded(_capture);
+            wedged = !StopCaptureBounded(_pipeline.Capture);
         }
         _captureFrameHandler = null;
         _captureFailureHandler = null;
@@ -1184,7 +1184,7 @@ public sealed partial class ReplayEngine : IDisposable
         //
         // 1. Поток захвата не должен работать, когда освобождают видеопроцессор и
         //    текстуры пула: он ими пользуется прямо в кадре. Поэтому выше стоит
-        //    _capture.Stop() — он дожидается своего потока (DDA джойнит его, WGC
+        //    _pipeline.Capture.Stop() — он дожидается своего потока (DDA джойнит его, WGC
         //    ждёт завершения колбэков).
         //
         // 2. Поток пейсера внутри энкодера держит КОНТЕКСТ, взятый у захвата
@@ -1206,12 +1206,7 @@ public sealed partial class ReplayEngine : IDisposable
         }
         else
         {
-            _encoder?.Dispose(); _encoder = null;
-            _gpuTimer?.Dispose(); _gpuTimer = null;
-            _scaler?.Dispose(); _scaler = null;
-            _processor?.Dispose(); _processor = null;
-            _frameBroker?.Dispose(); _frameBroker = null;
-            _capture?.Dispose(); _capture = null;
+            _pipeline.DisposeOrdered();
         }
         lock (_captureTargetSync) _activeCaptureTarget = null;
 
@@ -1254,21 +1249,26 @@ public sealed partial class ReplayEngine : IDisposable
     }
 
     /// <summary>
-    /// Объекты брошенного конвейера. Держим ссылки до конца процесса: иначе их
-    /// освободил бы сборщик мусора, и поток финализаторов повис бы на том же
-    /// устройстве, остановив сборку мусора во всём приложении.
+    /// Бросить текущий конвейер целиком (см. <see cref="AbandonedPipelines"/>). Энкодер
+    /// в хосте NVENC при этом не бросается, а убивается: Windows освободит его память.
+    /// Брошенных стало слишком много — повтор останавливается: каждый держит
+    /// видеопамять, и новая пересборка на той же видеокарте, скорее всего, повиснет так же.
     /// </summary>
-    private static readonly List<object> s_abandoned = [];
-
     private void AbandonWedgedPipeline()
     {
-        lock (s_abandoned)
+        var session = _pipeline;
+        session.Encoder?.AbortHost("конвейер брошен", countFailure: false);
+        _pipeline = new PipelineSession(0);
+        if (session.IsEmpty) return;
+        if (AbandonedPipelines.Add(session) >= AbandonedPipelines.Limit)
         {
-            foreach (object? o in new object?[] { _encoder, _gpuTimer, _scaler, _processor, _frameBroker, _capture })
-                if (o is not null) s_abandoned.Add(o);
+            Log.Error("Engine", "Слишком много брошенных конвейеров — повтор останавливаю, чтобы не копить видеопамять");
+            _ = Task.Run(() =>
+            {
+                try { Stop(); } catch (Exception ex) { Log.Error("Engine", ex); }
+                Warning?.Invoke("Запись остановлена: видеокарта несколько раз не отпустила захват. Перезапустите Aura.");
+            });
         }
-        _encoder = null; _gpuTimer = null; _scaler = null;
-        _processor = null; _frameBroker = null; _capture = null;
     }
 
     /// <summary>

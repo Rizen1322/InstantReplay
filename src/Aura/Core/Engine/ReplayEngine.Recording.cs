@@ -27,7 +27,7 @@ public sealed partial class ReplayEngine
     /// Начать обычную запись в файл. Если повтор выключен, конвейер поднимается
     /// только ради записи и гасится, когда её остановят.
     ///
-    /// Под тем же замком, что и остальной жизненный цикл: метод трогает _encoder,
+    /// Под тем же замком, что и остальной жизненный цикл: метод трогает _pipeline.Encoder,
     /// _audio и _recorder, а параллельный Stop() обнуляет ровно их. Monitor
     /// реентерантен, поэтому вызов из StopLocked и из восстановления проходит.
     /// </summary>
@@ -109,7 +109,7 @@ public sealed partial class ReplayEngine
     private void DetachRecorderLocked()
     {
         if (_recorder is null || _recorderDetached) return;
-        if (_encoder is { } encoder && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
+        if (_pipeline.Encoder is { } encoder && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
         _recorderFrameHandler = null;
         _recorderDetached = true;
     }
@@ -124,7 +124,7 @@ public sealed partial class ReplayEngine
     private void ReattachRecorderLocked()
     {
         var recorder = _recorder!;
-        var encoder = _encoder;
+        var encoder = _pipeline.Encoder;
         if (encoder is not { StreamReady: true }) return;   // энкодер ещё не готов — попробуем при следующем старте
 
         if (_recorderStream != (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps))
@@ -198,7 +198,7 @@ public sealed partial class ReplayEngine
             return;
         }
         if (_state == EngineState.Stopped) StartWithFallbackLocked(preserveBuffers: false); // может бросить — наружу, UI покажет
-        if (_encoder is not { StreamReady: true }) return;
+        if (_pipeline.Encoder is not { StreamReady: true }) return;
 
         var s = _settings.Current;
         // Места нет — запись не начинаем: файл оборвался бы через пару минут.
@@ -243,11 +243,11 @@ public sealed partial class ReplayEngine
             }
         };
         _recorderFrameHandler = recorder.OnFrame;
-        _encoder.FrameEncoded += _recorderFrameHandler;
+        _pipeline.Encoder.FrameEncoded += _recorderFrameHandler;
         // Файл начинается с ключевого кадра, а они идут раз в две секунды. Без
         // просьбы запись теряла до двух секунд в начале: нажал «Запись», а в
         // файле первые мгновения отсутствуют.
-        _encoder.RequestKeyframe();
+        _pipeline.Encoder.RequestKeyframe();
         _audio.FrameEncoded += recorder.OnAudio;
         _recorder = recorder;
         RecordingStartedUtc ??= DateTime.UtcNow;
@@ -299,7 +299,7 @@ public sealed partial class ReplayEngine
             var recorder = _recorder;
             if (recorder is null) return;
             _recorder = null;
-            var encoder = _encoder;
+            var encoder = _pipeline.Encoder;
             if (encoder is not null && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
             _recorderFrameHandler = null;
             _recorderDetached = false;
@@ -330,9 +330,9 @@ public sealed partial class ReplayEngine
         if (recorder is null) return null;
         _recorder = null;
         Log.Info("Encoder", $"NVENC за запись: {NvencStats.Take().Since(_recorderNvencStats)}");
-        // Одно чтение поля вместо двух: параллельный снос обнулял _encoder ровно
+        // Одно чтение поля вместо двух: параллельный снос обнулял _pipeline.Encoder ровно
         // между проверкой и использованием
-        var encoder = _encoder;
+        var encoder = _pipeline.Encoder;
         if (encoder is not null && _recorderFrameHandler is { } handler) encoder.FrameEncoded -= handler;
         _recorderFrameHandler = null;
         _recorderDetached = false;

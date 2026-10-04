@@ -73,6 +73,7 @@ $expectedHookHash = (([IO.File]::ReadAllText($hookManifest) -split '\s+')[0]).To
 $actualHookHash = (Get-FileHash -LiteralPath $hook -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($expectedHookHash -ne $actualHookHash) { throw "native hook и manifest не совпадают" }
 if (-not (Test-Path -LiteralPath (Join-Path $publish "Aura.Media64.dll") -PathType Leaf)) { throw "в поставке нет Aura.Media64.dll (NVENC и RNNoise)" }
+if (-not (Test-Path -LiteralPath (Join-Path $publish "Aura.EncoderHost.exe") -PathType Leaf)) { throw "в поставке нет Aura.EncoderHost.exe (хост NVENC)" }
 
 Write-Host "== 5/8 Пакет identity =="
 # Sparse-пакет кладём в поставку: установщик зарегистрирует его с внешним

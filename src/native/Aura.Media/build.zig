@@ -41,4 +41,29 @@ pub fn build(b: *std.Build) void {
         .root_module = module,
     });
     b.installArtifact(lib);
+
+    // Хост NVENC (encoder_host.c): отдельный процесс, в котором живёт сессия
+    // кодировщика. Его можно убить при зависании драйвера, не трогая Aura.
+    const host_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    host_module.addIncludePath(b.path("../../../third_party/nvenc"));
+    host_module.addCSourceFiles(.{
+        .files = &.{"encoder_host.c"},
+        .flags = &.{ "-std=c11", "-DNDEBUG", "-DUNICODE", "-D_UNICODE", "-Wall", "-Wno-unused-function" },
+    });
+    host_module.linkSystemLibrary("kernel32", .{});
+    host_module.linkSystemLibrary("user32", .{});
+    host_module.linkSystemLibrary("shell32", .{});
+    host_module.linkSystemLibrary("d3d11", .{});
+    host_module.linkSystemLibrary("dxgi", .{});
+    const host = b.addExecutable(.{
+        .name = "Aura.EncoderHost",
+        .root_module = host_module,
+    });
+    host.subsystem = .windows;
+    host.mingw_unicode_entry_point = true;
+    b.installArtifact(host);
 }

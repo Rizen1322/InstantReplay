@@ -19,7 +19,7 @@ namespace Aura.Core.Encoding;
 /// Всё, чего конкретная видеокарта не умеет, прослойка выключает сама (по
 /// NvEncGetEncodeCaps), а если сессия не открылась вовсе — энкодер уходит на MFT.
 /// </summary>
-internal sealed partial class NvencSession : IDisposable
+internal sealed partial class NvencSession : INvencSession
 {
     private const string Dll = "Aura.Media64.dll";
 

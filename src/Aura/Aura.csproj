@@ -16,9 +16,9 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyVersion>2.0.36.0</AssemblyVersion>
-    <FileVersion>2.0.36.0</FileVersion>
-    <Version>2.0.36</Version>
+    <AssemblyVersion>2.0.37.0</AssemblyVersion>
+    <FileVersion>2.0.37.0</FileVersion>
+    <Version>2.0.37</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
@@ -65,6 +65,10 @@
              Link="Aura.Media64.dll"
              CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="$(GameCaptureHookOutput)\Aura.EncoderHost.exe"
+             Link="Aura.EncoderHost.exe"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
     <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\native\Aura.Media\**\*.*" />
     <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\third_party\nvenc\**\*.*" />
     <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\third_party\rnnoise\**\*.*" />
@@ -93,10 +97,12 @@
           BeforeTargets="CoreCompile"
           Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Aura'"
           Inputs="@(MediaNativeSource)"
-          Outputs="$(GameCaptureHookOutput)\Aura.Media64.dll">
+          Outputs="$(GameCaptureHookOutput)\Aura.Media64.dll;$(GameCaptureHookOutput)\Aura.EncoderHost.exe">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\packaging\build_media_native.ps1&quot; -OutputDir &quot;$(GameCaptureHookOutput)&quot;" />
     <Error Condition="!Exists('$(GameCaptureHookOutput)\Aura.Media64.dll')"
            Text="Aura.Media64.dll was not produced." />
+    <Error Condition="!Exists('$(GameCaptureHookOutput)\Aura.EncoderHost.exe')"
+           Text="Aura.EncoderHost.exe was not produced." />
   </Target>
 
   <!-- VideoLAN.LibVLC.Windows carries three complete native runtimes. Aura is an

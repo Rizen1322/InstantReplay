@@ -53,11 +53,12 @@ internal sealed class EncoderTexturePool : IDisposable
     private readonly SharedSlot?[]? _shared;
 
     /// <summary>Слот в общем режиме: одна текстура, два устройства, keyed mutex.</summary>
-    private sealed class SharedSlot(ID3D11Texture2D encoder, IDXGIKeyedMutex encoderLock,
+    private sealed class SharedSlot(ID3D11Texture2D? encoder, IDXGIKeyedMutex? encoderLock,
                                     ID3D11Texture2D capture, IDXGIKeyedMutex captureLock)
     {
-        public readonly ID3D11Texture2D Encoder = encoder;
-        public readonly IDXGIKeyedMutex EncoderLock = encoderLock;
+        // В режиме хоста NVENC стороны энкодера в процессе Aura нет (null)
+        public readonly ID3D11Texture2D? Encoder = encoder;
+        public readonly IDXGIKeyedMutex? EncoderLock = encoderLock;
         public readonly ID3D11Texture2D Capture = capture;
         public readonly IDXGIKeyedMutex CaptureLock = captureLock;
         /// <summary>Захват записал кадр (ключ 1), а энкодер его ещё не забрал.</summary>
@@ -66,7 +67,7 @@ internal sealed class EncoderTexturePool : IDisposable
         public void Dispose()
         {
             CaptureLock.Dispose(); Capture.Dispose();
-            EncoderLock.Dispose(); Encoder.Dispose();
+            EncoderLock?.Dispose(); Encoder?.Dispose();
         }
     }
 
@@ -102,6 +103,68 @@ internal sealed class EncoderTexturePool : IDisposable
         _slots = new ID3D11Texture2D?[Math.Max(bySlots, minSlots)];
         _ledger = new PoolSlotLedger(_slots.Length);
     }
+
+    /// <summary>
+    /// Общий режим для хоста NVENC (<see cref="RemoteNvencSession"/>): текстуры живут
+    /// на устройстве захвата Aura, хост открывает их по дескрипторам. Так они
+    /// переживают смерть хоста, а убитый хост не уносит с собой кадры очереди.
+    /// </summary>
+    public EncoderTexturePool(ID3D11Device captureDevice, bool forHost, int width, int height, bool tenBit, int slots)
+    {
+        _device = captureDevice;
+        _renderTarget = false;
+        _slots = new ID3D11Texture2D?[slots];
+        _shared = new SharedSlot?[slots];
+        _ledger = new PoolSlotLedger(slots);
+        var desc = new Texture2DDescription
+        {
+            Width = (uint)width,
+            Height = (uint)height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = tenBit ? Format.P010 : Format.NV12,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+            MiscFlags = ResourceOptionFlags.SharedKeyedMutex,
+        };
+        try
+        {
+            var handles = new IntPtr[slots];
+            for (int i = 0; i < slots; i++)
+            {
+                var capture = Aura.Core.Diagnostics.GpuResourceLedger.Track(captureDevice.CreateTexture2D(desc), "общий пул");
+                var captureLock = capture.QueryInterface<IDXGIKeyedMutex>();
+                using (var resource = capture.QueryInterface<IDXGIResource>()) handles[i] = resource.SharedHandle;
+                _shared[i] = new SharedSlot(null, null, capture, captureLock);
+                _slots[i] = capture;
+                _slotOf[capture.NativePointer] = i;
+            }
+            SharedHandles = handles;
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Дескрипторы общих текстур для хоста NVENC (по номеру слота).</summary>
+    public IReadOnlyList<IntPtr> SharedHandles { get; } = [];
+
+    /// <summary>Номер слота текстуры пула; -1 — не наша.</summary>
+    public int SlotIndexOf(ID3D11Texture2D texture) => TrySlotOf(texture, out int slot) ? slot : -1;
+
+    /// <summary>Хост скопировал кадр и вернул ключ 0: слот снова свободен.</summary>
+    public void ReleaseAfterHost(ID3D11Texture2D capture)
+    {
+        if (_shared is null || !TrySlotOf(capture, out int slot)) return;
+        _shared[slot]!.Written = false;
+        _ledger.Release(slot);
+    }
+
+    /// <summary>Хост получил WAIT_ABANDONED на общей текстуре: пул нужно пересоздать.</summary>
+    public void ReportAbandonedFromHost() => ReportAbandoned();
 
     /// <summary>
     /// Общий режим для прямого NVENC. Все слоты создаются сразу: текстуры на двух
@@ -281,6 +344,7 @@ internal sealed class EncoderTexturePool : IDisposable
     {
         if (_shared is null || !TrySlotOf(capture, out int slot)) return null;
         var shared = _shared[slot]!;
+        if (shared.EncoderLock is null || shared.Encoder is null) return null;
         int acquired = AcquireSync(shared.EncoderLock, 1, timeoutMs);
         if (acquired == WaitAbandoned) ReportAbandoned();
         return acquired == 0 ? shared.Encoder : null;
@@ -292,7 +356,7 @@ internal sealed class EncoderTexturePool : IDisposable
         if (_shared is null || !TrySlotOf(capture, out int slot)) return;
         var shared = _shared[slot]!;
         shared.Written = false;
-        shared.EncoderLock.ReleaseSync(0);
+        shared.EncoderLock?.ReleaseSync(0);
         _ledger.Release(slot);
     }
 
