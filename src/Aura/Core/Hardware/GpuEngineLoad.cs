@@ -49,7 +49,7 @@ internal sealed class GpuEngineLoad : IDisposable
     }
 
     /// <summary>Сумма по процессам для каждого движка, затем самый загруженный движок.</summary>
-    private static double Busiest(IntPtr counter)
+    internal static double Busiest(IntPtr counter)
     {
         if (counter == IntPtr.Zero) return 0;
         uint size = 0, count = 0;
@@ -93,18 +93,91 @@ internal sealed class GpuEngineLoad : IDisposable
     }
 
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern int PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
+    internal static extern int PdhOpenQueryW(string? dataSource, IntPtr userData, out IntPtr query);
 
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern int PdhAddEnglishCounterW(IntPtr query, string path, IntPtr userData, out IntPtr counter);
+    internal static extern int PdhAddEnglishCounterW(IntPtr query, string path, IntPtr userData, out IntPtr counter);
 
     [DllImport("pdh.dll")]
-    private static extern int PdhCollectQueryData(IntPtr query);
+    internal static extern int PdhCollectQueryData(IntPtr query);
 
     [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
-    private static extern int PdhGetFormattedCounterArrayW(IntPtr counter, uint format, ref uint bufferSize,
+    internal static extern int PdhGetFormattedCounterArrayW(IntPtr counter, uint format, ref uint bufferSize,
                                                           ref uint itemCount, IntPtr buffer);
 
     [DllImport("pdh.dll")]
-    private static extern int PdhCloseQuery(IntPtr query);
+    internal static extern int PdhCloseQuery(IntPtr query);
+}
+
+/// <summary>
+/// Насколько видеокарта сейчас занята работой нашего процесса: самый загруженный
+/// из её движков (3D, копирование, Video Encode) по счётчикам Windows для PID Aura.
+///
+/// ЗАЧЕМ. Когда энкодер молчит, по одному таймеру не понять, мёртв он или ждёт
+/// очереди за игрой. Если наши движки заняты, видеокарта работает над нашими
+/// кадрами, просто медленно: это голодание, пересобирать нечего. Замер нужен
+/// только в такие секунды, поэтому первый вызов лишь запускает счёт.
+/// </summary>
+internal sealed class GpuProcessActivity : IDisposable
+{
+    private readonly GpuCounterQuery? _query;
+
+    public GpuProcessActivity()
+    {
+        int pid = Environment.ProcessId;
+        _query = GpuCounterQuery.TryCreate($@"\GPU Engine(pid_{pid}_*)\Utilization Percentage");
+    }
+
+    /// <summary>Загрузка самого занятого нашего движка с прошлого вызова, %; null — замера ещё нет.</summary>
+    public double? Sample() => _query?.SampleBusiest();
+
+    public void Reset() => _query?.Reset();
+
+    public void Dispose() => _query?.Dispose();
+}
+
+/// <summary>Один счётчик «GPU Engine» по шаблону экземпляров: самый занятый движок.</summary>
+internal sealed class GpuCounterQuery : IDisposable
+{
+    private IntPtr _query, _counter;
+    private bool _primed;
+
+    private GpuCounterQuery(IntPtr query, IntPtr counter) { _query = query; _counter = counter; }
+
+    public static GpuCounterQuery? TryCreate(string path)
+    {
+        try
+        {
+            if (GpuEngineLoad.PdhOpenQueryW(null, IntPtr.Zero, out IntPtr query) != 0) return null;
+            if (GpuEngineLoad.PdhAddEnglishCounterW(query, path, IntPtr.Zero, out IntPtr counter) != 0)
+            {
+                GpuEngineLoad.PdhCloseQuery(query);
+                return null;
+            }
+            return new GpuCounterQuery(query, counter);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Первый вызов запускает счёт и возвращает null.</summary>
+    public double? SampleBusiest()
+    {
+        if (_query == IntPtr.Zero) return null;
+        try
+        {
+            if (GpuEngineLoad.PdhCollectQueryData(_query) != 0) return null;
+            if (!_primed) { _primed = true; return null; }
+            return GpuEngineLoad.Busiest(_counter);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Начать счёт заново: следующий замер снова только запускает.</summary>
+    public void Reset() => _primed = false;
+
+    public void Dispose()
+    {
+        if (_query != IntPtr.Zero) GpuEngineLoad.PdhCloseQuery(_query);
+        _query = IntPtr.Zero;
+    }
 }

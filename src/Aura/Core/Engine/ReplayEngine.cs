@@ -276,6 +276,7 @@ public sealed partial class ReplayEngine : IDisposable
         _videoBuffer.KeyframeNeeded += () => _encoder?.RequestKeyframe();
         // Реакция на изменение настроек записи (см. ReplayEngine.Settings.cs)
         _settings.Changed += OnSettingsChanged;
+        PurgeRescueLeftovers();
     }
 
     /// <summary>Счётчики NVENC при включении повтора: при выключении печатаем разницу.</summary>
@@ -584,6 +585,9 @@ public sealed partial class ReplayEngine : IDisposable
                                          preferTenBit: false, outputBase);
             }
             bool awaitingRestartKeyframe = validateSequenceHeader;
+            // Параметры старой части буфера: ниже поля переписываются под новый энкодер
+            var (previousCodec, previousWidth, previousHeight, previousFps) =
+                (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps);
             _encodedStreamReady = !awaitingRestartKeyframe;
             encoder.FrameEncoded += frame =>
             {
@@ -597,9 +601,12 @@ public sealed partial class ReplayEngine : IDisposable
                     if (!EncodedStreamCompatibility.SameSequenceHeader(
                             previousSequenceHeader, currentSequenceHeader))
                     {
-                        _videoBuffer.Clear();
+                        // Склеить со старыми кадрами нельзя, но и стирать их незачем:
+                        // см. ReplayEngine.Rescue.cs
                         Log.Warn("Engine", "Параметры новой сессии энкодера отличаются — " +
-                                           "старая видеочасть RAM-буфера очищена");
+                                           "старая часть повтора уходит в отдельный файл");
+                        RescueBufferBeforeFormatChange(previousSequenceHeader, previousCodec,
+                                                       previousWidth, previousHeight, previousFps);
                     }
                     _bufferSequenceHeader = currentSequenceHeader;
                     awaitingRestartKeyframe = false;
@@ -903,6 +910,8 @@ public sealed partial class ReplayEngine : IDisposable
             ForgetSystemSuspend();
             StopLocked();
         }
+        // Повтор выключен: часть до сбоя уже не сохранить из него
+        ExpireRescued(force: true);
     }
 
     /// <summary>

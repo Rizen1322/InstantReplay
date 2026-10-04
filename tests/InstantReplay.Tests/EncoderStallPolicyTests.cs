@@ -20,6 +20,16 @@ public sealed class EncoderStallPolicyTests
     }
 
     [Fact]
+    public void Busy_gpu_during_silence_is_starvation()
+    {
+        Assert.True(EncoderStallPolicy.IsStarved(0, allGraphicsPercent: 95));
+        Assert.True(EncoderStallPolicy.IsStarved(3, -1));
+        // Одна медленная секунда бывает и в начале настоящего зависания
+        Assert.False(EncoderStallPolicy.IsStarved(1, -1));
+        Assert.False(EncoderStallPolicy.IsStarved(0, 30));
+    }
+
+    [Fact]
     public void Slow_output_means_starvation_but_zero_does_not()
     {
         // Как у CS2 под HAGS: 6–15 кадров в секунду вместо 60

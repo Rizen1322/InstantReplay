@@ -16,9 +16,9 @@
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyVersion>2.0.34.0</AssemblyVersion>
-    <FileVersion>2.0.34.0</FileVersion>
-    <Version>2.0.34</Version>
+    <AssemblyVersion>2.0.35.0</AssemblyVersion>
+    <FileVersion>2.0.35.0</FileVersion>
+    <Version>2.0.35</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>

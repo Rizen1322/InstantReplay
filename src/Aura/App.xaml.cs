@@ -200,6 +200,17 @@ public partial class App : Application
             int.TryParse(e.Args[freezeArg + 1], out int freezeAfter))
             new Thread(() => Core.Diagnostics.ProcessFreeze.Run(freezeAfter * 1000, 7000)) { IsBackground = true }.Start();
 
+        // --selftest-encoder-stall N: через N секунд NVENC молчит 8 с (сторож энкодера)
+        int stallArg = Array.IndexOf(e.Args, "--selftest-encoder-stall");
+        if (dev && stallArg >= 0 && stallArg + 1 < e.Args.Length &&
+            int.TryParse(e.Args[stallArg + 1], out int stallAfter))
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(stallAfter * 1000);
+                Log.Info("SelfTest", "NVENC замолкает на 8 с");
+                Core.Encoding.VideoEncoder.TestStallMs = 8000;
+            });
+
         // --selftest-record N: записать N секунд в файл без повтора и выйти. Только
         // для проверки конвейера записи без рук (--dev и своя папка данных).
         int selfTestArg = Array.IndexOf(e.Args, "--selftest-record");

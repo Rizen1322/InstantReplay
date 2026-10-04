@@ -81,6 +81,7 @@ public sealed partial class ReplayEngine
 
     private void DumpStats(string label)
     {
+        ExpireRescued(force: false);
         var enc = _encoder;
         var cap = _capture;
         if (enc is null || State == EngineState.Stopped) return;
@@ -558,8 +559,13 @@ public sealed partial class ReplayEngine
     [System.Runtime.InteropServices.DllImport("kernel32.dll")]
     private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx status);
 
-    /// <summary>До какого времени считать видеокарту занятой игрой (см. EncoderStallPolicy).</summary>
-    private DateTime _wdSlowUntil;
+    /// <summary>Медленные секунды выхода энкодера за последнюю минуту (см. EncoderStallPolicy).</summary>
+    private readonly Queue<DateTime> _wdSlowWindows = new();
+
+    // Замеры видеокарты, пока энкодер молчит: наши движки и 3D всех процессов (игра)
+    private Aura.Core.Hardware.GpuProcessActivity? _wdOurGpu;
+    private Aura.Core.Hardware.GpuCounterQuery? _wdAllGraphics;
+    private double _wdSilentOurGpu = -1, _wdSilentGraphics = -1;
 
     /// <summary>
     /// Встал ли конвейер целиком. Главный признак жизни — закодированные кадры:
@@ -585,17 +591,43 @@ public sealed partial class ReplayEngine
         {
             if (_wdEncoded > 0 && EncoderStallPolicy.IsSlow(
                     encoded - _wdEncoded, (now - _wdEncodedAt).TotalSeconds, encoder.Fps))
-                _wdSlowUntil = now.AddSeconds(EncoderStallPolicy.StarvationMemorySeconds);
+                _wdSlowWindows.Enqueue(now);
             _wdEncoded = encoded;
             _wdEncodedAt = now;
+            if (_wdSilentOurGpu >= 0 || _wdSilentGraphics >= 0)
+            {
+                _wdOurGpu?.Reset();
+                _wdAllGraphics?.Reset();
+                _wdSilentOurGpu = _wdSilentGraphics = -1;
+            }
             return false;
         }
         stuck = (now - _wdEncodedAt).TotalSeconds;
-        starving = now < _wdSlowUntil;
+        if (stuck >= 1.5) SampleGpuDuringSilence();
+        while (_wdSlowWindows.Count > 0 &&
+               (now - _wdSlowWindows.Peek()).TotalSeconds > EncoderStallPolicy.StarvationMemorySeconds)
+            _wdSlowWindows.Dequeue();
+        starving = EncoderStallPolicy.IsStarved(_wdSlowWindows.Count, _wdSilentGraphics);
         if (stuck < EncoderStallPolicy.ThresholdSeconds(Volatile.Read(ref _wedgeCount), starving)) return false;
         _wdEncodedAt = now;   // один эпизод — одна пересборка
         return true;
     }
+
+    /// <summary>
+    /// Пока энкодер молчит, раз в секунду: заняты ли наши движки видеокарты и
+    /// насколько её грузят все процессы. Первый замер только запускает счёт.
+    /// </summary>
+    private void SampleGpuDuringSilence()
+    {
+        _wdOurGpu ??= new Aura.Core.Hardware.GpuProcessActivity();
+        _wdAllGraphics ??= Aura.Core.Hardware.GpuCounterQuery.TryCreate(@"\GPU Engine(*engtype_3D)\Utilization Percentage");
+        if (_wdOurGpu.Sample() is double ours) _wdSilentOurGpu = Math.Max(_wdSilentOurGpu, ours);
+        if (_wdAllGraphics?.SampleBusiest() is double all) _wdSilentGraphics = Math.Max(_wdSilentGraphics, all);
+    }
+
+    private string SilenceGpuReport() =>
+        $"наши движки GPU до {(_wdSilentOurGpu < 0 ? "?" : _wdSilentOurGpu.ToString("F0"))}%, " +
+        $"3D всех процессов до {(_wdSilentGraphics < 0 ? "?" : _wdSilentGraphics.ToString("F0"))}%";
 
     private bool _wdStaticLogged;
     private DateTime? _wdEvidenceSince;
@@ -686,6 +718,8 @@ public sealed partial class ReplayEngine
         _wdEncodedAt = DateTime.UtcNow;
         _wdLastTickMs = 0;
         _wdFrozenStreak = 0;
+        _wdSlowWindows.Clear();
+        _wdSilentOurGpu = _wdSilentGraphics = -1;
         _watchdog = new System.Threading.Timer(_ =>
         {
             var cap = _capture;
@@ -704,13 +738,27 @@ public sealed partial class ReplayEngine
 
             if (EncoderWedged(out double stuck, out bool starving))
             {
+                // Устройство удалено: это настоящая потеря видеокарты (Windows
+                // сбросила её через TDR), а не тишина. Пересборка на новом устройстве.
+                if (_encoder?.DeviceRemoved() is string removed)
+                {
+                    Log.Error("Engine", $"Энкодер молчит {stuck:F1} с, устройство удалено ({removed}) — пересобираю конвейер");
+                    long lostGeneration = Interlocked.Read(ref _captureGeneration);
+                    OnCaptureFailed(new CaptureFailure(
+                        CaptureFailureKind.DeviceLost,
+                        new InvalidOperationException($"устройство удалено: {removed}"),
+                        "видеокарта сброшена",
+                        lostGeneration,
+                        ActiveCaptureTarget()?.Revision ?? 0), lostGeneration);
+                    return;
+                }
                 // Встал прямой NVENC: пишем, на каком вызове, и до перезапуска
                 // программы кодируем через MFT — новая сессия NVENC рядом с
                 // зависшей не оживёт. Но не при голодании: там NVENC жив, а
                 // переход на MFT только очистил бы буфер повтора.
                 if (_encoder is { DirectNvenc: true } wedgedEncoder)
                 {
-                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " после медленной работы (видеокарту занимает игра)" : "")}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
+                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
                     if (!starving)
                     {
                         VideoEncoder.DirectNvencDisabled = true;
@@ -725,7 +773,7 @@ public sealed partial class ReplayEngine
                 // энкодер, которого душит игра, столько не молчит.
                 if (Interlocked.Increment(ref _wedgeCount) > 1)
                 {
-                    Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров) — видеокарта не отвечает, " +
+                    Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров; {SilenceGpuReport()}) — видеокарта не отвечает, " +
                                         "повтор выключаю, чтобы не копить брошенные конвейеры");
                     _ = Task.Run(() =>
                     {
@@ -734,8 +782,10 @@ public sealed partial class ReplayEngine
                     });
                     return;
                 }
-                Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом конвейере — " +
-                                    "взаимная блокировка на видеокарте, пересобираю конвейер");
+                Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом устройстве " +
+                                    $"({SilenceGpuReport()}) — " +
+                                    (starving ? "видеокарту занимает игра, пересобираю конвейер на том же энкодере"
+                                              : "взаимная блокировка, пересобираю конвейер"));
                 long wedgedGeneration = Interlocked.Read(ref _captureGeneration);
                 // Встал энкодер, а не захват: пересобираем на том же захвате
                 OnCaptureFailed(new CaptureFailure(

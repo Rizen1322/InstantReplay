@@ -464,6 +464,30 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Состояние сессии NVENC и её последние вызовы — для лога, когда конвейер встал.</summary>
     public string? NvencTrace() => _nvenc?.Trace();
 
+    /// <summary>Проверка в --dev (--selftest-encoder-stall): на сколько мс один раз замолчать.</summary>
+    internal static int TestStallMs;
+
+    /// <summary>
+    /// Код удаления устройства захвата или NVENC; null — оба живы. Настоящее
+    /// зависание видеокарты Windows сбрасывает за 2 с (TDR), и устройство
+    /// становится удалённым. Живое устройство при молчании энкодера — это
+    /// голодание или блокировка у нас, но не мёртвая видеокарта.
+    /// </summary>
+    public string? DeviceRemoved()
+    {
+        foreach (var (name, device) in new[] { ("захват", _device), ("NVENC", _nvencDevice) })
+        {
+            try
+            {
+                if (device is null) continue;
+                var reason = device.DeviceRemovedReason;
+                if (reason.Failure) return $"{name}: 0x{unchecked((uint)reason.Code):X8}";
+            }
+            catch { }
+        }
+        return null;
+    }
+
     private VideoCodec _nvencCodec;
 
     private bool TryInitializeNvenc(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
@@ -601,6 +625,8 @@ public sealed class VideoEncoder : IDisposable
                     if (TakeInput(20, out var dropped)) _copyPool?.Release(dropped.Texture);
                     continue;
                 }
+                // Проверка в --dev: энкодер один раз замолкает, как при зависании
+                if (Interlocked.Exchange(ref TestStallMs, 0) is int stallMs and > 0) Thread.Sleep(stallMs);
                 bool worked = false;
                 while (session.PendingCount > 0 && session.TryGet(0) is { } done)
                 {

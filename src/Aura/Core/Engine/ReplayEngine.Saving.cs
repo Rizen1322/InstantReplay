@@ -84,6 +84,13 @@ public sealed partial class ReplayEngine
         // восстановления терялось молча — ровно в тот момент, когда игра дёрнулась.
         if (_videoBuffer.TotalBytes == 0 || _bufferSequenceHeader is null && _bufferCodec != VideoCodec.AV1)
         {
+            // Новый энкодер ещё ничего не накопил, но часть до сбоя лежит готовой
+            if (PublishRescued(TimeSpan.FromSeconds(secondsOverride ?? _settings.Current.ReplayLengthSeconds).Ticks)
+                is { } rescuedOnly)
+            {
+                ReplaySaved?.Invoke(rescuedOnly.Path, rescuedOnly.Seconds);
+                return;
+            }
             SaveFailed?.Invoke(_state == EngineState.Recovering
                 ? "Запись восстанавливается — в буфере пока нет кадров"
                 : "Буфер ещё пуст");
@@ -181,6 +188,8 @@ public sealed partial class ReplayEngine
                 // берёт _lifecycle, а Stop() в это время ждёт ЭТУ задачу под тем же замком.
                 _settings.Update(x => x.TotalReplaysSaved++, "stats");
                 ReplaySaved?.Invoke(published, Math.Max(seconds, 1));
+                // Часть повтора до смены энкодера, если она ещё в окне: отдельным клипом
+                if (PublishRescued(wanted) is { } rescued) RecordingPartSaved?.Invoke(rescued.Path);
             }
             catch (Exception ex)
             {

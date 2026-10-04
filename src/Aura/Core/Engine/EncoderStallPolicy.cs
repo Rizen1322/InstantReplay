@@ -26,6 +26,20 @@ internal static class EncoderStallPolicy
     /// <summary>Сколько секунд после медленного выхода считать видеокарту занятой.</summary>
     public const double StarvationMemorySeconds = 60;
 
+    /// <summary>Сколько медленных секунд за минуту считается устойчивым голоданием.</summary>
+    public const int SlowWindowsForStarvation = 3;
+
+    /// <summary>
+    /// Видеокарта занята, а не мертва: выход был медленным несколько секунд за
+    /// последнюю минуту, или игра грузит 3D почти целиком. Одна медленная секунда
+    /// не в счёт: она бывает и в начале настоящего зависания, когда кадры
+    /// обрываются посреди секунды. Загрузка наших собственных движков тоже не
+    /// признак: захват и перевод кадров работают и при вставшем энкодере.
+    /// Отрицательное значение замера — замера нет.
+    /// </summary>
+    public static bool IsStarved(int recentSlowWindows, double allGraphicsPercent) =>
+        recentSlowWindows >= SlowWindowsForStarvation || allGraphicsPercent >= 80;
+
     public static double ThresholdSeconds(int previousEpisodes, bool starving) =>
         previousEpisodes > 0 ? GiveUpSeconds : starving ? StarvedSeconds : DeadlockSeconds;
 
