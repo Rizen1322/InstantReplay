@@ -537,8 +537,9 @@ public partial class CapturePage : PageBase
     {
         // Столько же считает ReplayVideoBuffer.Allocate: длительность плюс запас на
         // GOP и всплески битрейта, плюс блок под сохранение, округлённые вверх до
-        // блоков по 16 МБ. Показываем именно занимаемое, а не полезное — иначе цифра
-        // в настройках расходится с тем, что видно в диспетчере задач.
+        // блоков по 16 МБ. Это предел: адреса резервируются сразу, а память выдаётся
+        // блоками по мере заполнения (NativeArenaStorage), так что в диспетчере задач
+        // она растёт до этой цифры, но не выше.
         int seconds = ParseLength();
         long bitrate = Math.Max(1, (int)Bitrate.Value) * 1_000_000L;
         bool disk = DiskBuffer;
@@ -549,10 +550,10 @@ public partial class CapturePage : PageBase
         EstWhere.Text = disk ? "на диске" : "в памяти";
         string held = disk
             ? $"Столько займёт файл буфера на {LengthWords(seconds)}. Память почти не тратится."
-            : $"Столько держит в памяти буфер на {LengthWords(seconds)}.";
+            : $"Предел памяти для буфера на {LengthWords(seconds)}.";
         RamEstimate.Text = seconds >= supported
             ? $"{held} Это предел для такого битрейта: {LengthWords(supported)}."
-            : $"{held} Выделяется сразу с запасом на всплески и дальше не растёт.";
+            : $"{held} Размер ограничен заранее, память занимается по мере заполнения повтора.";
     }
 
     /// <summary>
