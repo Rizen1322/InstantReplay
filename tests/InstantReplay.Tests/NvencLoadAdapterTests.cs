@@ -38,12 +38,32 @@ public sealed class NvencLoadAdapterTests
     [Fact]
     public void Stalled_submit_old_frames_or_growing_queue_are_overload()
     {
-        // Все кадры закодированы, но вызов отправки подвисает
-        Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(encoded: PerWindow, p99: 30));
-        // Самый старый кадр ждёт в очереди дольше 100 мс
-        Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(PerWindow, 2, pendingAgeMs: 150));
-        // Очередь растёт
+        // Все кадры закодированы, но вызов отправки подвисает два окна подряд
+        var stalled = new Run(new NvencLoadAdapter(Fps, 1, true));
+        Assert.Null(stalled.Window(encoded: PerWindow, p99: 30));
+        Assert.Equal(1, stalled.Window(encoded: PerWindow, p99: 30));
+        // Самый старый кадр ждёт в очереди дольше 100 мс два окна подряд
+        var old = new Run(new NvencLoadAdapter(Fps, 1, true));
+        Assert.Null(old.Window(PerWindow, 2, pendingAgeMs: 150));
+        Assert.Equal(1, old.Window(PerWindow, 2, pendingAgeMs: 150));
+        // Очередь растёт — сразу
         Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(PerWindow, 2, queueGrowth: 6));
+        // Отправка стоит сотни миллисекунд — сразу
+        Assert.Equal(1, new Run(new NvencLoadAdapter(Fps, 1, true)).Window(PerWindow, 200));
+    }
+
+    [Fact]
+    public void Single_spike_with_everything_encoded_is_not_overload()
+    {
+        // Как в записи CS2: 60 из 60 кадров, потерь нет, очередь не растёт, но в
+        // одном окне один кадр ждал 148 мс или p99 отправки 31,8 мс
+        var adapter = new NvencLoadAdapter(Fps, 0, true);
+        var run = new Run(adapter);
+        Assert.Null(run.Window(PerWindow, 4, pendingAgeMs: 148));
+        Assert.Null(run.Window(PerWindow, 2));
+        Assert.Null(run.Window(PerWindow, 31.8, pendingAgeMs: 72));
+        Assert.Null(run.Window(PerWindow, 2));
+        Assert.Equal(0, adapter.Level);
     }
 
     [Fact]

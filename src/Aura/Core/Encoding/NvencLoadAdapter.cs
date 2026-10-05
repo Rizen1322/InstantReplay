@@ -194,6 +194,7 @@ internal sealed class NvencLoadAdapter
     private int _calm;
     private int _recoveryNeeded = RecoveryWindows;
     private int _sinceRecovery = int.MaxValue;
+    private bool _softPrevious;
 
     public int Level { get; private set; }
     public int MaxLevel => _levels.Count - 1;
@@ -238,8 +239,18 @@ internal sealed class NvencLoadAdapter
         // очередь/дропы — backpressure, который сам уже мог ограничить подачу.
         bool fed = dSubmitted >= target * 0.9;
         bool behind = dEncoded < Math.Min(dSubmitted, target) * 0.95 || dDropped > 0;
-        bool backpressure = maxPendingAgeMs > 100 || queueGrowth >= 5 || dDropped > 0;
-        bool overloaded = backpressure || (fed && (behind || submitP99Ms > 25));
+        // Жёсткие признаки: кадры теряются, очередь растёт, энкодер отстаёт,
+        // кадр ждёт полсекунды или отправка стоит сотни миллисекунд в каждом
+        // тридцатом кадре. Мягкие — разовый пик: один старый кадр в очереди
+        // (100–500 мс) или p99 отправки выше 25 мс. В записи CS2 под хостом NVENC
+        // такой пик в одном окне при 60 из 60 кадров и нулевых потерях снимал AQ
+        // на минуту трижды за десять минут. Мягкий признак считается, только если
+        // повторился два окна подряд.
+        bool strong = dDropped > 0 || queueGrowth >= 5 || maxPendingAgeMs > 500 ||
+                      (fed && (behind || submitP99Ms > 150));
+        bool soft = maxPendingAgeMs > 100 || (fed && submitP99Ms > 25);
+        bool overloaded = strong || (soft && _softPrevious);
+        _softPrevious = soft;
         bool calm = fed && dEncoded >= target * 0.95 && !behind &&
                     submitP99Ms < 8 && maxPendingAgeMs < 50 && queueGrowth <= 1;
         if (_sinceRecovery < int.MaxValue) _sinceRecovery++;
