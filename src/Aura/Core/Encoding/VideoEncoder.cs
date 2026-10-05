@@ -614,6 +614,7 @@ public sealed class VideoEncoder : IDisposable
         Log.Info("Encoder", $"HW-энкодер: NVENC напрямую ({where}), {codec}, " +
                             $"{width}x{height}@{fps}, {bitrateBps / 1_000_000} Мбит/с " +
                             $"(VBR, пик {bitrateBps * 2 / 1_000_000}); {session.Describe()}");
+        if (session.RcInfo() is { Length: > 0 } rc) Log.Info("Encoder", $"NVENC, битрейт: {rc}");
         Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров, общий пул {_copyPool.Slots} " +
                             $"+ входов энкодера {inputs} = " +
                             $"{frameBytes * (_copyPool.Slots + inputs) / (1024 * 1024)} МБ видеопамяти");

@@ -64,6 +64,20 @@ internal sealed partial class NvencSession : INvencSession
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_reconfigure")]
     private static partial int ReconfigureNative(IntPtr session, int multipass, int spatialAq);
 
+    [LibraryImport(Dll, EntryPoint = "aura_nvenc_rc_info")]
+    private static unsafe partial int RcInfoNative(IntPtr session, byte* buffer, int capacity);
+
+    /// <summary>Управление битрейтом, как его применил драйвер.</summary>
+    public unsafe string RcInfo()
+    {
+        if (_session == IntPtr.Zero) return "";
+        var buffer = new byte[1024];
+        int n;
+        try { fixed (byte* p = buffer) n = RcInfoNative(_session, p, buffer.Length); }
+        catch (EntryPointNotFoundException) { return ""; }
+        return System.Text.Encoding.UTF8.GetString(buffer, 0, Math.Clamp(n, 0, buffer.Length));
+    }
+
     [LibraryImport(Dll, EntryPoint = "aura_nvenc_trace")]
     private static unsafe partial int TraceNative(IntPtr session, byte* buffer, int capacity);
 

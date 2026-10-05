@@ -109,6 +109,7 @@ typedef struct Session {
     TraceEntry trace[TRACE_SIZE];
     volatile LONG traceNext;
     char lastError[256];
+    char rcInfo[512];          // итоговое управление битрейтом, как его вернул драйвер
     NV_ENC_CONFIG config;          // настройки, с которыми сессия работает сейчас
     NV_ENC_INITIALIZE_PARAMS init; // init.encodeConfig указывает на config выше
     uint8_t* out;              // копия последнего выхода: растёт под самый большой кадр
@@ -229,6 +230,36 @@ static void destroy_session(Session* s) {
     DeleteCriticalSection(&s->lock);
     DeleteCriticalSection(&s->apiLock);
     HeapFree(GetProcessHeap(), 0, s);
+}
+
+// Управление битрейтом, с которым сессия инициализирована: пресет и tuning
+// подставляют свои поля (целевое качество, пределы QP, начальный QP), и именно
+// они решают, держит ли VBR средний битрейт. Чтения применённых драйвером
+// параметров (nvEncGetEncodeParams) в SDK 12.1 нет, поэтому это итоговая
+// структура, отданная в nvEncInitializeEncoder.
+static void describe_rc(Session* s) {
+    const NV_ENC_RC_PARAMS* rc = &s->config.rcParams;
+    snprintf(s->rcInfo, sizeof s->rcInfo,
+             "режим %d, средний %u, потолок %u, VBV %u (начальный %u), целевое качество %u.%u, "
+             "minQP %s(%u/%u/%u), maxQP %s(%u/%u/%u), начальный QP %s, constQP %u/%u/%u, "
+             "проходов %d, AQ %u/%u (сила %u), просмотр вперёд %u (%u), zeroReorderDelay %u, strictGOP %u, "
+             "GOP %u, P-интервал %d, tuning %d",
+             (int)rc->rateControlMode, rc->averageBitRate, rc->maxBitRate, rc->vbvBufferSize, rc->vbvInitialDelay,
+             (unsigned)rc->targetQuality, (unsigned)rc->targetQualityLSB,
+             rc->enableMinQP ? "вкл " : "выкл ", rc->minQP.qpIntra, rc->minQP.qpInterP, rc->minQP.qpInterB,
+             rc->enableMaxQP ? "вкл " : "выкл ", rc->maxQP.qpIntra, rc->maxQP.qpInterP, rc->maxQP.qpInterB,
+             rc->enableInitialRCQP ? "вкл" : "выкл",
+             rc->constQP.qpIntra, rc->constQP.qpInterP, rc->constQP.qpInterB,
+             (int)rc->multiPass, rc->enableAQ, rc->enableTemporalAQ, rc->aqStrength,
+             rc->enableLookahead, rc->lookaheadDepth, rc->zeroReorderDelay, rc->strictGOPTarget,
+             s->config.gopLength, s->config.frameIntervalP, (int)s->init.tuningInfo);
+}
+
+AURA_EXPORT int aura_nvenc_rc_info(void* handle, char* buffer, int capacity) {
+    Session* s = (Session*)handle;
+    if (!s || !buffer || capacity <= 0) return 0;
+    lstrcpynA(buffer, s->rcInfo, capacity);
+    return lstrlenA(buffer);
 }
 
 AURA_EXPORT int aura_nvenc_create(void* d3d11Device, const AuraNvencConfig* cfg, AuraNvencApplied* applied,
@@ -417,6 +448,7 @@ AURA_EXPORT int aura_nvenc_create(void* d3d11Device, const AuraNvencConfig* cfg,
     s->config = config;
     s->init = init;
     s->init.encodeConfig = &s->config;
+    describe_rc(s);
     *out = s;
     return 1;
 }

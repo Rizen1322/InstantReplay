@@ -45,7 +45,7 @@
 
 enum {
     REQ_OPEN = 1, REQ_ATTACH, REQ_ENCODE, REQ_GET, REQ_FREE_SLOTS, REQ_RECONFIGURE,
-    REQ_SEQUENCE_HEADER, REQ_TRACE, REQ_END_OF_STREAM, REQ_DESTROY
+    REQ_SEQUENCE_HEADER, REQ_TRACE, REQ_END_OF_STREAM, REQ_DESTROY, REQ_RC_INFO
 };
 
 // Коды ответа ENCODE сверх кодов прослойки
@@ -250,6 +250,11 @@ static int handle(int type) {
     case REQ_TRACE: {
         int n = g_session ? aura_nvenc_trace(g_session, (char*)(g_view + OFF_DATA), (int)(g_viewSize - OFF_DATA)) : 0;
         *i32(OFF_DATA_LENGTH) = n > 0 ? n : 0;
+        return n;
+    }
+    case REQ_RC_INFO: {
+        int n = g_session ? aura_nvenc_rc_info(g_session, (char*)(g_view + OFF_DATA), (int)(g_viewSize - OFF_DATA)) : 0;
+        *i32(OFF_DATA_LENGTH) = n;
         return n;
     }
     case REQ_END_OF_STREAM: if (g_session) aura_nvenc_end(g_session); return 0;

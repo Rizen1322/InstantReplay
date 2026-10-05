@@ -16,6 +16,8 @@ internal interface INvencSession : IDisposable
     string Trace();
     void EndOfStream();
     string Describe();
+    /// <summary>Управление битрейтом, как его применил драйвер (для лога).</summary>
+    string RcInfo();
     bool LastSkipFatal { get; }
     string LastSkipReason { get; }
     bool ReleaseFailed { get; }
@@ -45,7 +47,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     private const long MappingBytes = OffData + 32L * 1024 * 1024;   // самый большой ключевой кадр с запасом
     private const int MaxSlots = 64;
 
-    private enum Request { Open = 1, Attach, Encode, Get, FreeSlots, Reconfigure, SequenceHeader, Trace, EndOfStream, Destroy }
+    private enum Request { Open = 1, Attach, Encode, Get, FreeSlots, Reconfigure, SequenceHeader, Trace, EndOfStream, Destroy, RcInfo }
 
     /// <summary>Ответ ENCODE: общий слот не отдан за 200 мс.</summary>
     public const int EncodeSlotTimeout = -2000;
@@ -185,6 +187,11 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     /// <summary>Передать хосту общие текстуры пула (legacy shared handles). false — хост их не открыл.</summary>
     public bool Attach(IReadOnlyList<IntPtr> handles, out string error)
     {
+        lock (_call) return AttachLocked(handles, out error);
+    }
+
+    private bool AttachLocked(IReadOnlyList<IntPtr> handles, out string error)
+    {
         error = "";
         if (handles.Count is 0 or > MaxSlots) { error = "неверное число слотов"; return false; }
         WriteLong(OffArgs, handles.Count);
@@ -202,6 +209,11 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     /// </summary>
     public int EncodeSlot(int slot, long pts, bool forceIdr, bool retry)
     {
+        lock (_call) return EncodeSlotLocked(slot, pts, forceIdr, retry);
+    }
+
+    private int EncodeSlotLocked(int slot, long pts, bool forceIdr, bool retry)
+    {
         WriteLong(OffArgs, slot);
         WriteLong(OffArgs + 8, pts);
         WriteLong(OffArgs + 16, forceIdr ? 1 : 0);
@@ -214,6 +226,11 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     public int PendingCount => (int)(Interlocked.Read(ref _sent) - Interlocked.Read(ref _got));
 
     public (ArraySegment<byte> Data, long Pts, int PictureType)? TryGet(uint timeoutMs)
+    {
+        lock (_call) return TryGetLocked(timeoutMs);
+    }
+
+    private (ArraySegment<byte> Data, long Pts, int PictureType)? TryGetLocked(uint timeoutMs)
     {
         WriteLong(OffArgs, timeoutMs);
         int result = Call(Request.Get, (int)Math.Min(int.MaxValue, timeoutMs + CallTimeoutMs));
@@ -256,21 +273,39 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
 
     public int Reconfigure(int multipass, bool spatialAq)
     {
-        WriteLong(OffArgs, multipass);
-        WriteLong(OffArgs + 8, spatialAq ? 1 : 0);
-        return Call(Request.Reconfigure, CallTimeoutMs);
+        lock (_call)
+        {
+            WriteLong(OffArgs, multipass);
+            WriteLong(OffArgs + 8, spatialAq ? 1 : 0);
+            return CallLocked(Request.Reconfigure, CallTimeoutMs);
+        }
     }
 
     public byte[]? SequenceHeader()
     {
-        if (Call(Request.SequenceHeader, CallTimeoutMs) != 1) return null;
-        int size = ReadInt(OffDataLength);
-        var header = new byte[size];
-        Marshal.Copy((IntPtr)(_base + OffData), header, 0, size);
-        return header;
+        lock (_call)
+        {
+            if (CallLocked(Request.SequenceHeader, CallTimeoutMs) != 1) return null;
+            int size = ReadInt(OffDataLength);
+            var header = new byte[size];
+            Marshal.Copy((IntPtr)(_base + OffData), header, 0, size);
+            return header;
+        }
     }
 
     public void EndOfStream() => Call(Request.EndOfStream, CallTimeoutMs);
+
+    public string RcInfo()
+    {
+        lock (_call)
+        {
+            int n = CallLocked(Request.RcInfo, CallTimeoutMs);
+            if (n <= 0) return "";
+            var bytes = new byte[Math.Min(n, ReadInt(OffDataLength))];
+            Marshal.Copy((IntPtr)(_base + OffData), bytes, 0, bytes.Length);
+            return System.Text.Encoding.UTF8.GetString(bytes);
+        }
+    }
 
     /// <summary>
     /// Журнал вызовов NVENC из хоста. Если хост занят зависшим вызовом, сам журнал
@@ -304,6 +339,12 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
 
     // ---------------- обмен ----------------
 
+    /// <summary>
+    /// Весь обмен — запись аргументов, вызов и чтение результата и данных — идёт
+    /// под одним замком <see cref="_call"/>: общий блок и область данных одни на
+    /// все запросы. Раньше аргументы писались до замка, а кадр читался после, и
+    /// Trace со сторожа между ними мог переписать область данных посреди кадра.
+    /// </summary>
     private int Call(Request type, int timeoutMs)
     {
         lock (_call) return CallLocked(type, timeoutMs);
