@@ -223,6 +223,9 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Пишем ли мы сейчас десять бит. Решается при инициализации.</summary>
     public bool TenBit { get; private set; }
 
+    /// <summary>Как тратить битрейт в NVENC; ставится до Initialize. MFT всегда пишет CBR.</summary>
+    public BitrateMode BitrateMode { get; set; } = BitrateMode.Quality;
+
     public void Initialize(ID3D11Device device, int width, int height, int fps, long bitrateBps,
                            VideoCodec codec, bool preferTenBit = false)
     {
@@ -532,7 +535,7 @@ public sealed class VideoEncoder : IDisposable
                 multithread.SetMultithreadProtected(true);
             Capture.GpuPriority.TryRaise(encoderDevice);
 
-            var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit);
+            var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit, BitrateMode);
             session = NvencSession.TryCreate(encoderDevice.NativePointer, config, out string error);
             if (session is null)
             {
@@ -613,7 +616,8 @@ public sealed class VideoEncoder : IDisposable
         int inputs = session is RemoteNvencSession ? session.Settings.BufferCount : _nvencInputs.Length;
         Log.Info("Encoder", $"HW-энкодер: NVENC напрямую ({where}), {codec}, " +
                             $"{width}x{height}@{fps}, {bitrateBps / 1_000_000} Мбит/с " +
-                            $"(VBR, пик {bitrateBps * 2 / 1_000_000}); {session.Describe()}");
+                            $"({RateControlPolicy.For(BitrateMode, codec, width, height, fps, bitrateBps, NvencSession.UsesExtras(width, height, fps))}); " +
+                            session.Describe());
         if (session.RcInfo() is { Length: > 0 } rc) Log.Info("Encoder", $"NVENC, битрейт: {rc}");
         Log.Info("Encoder", $"Очередь кодирования: {_maxInputQueue} кадров, общий пул {_copyPool.Slots} " +
                             $"+ входов энкодера {inputs} = " +
@@ -678,7 +682,7 @@ public sealed class VideoEncoder : IDisposable
     private bool TryInitializeRemoteNvenc(ID3D11Device device, int width, int height, int fps, long bitrateBps, VideoCodec codec)
     {
         if (AdapterLuidOf(device) is not long luid) return false;
-        var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit);
+        var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit, BitrateMode);
         var session = RemoteNvencSession.TryStart(luid, s_gpuPriorityClass.Value, config, out string error);
         if (session is null)
         {
@@ -1308,12 +1312,8 @@ public sealed class VideoEncoder : IDisposable
         // в логе стояло «VBR с потолком не принят энкодером», и чтение обратно
         // возвращало CBR. Пробуем до типов; удержалось или нет, проверит
         // ConfigureRateControl, который зовут уже после.
-        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, PeakConstrainedVbr, optional: true);
+        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, ConstantBitRate, optional: true);
         _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, (uint)bitrateBps, optional: true);
-        _codecApi.Set(
-            CodecApiGuids.AVEncCommonMaxBitRate,
-            PeakBitrate(bitrateBps),
-            optional: true);
 
         // Размер группы кадров — тоже структурный параметр, и ровно на нём это
         // подтвердилось замером. Выставленный ПОСЛЕ медиатипов, он у NVIDIA HEVC
@@ -1329,19 +1329,6 @@ public sealed class VideoEncoder : IDisposable
 
         ConfigureReferenceFrames();
     }
-
-    /// <summary>
-    /// Потолок битрейта для VBR — вдвое выше среднего.
-    ///
-    /// ЗАЧЕМ ВДВОЕ, А НЕ В ПОЛТОРА РАЗА. Средний битрейт от потолка не меняется, а
-    /// сложным сценам (взрыв, резкий разворот камеры) разрешено занять больше. Замер
-    /// на реальной записи 1440p60 при 15 Мбит/с, VMAF по модели для близкого
-    /// просмотра: потолок ×1.5 — 96.48 (5% худших кадров 92.35), ×2 — 96.50 (92.63).
-    /// Выигрыш небольшой, но он весь приходится на худшие кадры — те, что и видно.
-    /// Длину буфера повтора это не меняет: арена считается по среднему битрейту.
-    /// </summary>
-    private static uint PeakBitrate(long bitrateBps) =>
-        (uint)Math.Min(bitrateBps * 2, uint.MaxValue);
 
     /// <summary>Сколько опорных кадров просим у энкодера.</summary>
     private const uint WantedReferenceFrames = 3;
@@ -1376,9 +1363,6 @@ public sealed class VideoEncoder : IDisposable
         if (_codecApi.TryReadUInt(CodecApiGuids.AVEncVideoMaxNumRefFrame, out uint accepted))
             Log.Info("Encoder", $"Опорных кадров: {accepted}");
     }
-
-    /// <summary>eAVEncCommonRateControlMode: VBR со средним битрейтом и потолком.</summary>
-    private const uint PeakConstrainedVbr = 1;
 
     /// <summary>eAVEncCommonRateControlMode: постоянный битрейт.</summary>
     private const uint ConstantBitRate = 0;
@@ -1463,55 +1447,36 @@ public sealed class VideoEncoder : IDisposable
     }
 
     /// <summary>
-    /// Битрейт: VBR с потолком, с откатом на CBR там, где энкодер его не принял.
+    /// Битрейт запасного кодировщика (MFT): CBR.
     ///
     /// eAVEncCommonRateControlMode: 0 = CBR, 1 = PeakConstrainedVBR,
     /// 2 = UnconstrainedVBR, 3 = Quality.
     ///
-    /// Здесь по очереди стояли два неверных значения. Сначала 3 под комментарием
-    /// «CBR»: это режим ПО КАЧЕСТВУ, заданный битрейт он игнорирует, и в замерах
-    /// по сохранённым клипам фактический битрейт гулял от 15.0 до 58.1 Мбит/с при
-    /// настройке 50. Потом 0, настоящий CBR, «как у NVIDIA App». Но NVIDIA App
-    /// пишет как раз переменным битрейтом, и это видно на глаз: при CBR энкодер
-    /// обязан выдать одни и те же 30 Мбит/с и на статичном меню, и на взрыве в
-    /// пол-экрана. На простой сцене биты уходят впустую, на сложной их не хватает,
-    /// и картинка разваливается на блоки ровно там, где это заметно.
-    ///
-    /// Режим 1 берёт лучшее от обоих: СРЕДНИЙ битрейт равен заданному, поэтому
-    /// расчёт длины буфера повтора остаётся верным, а на сложных сценах энкодер
-    /// может занять до потолка. Потолок — вдвое выше среднего (см. PeakBitrate).
+    /// История: сначала здесь стояло 3 (режим по качеству, битрейт гулял от 15 до
+    /// 58 Мбит/с при заданных 50), потом 1 (VBR с потолком). Но VBR у NVENC считает
+    /// средний по всей сессии и после простоя рабочего стола копит запас: на тех же
+    /// кадрах CS2 30,8 Мбит/с без простоя и 60,1 после двух минут при заданных 30.
+    /// Прямой NVENC теперь пишет «качество» (CQ с потолком, см. RateControlPolicy),
+    /// а у MFT целевого качества с потолком нет, поэтому здесь CBR: на статичном
+    /// экране он поток не раздувает.
     /// </summary>
     private void ConfigureRateControl(long bitrateBps)
     {
         if (_codecApi is null) return;
 
         uint mean = (uint)bitrateBps;
-        uint peak = PeakBitrate(bitrateBps);
 
-        // Режим уже пробовали поставить до медиатипов (ConfigureCodecApiEarly).
-        // Повторяем на случай энкодеров, которые принимают его только здесь, и
-        // проверяем чтением обратно: SetValue у NVIDIA возвращает успех и на
-        // ключах, которые ничего не меняют.
-        _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, PeakConstrainedVbr, optional: true);
-        bool vbrAccepted =
-            _codecApi.TryReadUInt(CodecApiGuids.AVEncCommonRateControlMode, out uint actual) &&
-            actual == PeakConstrainedVbr;
-
-        if (vbrAccepted)
-        {
-            _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, mean);
-            _codecApi.Set(CodecApiGuids.AVEncCommonMaxBitRate, peak, optional: true);
-            Log.Info("Encoder", $"Битрейт: VBR с потолком, средний {mean / 1_000_000} Мбит/с, " +
-                                $"пик {peak / 1_000_000} Мбит/с");
-            return;
-        }
-
-        // Энкодер не принял режим с потолком. CBR хуже по качеству, но предсказуем,
-        // и заданный битрейт он соблюдает — в отличие от режима по качеству.
+        // Запасной кодировщик пишет CBR в обоих режимах. VBR с потолком у NVENC
+        // считает среднее по всей сессии и после простоя тратит накопленное на
+        // потолке (см. RateControlPolicy), а режим по качеству (3) у MFT потолка не
+        // держит: битрейт гулял от 15 до 58 при заданных 50.
         _codecApi.Set(CodecApiGuids.AVEncCommonRateControlMode, ConstantBitRate);
         _codecApi.Set(CodecApiGuids.AVEncCommonMeanBitRate, mean);
-        Log.Info("Encoder", $"Битрейт: VBR с потолком не принят энкодером, " +
-                            $"остаётся CBR {mean / 1_000_000} Мбит/с");
+        bool cbr = _codecApi.TryReadUInt(CodecApiGuids.AVEncCommonRateControlMode, out uint actual) &&
+                   actual == ConstantBitRate;
+        Log.Info("Encoder", cbr
+            ? $"Битрейт: CBR {mean / 1_000_000} Мбит/с"
+            : $"Битрейт: энкодер не подтвердил CBR (режим {actual}), задан средний {mean / 1_000_000} Мбит/с");
     }
 
     /// <summary>Тюнинг через ICodecAPI: битрейт, GOP = 2 сек, качество записи. Ошибки не фатальны.</summary>

@@ -570,6 +570,7 @@ public sealed partial class ReplayEngine : IDisposable
                 $"энкодер: {reason}",
                 generation,
                 ActiveCaptureTarget()?.Revision ?? 0), generation);
+            encoder.BitrateMode = s.BitrateMode;
             encoder.Initialize(_pipeline.Capture.D3DDevice, _pipeline.Processor.OutWidth, _pipeline.Processor.OutHeight,
                                s.Fps, s.BitrateBps, s.Codec, _pipeline.Processor.TenBit);
 

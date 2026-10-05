@@ -30,6 +30,10 @@ internal sealed partial class NvencSession : INvencSession
         public int Bitrate, MaxBitrate, VbvBuffer;
         public int TenBit, GopLength, Preset, Lookahead, BFrames;
         public int SpatialAq, TemporalAq, AqStrength, Multipass, BufferCount;
+        /// <summary>0 — CBR, 1 — постоянное качество (CQ) с потолком MaxBitrate.</summary>
+        public int RateMode;
+        /// <summary>Для CQ: уровень × 256.</summary>
+        public int TargetQuality;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -116,7 +120,12 @@ internal sealed partial class NvencSession : INvencSession
     /// видеокарту. Проверено на RTX 3070: 1440p60 на P5 с просмотром вперёд
     /// держит темп с запасом, 4K60 — на P4 без двух проходов.
     /// </summary>
-    public static Config ConfigFor(VideoCodec codec, int width, int height, int fps, long bitrateBps, bool tenBit)
+    /// <summary>B-кадры и второй проход включаются только ниже 1440p60 (см. ConfigFor).</summary>
+    public static bool UsesExtras(int width, int height, int fps) =>
+        (double)width * height * fps < 2560.0 * 1440 * 60 * 0.95;
+
+    public static Config ConfigFor(VideoCodec codec, int width, int height, int fps, long bitrateBps, bool tenBit,
+                                   BitrateMode mode = BitrateMode.Quality)
     {
         double pixelRate = (double)width * height * fps;           // пикселей в секунду
         bool heavy = pixelRate > 2560.0 * 1440 * 60 * 1.05;        // больше 1440p60
@@ -124,8 +133,9 @@ internal sealed partial class NvencSession : INvencSession
         // CS2 NVENC с ними не успевал: отправка кадра в среднем 5–11 мс, пики до
         // 350 мс, и за полчаса игры 51 провал записи до 33–60 кадров. Без них в
         // том же разрешении 27.09 за 8 часов не было ни одного.
-        bool extras = pixelRate < 2560.0 * 1440 * 60 * 0.95;
+        bool extras = UsesExtras(width, height, fps);
         bool veryHeavy = pixelRate > 3840.0 * 2160 * 60 * 1.05;    // больше 4K60
+        var rate = RateControlPolicy.For(mode, codec, width, height, fps, bitrateBps, extras);
 
         return WithOverrides(new Config
         {
@@ -134,12 +144,12 @@ internal sealed partial class NvencSession : INvencSession
             Height = height,
             Fps = fps,
             Bitrate = (int)Math.Min(bitrateBps, int.MaxValue),
-            MaxBitrate = (int)Math.Min(bitrateBps * 2, int.MaxValue),
-            // Две секунды буфера VBV. Файл не поток: задержки, ради которой в
-            // трансляциях держат буфер коротким, у записи нет. Длинный буфер даёт
-            // перераспределять биты внутри пары секунд, и резкая сцена после
-            // спокойной не рассыпается в кашу. Средний битрейт тот же.
-            VbvBuffer = (int)Math.Min(bitrateBps * 2, int.MaxValue),
+            // Режим и потолок — RateControlPolicy: «качество» (CQ, потолок и VBV
+            // два заданных битрейта) или CBR (буфер на секунду заданного битрейта)
+            MaxBitrate = (int)Math.Min(rate.MaxBitrate, int.MaxValue),
+            VbvBuffer = (int)Math.Min(rate.VbvBuffer, int.MaxValue),
+            RateMode = rate.ConstantQuality ? 1 : 0,
+            TargetQuality = (int)Math.Round(rate.TargetQuality * 256),
             TenBit = tenBit ? 1 : 0,
             GopLength = fps * 2,
             Preset = veryHeavy ? 3 : heavy ? 4 : 5,

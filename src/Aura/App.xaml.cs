@@ -169,7 +169,7 @@ public partial class App : Application
         // Снимок вёрстки и самопроверка идут рядом с настоящей Aura: перехватывать
         // её сочетания клавиш им нельзя.
         bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record") ||
-                        e.Args.Contains("--selftest-replay") || e.Args.Contains("--whatsnew-test") || e.Args.Contains("--selftest-saves") ||
+                        e.Args.Contains("--selftest-replay") || e.Args.Contains("--whatsnew-test") || e.Args.Contains("--selftest-saves") || e.Args.Contains("--selftest-encode-file") ||
                         e.Args.Contains("--editor-seek-test");
         if (!(dev && headless)) Services.Hotkeys.Start();
         else Services.Notifications.Muted = true;
@@ -248,6 +248,24 @@ public partial class App : Application
                     catch { }
                 }
             });
+
+        // --selftest-encode-file <файл> <секунд рабочего стола> <Мбит/с> <Quality|Economy> [высота]:
+        // кодировщик Aura в реальном времени, статичный кадр и потом игра из файла
+        int encodeFileArg = Array.IndexOf(e.Args, "--selftest-encode-file");
+        if (dev && encodeFileArg >= 0 && encodeFileArg + 4 < e.Args.Length)
+        {
+            string clip = e.Args[encodeFileArg + 1];
+            int warmup = int.Parse(e.Args[encodeFileArg + 2]);
+            int mbps = int.Parse(e.Args[encodeFileArg + 3]);
+            var mode = Enum.Parse<Core.Settings.BitrateMode>(e.Args[encodeFileArg + 4]);
+            int height = encodeFileArg + 5 < e.Args.Length && int.TryParse(e.Args[encodeFileArg + 5], out int h) ? h : 1440;
+            _ = Task.Run(() =>
+            {
+                try { Core.Diagnostics.EncodeFileSelfTest.Run(clip, warmup, mbps, mode, height); }
+                catch (Exception ex) { Log.Error("SelfTest", ex); }
+                Current.Dispatcher.Invoke(ExitApp);
+            });
+        }
 
         // --selftest-record N: записать N секунд в файл без повтора и выйти. Только
         // для проверки конвейера записи без рук (--dev и своя папка данных).

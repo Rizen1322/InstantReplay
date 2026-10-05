@@ -219,6 +219,7 @@ public partial class CapturePage : PageBase
         Select(FpsSeg, s.Fps.ToString());
         Bitrate.Value = s.BitrateMbps;
         ShowBitrate();
+        SelectBitrateMode(s.BitrateMode);
 
         try { (_vendor, _supported) = HardwareEncoders.ProbeSupport(); } catch { }
         if (_supported.Count == 0) _supported = [VideoCodec.H264, VideoCodec.HEVC];
@@ -266,6 +267,7 @@ public partial class CapturePage : PageBase
             s.VerticalResolution = int.Parse((string)((ListBoxItem)ResolutionSeg.SelectedItem).Tag);
             s.Fps = int.Parse((string)((ListBoxItem)FpsSeg.SelectedItem).Tag);
             s.BitrateMbps = (int)Bitrate.Value;
+            s.BitrateMode = SelectedBitrateMode();
             s.Codec = _selectedCodec;
             s.ReplayLengthSeconds = replayLength;
             s.ReplayBufferOnDisk = DiskBufferSwitch.IsChecked == true;
@@ -297,6 +299,33 @@ public partial class CapturePage : PageBase
         HighlightPreset();
         ShowRam();
         SetDirty(true);
+    }
+
+    private void BitrateMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        ShowBitrate();
+        if (_loading) return;
+        ShowRam();
+        SetDirty(true);
+    }
+
+    private BitrateMode SelectedBitrateMode() =>
+        BitrateModeSeg.SelectedItem is ListBoxItem { Tag: "Economy" } ? BitrateMode.Economy : BitrateMode.Quality;
+
+    private void SelectBitrateMode(BitrateMode mode)
+    {
+        Select(BitrateModeSeg, mode == BitrateMode.Economy ? "Economy" : "Quality");
+        ShowBitrateMode();
+    }
+
+    private void ShowBitrateMode()
+    {
+        if (BitrateModeSub is null) return;
+        BitrateModeSub.Text = SelectedBitrateMode() == BitrateMode.Economy
+            ? "Ровно заданный битрейт: размер клипа предсказуем"
+            : !QualityModeActive()
+                ? "Для этого кодека или видеокарты пока только ровный битрейт, как в экономии"
+                : "Заданный битрейт ориентир, а не среднее: спокойные сцены легче, в динамике до двух заданных";
     }
 
     private void Bitrate_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -404,8 +433,16 @@ public partial class CapturePage : PageBase
             _ when _vendor.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) => "NVENC",
             _ => _vendor
         };
-        return $"{codec} на {vendor}";
+        return $"{codec} на {vendor}, {(QualityModeActive() ? "качество" : "ровный битрейт")}";
     }
+
+    /// <summary>
+    /// Работает ли «Качество» на самом деле: CQ есть только у прямого NVENC и не для
+    /// AV1. Кодировщики Windows (AMD, Intel, запасной путь) и AV1 пишут CBR.
+    /// </summary>
+    private bool QualityModeActive() =>
+        SelectedBitrateMode() == BitrateMode.Quality && _selectedCodec != VideoCodec.AV1
+        && _vendor.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
 
     private void HighlightLength(int seconds)
     {
@@ -470,10 +507,15 @@ public partial class CapturePage : PageBase
         // Вес именно ВАШЕГО повтора, а не абстрактной минуты: длина буфера задана
         // рядом, и человек хочет знать, во что обойдётся файл, который он сохранит.
         int seconds = ParseLength();
-        double clipMb = value * 0.125 * seconds;
-        KvMinute.Text = $"≈ {value * 0.125 * 60:0} МБ";
-        KvClip.Text = clipMb >= 1024 ? $"≈ {clipMb / 1024:0.#} ГБ" : $"≈ {clipMb:0} МБ";
+        // В режиме качества размер зависит от игры: честно показываем только потолок
+        bool quality = QualityModeActive();
+        double factor = quality ? 2 : 1;
+        string prefix = quality ? "до" : "≈";
+        double clipMb = value * 0.125 * seconds * factor;
+        KvMinute.Text = $"{prefix} {value * 0.125 * 60 * factor:0} МБ";
+        KvClip.Text = clipMb >= 1024 ? $"{prefix} {clipMb / 1024:0.#} ГБ" : $"{prefix} {clipMb:0} МБ";
         KvEncoder.Text = EncoderName();
+        ShowBitrateMode();   // фактический режим зависит и от кодека
 
     }
 
@@ -510,7 +552,7 @@ public partial class CapturePage : PageBase
             : $"Столько держит в памяти буфер на {LengthWords(seconds)}.";
         RamEstimate.Text = seconds >= supported
             ? $"{held} Это предел для такого битрейта: {LengthWords(supported)}."
-            : $"{held} Клип такой же длины займёт на диске примерно столько же.";
+            : $"{held} Выделяется сразу с запасом на всплески и дальше не растёт.";
     }
 
     /// <summary>

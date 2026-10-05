@@ -47,6 +47,8 @@ typedef struct AuraNvencConfig {
     int32_t aqStrength;     // 0 — авто, 1..15
     int32_t multipass;      // 0 — нет, 1 — четверть разрешения, 2 — полное
     int32_t bufferCount;    // выходных буферов (глубина конвейера)
+    int32_t rateMode;       // 0 — CBR, 1 — постоянное качество (CQ) с потолком maxBitrate
+    int32_t targetQuality;  // для CQ: уровень × 256 (дробная часть идёт в targetQualityLSB)
 } AuraNvencConfig;
 
 // Что реально включилось — для лога и для расчёта глубины очереди в C#.
@@ -240,12 +242,15 @@ static void destroy_session(Session* s) {
 static void describe_rc(Session* s) {
     const NV_ENC_RC_PARAMS* rc = &s->config.rcParams;
     snprintf(s->rcInfo, sizeof s->rcInfo,
-             "режим %d, средний %u, потолок %u, VBV %u (начальный %u), целевое качество %u.%u, "
+             "режим %s, средний %u, потолок %u, VBV %u (начальный %u), целевое качество %.2f, "
              "minQP %s(%u/%u/%u), maxQP %s(%u/%u/%u), начальный QP %s, constQP %u/%u/%u, "
              "проходов %d, AQ %u/%u (сила %u), просмотр вперёд %u (%u), zeroReorderDelay %u, strictGOP %u, "
              "GOP %u, P-интервал %d, tuning %d",
-             (int)rc->rateControlMode, rc->averageBitRate, rc->maxBitRate, rc->vbvBufferSize, rc->vbvInitialDelay,
-             (unsigned)rc->targetQuality, (unsigned)rc->targetQualityLSB,
+             rc->rateControlMode == NV_ENC_PARAMS_RC_CBR ? "CBR"
+                 : rc->rateControlMode == NV_ENC_PARAMS_RC_CONSTQP ? "постоянный QP"
+                 : rc->targetQuality ? "CQ (VBR с целевым качеством)" : "VBR",
+             rc->averageBitRate, rc->maxBitRate, rc->vbvBufferSize, rc->vbvInitialDelay,
+             rc->targetQuality + rc->targetQualityLSB / 256.0,
              rc->enableMinQP ? "вкл " : "выкл ", rc->minQP.qpIntra, rc->minQP.qpInterP, rc->minQP.qpInterB,
              rc->enableMaxQP ? "вкл " : "выкл ", rc->maxQP.qpIntra, rc->maxQP.qpInterP, rc->maxQP.qpInterB,
              rc->enableInitialRCQP ? "вкл" : "выкл",
@@ -313,10 +318,28 @@ AURA_EXPORT int aura_nvenc_create(void* d3d11Device, const AuraNvencConfig* cfg,
     config.gopLength = (uint32_t)cfg->gopLength;
     config.frameIntervalP = bFrames + 1;
 
+    // Управление битрейтом. Обычный VBR со средним битрейтом здесь больше не
+    // используется: NVENC считает его среднее по всей сессии, и за минуты
+    // статичного рабочего стола копит запас, который потом тратит на потолке.
+    // Замер на одних и тех же кадрах CS2: 30,8 Мбит/с без простоя и 60,1 после
+    // двух минут рабочего стола при заданных 30 (src/native/Aura.Media/rc_probe.c).
+    //  • CQ (качество): VBR с целевым качеством и потолком, без среднего —
+    //    накопления нет, простые сцены почти бесплатны, сложные до потолка;
+    //  • CBR (экономия): ровно заданный битрейт; на статичном экране NVENC не
+    //    добивает поток до него.
     NV_ENC_RC_PARAMS* rc = &config.rcParams;
-    rc->rateControlMode = NV_ENC_PARAMS_RC_VBR;
-    rc->averageBitRate = (uint32_t)cfg->bitrate;
-    rc->maxBitRate = (uint32_t)cfg->maxBitrate;
+    if (cfg->rateMode == 1) {
+        rc->rateControlMode = NV_ENC_PARAMS_RC_VBR;
+        rc->averageBitRate = 0;
+        rc->maxBitRate = (uint32_t)cfg->maxBitrate;
+        int tq = cfg->targetQuality > 0 ? cfg->targetQuality : 25 * 256;
+        rc->targetQuality = (uint8_t)(tq / 256);
+        rc->targetQualityLSB = (uint8_t)(tq % 256);
+    } else {
+        rc->rateControlMode = NV_ENC_PARAMS_RC_CBR;
+        rc->averageBitRate = (uint32_t)cfg->bitrate;
+        rc->maxBitRate = (uint32_t)cfg->bitrate;
+    }
     rc->vbvBufferSize = (uint32_t)cfg->vbvBuffer;
     rc->vbvInitialDelay = (uint32_t)cfg->vbvBuffer;
     rc->multiPass = cfg->multipass == 2 ? NV_ENC_TWO_PASS_FULL_RESOLUTION

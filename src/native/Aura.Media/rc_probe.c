@@ -39,10 +39,14 @@ int main(int argc, char** argv) {
     // Те же параметры, что Aura даёт для 1440p60 (NvencSession.ConfigFor): VBR,
     // потолок и VBV — два средних, GOP 2 с, пресет P4, без B-кадров и второго прохода
     AuraNvencConfig cfg = { 0 };
-    cfg.codec = 1; cfg.width = w; cfg.height = h; cfg.fps = fps;
+    // Кодек (argv[12]): 0 — H.264, 1 — HEVC (по умолчанию), 2 — AV1
+    cfg.codec = argc > 12 ? atoi(argv[12]) : 1; cfg.width = w; cfg.height = h; cfg.fps = fps;
     cfg.bitrate = bitrate; cfg.maxBitrate = bitrate * 2; cfg.vbvBuffer = bitrate * 2;
     cfg.tenBit = tenBit; cfg.gopLength = fps * 2; cfg.preset = 4; cfg.lookahead = 0; cfg.bFrames = 0;
     cfg.spatialAq = 1; cfg.temporalAq = 0; cfg.aqStrength = 8; cfg.multipass = 0; cfg.bufferCount = 0;
+    // Как Aura ниже 1440p60: PROBE_BFRAMES=2, PROBE_MULTIPASS=1
+    if (getenv("PROBE_BFRAMES")) cfg.bFrames = atoi(getenv("PROBE_BFRAMES"));
+    if (getenv("PROBE_MULTIPASS")) cfg.multipass = atoi(getenv("PROBE_MULTIPASS"));
     AuraNvencApplied applied; void* s; char err[512];
     if (!aura_nvenc_create(dev, &cfg, &applied, &s, err, sizeof err)) { printf("create: %s\n", err); return 1; }
     // Вариант управления битрейтом для сравнения (argv[10]): vbr2 — как в Aura,
@@ -55,6 +59,20 @@ int main(int argc, char** argv) {
         NV_ENC_RC_PARAMS* rc = &c.rcParams;
         if (strcmp(mode, "vbr15") == 0) { rc->maxBitRate = bitrate / 2 * 3; rc->vbvBufferSize = rc->vbvInitialDelay = bitrate / 2 * 3; }
         if (strcmp(mode, "vbrvbv1") == 0) { rc->vbvBufferSize = rc->vbvInitialDelay = bitrate; }
+        // cqpN — постоянный QP N (I на 2 ниже, как у пресетов); cqN — VBR с целевым
+        // качеством N и потолком 2× среднего (средний не задаётся)
+        if (strncmp(mode, "cqp", 3) == 0) {
+            int qp = atoi(mode + 3);
+            rc->rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+            rc->constQP.qpIntra = (uint32_t)(qp > 2 ? qp - 2 : qp);
+            rc->constQP.qpInterP = (uint32_t)qp;
+            rc->constQP.qpInterB = (uint32_t)(qp + 2);
+        } else if (strncmp(mode, "cq", 2) == 0) {
+            rc->rateControlMode = NV_ENC_PARAMS_RC_VBR;
+            rc->averageBitRate = 0;
+            rc->targetQuality = (uint8_t)atoi(mode + 2);
+            rc->targetQualityLSB = 0;
+        }
         if (strcmp(mode, "cbr2") == 0) { rc->rateControlMode = NV_ENC_PARAMS_RC_CBR; rc->maxBitRate = bitrate; rc->vbvBufferSize = rc->vbvInitialDelay = bitrate * 2; }
         if (strcmp(mode, "cbr") == 0) { rc->rateControlMode = NV_ENC_PARAMS_RC_CBR; rc->maxBitRate = bitrate; rc->vbvBufferSize = rc->vbvInitialDelay = bitrate; }
         if (strcmp(mode, "vbr2") != 0) {
@@ -84,7 +102,7 @@ int main(int argc, char** argv) {
     uint8_t* buf = (uint8_t*)malloc(total);
     uint32_t seed = 12345;
 
-    long long bytes = 0, part[3] = { 0, 0, 0 };
+    long long bytes = 0, part[3] = { 0, 0, 0 }, seg[64] = { 0 };   // seg — байты по 10 с
     int sent = 0, got = 0, keys = 0;
     const uint8_t* data; int size; int64_t opts; int type;
     // Разгон: статичный серый кадр, как рабочий стол перед игрой. В подсчёт не входит.
@@ -127,19 +145,24 @@ int main(int argc, char** argv) {
         while (aura_nvenc_free_slots(s) <= 0) {
             int g = aura_nvenc_get(s, 2000, &data, &size, &opts, &type);
             if (g != 1) { printf("get: %d\n", g); break; }
-            if (out) fwrite(data, 1, (size_t)size, out); bytes += size; part[got * 3 / frames > 2 ? 2 : got * 3 / frames] += size; got++;
+            if (out) fwrite(data, 1, (size_t)size, out); bytes += size; part[got * 3 / frames > 2 ? 2 : got * 3 / frames] += size;
+            seg[got / (fps * 10) < 63 ? got / (fps * 10) : 63] += size; got++;
             if (type == NV_ENC_PIC_TYPE_IDR || type == NV_ENC_PIC_TYPE_I) keys++;
         }
     }
     aura_nvenc_end(s);
     while (aura_nvenc_get(s, 2000, &data, &size, &opts, &type) == 1) {
-        if (out) fwrite(data, 1, (size_t)size, out); bytes += size; part[2] += size; got++;
+        if (out) fwrite(data, 1, (size_t)size, out); bytes += size; part[2] += size;
+        seg[got / (fps * 10) < 63 ? got / (fps * 10) : 63] += size; got++;
         if (type == NV_ENC_PIC_TYPE_IDR || type == NV_ENC_PIC_TYPE_I) keys++;
     }
     double third = frames / 3.0;
     printf("подано %d, получено %d, ключевых %d; средний %.1f Мбит/с; по третям %.1f / %.1f / %.1f\n",
            sent, got, keys, bytes * 8.0 * fps / got / 1e6,
            part[0] * 8.0 * fps / third / 1e6, part[1] * 8.0 * fps / third / 1e6, part[2] * 8.0 * fps / third / 1e6);
+    printf("по 10 с:");
+    for (int i = 0; i * fps * 10 < got && i < 64; i++) printf(" %.0f", seg[i] * 8.0 / 10 / 1e6);
+    printf("\n");
     if (out) fclose(out);
     aura_nvenc_destroy(s);
     return 0;

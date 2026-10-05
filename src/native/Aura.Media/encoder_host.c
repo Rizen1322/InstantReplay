@@ -36,9 +36,9 @@
 #define OFF_DATA_LENGTH   12
 #define OFF_ARGS          16     // int64[16]
 #define OFF_OUT           144    // int64[16]
-#define OFF_CONFIG        272    // AuraNvencConfig
-#define OFF_APPLIED       344    // AuraNvencApplied
-#define OFF_HANDLES       384    // uint64[64]
+#define OFF_CONFIG        272    // AuraNvencConfig (до 176 байт)
+#define OFF_APPLIED       448    // AuraNvencApplied
+#define OFF_HANDLES       512    // uint64[64]
 #define OFF_ERROR         1024   // char[1024]
 #define OFF_DATA          65536
 #define MAX_SLOTS         64

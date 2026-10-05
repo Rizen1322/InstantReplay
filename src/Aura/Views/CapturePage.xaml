@@ -64,6 +64,17 @@
                             </StackPanel>
                         </c:AdaptiveRow>
 
+                        <c:AdaptiveRow Margin="16,12,16,12">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Режим битрейта" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="BitrateModeSub" Style="{StaticResource RowSub}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <c:Segmented x:Name="BitrateModeSeg" HorizontalAlignment="Right" SelectionChanged="BitrateMode_Changed">
+                                <ListBoxItem Content="Качество" Tag="Quality"/>
+                                <ListBoxItem Content="Экономия" Tag="Economy"/>
+                            </c:Segmented>
+                        </c:AdaptiveRow>
+
                         <!-- Кодек: три плитки -->
                         <UniformGrid x:Name="Codecs" Rows="1" Columns="3" Margin="10,4,2,10"/>
 

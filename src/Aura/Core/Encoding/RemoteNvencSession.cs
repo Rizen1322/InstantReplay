@@ -42,7 +42,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     // ---- раскладка управляющего блока (encoder_host.c) ----
     private const int HostMagic = 0x31484E56;
     private const int OffMagic = 0, OffType = 4, OffResult = 8, OffDataLength = 12;
-    private const int OffArgs = 16, OffOut = 144, OffConfig = 272, OffApplied = 344, OffHandles = 384, OffError = 1024;
+    private const int OffArgs = 16, OffOut = 144, OffConfig = 272, OffApplied = 448, OffHandles = 512, OffError = 1024;
     private const int OffData = 65536;
     private const long MappingBytes = OffData + 32L * 1024 * 1024;   // самый большой ключевой кадр с запасом
     private const int MaxSlots = 64;

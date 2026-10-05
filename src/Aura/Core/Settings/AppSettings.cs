@@ -4,6 +4,15 @@ namespace Aura.Core.Settings;
 
 public enum VideoCodec { H264, HEVC, AV1 }
 
+/// <summary>Как кодировщик тратит битрейт (см. Encoding.RateControlPolicy).</summary>
+public enum BitrateMode
+{
+    /// <summary>Постоянное качество с потолком в два заданных битрейта.</summary>
+    Quality,
+    /// <summary>Ровно заданный битрейт (CBR).</summary>
+    Economy
+}
+
 /// <summary>Глубина цвета записи.</summary>
 public enum VideoBitDepth
 {
@@ -64,6 +73,12 @@ public sealed class AppSettings
     /// сам уведёт настройку на H.264 (см. App.GuardCodec).
     /// </summary>
     public VideoCodec Codec { get; set; } = VideoCodec.HEVC;
+
+    /// <summary>
+    /// «Качество» по умолчанию: простые сцены легче, динамичным разрешено до двух
+    /// заданных битрейтов. «Экономия»: ровно заданный битрейт.
+    /// </summary>
+    public BitrateMode BitrateMode { get; set; } = BitrateMode.Quality;
 
     /// <summary>
     /// Глубина цвета. Десять бит заметно лучше держат плавные переходы: небо, дым
