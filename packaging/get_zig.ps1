@@ -24,13 +24,20 @@ if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
     Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl -OutFile $archive
 }
 
-$actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+# Хеш и распаковка через .NET, а не Get-FileHash и Expand-Archive: в CI этот
+# скрипт запускает powershell.exe из шага pwsh, PSModulePath достаётся от pwsh,
+# и командлеты из модулей Windows PowerShell не находятся.
+$stream = [System.IO.File]::OpenRead($archive)
+try { $hashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash($stream) }
+finally { $stream.Dispose() }
+$actualSha256 = -join ($hashBytes | ForEach-Object { $_.ToString("x2") })
 if ($actualSha256 -ne $expectedSha256) {
     throw "SHA-256 архива Zig не совпал: $actualSha256"
 }
 
 if (-not (Test-Path -LiteralPath $expandedRoot -PathType Container)) {
-    Expand-Archive -LiteralPath $archive -DestinationPath $versionRoot
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $versionRoot)
 }
 
 if (-not (Test-Path -LiteralPath $zigExe -PathType Leaf)) {

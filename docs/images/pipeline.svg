@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 450" width="960" height="450" font-family="Segoe UI, Inter, -apple-system, Helvetica, Arial, sans-serif">
+<rect x="0.5" y="0.5" width="959" height="449" rx="16" fill="#0e1014" stroke="#232832"/>
+<text x="32" y="44" font-size="20" fill="#e9ecef" font-weight="700" text-anchor="start" >Путь кадра от экрана до файла</text>
+<text x="32" y="68" font-size="13" fill="#8a919c" font-weight="400" text-anchor="start" >Зелёные точки: кадры, которые попадут в запись. Серые: лишние, их отбрасывают до копирования.</text>
+<path d="M24 96 H744" stroke="#34d27b" stroke-opacity=".45" stroke-width="2" stroke-dasharray="4 5"/>
+<text x="24" y="90" font-size="12" fill="#34d27b" font-weight="600" text-anchor="start" >видеопамять: несжатый кадр не уходит в RAM</text>
+<path d="M784 96 H936" stroke="#5b9dff" stroke-opacity=".55" stroke-width="2" stroke-dasharray="4 5"/>
+<text x="784" y="90" font-size="12" fill="#5b9dff" font-weight="600" text-anchor="start" >оперативная память</text>
+<path d="M100 160 H860" stroke="#232832" stroke-width="2"/>
+<path d="M100 290 H860" stroke="#232832" stroke-width="2"/>
+<path d="M289 160 V236" stroke="#232832" stroke-width="2" stroke-dasharray="3 4"/>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="0.0s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-0.75s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-1.5s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-2.25s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-3.0s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-3.75s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-4.5s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="5" fill="#34d27b"><animateMotion dur="6s" begin="-5.25s" repeatCount="indefinite" path="M100 160 H860"/></circle>
+<circle r="4.5" fill="#4b5260"><animateMotion dur="2.25s" begin="-0.375s" repeatCount="indefinite" path="M112 160 H289 V236"/><animate attributeName="opacity" values="1;1;0" keyTimes="0;0.7;1" dur="2.25s" begin="-0.375s" repeatCount="indefinite"/></circle>
+<circle r="4.5" fill="#4b5260"><animateMotion dur="2.25s" begin="-1.125s" repeatCount="indefinite" path="M112 160 H289 V236"/><animate attributeName="opacity" values="1;1;0" keyTimes="0;0.7;1" dur="2.25s" begin="-1.125s" repeatCount="indefinite"/></circle>
+<circle r="4.5" fill="#4b5260"><animateMotion dur="2.25s" begin="-1.875s" repeatCount="indefinite" path="M112 160 H289 V236"/><animate attributeName="opacity" values="1;1;0" keyTimes="0;0.7;1" dur="2.25s" begin="-1.875s" repeatCount="indefinite"/></circle>
+<rect width="8" height="8" rx="2" y="-4" x="-4" fill="#5b9dff"><animateMotion dur="6s" begin="0s" repeatCount="indefinite" path="M100 290 H860"/></rect>
+<rect width="8" height="8" rx="2" y="-4" x="-4" fill="#5b9dff"><animateMotion dur="6s" begin="-1s" repeatCount="indefinite" path="M100 290 H860"/></rect>
+<rect width="8" height="8" rx="2" y="-4" x="-4" fill="#5b9dff"><animateMotion dur="6s" begin="-2s" repeatCount="indefinite" path="M100 290 H860"/></rect>
+<rect width="8" height="8" rx="2" y="-4" x="-4" fill="#5b9dff"><animateMotion dur="6s" begin="-3s" repeatCount="indefinite" path="M100 290 H860"/></rect>
+<rect width="8" height="8" rx="2" y="-4" x="-4" fill="#5b9dff"><animateMotion dur="6s" begin="-4s" repeatCount="indefinite" path="M100 290 H860"/></rect>
+<rect width="8" height="8" rx="2" y="-4" x="-4" fill="#5b9dff"><animateMotion dur="6s" begin="-5s" repeatCount="indefinite" path="M100 290 H860"/></rect>
+<g ><rect x="24" y="118" width="150" height="96" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="24" y="132" width="3" height="22" rx="1.5" fill="#34d27b"/>
+<text x="40" y="149" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Захват</text>
+<text x="40" y="172" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >WGC или DDA</text>
+<text x="40" y="191" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >до 120 кадр/с</text>
+</g>
+<g ><rect x="214" y="118" width="150" height="96" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="214" y="132" width="3" height="22" rx="1.5" fill="#34d27b"/>
+<text x="230" y="149" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Отбор</text>
+<text x="230" y="172" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >ровно 60 кадр/с</text>
+<text x="230" y="191" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >по сетке слотов</text>
+</g>
+<g ><rect x="404" y="118" width="150" height="96" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="404" y="132" width="3" height="22" rx="1.5" fill="#34d27b"/>
+<text x="420" y="149" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Цвет</text>
+<text x="420" y="172" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >BGRA в NV12</text>
+<text x="420" y="191" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >или P010, на GPU</text>
+</g>
+<g ><rect x="594" y="118" width="150" height="96" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="594" y="132" width="3" height="22" rx="1.5" fill="#34d27b"/>
+<text x="610" y="149" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >NVENC</text>
+<text x="610" y="172" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >свой процесс</text>
+<text x="610" y="191" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >HEVC, H.264, AV1</text>
+</g>
+<g ><rect x="784" y="118" width="152" height="210" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="784" y="132" width="3" height="22" rx="1.5" fill="#5b9dff"/>
+<text x="800" y="149" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Кольца</text>
+<text x="800" y="172" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >видео: сжатые кадры</text>
+<text x="800" y="191" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >звук: AAC</text>
+<text x="800" y="210" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" ></text>
+<text x="800" y="229" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >длина повтора</text>
+<text x="800" y="248" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >постоянная: старое</text>
+<text x="800" y="267" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >уступает место</text>
+<text x="800" y="286" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >новому</text>
+</g>
+<text x="289" y="254" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >лишние кадры</text>
+<g ><rect x="24" y="258" width="150" height="64" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="24" y="272" width="3" height="22" rx="1.5" fill="#5b9dff"/>
+<text x="40" y="289" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Звук игры</text>
+<text x="40" y="312" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >только процесс игры</text>
+</g>
+<g ><rect x="214" y="258" width="150" height="64" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="214" y="272" width="3" height="22" rx="1.5" fill="#5b9dff"/>
+<text x="230" y="289" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Микрофон</text>
+<text x="230" y="312" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >шумодав RNNoise</text>
+</g>
+<g ><rect x="404" y="258" width="340" height="64" rx="12" fill="#161a21" stroke="#232832"/>
+<rect x="404" y="272" width="3" height="22" rx="1.5" fill="#5b9dff"/>
+<text x="420" y="289" font-size="16" fill="#e9ecef" font-weight="600" text-anchor="start" >Микшер и AAC</text>
+<text x="420" y="312" font-size="12.5" fill="#8a919c" font-weight="400" text-anchor="start" >шаг 10 мс по тем же часам, что у кадров</text>
+</g>
+<path d="M860 328 V362" stroke="#232832" stroke-width="2"/>
+<circle r="5" fill="#34d27b" opacity="0"><animateMotion dur="6s" repeatCount="indefinite" path="M860 328 V372" keyPoints="0;0;1;1" keyTimes="0;0.55;0.7;1" calcMode="linear"/><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.54;0.55;0.69;0.7;1" dur="6s" repeatCount="indefinite"/></circle>
+<g><rect x="404" y="362" width="150" height="56" rx="12" fill="#161a21" stroke="#232832"><animate attributeName="stroke" values="#232832;#232832;#34d27b;#232832" keyTimes="0;0.5;0.56;1" dur="6s" repeatCount="indefinite"/></rect><text x="479" y="386" font-size="15" fill="#e9ecef" font-weight="700" text-anchor="middle" >Alt+F10</text><text x="479" y="405" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >сохранить повтор</text></g>
+<path d="M554 390 H594" stroke="#232832" stroke-width="2"/>
+<g><rect x="594" y="362" width="342" height="56" rx="12" fill="#161a21" stroke="#232832"><animate attributeName="stroke" values="#232832;#232832;#34d27b;#34d27b;#232832" keyTimes="0;0.68;0.72;0.9;1" dur="6s" repeatCount="indefinite"/></rect><text x="612" y="386" font-size="15" fill="#e9ecef" font-weight="700" text-anchor="start" >MP4 на диске</text><text x="612" y="405" font-size="12" fill="#8a919c" font-weight="400" text-anchor="start" >кадры копируются как есть, без перекодирования</text></g>
+</svg>

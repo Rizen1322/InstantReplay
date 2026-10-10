@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 400" width="960" height="400" font-family="Segoe UI, Inter, -apple-system, Helvetica, Arial, sans-serif">
+<rect x="0.5" y="0.5" width="959" height="399" rx="16" fill="#0e1014" stroke="#232832"/>
+<path d="M198.6 82.0 A124 124 0 0 1 212.8 83.1" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M218.0 84.0 A124 124 0 0 1 231.8 87.3" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M236.8 88.9 A124 124 0 0 1 250.0 94.4" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M254.6 96.7 A124 124 0 0 1 266.8 104.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M271.0 107.2 A124 124 0 0 1 281.8 116.5" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M285.5 120.2 A124 124 0 0 1 294.8 131.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M297.8 135.2 A124 124 0 0 1 305.3 147.4" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M307.6 152.0 A124 124 0 0 1 313.1 165.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M314.7 170.2 A124 124 0 0 1 318.0 184.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M318.9 189.2 A124 124 0 0 1 320.0 203.4" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M320.0 208.6 A124 124 0 0 1 318.9 222.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M318.0 228.0 A124 124 0 0 1 314.7 241.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M313.1 246.8 A124 124 0 0 1 307.6 260.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M305.3 264.6 A124 124 0 0 1 297.8 276.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M294.8 281.0 A124 124 0 0 1 285.5 291.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M281.8 295.5 A124 124 0 0 1 271.0 304.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M266.8 307.8 A124 124 0 0 1 254.6 315.3" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M250.0 317.6 A124 124 0 0 1 236.8 323.1" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M231.8 324.7 A124 124 0 0 1 218.0 328.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M212.8 328.9 A124 124 0 0 1 198.6 330.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M193.4 330.0 A124 124 0 0 1 179.2 328.9" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M174.0 328.0 A124 124 0 0 1 160.2 324.7" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M155.2 323.1 A124 124 0 0 1 142.0 317.6" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M137.4 315.3 A124 124 0 0 1 125.2 307.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M121.0 304.8 A124 124 0 0 1 110.2 295.5" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M106.5 291.8 A124 124 0 0 1 97.2 281.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M94.2 276.8 A124 124 0 0 1 86.7 264.6" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M84.4 260.0 A124 124 0 0 1 78.9 246.8" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M77.3 241.8 A124 124 0 0 1 74.0 228.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M73.1 222.8 A124 124 0 0 1 72.0 208.6" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M72.0 203.4 A124 124 0 0 1 73.1 189.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M74.0 184.0 A124 124 0 0 1 77.3 170.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M78.9 165.2 A124 124 0 0 1 84.4 152.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M86.7 147.4 A124 124 0 0 1 94.2 135.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M97.2 131.0 A124 124 0 0 1 106.5 120.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M110.2 116.5 A124 124 0 0 1 121.0 107.2" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M125.2 104.2 A124 124 0 0 1 137.4 96.7" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M142.0 94.4 A124 124 0 0 1 155.2 88.9" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M160.2 87.3 A124 124 0 0 1 174.0 84.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M179.2 83.1 A124 124 0 0 1 193.4 82.0" stroke="#1a1e25" stroke-width="30" fill="none" opacity="1.00"/>
+<g><path d="M198.6 82.0 A124 124 0 0 1 212.8 83.1" stroke="#34d27b" stroke-width="30" fill="none" opacity="1.00"/>
+<path d="M179.2 83.1 A124 124 0 0 1 193.4 82.0" stroke="#34d27b" stroke-width="30" fill="none" opacity="0.98"/>
+<path d="M160.2 87.3 A124 124 0 0 1 174.0 84.0" stroke="#34d27b" stroke-width="30" fill="none" opacity="0.96"/>
+<path d="M142.0 94.4 A124 124 0 0 1 155.2 88.9" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.93"/>
+<path d="M125.2 104.2 A124 124 0 0 1 137.4 96.7" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.91"/>
+<path d="M110.2 116.5 A124 124 0 0 1 121.0 107.2" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.89"/>
+<path d="M97.2 131.0 A124 124 0 0 1 106.5 120.2" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.87"/>
+<path d="M86.7 147.4 A124 124 0 0 1 94.2 135.2" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.84"/>
+<path d="M78.9 165.2 A124 124 0 0 1 84.4 152.0" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.82"/>
+<path d="M74.0 184.0 A124 124 0 0 1 77.3 170.2" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.80"/>
+<path d="M72.0 203.4 A124 124 0 0 1 73.1 189.2" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.78"/>
+<path d="M73.1 222.8 A124 124 0 0 1 72.0 208.6" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.76"/>
+<path d="M77.3 241.8 A124 124 0 0 1 74.0 228.0" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.73"/>
+<path d="M84.4 260.0 A124 124 0 0 1 78.9 246.8" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.71"/>
+<path d="M94.2 276.8 A124 124 0 0 1 86.7 264.6" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.69"/>
+<path d="M106.5 291.8 A124 124 0 0 1 97.2 281.0" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.67"/>
+<path d="M121.0 304.8 A124 124 0 0 1 110.2 295.5" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.65"/>
+<path d="M137.4 315.3 A124 124 0 0 1 125.2 307.8" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.62"/>
+<path d="M155.2 323.1 A124 124 0 0 1 142.0 317.6" stroke="#2bb46a" stroke-width="30" fill="none" opacity="0.60"/>
+<path d="M174.0 328.0 A124 124 0 0 1 160.2 324.7" stroke="#23784a" stroke-width="30" fill="none" opacity="0.58"/>
+<path d="M193.4 330.0 A124 124 0 0 1 179.2 328.9" stroke="#23784a" stroke-width="30" fill="none" opacity="0.56"/>
+<path d="M212.8 328.9 A124 124 0 0 1 198.6 330.0" stroke="#23784a" stroke-width="30" fill="none" opacity="0.53"/>
+<path d="M231.8 324.7 A124 124 0 0 1 218.0 328.0" stroke="#23784a" stroke-width="30" fill="none" opacity="0.51"/>
+<path d="M250.0 317.6 A124 124 0 0 1 236.8 323.1" stroke="#23784a" stroke-width="30" fill="none" opacity="0.49"/>
+<path d="M266.8 307.8 A124 124 0 0 1 254.6 315.3" stroke="#23784a" stroke-width="30" fill="none" opacity="0.47"/>
+<path d="M281.8 295.5 A124 124 0 0 1 271.0 304.8" stroke="#23784a" stroke-width="30" fill="none" opacity="0.45"/>
+<path d="M294.8 281.0 A124 124 0 0 1 285.5 291.8" stroke="#23784a" stroke-width="30" fill="none" opacity="0.42"/>
+<path d="M305.3 264.6 A124 124 0 0 1 297.8 276.8" stroke="#23784a" stroke-width="30" fill="none" opacity="0.40"/>
+<path d="M313.1 246.8 A124 124 0 0 1 307.6 260.0" stroke="#23784a" stroke-width="30" fill="none" opacity="0.38"/>
+<path d="M318.0 228.0 A124 124 0 0 1 314.7 241.8" stroke="#23784a" stroke-width="30" fill="none" opacity="0.36"/>
+<path d="M320.0 208.6 A124 124 0 0 1 318.9 222.8" stroke="#23784a" stroke-width="30" fill="none" opacity="0.34"/>
+<path d="M318.9 189.2 A124 124 0 0 1 320.0 203.4" stroke="#23784a" stroke-width="30" fill="none" opacity="0.31"/>
+<path d="M314.7 170.2 A124 124 0 0 1 318.0 184.0" stroke="#23784a" stroke-width="30" fill="none" opacity="0.29"/>
+<path d="M307.6 152.0 A124 124 0 0 1 313.1 165.2" stroke="#23784a" stroke-width="30" fill="none" opacity="0.27"/>
+<path d="M297.8 135.2 A124 124 0 0 1 305.3 147.4" stroke="#23784a" stroke-width="30" fill="none" opacity="0.25"/>
+<path d="M285.5 120.2 A124 124 0 0 1 294.8 131.0" stroke="#23784a" stroke-width="30" fill="none" opacity="0.22"/>
+<path d="M271.0 107.2 A124 124 0 0 1 281.8 116.5" stroke="#23784a" stroke-width="30" fill="none" opacity="0.20"/>
+<path d="M254.6 96.7 A124 124 0 0 1 266.8 104.2" stroke="#23784a" stroke-width="30" fill="none" opacity="0.18"/>
+<circle cx="196" cy="82" r="7" fill="#ffffff"/><animateTransform attributeName="transform" type="rotate" from="0 196 206" to="360 196 206" dur="20s" repeatCount="indefinite"/></g>
+<text x="196" y="200" font-size="44" fill="#e9ecef" font-weight="700" text-anchor="middle" >3:00</text>
+<text x="196" y="226" font-size="14" fill="#8a919c" font-weight="400" text-anchor="middle" >последних минут</text>
+<text x="196" y="246" font-size="14" fill="#8a919c" font-weight="400" text-anchor="middle" >в памяти</text>
+<g opacity="0"><animate attributeName="opacity" from="0" to="1" begin="0.3s" dur="0.6s" fill="freeze"/><circle cx="430" cy="69" r="5" fill="#34d27b"/><text x="448" y="74" font-size="17" fill="#e9ecef" font-weight="600" text-anchor="start" >Пишется по кругу</text><text x="448" y="98" font-size="14" fill="#8a919c" font-weight="400" text-anchor="start" >Новые секунды занимают место самых старых, длина повтора не меняется.</text></g>
+<g opacity="0"><animate attributeName="opacity" from="0" to="1" begin="0.6499999999999999s" dur="0.6s" fill="freeze"/><circle cx="430" cy="149" r="5" fill="#34d27b"/><text x="448" y="154" font-size="17" fill="#e9ecef" font-weight="600" text-anchor="start" >Клип начинается с ключевого кадра</text><text x="448" y="178" font-size="14" fill="#8a919c" font-weight="400" text-anchor="start" >Он бывает каждые 2 секунды, поэтому первая картинка всегда целая.</text></g>
+<g opacity="0"><animate attributeName="opacity" from="0" to="1" begin="1.0s" dur="0.6s" fill="freeze"/><circle cx="430" cy="229" r="5" fill="#34d27b"/><text x="448" y="234" font-size="17" fill="#e9ecef" font-weight="600" text-anchor="start" >До сохранения диск не трогается</text><text x="448" y="258" font-size="14" fill="#8a919c" font-weight="400" text-anchor="start" >Видео есть только в памяти, пока не нажата клавиша сохранения.</text></g>
+<g opacity="0"><animate attributeName="opacity" from="0" to="1" begin="1.3499999999999999s" dur="0.6s" fill="freeze"/><circle cx="430" cy="309" r="5" fill="#34d27b"/><text x="448" y="314" font-size="17" fill="#e9ecef" font-weight="600" text-anchor="start" >Предел памяти известен заранее</text><text x="448" y="338" font-size="14" fill="#8a919c" font-weight="400" text-anchor="start" >3 минуты при 30 Мбит/с занимают до 1,4 ГБ. Память берётся по мере заполнения.</text></g>
+</svg>
