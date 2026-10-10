@@ -45,3 +45,6 @@ if (-not (Test-Path -LiteralPath $zigExe -PathType Leaf)) {
 }
 
 Write-Output $zigExe
+# Явный код выхода: вызывающие скрипты проверяют $LASTEXITCODE, а без exit он
+# остаётся пустым, и свежескачанный Zig считался бы неудачей.
+exit 0
