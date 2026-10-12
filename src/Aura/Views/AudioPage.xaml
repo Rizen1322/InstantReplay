@@ -4,6 +4,69 @@
                 xmlns:c="clr-namespace:Aura.Controls"
                 xmlns:views="clr-namespace:Aura.Views">
 
+    <views:PageBase.Resources>
+        <!-- Поле выбора программ: выглядит как выпадающий список, но выбирает несколько -->
+        <Style x:Key="PickerToggle" TargetType="ToggleButton">
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="B" Background="{DynamicResource Card2Brush}" CornerRadius="9"
+                                BorderBrush="{DynamicResource HairBrush}" BorderThickness="1" SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter Margin="10,0,4,0" VerticalAlignment="Center"
+                                                  TextBlock.FontSize="13" TextBlock.Foreground="{DynamicResource TxBrush}"/>
+                                <c:Icon Grid.Column="1" Data="{DynamicResource Ico.ChevDown}" Size="12" Margin="0,0,9,0"
+                                        Foreground="{DynamicResource Tx3Brush}" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource PressBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PickerItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="10,7,10,7"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="B" Background="Transparent" CornerRadius="7" Padding="{TemplateBinding Padding}" Margin="4,1,4,1">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <c:Icon x:Name="Tick" Data="{DynamicResource Ico.Check}" Size="13" Visibility="Hidden"
+                                        Foreground="{DynamicResource AccentBrush}" VerticalAlignment="Center"/>
+                                <ContentPresenter Grid.Column="1" TextBlock.FontSize="13" TextBlock.Foreground="{DynamicResource TxBrush}"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource HoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource AccentSoftBrush}"/>
+                                <Setter TargetName="Tick" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </views:PageBase.Resources>
+
     <!-- Звук. Выключенный источник прячет свои настройки, а не оставляет их серыми. -->
     <Grid Margin="20,16,16,0">
         <Grid.ColumnDefinitions>
@@ -32,21 +95,46 @@
                         <c:AdaptiveRow x:Name="GameScopeRow" Margin="32,4,16,12" MinTextWidth="200">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
                                 <TextBlock Text="Что писать" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Text="Одна игра: без Discord, браузера и звуков Windows" Style="{StaticResource RowSub}"/>
+                                <TextBlock Text="Выбранные: только звук нужных программ, без звуков Windows" Style="{StaticResource RowSub}"/>
                             </StackPanel>
                             <c:Segmented x:Name="GameScope" SelectionChanged="GameScope_Changed">
                                 <ListBoxItem Content="Весь звук" Tag="All"/>
-                                <ListBoxItem Content="Одна игра" Tag="One"/>
+                                <ListBoxItem Content="Выбранные" Tag="One"/>
                             </c:Segmented>
                         </c:AdaptiveRow>
                         <c:AdaptiveRow x:Name="GameProcessRow" Margin="32,4,16,12">
                             <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="Какая игра" Style="{StaticResource RowLabel}"/>
-                                <TextBlock x:Name="GameProcessSub" Style="{StaticResource RowSub}"
-                                           Text="Пока игра не запущена, звук игры не пишется"/>
+                                <TextBlock Text="Какие программы" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="GameProcessSub" Style="{StaticResource RowSub}" TextWrapping="Wrap"
+                                           Text="Пока программа не запущена, её звук не пишется"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal">
-                                <ComboBox x:Name="GameProcess" MinWidth="220" SelectionChanged="AudioSelection_Changed"/>
+                                <Grid>
+                                    <ToggleButton x:Name="GameProcessToggle" Style="{StaticResource PickerToggle}"
+                                                  MinWidth="220" MaxWidth="300">
+                                        <TextBlock x:Name="GameProcessText" TextTrimming="CharacterEllipsis"/>
+                                    </ToggleButton>
+                                    <Popup x:Name="GameProcessPopup" PlacementTarget="{Binding ElementName=GameProcessToggle}"
+                                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"
+                                           VerticalOffset="-2" HorizontalOffset="-8"
+                                           IsOpen="{Binding IsChecked, ElementName=GameProcessToggle, Mode=TwoWay}"
+                                           Opened="GameProcessPopup_Opened" Closed="GameProcessPopup_Closed">
+                                        <Border Background="{DynamicResource GlassBrush}" CornerRadius="12" Padding="0,4,0,8"
+                                                BorderBrush="{DynamicResource HairBrush}" BorderThickness="1"
+                                                Effect="{DynamicResource ToastShadow}" Margin="8"
+                                                MinWidth="{Binding ActualWidth, ElementName=GameProcessToggle}" MaxWidth="360">
+                                            <StackPanel>
+                                                <ListBox x:Name="GameProcess" SelectionMode="Extended" MaxHeight="300"
+                                                         Background="Transparent" BorderThickness="0"
+                                                         ItemContainerStyle="{StaticResource PickerItem}"
+                                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                         SelectionChanged="GameProcess_SelectionChanged"/>
+                                                <TextBlock Text="Ctrl и клик: выбрать несколько" Margin="14,6,14,0"
+                                                           FontSize="12" Foreground="{DynamicResource Tx3Brush}"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Popup>
+                                </Grid>
                                 <Button Style="{StaticResource BtnSquare}" Margin="8,0,0,0" Click="RefreshProcesses_Click"
                                         ToolTip="Обновить список: запусти игру и нажми" c:Deco.Icon="{DynamicResource Ico.Refresh}"/>
                             </StackPanel>

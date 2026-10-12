@@ -93,13 +93,46 @@ public sealed class AudioMixerEngine : IDisposable
     private bool _wantGame, _wantMic;
     private string? _renderDeviceId, _captureDeviceId;
 
-    /// <summary>Имя exe игры, чей звук пишется; null — весь звук устройства вывода.</summary>
-    private string? _gameProcess;
+    /// <summary>
+    /// Программы, чей звук пишется в дорожку игры; пусто — весь звук устройства
+    /// вывода. У каждой своя шкала и свой loopback процесса, микшер их складывает:
+    /// loopback Windows берёт только одно дерево процессов, поэтому «игра плюс
+    /// Discord» это два источника, а не один.
+    /// </summary>
+    private string[] _gameProcesses = [];
+    private ProcessSlot[] _slots = [];
     private System.Threading.Timer? _processWatch;
     private const long ProcessRetryMs = 30_000;
-    private long _processRetryAfter;
-    private bool _processFallbackWarned;
-    private int _processFailures;
+
+    private bool ProcessMode => _gameProcesses.Length > 0;
+
+    /// <summary>Источник звука одной программы. Поля меняются под _gameSwitch, Source ещё и под _sync.</summary>
+    private sealed class ProcessSlot(string name, AudioTimeline line)
+    {
+        public string Name { get; } = name;
+        public AudioTimeline Line { get; } = line;
+        public WasapiSource? Source;
+        public long RetryAfter;
+        public int Failures;
+        public bool MissingLogged;
+        public bool FailureWarned;
+    }
+
+    /// <summary>Разделитель программ в настройке <c>GameAudioProcess</c>.</summary>
+    public const char ProcessSeparator = ';';
+
+    /// <summary>Имена программ из настройки: «cs2;Discord» — две программы.</summary>
+    public static string[] ParseProcesses(string? value) => string.IsNullOrWhiteSpace(value)
+        ? []
+        : value.Split(ProcessSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+               .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+    /// <summary>Строка настройки из списка программ; null — весь звук.</summary>
+    public static string? JoinProcesses(IEnumerable<string> names)
+    {
+        string joined = string.Join(ProcessSeparator, names.Where(n => !string.IsNullOrWhiteSpace(n)));
+        return joined.Length == 0 ? null : joined;
+    }
 
     /// <summary>
     /// Смена источника звука игры идёт по одному: слежение за процессом (раз в
@@ -108,7 +141,6 @@ public sealed class AudioMixerEngine : IDisposable
     /// процесса ждёт систему до 5 с, дольше периода таймера, и вызовы наслаивались.
     /// </summary>
     private readonly object _gameSwitch = new();
-    private bool _processMissingLogged;
     private MMDeviceEnumerator? _deviceWatchEnumerator;
     private DefaultDeviceWatcher? _deviceWatcher;
     private int _generation;
@@ -153,11 +185,7 @@ public sealed class AudioMixerEngine : IDisposable
 
         _wantGame = captureGame; _wantMic = captureMic;
         _renderDeviceId = renderDeviceId; _captureDeviceId = captureDeviceId;
-        _gameProcess = string.IsNullOrWhiteSpace(gameProcess) ? null : gameProcess.Trim();
-        _processMissingLogged = false;
-        _processRetryAfter = 0;
-        _processFallbackWarned = false;
-        _processFailures = 0;
+        _gameProcesses = ParseProcesses(gameProcess);
         if (!captureGame && !captureMic) return;
 
         long origin = NowTicks();
@@ -165,7 +193,10 @@ public sealed class AudioMixerEngine : IDisposable
         {
             if (captureGame)
             {
-                _gameLine = new AudioTimeline(origin, 2);
+                if (ProcessMode)
+                    _slots = _gameProcesses.Select(name => new ProcessSlot(name, new AudioTimeline(origin, 2))).ToArray();
+                else
+                    _gameLine = new AudioTimeline(origin, 2);
                 _gameEncoder = new AacEncoder(2, GameBitrate);
                 _gameEncoder.FrameReady += (frame, pts) => Emit(AudioTrackKind.Game, frame, pts);
             }
@@ -187,14 +218,24 @@ public sealed class AudioMixerEngine : IDisposable
         // Кадры тишины понадобятся при сохранении — готовим заранее, в фоне
         _ = Task.Run(() => { SilentFrameOf(AudioTrackKind.Game); SilentFrameOf(AudioTrackKind.Mic); });
 
-        if (captureGame) _game = OpenSource(loopback: true);
+        if (captureGame && ProcessMode)
+        {
+            lock (_gameSwitch)
+                foreach (var slot in _slots)
+                {
+                    var source = OpenSlot(slot);
+                    lock (_sync) slot.Source = source;
+                }
+        }
+        else if (captureGame) _game = OpenSource(loopback: true);
         if (captureMic) _mic = OpenSource(loopback: false);
 
         WatchDefaultDevices();
 
-        // Звук одной игры: игра может запуститься позже Aura, перезапуститься с
-        // новым номером процесса или закрыться. Раз в две секунды сверяемся.
-        if (captureGame && _gameProcess is not null)
+        // Звук отдельных программ: программа может запуститься позже Aura,
+        // перезапуститься с новым номером процесса или закрыться. Раз в две
+        // секунды сверяемся.
+        if (captureGame && ProcessMode)
         {
             int watchGeneration = Volatile.Read(ref _generation);
             _processWatch = new System.Threading.Timer(_ => SyncGameProcess(watchGeneration), null,
@@ -214,41 +255,6 @@ public sealed class AudioMixerEngine : IDisposable
     private WasapiSource? OpenSource(bool loopback)
     {
         var line = loopback ? _gameLine! : _micLine!;
-        if (loopback && _gameProcess is { } processName)
-        {
-            int? pid = ProcessLoopback.FindProcess(processName);
-            if (pid is null)
-            {
-                // Игра не запущена: пишем тишину, а не весь компьютер, иначе в
-                // запись попал бы как раз тот звук, от которого человек отказался
-                if (!_processMissingLogged)
-                    Log.Info("Audio", $"Звук игры: {processName} не запущена, жду её");
-                _processMissingLogged = true;
-                return null;
-            }
-            try
-            {
-                var source = new WasapiSource(pid.Value, processName, line);
-                source.Failed += _ => RestartSource(DataFlow.Render);
-                _processMissingLogged = false;
-                return source;
-            }
-            catch (Exception ex)
-            {
-                // Звук одной игры не открылся. Весь звук компьютера вместо неё НЕ
-                // пишем: человек выбрал одну игру, а в клип попали бы звонок, браузер
-                // и уведомления. Раньше так и было (с предупреждением). Теперь тишина
-                // и новая попытка через полминуту, как при не запущенной игре.
-                Volatile.Write(ref _processRetryAfter, Environment.TickCount64 + ProcessRetryMs);
-                if (++_processFailures is 1 or 2 or 10 or 100)
-                    Log.Warn("Audio", $"Звук только из {processName} не открылся ({ex.Message}), " +
-                                      $"пока пишу тишину, повторю через 30 с ({_processFailures}-й раз)");
-                if (!_processFallbackWarned)
-                    Warning?.Invoke("Звук выбранной игры не открылся. Пока он не пишется, Aura повторит попытку сама");
-                _processFallbackWarned = true;
-                return null;
-            }
-        }
         try
         {
             var source = new WasapiSource(loopback, loopback ? _renderDeviceId : _captureDeviceId, line);
@@ -269,45 +275,90 @@ public sealed class AudioMixerEngine : IDisposable
         }
     }
 
-    /// <summary>Подхватить игру, которая запустилась, перезапустилась или закрылась.</summary>
+    /// <summary>
+    /// Открыть loopback одной программы. Не запущена или не открылась: null, и
+    /// весь звук компьютера вместо неё НЕ пишем. Человек выбрал программы, а в
+    /// клип попали бы звонок, браузер и уведомления. Раньше так и было.
+    /// </summary>
+    private WasapiSource? OpenSlot(ProcessSlot slot)
+    {
+        int? pid = ProcessLoopback.FindProcess(slot.Name);
+        if (pid is null)
+        {
+            if (!slot.MissingLogged)
+                Log.Info("Audio", $"Звук игры: {slot.Name} не запущена, жду её");
+            slot.MissingLogged = true;
+            return null;
+        }
+        try
+        {
+            var source = new WasapiSource(pid.Value, slot.Name, slot.Line);
+            source.Failed += _ => DropSlotSource(slot, source);
+            slot.MissingLogged = false;
+            return source;
+        }
+        catch (Exception ex)
+        {
+            slot.RetryAfter = Environment.TickCount64 + ProcessRetryMs;
+            if (++slot.Failures is 1 or 2 or 10 or 100)
+                Log.Warn("Audio", $"Звук только из {slot.Name} не открылся ({ex.Message}), " +
+                                  $"пока пишу тишину, повторю через 30 с ({slot.Failures}-й раз)");
+            if (!slot.FailureWarned)
+                Warning?.Invoke($"Звук {slot.Name} не открылся. Пока он не пишется, Aura повторит попытку сама");
+            slot.FailureWarned = true;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Источник программы отказал: убираем его, слежение за процессами откроет
+    /// заново на следующей сверке. Освобождаем не в потоке источника: его
+    /// Dispose ждёт этот самый поток.
+    /// </summary>
+    private void DropSlotSource(ProcessSlot slot, WasapiSource source)
+    {
+        lock (_sync)
+        {
+            if (slot.Source != source) return;
+            slot.Source = null;
+        }
+        Log.Warn("Audio", $"Звук игры: источник {slot.Name} отказал, открою заново");
+        Task.Run(source.Dispose);
+    }
+
+    /// <summary>Подхватить программы, которые запустились, перезапустились или закрылись.</summary>
     private void SyncGameProcess(int generation)
     {
         if (!Monitor.TryEnter(_gameSwitch)) return;   // прошлая сверка ещё идёт
         try
         {
-            string? name = _gameProcess;
-            if (!_running || name is null || generation != Volatile.Read(ref _generation)) return;
-            int? wanted = ProcessLoopback.FindProcess(name);
-            int? current;
-            bool fallback;
-            lock (_sync)
+            foreach (var slot in _slots)
             {
-                current = _game?.ProcessId;
-                fallback = _game is not null && _game.ProcessId is null;
-            }
-            // Весь звук вместо закрывшейся игры не оставляем: до её запуска тишина
-            if (wanted == current && !(fallback && wanted is null)) return;
-            // После неудачи (сейчас тишина или старый общий источник) новую попытку
-            // не раньше срока
-            if ((fallback || current is null) && wanted is not null &&
-                Environment.TickCount64 < Volatile.Read(ref _processRetryAfter)) return;
+                if (!_running || generation != Volatile.Read(ref _generation)) return;
+                int? wanted = ProcessLoopback.FindProcess(slot.Name);
+                int? current;
+                lock (_sync) current = slot.Source?.ProcessId;
+                if (wanted == current) continue;
+                // После неудачи новую попытку не раньше срока
+                if (current is null && wanted is not null && Environment.TickCount64 < slot.RetryAfter) continue;
 
-            WasapiSource? replacement = wanted is null ? null : OpenSource(loopback: true);
-            WasapiSource? old;
-            lock (_sync)
-            {
-                if (!_running || generation != _generation) { replacement?.Dispose(); return; }
-                old = _game;
-                _game = replacement;
+                WasapiSource? replacement = wanted is null ? null : OpenSlot(slot);
+                WasapiSource? old;
+                lock (_sync)
+                {
+                    if (!_running || generation != _generation) { replacement?.Dispose(); return; }
+                    old = slot.Source;
+                    slot.Source = replacement;
+                }
+                if (replacement is not null)
+                {
+                    Log.Info("Audio", $"Звук игры: подключился к {slot.Name} ({wanted})");
+                    slot.FailureWarned = false;
+                }
+                else if (old is not null)
+                    Log.Info("Audio", $"Звук игры: {slot.Name} закрылась, пишу тишину до её запуска");
+                old?.Dispose();
             }
-            if (replacement?.ProcessId is not null)
-            {
-                Log.Info("Audio", $"Звук игры: подключился к {name} ({wanted})");
-                _processFallbackWarned = false;
-            }
-            else if (old is not null && replacement is null)
-                Log.Info("Audio", $"Звук игры: {name} закрылась, пишу тишину до её запуска");
-            old?.Dispose();
         }
         catch (Exception ex) { Log.Warn("Audio", $"Слежение за процессом игры: {ex.Message}"); }
         finally { Monitor.Exit(_gameSwitch); }
@@ -334,7 +385,7 @@ public sealed class AudioMixerEngine : IDisposable
             _deviceWatcher = new DefaultDeviceWatcher(flow =>
             {
                 // Звук отдельной игры от устройства по умолчанию не зависит
-                bool affectsGame = flow == DataFlow.Render && _wantGame && _renderDeviceId is null && _gameProcess is null;
+                bool affectsGame = flow == DataFlow.Render && _wantGame && _renderDeviceId is null && !ProcessMode;
                 bool affectsMic = flow == DataFlow.Capture && _wantMic && _captureDeviceId is null;
                 if (affectsGame || affectsMic) RestartSource(flow);
             },
@@ -355,6 +406,9 @@ public sealed class AudioMixerEngine : IDisposable
     {
         int generation = Volatile.Read(ref _generation);
         bool loopback = flow == DataFlow.Render;
+        // Звук отдельных программ от устройства не зависит: их переподключает
+        // слежение за процессами
+        if (loopback && ProcessMode) return;
         Task.Run(() =>
         {
             // Windows шлёт уведомление до того, как новое устройство готово. А
@@ -381,13 +435,7 @@ public sealed class AudioMixerEngine : IDisposable
                 try
                 {
                     replacement = OpenSource(loopback);
-                    if (replacement is null)
-                    {
-                        // Звук одной игры и игра не запущена: это не сбой, слежение
-                        // за процессом подключит её само
-                        if (loopback && _gameProcess is not null) return;
-                        continue;
-                    }
+                    if (replacement is null) continue;
                     lock (_sync)
                     {
                         if (!_running || generation != _generation)
@@ -454,6 +502,7 @@ public sealed class AudioMixerEngine : IDisposable
         using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.ProAudio, "AudioMixer");
 
         var game = new float[BlockFrames * 2];
+        var programme = new float[BlockFrames * 2];
         var mic = new float[BlockFrames];
         var mix = new float[BlockFrames * 2];
         var gameLimiter = new Limiter(2);
@@ -491,21 +540,30 @@ public sealed class AudioMixerEngine : IDisposable
 
             long position = block * BlockFrames;
             AudioTimeline? gameLine, micLine;
+            ProcessSlot[] slots;
             AacEncoder? gameEncoder, micEncoder, mixEncoder;
             lock (_sync)
             {
-                gameLine = _gameLine; micLine = _micLine;
+                gameLine = _gameLine; micLine = _micLine; slots = _slots;
                 gameEncoder = _gameEncoder; micEncoder = _micEncoder; mixEncoder = _mixEncoder;
             }
 
             float gv = Math.Clamp(GameVolume, 0f, 2f);
             float mv = Math.Clamp(MicVolume, 0f, 2f);
 
-            if (gameLine is not null)
+            bool haveGame = gameLine is not null || slots.Length > 0;
+            if (gameLine is not null) gameLine.Read(position, game, BlockFrames);
+            else if (slots.Length > 0)
             {
-                gameLine.Read(position, game, BlockFrames);
-                if (gv != 1f) for (int i = 0; i < game.Length; i++) game[i] *= gv;
+                // Программы складываются; перегруз после сложения снимет лимитер
+                slots[0].Line.Read(position, game, BlockFrames);
+                for (int k = 1; k < slots.Length; k++)
+                {
+                    slots[k].Line.Read(position, programme, BlockFrames);
+                    for (int i = 0; i < game.Length; i++) game[i] += programme[i];
+                }
             }
+            if (haveGame && gv != 1f) for (int i = 0; i < game.Length; i++) game[i] *= gv;
             if (micLine is not null)
             {
                 micLine.Read(position, mic, BlockFrames);
@@ -540,10 +598,10 @@ public sealed class AudioMixerEngine : IDisposable
                 }
                 mixLimiter.Process(mix, BlockFrames);
             }
-            if (gameLine is not null) gameLimiter.Process(game, BlockFrames);
+            if (haveGame) gameLimiter.Process(game, BlockFrames);
             if (micLine is not null) micLimiter.Process(mic, BlockFrames);
 
-            GamePeak = gameLine is null ? 0 : Peak(game);
+            GamePeak = haveGame ? Peak(game) : 0;
             MicPeak = micLine is null ? 0 : Peak(mic);
 
             // Время блока — начало отрезка на шкале; лимитер сдвигает звук на
@@ -557,7 +615,9 @@ public sealed class AudioMixerEngine : IDisposable
             if (++report >= 6000) // раз в минуту
             {
                 report = 0;
-                Log.Info("Audio", $"Шкала звука: игра {Describe(gameLine)}, микрофон {Describe(micLine)}; " +
+                string gameText = slots.Length == 0 ? Describe(gameLine)
+                    : string.Join(", ", slots.Select(slot => $"{slot.Name} {Describe(slot.Line)}"));
+                Log.Info("Audio", $"Шкала звука: игра {gameText}, микрофон {Describe(micLine)}; " +
                                   $"лимитер: игра {Db(gameLimiter)}, микрофон {Db(micLimiter)}, смесь {Db(mixLimiter)}");
             }
             block++;
@@ -602,6 +662,8 @@ public sealed class AudioMixerEngine : IDisposable
         lock (_sync)
         {
             _game?.Dispose(); _game = null;
+            foreach (var slot in _slots) slot.Source?.Dispose();
+            _slots = [];
             _mic?.Dispose(); _mic = null;
             if (mixerExited)
             {

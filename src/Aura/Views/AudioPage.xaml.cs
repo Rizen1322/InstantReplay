@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 using Aura.Controls;
+using Aura.Core.Audio;
 using Aura.Core.Engine;
 using Aura.Core.Settings;
 
@@ -83,7 +84,7 @@ public partial class AudioPage : PageBase
         SelectTrack(s.TrackMode.ToString());
         FillAudioDevices(s);
         GameScope.SelectedIndex = s.GameAudioProcess is null ? 0 : 1;
-        FillProcesses(s.GameAudioProcess);
+        FillProcesses(AudioMixerEngine.ParseProcesses(s.GameAudioProcess));
         UpdateDependents();
         _loading = false;
         SetDirty(false);
@@ -117,11 +118,11 @@ public partial class AudioPage : PageBase
     {
         // «Одна игра» без выбранной игры раньше молча сохранялась как «весь звук»,
         // и в запись шёл Discord. Теперь без игры не применяем.
-        if (GameAudio.IsChecked == true && OneGame && GameProcess.SelectedItem is null)
+        if (GameAudio.IsChecked == true && OneGame && SelectedProcesses.Length == 0)
         {
-            Dialogs.Say("Выбери игру",
-                "Запусти игру, нажми «Обновить список» рядом с полем «Какая игра» и выбери её. " +
-                "Или переключи «Что писать» на «Весь звук».");
+            Dialogs.Say("Выбери программы",
+                "Запусти игру, нажми «Обновить список» рядом с полем «Какие программы» и выбери её. " +
+                "С Ctrl можно выбрать несколько. Или переключи «Что писать» на «Весь звук».");
             return;
         }
         Services.Settings.Update(s =>
@@ -131,7 +132,7 @@ public partial class AudioPage : PageBase
             s.TrackMode = Enum.Parse<AudioTrackMode>((string)((ListBoxItem)TrackMode.SelectedItem).Tag);
             s.RenderDeviceId = (string?)((ComboBoxItem)RenderDevice.SelectedItem)?.Tag;
             s.CaptureDeviceId = (string?)((ComboBoxItem)CaptureDevice.SelectedItem)?.Tag;
-            s.GameAudioProcess = OneGame ? (string?)(GameProcess.SelectedItem as ComboBoxItem)?.Tag : null;
+            s.GameAudioProcess = OneGame ? AudioMixerEngine.JoinProcesses(SelectedProcesses) : null;
         }, "video");
         SetDirty(false);
     }
@@ -144,19 +145,53 @@ public partial class AudioPage : PageBase
 
     private void GameScope_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (OneGame && GameProcess.SelectedItem is null && GameProcess.Items.Count > 0) GameProcess.SelectedIndex = 0;
+        if (OneGame && GameProcess.SelectedItems.Count == 0 && GameProcess.Items.Count > 0) GameProcess.SelectedIndex = 0;
         Audio_Changed(sender, e);
     }
 
-    private void RefreshProcesses_Click(object sender, RoutedEventArgs e) =>
-        FillProcesses((GameProcess.SelectedItem as ComboBoxItem)?.Tag as string ?? Services.Settings.Current.GameAudioProcess);
+    /// <summary>Выбранные программы (имена exe) в порядке списка.</summary>
+    private string[] SelectedProcesses => GameProcess.Items.Cast<ListBoxItem>()
+        .Where(item => item.IsSelected).Select(item => (string)item.Tag).ToArray();
+
+    private void GameProcess_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ShowProcessSummary();
+        Audio_Changed(sender, e);
+    }
+
+    /// <summary>
+    /// Пока список открыт, кнопка не ловит мышь: иначе щелчок по ней сначала
+    /// закрывал бы список (щелчок мимо), а потом открывал его снова.
+    /// </summary>
+    private void GameProcessPopup_Opened(object? sender, EventArgs e) => GameProcessToggle.IsHitTestVisible = false;
+    private void GameProcessPopup_Closed(object? sender, EventArgs e) => GameProcessToggle.IsHitTestVisible = true;
+
+    private void ShowProcessSummary()
+    {
+        var titles = GameProcess.Items.Cast<ListBoxItem>().Where(item => item.IsSelected)
+            .Select(item => (string)item.Tag).ToArray();
+        GameProcessText.Text = titles.Length switch
+        {
+            0 => "Ничего не выбрано",
+            1 => GameProcess.Items.Cast<ListBoxItem>().First(item => item.IsSelected).Content?.ToString() ?? titles[0],
+            _ => string.Join(", ", titles)
+        };
+        GameProcessToggle.ToolTip = titles.Length > 1 ? string.Join("\n", titles) : null;
+    }
+
+    private void RefreshProcesses_Click(object sender, RoutedEventArgs e)
+    {
+        string[] selected = SelectedProcesses;
+        FillProcesses(selected.Length > 0 ? selected
+            : AudioMixerEngine.ParseProcesses(Services.Settings.Current.GameAudioProcess));
+    }
 
     /// <summary>
     /// Программы, из которых можно писать звук: те, у кого сейчас есть звуковой
     /// сеанс (хоть раз что-то играли), и запущенные игры из списка известных.
     /// Выбранная раньше игра остаётся в списке, даже если сейчас не запущена.
     /// </summary>
-    private void FillProcesses(string? selected)
+    private void FillProcesses(string[] selected)
     {
         // Сначала сразу только выбранная игра: список всех процессов собирается в
         // фоне. Раньше он собирался в потоке интерфейса (обход всех процессов и
@@ -164,38 +199,41 @@ public partial class AudioPage : PageBase
         int generation = ++_processFill;
         var database = Core.GameDetection.GameDatabase.Load();
         var initial = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (selected is not null)
-            initial[selected] = database.TryGetGame(selected, out var t0) ? $"{t0} ({selected})" : selected;
+        foreach (string name in selected)
+            initial[name] = database.TryGetGame(name, out var t0) ? $"{t0} ({name})" : name;
         ShowProcesses(initial, selected, database, final: false);
 
         _ = Task.Run(() => CollectProcesses(database)).ContinueWith(task =>
         {
             if (generation != _processFill || task.Result is not { } names) return;
-            // Человек мог выбрать другую игру, пока шёл сбор
-            string? current = (GameProcess.SelectedItem as ComboBoxItem)?.Tag as string ?? selected;
-            ShowProcesses(names, current, database, final: true);
+            // Человек мог выбрать другие программы, пока шёл сбор
+            string[] current = SelectedProcesses;
+            ShowProcesses(names, current.Length > 0 ? current : selected, database, final: true);
         }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     private int _processFill;
 
-    private void ShowProcesses(SortedDictionary<string, string> names, string? selected,
+    private void ShowProcesses(SortedDictionary<string, string> names, string[] selected,
                                Core.GameDetection.GameDatabase database, bool final)
     {
         bool wasLoading = _loading;
         _loading = true;
-        if (final && selected is not null && !names.ContainsKey(selected))
-            names[selected] = database.TryGetGame(selected, out var t) ? $"{t} ({selected}), не запущена" : $"{selected}, не запущена";
+        if (final)
+            foreach (string name in selected)
+                if (!names.ContainsKey(name))
+                    names[name] = database.TryGetGame(name, out var t) ? $"{t} ({name}), не запущена" : $"{name}, не запущена";
 
         GameProcess.Items.Clear();
         foreach (var (exe, title) in names)
-            GameProcess.Items.Add(new ComboBoxItem { Content = title, Tag = exe });
-        foreach (ComboBoxItem item in GameProcess.Items)
-            if (string.Equals((string)item.Tag, selected, StringComparison.OrdinalIgnoreCase)) GameProcess.SelectedItem = item;
+            GameProcess.Items.Add(new ListBoxItem { Content = title, Tag = exe });
+        foreach (ListBoxItem item in GameProcess.Items)
+            if (selected.Contains((string)item.Tag, StringComparer.OrdinalIgnoreCase)) item.IsSelected = true;
+        ShowProcessSummary();
         if (final)
             GameProcessSub.Text = names.Count == 0
                 ? "Запусти игру и нажми обновить: она появится в списке"
-                : "Пока игра не запущена, звук игры не пишется";
+                : "Пока программа не запущена, её звук не пишется";
         _loading = wasLoading;
     }
 
@@ -338,7 +376,7 @@ public partial class AudioPage : PageBase
     private void ShowDeviceNames()
     {
         GameDeviceName.Text = OneGame
-            ? (GameProcess.SelectedItem as ComboBoxItem)?.Tag is string exe ? $"только {exe}" : "игра не выбрана"
+            ? SelectedProcesses is { Length: > 0 } exes ? $"только {string.Join(", ", exes)}" : "ничего не выбрано"
             : (RenderDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
         MicDeviceName.Text = (CaptureDevice.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "";
     }
