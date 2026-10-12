@@ -129,7 +129,7 @@ public static class ScreenCaptureFactory
                 throw new ArgumentException("Minecraft OpenGL требуется target", nameof(request));
             Logging.Log.Info(
                 "Capture",
-                $"Гибридный захват Minecraft: WGC-monitor + OpenGL, PID {target.ProcessId}, " +
+                $"Гибридный захват Minecraft: {(WgcAllowed ? "WGC" : "DDA")}-monitor + OpenGL, PID {target.ProcessId}, " +
                 $"revision {target.Revision}");
             return new MinecraftGameCaptureSource(target);
         }

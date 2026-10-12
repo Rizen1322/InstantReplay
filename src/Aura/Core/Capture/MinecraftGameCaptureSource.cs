@@ -5,11 +5,20 @@ using Vortice.Direct3D11;
 
 namespace Aura.Core.Capture;
 
-/// <summary>Один monitor WGC + Minecraft OpenGL bridge на общем D3D11 device.</summary>
+/// <summary>
+/// Захват монитора + Minecraft OpenGL bridge на общем D3D11 device.
+///
+/// Монитор пишется через WGC только там, где рамку записи можно убрать
+/// (<see cref="ScreenCaptureFactory.WgcAllowed"/>, Windows 11). На Windows 10 у
+/// WGC жёлтая рамка неотключаемая, поэтому монитор там берётся через Desktop
+/// Duplication, как и обычная запись. Раньше гибрид всегда брал WGC, и на
+/// Windows 10 при запуске Minecraft появлялась рамка.
+/// </summary>
 internal sealed class MinecraftGameCaptureSource : IScreenCapture
 {
     private readonly GameCaptureTarget _target;
-    private readonly ScreenCaptureSource _monitor;
+    private readonly IScreenCapture _monitor;
+    private readonly string _monitorName;
     private MinecraftCaptureRouter? _router;
     private OpenGlGameFrameBridge? _bridge;
     private ForegroundWindowWatcher? _foregroundWatcher;
@@ -26,7 +35,16 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
     public MinecraftGameCaptureSource(in GameCaptureTarget target)
     {
         _target = target;
-        _monitor = new ScreenCaptureSource(target.MonitorIndex);
+        if (ScreenCaptureFactory.WgcAllowed)
+        {
+            _monitor = new ScreenCaptureSource(target.MonitorIndex);
+            _monitorName = "WGC-monitor";
+        }
+        else
+        {
+            _monitor = new DesktopDuplicationSource();
+            _monitorName = "DDA-monitor";
+        }
         _monitor.FrameArrived += OnMonitorFrame;
         _monitor.Failed += failure => Failed?.Invoke(failure);
     }
@@ -117,7 +135,7 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
         }
         Log.Info(
             "Capture",
-            $"Гибридный Minecraft capture запущен: WGC-monitor + OpenGL hook, " +
+            $"Гибридный Minecraft capture запущен: {_monitorName} + OpenGL hook, " +
             $"PID {_target.ProcessId}, revision {_target.Revision}");
     }
 
