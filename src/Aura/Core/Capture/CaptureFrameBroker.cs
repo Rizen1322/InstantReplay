@@ -166,11 +166,18 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
     /// новый кадр за отведённое время не пришёл, безопасно возвращает последний
     /// готовый кадр вместо ошибки скриншота.
     /// </summary>
+    /// <param name="notBefore">
+    /// Новым считается только кадр, СНЯТЫЙ не раньше этой метки. Порядка публикации
+    /// мало: после того как система заморозила процесс на несколько секунд, WGC
+    /// отдаёт кадры, скопившиеся в пуле с начала заморозки, и скриншот выходил
+    /// на эти секунды раньше нажатия.
+    /// </param>
     public bool TryLeaseFreshest(
         long generation,
         TimeSpan waitForNewFrame,
         out CaptureFrameLease<TSlot>? lease,
-        out bool receivedNewFrame)
+        out bool receivedNewFrame,
+        long notBefore = long.MinValue)
     {
         if (waitForNewFrame < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(waitForNewFrame));
@@ -191,7 +198,7 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
                 if (_disposed || generation != _generation)
                     return false;
 
-                if (TryLeaseLocked(generation, baselineSequence, out lease))
+                if (TryLeaseLocked(generation, baselineSequence, out lease, notBefore))
                 {
                     receivedNewFrame = true;
                     return true;
@@ -209,7 +216,8 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
     private bool TryLeaseLocked(
         long generation,
         long minimumExclusiveReadySequence,
-        out CaptureFrameLease<TSlot>? lease)
+        out CaptureFrameLease<TSlot>? lease,
+        long notBefore = long.MinValue)
     {
         lease = null;
 
@@ -221,6 +229,7 @@ internal sealed class CaptureFrameBroker<TSlot> : IDisposable where TSlot : clas
                 if (candidate.State == SlotState.Ready &&
                     candidate.Generation == generation &&
                     candidate.ReadySequence > minimumExclusiveReadySequence &&
+                    candidate.Timestamp >= notBefore &&
                     candidate.ReadySequence > newestSequence)
                 {
                     index = i;

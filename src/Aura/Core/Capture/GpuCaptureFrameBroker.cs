@@ -250,7 +250,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
                 generation,
                 waitForNewFrame,
                 out CaptureFrameLease<GpuCaptureFrameSlot>? inner,
-                out bool receivedNewFrame))
+                out bool receivedNewFrame,
+                notBefore: NowTicks() - FreshFrameSlackTicks))
         {
             rejection = "готового кадра нет";
             return false;
@@ -277,6 +278,9 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         use(withoutCursor ? lease.CleanTexture ?? lease.Texture : lease.Texture);
         return true;
     }
+
+    /// <summary>Кадр, снятый за 50 мс до запроса, ещё считается свежим.</summary>
+    private const long FreshFrameSlackTicks = 50 * 10_000;
 
     /// <summary>Те же 100-нс тики, в которых источники захвата ставят метки кадрам.</summary>
     private static long NowTicks() =>

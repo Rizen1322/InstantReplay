@@ -222,7 +222,7 @@ public partial class RegionCaptureWindow : Window
             // Activate не всегда выводит окно вперёд, пока фокус у игры: клавиши
             // (Ctrl+A, Esc) уходили бы ей. Просим систему явно; право есть,
             // оверлей открыт нажатием, которое только что поймал наш хук.
-            NativeMethods.SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(_open).Handle);
+            ForceForeground(new System.Windows.Interop.WindowInteropHelper(_open).Handle);
             _open.Focus();
             Keyboard.Focus(_open);
         }
@@ -230,6 +230,33 @@ public partial class RegionCaptureWindow : Window
         {
             Interlocked.Exchange(ref _launching, 0);
         }
+    }
+
+    /// <summary>
+    /// Вывести оверлей вперёд с клавиатурным фокусом. Право на SetForegroundWindow
+    /// даёт последнее нажатие, но пока снимался кадр, игра успевала его «переждать»:
+    /// система отказывала, и первые Esc уходили игре. Тогда на миг цепляемся к
+    /// очереди ввода окна игры — так фокус отдают без права на передний план.
+    /// </summary>
+    private static void ForceForeground(IntPtr hwnd)
+    {
+        if (NativeMethods.SetForegroundWindow(hwnd) && NativeMethods.GetForegroundWindow() == hwnd) return;
+
+        uint foregroundThread = NativeMethods.GetWindowThreadProcessId(NativeMethods.GetForegroundWindow(), out _);
+        uint ownThread = NativeMethods.GetCurrentThreadId();
+        bool attached = foregroundThread != 0 && foregroundThread != ownThread &&
+                        NativeMethods.AttachThreadInput(ownThread, foregroundThread, true);
+        try
+        {
+            NativeMethods.BringWindowToTop(hwnd);
+            NativeMethods.SetForegroundWindow(hwnd);
+        }
+        finally
+        {
+            if (attached) NativeMethods.AttachThreadInput(ownThread, foregroundThread, false);
+        }
+        if (NativeMethods.GetForegroundWindow() != hwnd)
+            Log.Warn("Screenshot", "Windows не отдала фокус оверлею области — Esc может уйти игре");
     }
 
     /// <summary>

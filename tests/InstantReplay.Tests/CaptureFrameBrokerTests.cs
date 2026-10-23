@@ -105,6 +105,34 @@ public sealed class CaptureFrameBrokerTests
     }
 
     [Fact]
+    public async Task FreshestLeaseSkipsFramesCapturedBeforeRequest()
+    {
+        using var broker = CreateBroker();
+        broker.Reset(13);
+        using var waiting = new ManualResetEventSlim();
+
+        Task<(bool Fresh, int Value)> reader = Task.Run(() =>
+        {
+            waiting.Set();
+            broker.TryLeaseFreshest(13, TimeSpan.FromSeconds(2),
+                out CaptureFrameLease<FakeSlot>? lease, out bool fresh, notBefore: 150);
+            using (lease) return (fresh, lease?.Slot.Value ?? -1);
+        });
+
+        Assert.True(waiting.Wait(TimeSpan.FromSeconds(1)));
+        await Task.Delay(75);
+        // Опубликован после запроса, но снят раньше — как кадры из пула WGC после заморозки
+        Assert.True(broker.Publish(13, 100, slot => slot.Value = 10));
+        await Task.Delay(75);
+        Assert.False(reader.IsCompleted);
+        Assert.True(broker.Publish(13, 200, slot => slot.Value = 20));
+
+        var result = await reader.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(result.Fresh);
+        Assert.Equal(20, result.Value);
+    }
+
+    [Fact]
     public void FreshestLeaseFallsBackToCachedFrameAfterTimeout()
     {
         using var broker = CreateBroker();

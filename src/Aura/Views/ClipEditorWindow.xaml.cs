@@ -100,6 +100,8 @@ public partial class ClipEditorWindow : Window
         _timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += Timer_Tick;
         Loaded += Window_Loaded;
+        Activated += (_, _) => RepaintPausedFrame();
+        StateChanged += (_, _) => { if (WindowState != WindowState.Minimized) RepaintPausedFrame(); };
         Closed += (_, _) =>
         {
             DisposePlayer();
@@ -432,19 +434,28 @@ public partial class ClipEditorWindow : Window
             return;
         }
         double position = LogicalSeconds;
-        if (position < _startSeconds || position >= _endSeconds - 0.02) Seek(_startSeconds);
+        if (position < _startSeconds || position >= PlaybackStopSeconds - 0.02) Seek(_startSeconds);
         _player.Play();
     }
+
+    private const double EndOfFileMarginSeconds = 0.15;
+
+    /// <summary>Где остановить воспроизведение: конец выделения, но не вплотную к концу файла.</summary>
+    private double PlaybackStopSeconds =>
+        Math.Max(_startSeconds, Math.Min(_endSeconds, _durationSeconds - EndOfFileMarginSeconds));
 
     private void Timer_Tick(object? sender, EventArgs e)
     {
         if (_player is null || _durationSeconds <= 0) return;
         WatchPreview();
         double position = CurrentSeconds;
-        if (_player.IsPlaying && position >= _endSeconds)
+        // У конца файла встаём чуть раньше: доиграв, LibVLC закрывает видеовывод,
+        // и вместо последнего кадра остаётся чёрный экран
+        double stopAt = PlaybackStopSeconds;
+        if (_player.IsPlaying && position >= stopAt)
         {
             _player.SetPause(true);
-            Seek(_endSeconds);
+            Seek(stopAt);
             return;
         }
         if (_scrubbing) return;            // пока тянут шкалу, позицию ведёт мышь
@@ -606,6 +617,20 @@ public partial class ClipEditorWindow : Window
         _frameRefresh ??= CreateFrameRefresh();
         _frameRefresh.Stop();
         _frameRefresh.Start();
+    }
+
+    /// <summary>
+    /// Окно видеовывода LibVLC на паузе само не перерисовывается: после сворачивания
+    /// или переключения в игру и обратно там оставался чёрный прямоугольник или
+    /// чужой кусок экрана, пока не щёлкнешь по шкале. Перематываем на кадр назад —
+    /// шаг кадра в ApplyPendingSeek вернёт ровно на текущий и покажет его.
+    /// </summary>
+    private void RepaintPausedFrame()
+    {
+        if (_player is null || _disposed || _ended || _pauseOnFirstFrame || _scrubbing ||
+            _player.IsPlaying || _durationSeconds <= 0 || _pendingSeek is not null) return;
+        _pendingSeek = Math.Max(0, LogicalSeconds - FrameStep.TotalSeconds);
+        ApplyPendingSeek();
     }
 
     private DispatcherTimer CreateFrameRefresh()
