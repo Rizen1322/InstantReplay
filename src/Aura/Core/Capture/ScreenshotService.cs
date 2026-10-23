@@ -47,6 +47,16 @@ public static class ScreenshotService
     /// </summary>
     private const int StrictLiveBudgetMs = 250;
 
+    /// <summary>
+    /// Сколько живой кадр ждут в одиночку. В игре он приходит за кадр-два (до 17 мс
+    /// на 60 Гц); дольше — значит экран стоит, и пора параллельно снимать самим.
+    /// </summary>
+    private const int LiveHeadStartMs = 60;
+
+    /// <summary>Проигравшая гонку сессия доработает сама; её ошибку только наблюдаем.</summary>
+    private static void ObserveLoser(Task task) =>
+        task.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
     public static async Task<(byte[] Bgra, int W, int H)> CapturePixelsAsync(
         int monitorIndex, bool cursor, LiveFrameProvider? live = null, byte[]? into = null)
     {
@@ -74,20 +84,49 @@ public static class ScreenshotService
             !pipelineHoldsDuplication ||
             (ScreenCaptureFactory.IsWgcAvailable && CaptureAccess.IsBorderControlSupported);
 
+        if (live is not null && ownSessionIsClean)
+        {
+            // Гонка вместо очереди. На статичном экране захват новых кадров не шлёт,
+            // и раньше своя сессия стартовала только после 250 мс ожидания живого
+            // кадра — оверлей области открывался с заметной задержкой. Теперь, если
+            // живой кадр не пришёл за LiveHeadStartMs, своя сессия идёт параллельно,
+            // и берётся тот снимок, что готов первым. Буфер into живому пути не даём:
+            // проигравший может дописать в него уже после того, как отдали победителя.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var liveTask = Task.Run(() => TakeLiveFrame(live, null, allowStale: false, budgetMs: StrictLiveBudgetMs));
+            if (await Task.WhenAny(liveTask, Task.Delay(LiveHeadStartMs)).ConfigureAwait(false) == liveTask &&
+                await liveTask.ConfigureAwait(false) is { } early)
+                return early;
+
+            var ownTask = CaptureOwnSessionAsync(monitorIndex, cursor, forceWgc: pipelineHoldsDuplication);
+            Task first = await Task.WhenAny(liveTask, ownTask).ConfigureAwait(false);
+            if (first == liveTask && await liveTask.ConfigureAwait(false) is { } fromLive)
+            {
+                ObserveLoser(ownTask);
+                return fromLive;
+            }
+            try
+            {
+                var own = await ownTask.ConfigureAwait(false);
+                Log.Info("Screenshot", $"Снято своей сессией за {clock.ElapsedMilliseconds} мс");
+                return own;
+            }
+            catch when (!liveTask.IsCompleted)
+            {
+                // Своя сессия не открылась, а живой путь ещё ждёт кадр — дождёмся его
+                if (await liveTask.ConfigureAwait(false) is { } late) return late;
+                throw;
+            }
+        }
+
         if (live is not null)
         {
-            // Есть чистый запасной путь — берём у буфера только СВЕЖИЙ кадр и ждём
-            // недолго: устаревший кадр честнее переснять, чем отдать.
-            //
             // Чистого пути нет (Windows 10 при работающем буфере) — устаревший кадр
             // берётся как есть, и ждать ради «свежести» бессмысленно: отказываться от
             // него всё равно некуда. Тогда даём полный бюджет повторов на случай, когда
             // все слоты брокера заняты конвейером.
-            shot = ownSessionIsClean
-                ? await Task.Run(() => TakeLiveFrame(live, into, allowStale: false, budgetMs: StrictLiveBudgetMs))
-                    .ConfigureAwait(false)
-                : await Task.Run(() => TakeLiveFrame(live, into, allowStale: true, budgetMs: LiveFrameBudgetMs))
-                    .ConfigureAwait(false);
+            shot = await Task.Run(() => TakeLiveFrame(live, into, allowStale: true, budgetMs: LiveFrameBudgetMs))
+                .ConfigureAwait(false);
         }
 
         // 2) Своя одноразовая сессия. WGC принудительно — только когда он чистый;
