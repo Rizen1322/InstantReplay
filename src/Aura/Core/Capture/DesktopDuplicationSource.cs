@@ -200,6 +200,19 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     newDuplication = newOutput.DuplicateOutput(_device!);
                 }
 
+                // Размер кадров — у самой дупликации, а не у выхода, прочитанного до
+                // неё: посреди смены режима экрана между двумя вызовами режим успевал
+                // смениться, и конвейер собирался под кадры другого размера.
+                var mode = newDuplication.Description.ModeDescription;
+                if (mode.Width > 0 && mode.Height > 0 &&
+                    (mode.Width != Width || mode.Height != Height))
+                {
+                    Log.Info("Capture", $"Выход сообщил {Width}x{Height}, дупликация отдаёт " +
+                                        $"{mode.Width}x{mode.Height} — беру размер дупликации");
+                    Width = (int)mode.Width;
+                    Height = (int)mode.Height;
+                }
+
                 _output = newOutput;
                 newOutput = null; // владение перешло в поле
                 _duplication = newDuplication;

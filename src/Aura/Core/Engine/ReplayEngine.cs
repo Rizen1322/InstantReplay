@@ -59,6 +59,8 @@ public sealed partial class ReplayEngine : IDisposable
     private Action<CaptureFailure>? _captureFailureHandler;
     private CancellationTokenSource? _recoveryCancellation;
     private DateTimeOffset _pipelineStartedAt;
+    private long _lastSizeMismatchRestartMs = long.MinValue / 2;
+    private const long SizeMismatchRestartIntervalMs = 5_000;
     private VideoCodec _bufferCodec;
     private int _bufferWidth, _bufferHeight, _bufferFps;
     private byte[]? _bufferSequenceHeader;
@@ -472,10 +474,19 @@ public sealed partial class ReplayEngine : IDisposable
             WarnIfMonitorIsHdr(s.MonitorIndex);
 
             var monitorCanvas = MonitorLayout.For(s.MonitorIndex);
-            int canvasWidth = monitorCanvas?.Width ?? _pipeline.Capture.Width;
             _pipelineMonitorIndex = s.MonitorIndex;
             _pipelineCanvas = monitorCanvas is { } mc ? (mc.Width, mc.Height) : null;
-            int canvasHeight = monitorCanvas?.Height ?? _pipeline.Capture.Height;
+            // Кадры Desktop Duplication ровно того размера, что дупликация прочитала у
+            // выхода. Границы монитора читаются отдельным вызовом и посреди смены режима
+            // экрана могут уже (или ещё) показывать другой размер — тогда брокер и
+            // видеопроцессор собирались под чужие кадры, и запись выходила чёрной.
+            bool canvasFromCapture = _captureBackend == CaptureBackend.DesktopDuplication;
+            int canvasWidth = canvasFromCapture ? _pipeline.Capture.Width : monitorCanvas?.Width ?? _pipeline.Capture.Width;
+            int canvasHeight = canvasFromCapture ? _pipeline.Capture.Height : monitorCanvas?.Height ?? _pipeline.Capture.Height;
+            if (canvasFromCapture && monitorCanvas is { } bounds &&
+                (bounds.Width != canvasWidth || bounds.Height != canvasHeight))
+                Log.Info("Capture", $"Границы монитора {bounds.Width}x{bounds.Height}, дупликация " +
+                                    $"{canvasWidth}x{canvasHeight} — конвейер собираю под дупликацию");
 
             // Размер записи фиксируется по разрешению рабочего стола, а не по текущему
             // режиму экрана. Иначе игра, переключающая экран на своё разрешение, меняла
@@ -682,6 +693,20 @@ public sealed partial class ReplayEngine : IDisposable
             Diagnostics.PipelineProbe.CaptureCopy.Add(
                 copyStart, Diagnostics.PipelineProbe.Now());
             _frameReady?.Set();
+        }
+        catch (CaptureFrameSizeMismatchException ex)
+        {
+            // Кадр другого размера в брокер не скопировать: без пересборки запись
+            // так и останется чёрной. Пересборка — не чаще раза в несколько секунд:
+            // если размеры не сошлись и после неё, лучше застывший кадр, чем шторм
+            // перезапусков на каждом кадре.
+            long nowMs = Environment.TickCount64;
+            if (nowMs - Interlocked.Read(ref _lastSizeMismatchRestartMs) < SizeMismatchRestartIntervalMs) return;
+            Interlocked.Exchange(ref _lastSizeMismatchRestartMs, nowMs);
+            Log.Warn("Engine", $"Кадр не того размера ({ex.Message}) — пересобираю конвейер");
+            OnCaptureFailed(new CaptureFailure(
+                CaptureFailureKind.CaptureFormatChanged, ex, $"размер кадра изменился: {ex.Message}",
+                observedGeneration, surface.TargetRevision), observedGeneration);
         }
         catch (Exception ex)
         {

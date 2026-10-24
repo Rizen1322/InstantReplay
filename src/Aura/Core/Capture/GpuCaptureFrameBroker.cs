@@ -15,6 +15,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     private readonly CaptureFrameBroker<GpuCaptureFrameSlot> _broker;
     private readonly ID3D11Device _device;
     private readonly object _publishSync = new();
+    private readonly int _width;
+    private readonly int _height;
     private ID3D11Texture2D? _windowCursorClean;
     private ID3D11Texture2D? _windowCursorComposed;
     private bool _disposed;
@@ -38,6 +40,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
 
         _device = device;
         _context = context;
+        _width = width;
+        _height = height;
         _separateCursor = separateCursor;
         _cursorOverlay = separateCursor ? new CursorOverlay(device, context) : null;
         if (windowEpisode && hybridEpisode)
@@ -93,6 +97,21 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             {
                 Interlocked.Increment(ref _framesRejected);
                 return false;
+            }
+
+            // Оконный кадр приводит к размеру нормализатор, а мониторный копируется
+            // как есть. После смены режима экрана дупликация может отдавать кадры не
+            // того размера, под который собран конвейер: CopyResource тогда молча
+            // ничего не делает, и повтор минутами пишет чёрный экран.
+            if (captured.Scope == CaptureSurfaceScope.Monitor)
+            {
+                var source = captured.Texture.Description;
+                if (source.Width != _width || source.Height != _height)
+                {
+                    Interlocked.Increment(ref _framesRejected);
+                    throw new CaptureFrameSizeMismatchException(
+                        (int)source.Width, (int)source.Height, _width, _height);
+                }
             }
 
             DdaCursorSnapshot cursor = default;
