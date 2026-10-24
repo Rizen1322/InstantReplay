@@ -1164,8 +1164,18 @@ public partial class App : Application
         var engine = Services.Engine;
         bool running = engine.ReplayActive;
 
-        _tray.ToolTipText = engine.IsRecordingToFile ? "Aura: идёт запись"
-                          : running ? "Aura: повтор пишется" : "Aura: выключено";
+        // Shell_NotifyIcon может отказать после перезапуска Explorer или потери
+        // значка. Это сбой оболочки, а не захвата: исключение из StateChanged
+        // иначе доходит до StartLocked и останавливает уже запущенный конвейер.
+        try
+        {
+            _tray.ToolTipText = engine.IsRecordingToFile ? "Aura: идёт запись"
+                              : running ? "Aura: повтор пишется" : "Aura: выключено";
+        }
+        catch (InvalidOperationException ex)
+        {
+            Log.Warn("App", $"Не удалось обновить подсказку значка в трее: {ex.Message}");
+        }
         if (_trayToggle is not null) _trayToggle.Header = running ? "Выключить повтор" : "Включить повтор";
         if (_traySave is not null) _traySave.IsEnabled = engine.State == EngineState.Running;
     }
