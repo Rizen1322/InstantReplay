@@ -325,7 +325,7 @@ public sealed class VideoProcessorNv12 : IDisposable
                 Enable = true,
                 InputSurface = inputView
             };
-            _videoContext.VideoProcessorBlt(_processor, _outputViews[i]!, 0, 1, [stream]);
+            _videoContext.VideoProcessorBlt(_processor, _outputViews[i]!, 0, 1, [stream]).CheckError();
             return _pool[i]!;
         }
     }

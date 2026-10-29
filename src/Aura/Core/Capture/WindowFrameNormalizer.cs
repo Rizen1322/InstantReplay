@@ -89,7 +89,7 @@ internal sealed class WindowFrameNormalizer : IDisposable
             new RawRect(fit.X, fit.Y, fit.X + fit.Width, fit.Y + fit.Height));
 
         var stream = new VideoProcessorStream { Enable = true, InputSurface = input };
-        _videoContext.VideoProcessorBlt(_processor!, output, 0, 1, [stream]);
+        _videoContext.VideoProcessorBlt(_processor!, output, 0, 1, [stream]).CheckError();
     }
 
     private void EnsureProcessor(int sourceWidth, int sourceHeight)
