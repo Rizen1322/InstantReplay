@@ -215,4 +215,117 @@ public sealed class EncoderCfrPolicyTests
         Assert.True(filled.Count >= span - 2, $"настоящих кадров {filled.Count} из {span}");
         Assert.True(leadSum / filled.Count < interval / 2, "видео постоянно позже звука на слот");
     }
+
+    [Fact]
+    public void Capture_interval_is_a_quarter_below_60_fps_and_half_from_60()
+    {
+        Assert.Equal(10_000_000L / 30 / 4, EncoderCfrPolicy.CaptureMinIntervalTicks(30));
+        Assert.Equal(10_000_000L / 40 / 4, EncoderCfrPolicy.CaptureMinIntervalTicks(40));
+        Assert.Equal(10_000_000L / 60 / 2, EncoderCfrPolicy.CaptureMinIntervalTicks(60));
+        Assert.Equal(10_000_000L / 144 / 2, EncoderCfrPolicy.CaptureMinIntervalTicks(144));
+        Assert.Equal(0, EncoderCfrPolicy.CaptureMinIntervalTicks(0));
+    }
+
+    public static TheoryData<bool, int, int> PacingMatrix()
+    {
+        var data = new TheoryData<bool, int, int>();
+        foreach (bool dda in new[] { false, true })
+        foreach (int hz in new[] { 60, 75, 120, 144, 165, 240 })
+        foreach (int fps in new[] { 30, 40, 60 })
+            data.Add(dda, hz, fps);
+        return data;
+    }
+
+    /// <summary>
+    /// Лёгкая игра: кадр на каждом импульсе монитора. Захват (WGC: MinUpdateInterval и
+    /// отбор; DDA: ожидание, AcquireNextFrame без ожидания, опрос раз в 2 мс) и выбор
+    /// слота как в VideoEncoder.SameSlotAsLastFrame/SubmitFrame. Проверяется не fps, а
+    /// ровность: шаг ВРЕМЕНИ КАДРА между соседними слотами. Метки (PTS) ровные всегда,
+    /// дёргается картинка: при половине интервала на 144 Гц и 30 fps шаги шли по 21 и
+    /// 42 мс у 40% кадров.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PacingMatrix))]
+    public void Light_game_records_evenly_paced_frames(bool dda, int hz, int fps)
+    {
+        long gap = EncoderCfrPolicy.CaptureMinIntervalTicks(fps);
+        var random = new Random(hz * 1000 + fps);
+        var presents = new List<long>();
+        for (double t = 1e9; t < 1e9 + 30e7; t += 1e7 / hz)
+            presents.Add((long)t + random.Next(-3_000, 3_000));
+
+        var captured = dda ? CaptureDda(presents, fps, gap) : CaptureWgc(presents, fps, gap);
+
+        // Захват не тяжелее предела (с допуском отбора в 1 мс): на 30 fps не больше
+        // 120 кадров в секунду, как и при 60 fps
+        double perSecond = captured.Count / 30.0;
+        Assert.True(perSecond <= 10_000_000.0 / (gap - 10_000) + 1, $"захват {perSecond:F0} кадров/с");
+        if (fps == 30) Assert.True(perSecond <= 121, $"захват {perSecond:F0} кадров/с");
+
+        long cfrBase = captured[0], lastPts = cfrBase, lastReal = cfrBase;
+        var shown = new SortedDictionary<long, long> { [0] = cfrBase };
+        foreach (long ticks in captured.Skip(1))
+        {
+            long natural = EncoderCfrPolicy.NaturalSlot(ticks, cfrBase, fps);
+            if (EncoderCfrPolicy.RedundantInSlot(ticks, natural, lastPts, lastReal, fps)) continue;
+            long? placed = EncoderCfrPolicy.QuantizePts(ticks, cfrBase, lastPts, fps);
+            lastReal = ticks;
+            if (placed is not long pts) continue;
+            long slot = EncoderCfrPolicy.SlotIndex(pts, cfrBase, fps);
+            Assert.Equal(EncoderCfrPolicy.SlotPts(slot, cfrBase, fps), pts);   // PTS ровно на сетке
+            shown[slot] = ticks;
+            lastPts = pts;
+        }
+
+        long slots = shown.Keys.Max() + 1;
+        Assert.True(shown.Count >= slots * 0.97, $"настоящих кадров {shown.Count} из {slots}");
+
+        // 60 fps не менялся (там своё, давнее дрожание на 144/165 Гц), а 40 fps на 60
+        // и 75 Гц ровно не разложить: кадров монитора не хватает на ровный шаг.
+        if (fps >= 60 || (fps == 40 && hz <= 75)) return;
+        double interval = 10_000_000.0 / fps;
+        long previous = shown[0];
+        int uneven = 0;
+        for (long slot = 1; slot < slots; slot++)
+        {
+            long current = shown.TryGetValue(slot, out long t) ? t : previous;
+            if (Math.Abs(current - previous - interval) > interval / 3) uneven++;
+            previous = current;
+        }
+        Assert.True(uneven <= slots * 0.05, $"неровных шагов {uneven} из {slots}");
+    }
+
+    private static List<long> CaptureWgc(List<long> presents, int fps, long gap)
+    {
+        var accepted = new List<long>();
+        long delivered = long.MinValue / 2, last = 0;
+        foreach (long ticks in presents)
+        {
+            if (ticks - delivered < gap - 20_000) continue;   // MinUpdateInterval: DWM пропускает импульс
+            delivered = ticks;
+            if (EncoderCfrPolicy.CaptureTooSoon(ticks, last, fps)) continue;
+            last = ticks;
+            accepted.Add(ticks);
+        }
+        return accepted;
+    }
+
+    private static List<long> CaptureDda(List<long> presents, int fps, long gap)
+    {
+        var accepted = new List<long>();
+        long now = presents[0], last = 0;
+        int latest = 0, seen = -1;
+        while (now <= presents[^1])
+        {
+            if (last > 0) now = Math.Max(now, last + gap - 10_000);
+            while (latest + 1 < presents.Count && presents[latest + 1] <= now) latest++;
+            if (presents[latest] > now || latest == seen) { now += 20_000; continue; }   // WaitTimeout
+            seen = latest;                                     // дупликация отдаёт самый свежий кадр
+            long ticks = presents[latest];
+            if (EncoderCfrPolicy.CaptureTooSoon(ticks, last, fps)) continue;
+            last = ticks;
+            accepted.Add(ticks);
+        }
+        return accepted;
+    }
 }

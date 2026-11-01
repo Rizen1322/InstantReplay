@@ -177,7 +177,8 @@ internal sealed class WgcCaptureSession : IScreenCapture
             // выбрасывал бы кадр без замены. С половиной интервала система отдаёт с
             // запасом (на 144 Гц — 72 кадра вместо 144, то есть вдвое меньше работы
             // для DWM), а ровно 60 из них выбирает энкодер по своей сетке слотов.
-            long wanted = 10_000_000L / targetFps / 2;
+            // Ниже 60 fps просим четверть: см. EncoderCfrPolicy.CaptureMinIntervalTicks.
+            long wanted = Encoding.EncoderCfrPolicy.CaptureMinIntervalTicks(targetFps);
             TimeSpan? accepted = Interop.CaptureInterop.TrySetMinUpdateInterval(
                 _session, TimeSpan.FromTicks(wanted));
             if (accepted is { } interval)

@@ -326,9 +326,10 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // так что ожидание ничего не теряет.
                 if (_minFrameIntervalTicks > 0 && _lastAcceptedTicks > 0)
                 {
-                    // Полинтервала от прошлого кадра: ближе к нему кадр всё равно
-                    // лишний (см. EncoderCfrPolicy.CaptureTooSoon)
-                    long waitTicks = _lastAcceptedTicks + _minFrameIntervalTicks / 2 - 10_000 -
+                    // Тот же предел, что в отборе ниже: ближе к прошлому кадр всё
+                    // равно лишний (см. EncoderCfrPolicy.CaptureMinIntervalTicks)
+                    long waitTicks = _lastAcceptedTicks +
+                                     Encoding.EncoderCfrPolicy.CaptureMinIntervalTicks(_targetFps) - 10_000 -
                                      QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
                     if (waitTicks > 5_000) timer.Wait(waitTicks);
                 }

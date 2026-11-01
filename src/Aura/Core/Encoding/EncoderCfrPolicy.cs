@@ -1,4 +1,4 @@
-﻿namespace Aura.Core.Encoding;
+namespace Aura.Core.Encoding;
 
 /// <summary>
 /// Арифметика постоянной частоты кадров: куда на сетке 1/fps встаёт пришедший кадр
@@ -58,7 +58,21 @@ internal static class EncoderCfrPolicy
     /// </summary>
     public static bool CaptureTooSoon(long ticks, long lastAcceptedTicks, int fps) =>
         fps > 0 && lastAcceptedTicks > 0 &&
-        ticks - lastAcceptedTicks < 10_000_000L / fps / 2 - 10_000;
+        ticks - lastAcceptedTicks < CaptureMinIntervalTicks(fps) - 10_000;
+
+    /// <summary>
+    /// Минимальный интервал между кадрами захвата: общий для отбора выше,
+    /// MinUpdateInterval у WGC и ожидания перед AcquireNextFrame у DDA.
+    ///
+    /// НИЖЕ 60 FPS ЧЕТВЕРТЬ ИНТЕРВАЛА, А НЕ ПОЛОВИНА. Половина при 30 fps — это
+    /// 16.7 мс, и от монитора доходил лишь каждый n-й импульс: на 144 Гц каждый
+    /// третий (48 кадров в секунду на 30 слотов). Слоты получали кадры то через
+    /// 21, то через 42 мс, и запись дёргалась в любой, даже лёгкой игре. С четвертью
+    /// захват не тяжелее, чем при 60 fps сейчас (на 30 fps до 120 кадров в секунду).
+    /// 60 fps и выше не трогаем: там половина уже 8.3 мс и меньше.
+    /// </summary>
+    public static long CaptureMinIntervalTicks(int fps) =>
+        fps <= 0 ? 0 : 10_000_000L / fps / (fps < 60 ? 4 : 2);
 
     /// <summary>
     /// Кадр можно не преобразовывать: его слот уже занят (<paramref name="lastPlacedPts"/>
