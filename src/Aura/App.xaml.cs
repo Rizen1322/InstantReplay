@@ -447,7 +447,11 @@ public partial class App : Application
             ShowChangelogIfUpdated();
         }
 
-        if (Services.Settings.Current.AutoStartReplayBuffer) SafeStartEngine();
+        if (Services.Settings.Current.AutoStartReplayBuffer)
+        {
+            if (e.Args.Contains("--minimized")) _ = StartEngineAfterLogonAsync();
+            else SafeStartEngine();
+        }
         if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
 
         Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
@@ -911,6 +915,26 @@ public partial class App : Application
     }
 
     // ---------------- Действия ----------------
+
+    /// <summary>
+    /// Автозапуск при входе: захват монитора, начатый в первые секунды после
+    /// загрузки, пока рабочий стол ещё собирается, остаётся чёрным навсегда —
+    /// обновляется только курсор, а кадры идут, так что сторож тишины молчит.
+    /// По логам: старт через 9 и 12 с после загрузки — чёрный, через 15 с — норма.
+    /// </summary>
+    private static async Task StartEngineAfterLogonAsync()
+    {
+        const long SettleMs = 30_000;
+        long wait = SettleMs - Environment.TickCount64;
+        if (wait > 0)
+        {
+            Log.Info("App", $"Автозапуск сразу после загрузки — повтор включится через {wait / 1000} с");
+            await Task.Delay(TimeSpan.FromMilliseconds(wait));
+            // Человек мог включить повтор сам, пока ждали
+            if (Services.Engine.State != EngineState.Stopped) return;
+        }
+        SafeStartEngine();
+    }
 
     public static void SafeStartEngine()
     {
