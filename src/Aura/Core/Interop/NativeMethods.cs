@@ -29,6 +29,14 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnhookWindowsHookEx(IntPtr hhk);
     [LibraryImport("user32.dll")] internal static partial short GetAsyncKeyState(int vKey);
+    [LibraryImport("user32.dll")] internal static partial IntPtr GetShellWindow();
+    [LibraryImport("user32.dll")] internal static partial IntPtr OpenInputDesktop(uint dwFlags, [MarshalAs(UnmanagedType.Bool)] bool fInherit, uint dwDesiredAccess);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool CloseDesktop(IntPtr hDesktop);
+    [LibraryImport("user32.dll", EntryPoint = "GetUserObjectInformationW")] [return: MarshalAs(UnmanagedType.Bool)]
+    internal static unsafe partial bool GetUserObjectInformation(IntPtr hObj, int nIndex, char* pvInfo, uint nLength, out uint lpnLengthNeeded);
+    internal const int UOI_NAME = 2;
+    internal const uint DESKTOP_READOBJECTS = 0x0001;
 
     // ---------------- Тождество файла (защита обновления от подмены каталога) ----------------
 

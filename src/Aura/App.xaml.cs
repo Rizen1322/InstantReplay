@@ -8,6 +8,7 @@ using Vortice.MediaFoundation;
 using Aura.Core.Engine;
 using Aura.Core.Hardware;
 using Aura.Core.Hotkeys;
+using Aura.Core.Interop;
 using Aura.Core.Logging;
 using Aura.Core.Notifications;
 using Aura.Core.Settings;
@@ -447,11 +448,7 @@ public partial class App : Application
             ShowChangelogIfUpdated();
         }
 
-        if (Services.Settings.Current.AutoStartReplayBuffer)
-        {
-            if (e.Args.Contains("--minimized")) _ = StartEngineAfterLogonAsync();
-            else SafeStartEngine();
-        }
+        if (Services.Settings.Current.AutoStartReplayBuffer) _ = StartEngineWhenDesktopReadyAsync();
         if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
 
         Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
@@ -917,23 +914,44 @@ public partial class App : Application
     // ---------------- Действия ----------------
 
     /// <summary>
-    /// Автозапуск при входе: захват монитора, начатый в первые секунды после
-    /// загрузки, пока рабочий стол ещё собирается, остаётся чёрным навсегда —
-    /// обновляется только курсор, а кадры идут, так что сторож тишины молчит.
-    /// По логам: старт через 9 и 12 с после загрузки — чёрный, через 15 с — норма.
+    /// Автозапуск при входе: сразу после ввода пароля Winlogon ещё держит на экране
+    /// свой рабочий стол с приветствием и переключается на пользовательский, только
+    /// когда Explorer готов. Захват монитора, начатый до этого, остаётся чёрным
+    /// навсегда — обновляется только курсор, а кадры идут, так что сторож тишины
+    /// молчит. Поэтому ждём, пока на экране окажется наш рабочий стол с оболочкой.
     /// </summary>
-    private static async Task StartEngineAfterLogonAsync()
+    private static async Task StartEngineWhenDesktopReadyAsync()
     {
-        const long SettleMs = 30_000;
-        long wait = SettleMs - Environment.TickCount64;
-        if (wait > 0)
+        if (!UserDesktopReady())
         {
-            Log.Info("App", $"Автозапуск сразу после загрузки — повтор включится через {wait / 1000} с");
-            await Task.Delay(TimeSpan.FromMilliseconds(wait));
+            Log.Info("App", "Рабочий стол после входа ещё не готов — повтор включится, когда он появится");
+            var waited = System.Diagnostics.Stopwatch.StartNew();
+            // Без оболочки (другой shell, Explorer упал) не ждём вечно
+            while (!UserDesktopReady() && waited.Elapsed < TimeSpan.FromMinutes(2))
+                await Task.Delay(500);
+            Log.Info("App", $"Рабочий стол готов через {waited.Elapsed.TotalSeconds:F1} с");
             // Человек мог включить повтор сам, пока ждали
             if (Services.Engine.State != EngineState.Stopped) return;
         }
         SafeStartEngine();
+    }
+
+    /// <summary>
+    /// На экране пользовательский рабочий стол (не Winlogon), и Explorer создал своё окно.
+    /// Пока ввод у Winlogon, OpenInputDesktop отвечает отказом в доступе.
+    /// </summary>
+    private static unsafe bool UserDesktopReady()
+    {
+        if (NativeMethods.GetShellWindow() == IntPtr.Zero) return false;
+        IntPtr desktop = NativeMethods.OpenInputDesktop(0, false, NativeMethods.DESKTOP_READOBJECTS);
+        if (desktop == IntPtr.Zero) return false;
+        try
+        {
+            char* name = stackalloc char[64];
+            return NativeMethods.GetUserObjectInformation(desktop, NativeMethods.UOI_NAME, name, 64 * sizeof(char), out _) &&
+                   new string(name).Equals("Default", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { NativeMethods.CloseDesktop(desktop); }
     }
 
     public static void SafeStartEngine()
