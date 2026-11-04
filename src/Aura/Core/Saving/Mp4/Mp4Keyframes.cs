@@ -113,7 +113,7 @@ public static class Mp4Keyframes
     }
 
     /// <summary>Пустой отрезок перед медиа (в единицах фильма) и начало медиа (в единицах дорожки).</summary>
-    private static (long EmptyMovie, long MediaStart) EditList(byte[] moov, BoxRef trak, long movieTimescale)
+    internal static (long EmptyMovie, long MediaStart) EditList(byte[] moov, BoxRef trak, long movieTimescale)
     {
         var edts = Find(moov, trak.Body, trak.End, "edts");
         if (edts is not { } e || Find(moov, e.Body, e.End, "elst") is not { } elst) return (0, 0);
@@ -142,7 +142,7 @@ public static class Mp4Keyframes
         return (empty, 0);
     }
 
-    private static List<(uint Count, long Value)> Runs(byte[] moov, BoxRef? box, bool signed)
+    internal static List<(uint Count, long Value)> Runs(byte[] moov, BoxRef? box, bool signed)
     {
         var runs = new List<(uint, long)>();
         if (box is not { } b) return runs;
@@ -159,9 +159,9 @@ public static class Mp4Keyframes
         return runs;
     }
 
-    private readonly record struct BoxRef(string Type, int Start, int Body, int End);
+    internal readonly record struct BoxRef(string Type, int Start, int Body, int End);
 
-    private static IEnumerable<BoxRef> Children(byte[] data, int start, int end)
+    internal static IEnumerable<BoxRef> Children(byte[] data, int start, int end)
     {
         int pos = start;
         while (pos + 8 <= end)
@@ -180,14 +180,14 @@ public static class Mp4Keyframes
         }
     }
 
-    private static BoxRef? Find(byte[] data, int start, int end, string type)
+    internal static BoxRef? Find(byte[] data, int start, int end, string type)
     {
         foreach (var b in Children(data, start, end))
             if (b.Type == type) return b;
         return null;
     }
 
-    private static BoxRef? FindPath(byte[] data, BoxRef parent, params string[] path)
+    internal static BoxRef? FindPath(byte[] data, BoxRef parent, params string[] path)
     {
         BoxRef current = parent;
         foreach (string part in path)
@@ -198,7 +198,7 @@ public static class Mp4Keyframes
         return current;
     }
 
-    private static byte[]? ReadTopLevel(Stream file, string type)
+    internal static byte[]? ReadTopLevel(Stream file, string type)
     {
         var header = new byte[16];
         long pos = 0;

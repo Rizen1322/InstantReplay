@@ -285,9 +285,10 @@ internal static class Mp4Boxes
     /// (дорожка начинается позже фильма), <paramref name="mediaStart"/> — с какого
     /// места своей шкалы дорожка начинает показ (сдвиг из-за B-кадров).
     /// </summary>
-    public static void Edts(BoxWriter w, long emptyMovie, ulong mediaMovieDuration, long mediaStart)
+    public static void Edts(BoxWriter w, long emptyMovie, ulong mediaMovieDuration, long mediaStart, bool always = false)
     {
-        if (emptyMovie <= 0 && mediaStart <= 0) return;
+        // always: правка короче медиа (хвост вырезанного фрагмента) — без elst он бы играл
+        if (!always && emptyMovie <= 0 && mediaStart <= 0) return;
         w.Begin("edts");
         w.BeginFull("elst", 1, 0);
         w.U32(emptyMovie > 0 ? 2u : 1u);

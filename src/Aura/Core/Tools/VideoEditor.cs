@@ -30,6 +30,47 @@ public static class VideoEditor
         return clip.OriginalDuration;
     }
 
+    /// <summary>
+    /// Вырезать фрагмент своими силами, без перекодирования и без кодеков
+    /// (<see cref="Saving.Mp4.Mp4Trim"/>): работает для H.264, HEVC и AV1 на любой
+    /// Windows. <paramref name="audioTrackIndex"/> -1 — все дорожки: при
+    /// <paramref name="mixAudio"/> они сводятся в одну (звук перекодируется, видео нет),
+    /// иначе остаются отдельными.
+    /// </summary>
+    public static async Task<string> TrimLosslessAsync(
+        string input,
+        TimeSpan start,
+        TimeSpan end,
+        int audioTrackIndex = -1,
+        IProgress<double>? progress = null,
+        CancellationToken ct = default,
+        bool mixAudio = false)
+    {
+        ValidateRange(start, end);
+        string output = CreateOutputPath(input);
+        string tempPath = Path.Combine(
+            Path.GetDirectoryName(output)!,
+            ".aura-edit-" + Guid.NewGuid().ToString("N") + ".part.mp4");
+
+        Log.Info("Editor", $"Вырезка без перекодирования {Path.GetFileName(input)}: {start} — {end}, " +
+                           $"audio={audioTrackIndex}{(mixAudio ? ", сведение" : "")}");
+        try
+        {
+            await Task.Run(() => Saving.Mp4.Mp4Trim.Cut(
+                input, tempPath, start.TotalSeconds, end.TotalSeconds, audioTrackIndex,
+                p => progress?.Report(p), ct, mixAudio ? Audio.AudioMixdown.Mix : null), ct);
+            if (File.Exists(output)) output = CreateOutputPath(input);
+            File.Move(tempPath, output);
+            progress?.Report(1);
+            return output;
+        }
+        catch
+        {
+            try { File.Delete(tempPath); } catch { }
+            throw;
+        }
+    }
+
     public static async Task<string> TrimPreciseAsync(
         string input,
         TimeSpan start,

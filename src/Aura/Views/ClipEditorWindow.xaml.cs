@@ -733,7 +733,7 @@ public partial class ClipEditorWindow : Window
         {
             _player.SetAudioTrack(_audioTrackIds[0]);
             SetStatus("В предпросмотре звучит игра",
-                      "В сохранённый фрагмент игра и микрофон попадут вместе.");
+                      "В сохранённом фрагменте игра и микрофон будут сведены в одну дорожку.");
             return;
         }
 
@@ -855,11 +855,9 @@ public partial class ClipEditorWindow : Window
         _mixTrackSearch.TrySetResult();
     }
 
-    private string DefaultHint() => _ffmpeg is null
-        ? "Точное сохранение кадр в кадр встроенными средствами, без внешних программ."
-        : _audioSelection < 0 && _audioTrackIds.Length > 1
-            ? "Видео копируется без потери качества, игра и микрофон сводятся в одну дорожку."
-            : "Видео и звук копируются без потери качества, это быстро.";
+    private string DefaultHint() => !MixAudio
+        ? "Видео и звук копируются кадр в кадр без потери качества, это быстро."
+        : "Видео копируется кадр в кадр без потери качества, игра и микрофон сводятся в одну дорожку.";
 
     private void SetStatus(string status, string hint)
     {
@@ -1051,33 +1049,50 @@ public partial class ClipEditorWindow : Window
 
     private async void Export_Click(object sender, RoutedEventArgs e)
     {
-        await ExportAsync(SmartExportAsync, fast: _ffmpeg is not null);
+        await ExportAsync(SmartExportAsync, fast: false);
     }
 
+    /// <summary>Сохранить игру и микрофон сведёнными: это требует нового звука.</summary>
+    private bool MixAudio => _audioSelection < 0 && _audioTrackIds.Length > 1;
+
     /// <summary>
-    /// Одна кнопка, как в LosslessCut: быстрый remux при доступном ffmpeg, а если
-    /// конкретный контейнер ему не подошёл — автоматический точный fallback.
-    /// Никакого вопроса о выборе «режима экспорта» человеку не показываем.
+    /// Одна кнопка, как в LosslessCut, без вопроса о «режиме экспорта». Способы по
+    /// очереди, следующий — если предыдущий не справился:
+    /// <list type="bullet">
+    /// <item>своя вырезка без перекодирования видео: кадр в кадр, без кодеков видео
+    /// (Windows без расширения из Store HEVC не декодирует, и точный экспорт падал);
+    /// «Вместе» сводит звук штатным AAC Windows;</item>
+    /// <item>ffmpeg, если он есть (начало попадает на ключевой кадр);</item>
+    /// <item>Windows Media с перекодированием всего — только для H.264;</item>
+    /// <item>для «Вместе» в крайнем случае своя вырезка с дорожками по отдельности.</item>
+    /// </list>
     /// </summary>
     private async Task<string> SmartExportAsync(
         TimeSpan start, TimeSpan end, IProgress<double>? progress, CancellationToken ct)
     {
-        if (_ffmpeg is not null)
+        var attempts = new List<(string Name, Func<Task<string>> Run)>
+        {
+            ("своя вырезка", () => VideoEditor.TrimLosslessAsync(
+                _item.FullPath, start, end, _audioSelection, progress, ct, mixAudio: MixAudio)),
+        };
+        if (_ffmpeg is { } ffmpeg)
+            attempts.Add(("ffmpeg", () => Ffmpeg.TrimLosslessAsync(
+                ffmpeg, _item.FullPath, start, end, _audioSelection, Math.Max(1, _audioTrackIds.Length), ct)));
+        attempts.Add(("Windows Media", () => VideoEditor.TrimPreciseAsync(
+            _item.FullPath, start, end, _audioSelection, progress, ct)));
+        if (MixAudio)
+            attempts.Add(("своя вырезка без сведения", () => VideoEditor.TrimLosslessAsync(
+                _item.FullPath, start, end, _audioSelection, progress, ct)));
+
+        for (int i = 0; ; i++)
             try
             {
-                return await Ffmpeg.TrimLosslessAsync(
-                    _ffmpeg, _item.FullPath, start, end, _audioSelection,
-                    Math.Max(1, _audioTrackIds.Length), ct);
+                return await attempts[i].Run();
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException && i + 1 < attempts.Count)
             {
-                Log.Warn("Editor", $"Быстрый экспорт не удался, перехожу на точный: {ex.Message}");
-                ExportStatus.Text = "Быстрый режим не подошёл, делаю точный экспорт…";
+                Log.Warn("Editor", $"Экспорт ({attempts[i].Name}) не удался, пробую {attempts[i + 1].Name}: {ex.Message}");
             }
-
-        return await VideoEditor.TrimPreciseAsync(
-            _item.FullPath, start, end, _audioSelection, progress, ct);
     }
 
     private async Task ExportAsync(
@@ -1094,7 +1109,7 @@ public partial class ClipEditorWindow : Window
         ExportStatus.Text = "Сохраняю фрагмент…";
         ExportHint.Text = fast
             ? "Видео копируется без потери качества; исходный клип не меняется."
-            : "Точное сохранение кадр в кадр; исходный клип не меняется.";
+            : "Сохраняю кадр в кадр; исходный клип не меняется.";
         _exportCancellation = new CancellationTokenSource();
         SetExporting(true, fast);
         OpenFolderButton.Visibility = Visibility.Collapsed;

@@ -39,9 +39,14 @@ public static class Mp4Defragment
         }
     }
 
-    /// <summary>Всё о дорожке, что нужно для её trak.</summary>
+    /// <summary>
+    /// Всё о дорожке, что нужно для её trak. <paramref name="EditMovie"/> ≥ 0 задаёт
+    /// список правок явно (вырезка фрагмента): пустой отрезок <paramref name="EmptyMovie"/>,
+    /// затем EditMovie единиц фильма с <paramref name="MediaStart"/> — остальное скрыто.
+    /// </summary>
     internal sealed record Track(int Id, bool Audio, int Timescale, int Width, int Height, string Name,
-                                 byte[] Stsd, long MediaStart, TrackIndex Index);
+                                 byte[] Stsd, long MediaStart, TrackIndex Index,
+                                 long EmptyMovie = 0, long EditMovie = -1);
 
     /// <summary>Обычный moov по готовым индексам дорожек.</summary>
     internal static byte[] BuildMoov(IReadOnlyList<Track> tracks, bool co64)
@@ -50,7 +55,9 @@ public static class Mp4Defragment
         w.Begin("moov");
         long movie = 0;
         foreach (var t in tracks)
-            movie = Math.Max(movie, DelayMovie(t) + (long)Mp4Boxes.ToMovie(t.Index.MediaDuration - t.MediaStart, t.Timescale));
+            movie = Math.Max(movie, t.EditMovie >= 0
+                ? t.EmptyMovie + t.EditMovie
+                : DelayMovie(t) + (long)Mp4Boxes.ToMovie(t.Index.MediaDuration - t.MediaStart, t.Timescale));
         Mp4Boxes.Mvhd(w, (ulong)movie, tracks.Count == 0 ? 1 : tracks.Max(t => t.Id) + 1);
         foreach (var t in tracks) WriteTrak(w, t, co64);
         w.End();
@@ -65,12 +72,13 @@ public static class Mp4Defragment
     {
         var index = t.Index;
         long mediaStart = Math.Clamp(t.MediaStart, 0, Math.Max(0, index.MediaDuration - 1));
-        ulong mediaMovie = Mp4Boxes.ToMovie(index.MediaDuration - mediaStart, t.Timescale);
-        long delay = DelayMovie(t);
+        bool explicitEdit = t.EditMovie >= 0;
+        ulong mediaMovie = explicitEdit ? (ulong)t.EditMovie : Mp4Boxes.ToMovie(index.MediaDuration - mediaStart, t.Timescale);
+        long delay = explicitEdit ? t.EmptyMovie : DelayMovie(t);
 
         w.Begin("trak");
         Mp4Boxes.Tkhd(w, t.Id, mediaMovie + (ulong)delay, t.Audio, t.Width, t.Height);
-        Mp4Boxes.Edts(w, delay, mediaMovie, mediaStart);
+        Mp4Boxes.Edts(w, delay, mediaMovie, mediaStart, always: explicitEdit);
         w.Begin("mdia");
         Mp4Boxes.Mdhd(w, t.Timescale, (ulong)index.MediaDuration);
         Mp4Boxes.Hdlr(w, t.Audio, t.Name);
@@ -261,6 +269,34 @@ public static class Mp4Defragment
         if (FindChild(file, moovBox.Offset + moovBox.Header, moovBox.Offset + moovBox.Size, "mvex") < 0) return false;
         if (boxes.Count(b => b.Type == "moov") > 1) return false;
 
+        var moofs = new List<long>();
+        if (FragmentTracks(file, boxes, moovBox, moofs) is not { } tracks) return false;
+        long mfra = boxes.FirstOrDefault(b => b.Type == "mfra") is { Type: not null } m ? m.Offset : -1;
+        // Заглушка гибридного MP4 (записи с 2.0.14): «free» на 16 байт прямо перед moov
+        long placeholder = boxes.FirstOrDefault(b => b.Type == "free" && b.Size == 16 &&
+                                                     b.Offset + b.Size == moovBox.Offset) is { Type: not null } f
+            ? f.Offset : -1;
+        Finalize(file, tracks, moovBox.Offset, moofs, mfra, placeholder);
+        return true;
+    }
+
+    /// <summary>
+    /// Дорожки готового фрагментированного файла с полными таблицами сэмплов —
+    /// для вырезки фрагмента (<see cref="Mp4Trim"/>). null — файл не фрагментированный
+    /// или разобрать его не удалось.
+    /// </summary>
+    internal static List<Track>? ReadFragmented(Stream file)
+    {
+        var boxes = TopLevel(file).Where(b => b.Offset + b.Size <= file.Length).ToList();
+        var moovBox = boxes.FirstOrDefault(b => b.Type == "moov");
+        if (moovBox.Type is null ||
+            FindChild(file, moovBox.Offset + moovBox.Header, moovBox.Offset + moovBox.Size, "mvex") < 0) return null;
+        return FragmentTracks(file, boxes, moovBox, []);
+    }
+
+    /// <summary>Описание дорожек из заголовка и сэмплы из всех moof.</summary>
+    private static List<Track>? FragmentTracks(Stream file, List<Box> boxes, Box moovBox, List<long> moofs)
+    {
         // Описание дорожек из заголовка
         var infos = new Dictionary<int, (bool Audio, int Timescale, int Width, int Height, string Name, byte[] Stsd, long MediaStart)>();
         foreach (var trak in Children(file, moovBox.Offset + moovBox.Header, moovBox.Offset + moovBox.Size).Where(c => c.Type == "trak"))
@@ -271,7 +307,7 @@ public static class Mp4Defragment
             var hdlr = Find(trakBytes, "mdia/hdlr");
             var stsd = Find(trakBytes, "mdia/minf/stbl/stsd");
             var elst = Find(trakBytes, "edts/elst");
-            if (tkhd.Offset < 0 || mdhd.Offset < 0 || hdlr.Offset < 0 || stsd.Offset < 0) return false;
+            if (tkhd.Offset < 0 || mdhd.Offset < 0 || hdlr.Offset < 0 || stsd.Offset < 0) return null;
 
             bool v1 = trakBytes[tkhd.Offset + 8] == 1;
             int id = (int)BinaryPrimitives.ReadUInt32BigEndian(trakBytes.AsSpan(tkhd.Offset + 12 + (v1 ? 16 : 8)));
@@ -299,7 +335,6 @@ public static class Mp4Defragment
 
         // Сэмплы из фрагментов
         var indexes = infos.Keys.ToDictionary(id => id, _ => new TrackIndex());
-        var moofs = new List<long>();
         foreach (var moof in boxes.Where(b => b.Type == "moof"))
         {
             moofs.Add(moof.Offset);
@@ -310,24 +345,17 @@ public static class Mp4Defragment
                 int size = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pos));
                 if (size < 8) break;
                 if (TextEncoding.ASCII.GetString(data, pos + 4, 4) == "traf")
-                    if (!ReadTraf(data, pos, size, moof.Offset, infos, indexes)) return false;
+                    if (!ReadTraf(data, pos, size, moof.Offset, infos, indexes)) return null;
                 pos += size;
             }
         }
-        if (indexes.Values.All(i => i.Sizes.Count == 0)) return false;
+        if (indexes.Values.All(i => i.Sizes.Count == 0)) return null;
 
-        var tracks = infos.OrderBy(kv => kv.Key)
+        return infos.OrderBy(kv => kv.Key)
             .Where(kv => indexes[kv.Key].Sizes.Count > 0)
             .Select(kv => new Track(kv.Key, kv.Value.Audio, kv.Value.Timescale, kv.Value.Width, kv.Value.Height,
                                     kv.Value.Name, kv.Value.Stsd, kv.Value.Audio ? 0 : kv.Value.MediaStart, indexes[kv.Key]))
             .ToList();
-        long mfra = boxes.FirstOrDefault(b => b.Type == "mfra") is { Type: not null } m ? m.Offset : -1;
-        // Заглушка гибридного MP4 (записи с 2.0.14): «free» на 16 байт прямо перед moov
-        long placeholder = boxes.FirstOrDefault(b => b.Type == "free" && b.Size == 16 &&
-                                                     b.Offset + b.Size == moovBox.Offset) is { Type: not null } f
-            ? f.Offset : -1;
-        Finalize(file, tracks, moovBox.Offset, moofs, mfra, placeholder);
-        return true;
     }
 
     /// <summary>
