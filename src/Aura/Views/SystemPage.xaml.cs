@@ -328,6 +328,15 @@ public partial class SystemPage : PageBase
         if (seconds < 0.2) return;   // тик пришёл слишком рано — числа были бы шумом
 
         var frames = Services.Engine.FrameCounters;
+        // Захват или энкодер пересоздан (смена разрешения) — его счётчики начались с нуля,
+        // разница вышла бы отрицательной. Этот тик пропускаем, отсчёт заново.
+        if (frames.Accepted < _prevFrames.Accepted || frames.Encoded < _prevFrames.Encoded ||
+            frames.Dropped < _prevFrames.Dropped || frames.Duplicated < _prevFrames.Duplicated)
+        {
+            ResetLoadBaseline();
+            return;
+        }
+
         // Один снимок процесса на тик: и время процессора, и память берём из него,
         // чтобы числа в плитках относились к одному и тому же моменту.
         var process = Process.GetCurrentProcess();
