@@ -64,6 +64,7 @@ public static class ReplaySaver
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
         string partPath = filePath + ".part";
         long fileBytes;
+        long flushMs;
         bool written = false;
         try
         {
@@ -76,7 +77,9 @@ public static class ReplaySaver
                 stream.Flush();
                 // До переименования данные должны быть на диске, а не в кэше: иначе
                 // при выключении питания остаётся файл с именем клипа и нулями внутри
+                long flushStart = sw.ElapsedMilliseconds;
                 file.Flush(flushToDisk: true);
+                flushMs = sw.ElapsedMilliseconds - flushStart;
             }
             written = true;
         }
@@ -101,7 +104,8 @@ public static class ReplaySaver
         Log.Info("Saver", $"Сохранено: {published} ({video.Count} кадров за {clipSeconds:F1} с{fps}, " +
                           $"звук: {inputs.Count} дорожк., {audioFrames} кадров AAC); " +
                           $"{fileBytes / (1024 * 1024)} МБ за {ms} мс" +
-                          (ms > 0 ? $", {fileBytes / 1024.0 / 1024 / (ms / 1000.0):F0} МБ/с" : ""));
+                          (ms > 0 ? $", {fileBytes / 1024.0 / 1024 / (ms / 1000.0):F0} МБ/с" : "") +
+                          $" (из них сброс на диск {flushMs} мс)");
         return published;
     }
 
@@ -162,12 +166,12 @@ public static class ReplaySaver
 
         private readonly Stream _inner;
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
-        private bool _gentle;
+        private bool _escalated;
 
         public GentleWriteStream(Stream inner, bool gentle)
         {
             _inner = inner;
-            _gentle = BackgroundIoScope.EnterIf(gentle);
+            BackgroundIoScope.EnterIf(gentle);
         }
 
         public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
@@ -175,12 +179,18 @@ public static class ReplaySaver
         public override void Write(ReadOnlySpan<byte> buffer)
         {
             _inner.Write(buffer);
-            if (_gentle && _clock.ElapsedMilliseconds > BudgetMs)
+            if (!_escalated && _clock.ElapsedMilliseconds > BudgetMs)
             {
-                _gentle = false;
-                if (BackgroundIoScope.ReleaseForCurrentThread())
-                    Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс) — " +
-                                      "фоновый режим ввода-вывода снят, дописываем в полную силу");
+                _escalated = true;
+                bool wasGentle = BackgroundIoScope.ReleaseForCurrentThread();
+                // BelowNormal под игрой, занявшей все ядра, почти не получает процессора:
+                // 677 МБ писались 50 с. Захват и кодирование на AboveNormal — Normal им не мешает.
+                // Прежний приоритет вернёт finally в ReplayEngine.SaveReplay.
+                var self = Thread.CurrentThread;
+                if (self.Priority < ThreadPriority.Normal) self.Priority = ThreadPriority.Normal;
+                Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс) — " +
+                                  (wasGentle ? "фоновый режим ввода-вывода снят, " : "") +
+                                  "приоритет поднят до обычного, дописываем в полную силу");
             }
         }
 

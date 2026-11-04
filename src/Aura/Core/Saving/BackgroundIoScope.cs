@@ -95,7 +95,8 @@ internal static class BackgroundIoScope
     /// Приоритет при выходе восстанавливается системой на тот, что был ДО входа:
     /// «The system restores the resource scheduling priorities of the thread as they
     /// were before the thread entered background processing mode». То есть поток
-    /// сохранения вернётся к BelowNormal — процессор игре мы всё равно не отбираем.
+    /// сохранения вернётся к BelowNormal, а под игрой, занявшей все ядра, этого мало
+    /// (677 МБ за 50 с) — поэтому GentleWriteStream сразу поднимает его до Normal.
     /// </summary>
     public static bool ReleaseForCurrentThread()
     {
