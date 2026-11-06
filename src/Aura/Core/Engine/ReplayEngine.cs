@@ -719,7 +719,7 @@ public sealed partial class ReplayEngine : IDisposable
                     observedGeneration, surface.TargetRevision), observedGeneration);
                 return;
             }
-            Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
+            Log.Error("Engine", $"Кадр пропущен: {ex.Message}\n{ex}");
         }
         finally { _frameGate.ExitReadLock(); }
     }
@@ -734,10 +734,10 @@ public sealed partial class ReplayEngine : IDisposable
         if (_frameWorker is not null)
             throw new InvalidOperationException("Обработчик кадров уже запущен");
 
-        _frameReady = new AutoResetEvent(false);
+        var ready = _frameReady = new AutoResetEvent(false);
         var token = new FrameWorkerToken();
         _frameWorkerToken = token;
-        _frameWorker = new Thread(() => FrameWorkerLoop(token, generation))
+        _frameWorker = new Thread(() => FrameWorkerLoop(token, generation, ready))
         {
             IsBackground = true,
             Name = "AuraFrameWorker",
@@ -746,13 +746,12 @@ public sealed partial class ReplayEngine : IDisposable
         _frameWorker.Start();
     }
 
-    private void FrameWorkerLoop(FrameWorkerToken token, long generation)
+    private void FrameWorkerLoop(FrameWorkerToken token, long generation, AutoResetEvent ready)
     {
         using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "AuraFrameWorker");
         while (token.Running)
         {
-            AutoResetEvent? ready = _frameReady;
-            if (ready is null || !ready.WaitOne(100)) continue;
+            if (!ready.WaitOne(100)) continue;
             if (!token.Running) break;
             ProcessLatestFrame(generation);
         }
@@ -765,8 +764,10 @@ public sealed partial class ReplayEngine : IDisposable
 
         try
         {
-            if (!_pipelineOpen || _pipeline.FrameBroker is null ||
-                !_pipeline.FrameBroker.TryLeaseLatest(generation, out GpuCaptureFrameLease? lease)) return;
+            // Брошенный worker может проснуться после пересборки: все стадии — из его сессии.
+            var pipeline = _pipeline;
+            if (!_pipelineOpen || pipeline.Id != generation || pipeline.FrameBroker is null ||
+                !pipeline.FrameBroker.TryLeaseLatest(generation, out GpuCaptureFrameLease? lease)) return;
 
             GpuCaptureFrameLease current = lease!;
             using (current)
@@ -774,14 +775,14 @@ public sealed partial class ReplayEngine : IDisposable
                 // Очередь энкодера забита — кадр всё равно вытеснит другой такой же.
                 // Тратить на него видеокарту, которая и так не справляется, незачем:
                 // см. VideoEncoder.InputQueueSaturated.
-                if (_pipeline.Encoder is { } saturatedCheck && saturatedCheck.InputQueueSaturated)
+                if (pipeline.Encoder is { } saturatedCheck && saturatedCheck.InputQueueSaturated)
                 {
                     Interlocked.Increment(ref saturatedCheck.FramesSkippedBeforeConvert);
                     return;
                 }
 
                 // Слот сетки уже занят прошлым кадром: см. VideoEncoder.SameSlotAsLastFrame
-                if (_pipeline.Encoder is { } slotCheck && slotCheck.SameSlotAsLastFrame(current.Timestamp))
+                if (pipeline.Encoder is { } slotCheck && slotCheck.SameSlotAsLastFrame(current.Timestamp))
                 {
                     Interlocked.Increment(ref slotCheck.FramesSkippedSameSlot);
                     return;
@@ -790,20 +791,27 @@ public sealed partial class ReplayEngine : IDisposable
                 // Метки видеокарты ставятся вокруг тех же двух стадий, что и
                 // секундомер потока. Сравнение этих двух цифр и есть весь смысл:
                 // процессор здесь только ставит команды в очередь.
-                var context = _pipeline.Capture!.D3DContext;
-                bool timed = _pipeline.GpuTimer?.BeginFrame(context) == true;
+                var context = pipeline.Capture!.D3DContext;
+                bool timed = pipeline.GpuTimer?.BeginFrame(context) == true;
 
-                long t0 = Diagnostics.PipelineProbe.Now();
-                var input = _pipeline.Scaler?.Scale(current.Texture) ?? current.Texture;
-                var nv12 = _pipeline.Processor!.Convert(input);
-                long t1 = Diagnostics.PipelineProbe.Now();
-                if (timed) _pipeline.GpuTimer!.Mark(context);
+                try
+                {
+                    long t0 = Diagnostics.PipelineProbe.Now();
+                    var input = pipeline.Scaler?.Scale(current.Texture) ?? current.Texture;
+                    var nv12 = pipeline.Processor!.Convert(input);
+                    long t1 = Diagnostics.PipelineProbe.Now();
+                    if (timed) pipeline.GpuTimer!.Mark(context);
 
-                _pipeline.Encoder!.SubmitFrame(nv12, current.Timestamp, context);
-                if (timed) { _pipeline.GpuTimer!.Mark(context); _pipeline.GpuTimer.EndFrame(context); }
+                    pipeline.Encoder!.SubmitFrame(nv12, current.Timestamp, context, timed ? pipeline.GpuTimer : null);
+                    Interlocked.Increment(ref pipeline.FramesProcessed);
 
-                Diagnostics.PipelineProbe.Convert.Add(t0, t1);
-                Diagnostics.PipelineProbe.Submit.Add(t1, Diagnostics.PipelineProbe.Now());
+                    Diagnostics.PipelineProbe.Convert.Add(t0, t1);
+                    Diagnostics.PipelineProbe.Submit.Add(t1, Diagnostics.PipelineProbe.Now());
+                }
+                finally
+                {
+                    if (timed) pipeline.GpuTimer!.EndFrame(context);
+                }
             }
         }
         catch (Exception ex)
@@ -816,7 +824,7 @@ public sealed partial class ReplayEngine : IDisposable
             }
             else
             {
-                Log.Error("Engine", $"Кадр пропущен: {ex.Message}");
+                Log.Error("Engine", $"Кадр пропущен: {ex.Message}\n{ex}");
             }
         }
         finally

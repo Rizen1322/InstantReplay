@@ -1,4 +1,4 @@
-﻿using Vortice.Direct3D11;
+using Vortice.Direct3D11;
 using Vortice.DXGI;
 
 namespace Aura.Core.Capture;
@@ -20,6 +20,7 @@ public sealed class VideoProcessorNv12 : IDisposable
 
     private ID3D11VideoProcessorEnumerator? _enumerator;
     private ID3D11VideoProcessor? _processor;
+    private readonly Dictionary<nint, ID3D11VideoProcessorInputView> _inputViews = [];
     private ID3D11VideoProcessorOutputView?[] _outputViews = [];
     private ID3D11Texture2D?[] _pool = [];
     private int _poolIndex;
@@ -223,17 +224,8 @@ public sealed class VideoProcessorNv12 : IDisposable
     /// </summary>
     private bool TryBuildPool(Format format)
     {
-        // Флаги привязки пробуем по убыванию. VideoEncoder здесь не обязателен:
-        // энкодер получает не эту текстуру, а её копию из своего пула, и та
-        // создаётся вообще без привязок (см. EncoderTexturePool.Copy). Но на NV12
-        // флаг годами стоял и ничего не ломал, поэтому оставляем его первой
-        // попыткой, а второй идёт только RenderTarget.
-        //
-        // Ради этого всё и затевалось: в замере CheckFormatSupport подтверждал для
-        // P010 привязку RenderTarget, а CreateTexture2D всё равно отвечал
-        // E_INVALIDARG. Значит, драйверу мешает именно сочетание с VideoEncoder.
-        return TryBuildPoolWith(format, BindFlags.RenderTarget | BindFlags.VideoEncoder) ||
-               TryBuildPoolWith(format, BindFlags.RenderTarget);
+        // Энкодер получает копию из своего пула; здесь нужен только вывод VP.
+        return TryBuildPoolWith(format, BindFlags.RenderTarget);
     }
 
     private bool TryBuildPoolWith(Format format, BindFlags bindFlags)
@@ -301,6 +293,7 @@ public sealed class VideoProcessorNv12 : IDisposable
     public ID3D11Texture2D Convert(ID3D11Texture2D bgraFrame)
     {
         lock (_sync)
+        lock (_device)   // тот же замок, что у скейлера и пула: контекст один на конвейер
         {
             if (_processor is null || _enumerator is null)
                 throw new InvalidOperationException("VideoProcessorNv12 не сконфигурирован");
@@ -308,17 +301,8 @@ public sealed class VideoProcessorNv12 : IDisposable
             int i = _poolIndex;
             _poolIndex = (_poolIndex + 1) % PoolSize;
 
-            // Представление создаётся на каждый кадр и сразу освобождается.
-            // Кешировать его нельзя: удержание ссылки на текстуру мешает пулу WGC
-            // переиспользовать буферы — в играх это давало микрофризы.
-            using var inputView = _videoDevice.CreateVideoProcessorInputView(
-                bgraFrame, _enumerator,
-                new VideoProcessorInputViewDescription
-                {
-                    FourCC = 0,
-                    ViewDimension = VideoProcessorInputViewDimension.Texture2D,
-                    Texture2D = new Texture2DVideoProcessorInputView { MipSlice = 0, ArraySlice = 0 }
-                });
+            // Здесь текстуры брокера/скейлера, а не WGC: view живёт вместе с конвертером.
+            var inputView = CreateInputView(bgraFrame);
 
             var stream = new VideoProcessorStream
             {
@@ -330,8 +314,38 @@ public sealed class VideoProcessorNv12 : IDisposable
         }
     }
 
+    private ID3D11VideoProcessorInputView CreateInputView(ID3D11Texture2D frame)
+    {
+        if (_inputViews.TryGetValue(frame.NativePointer, out var cached)) return cached;
+        try
+        {
+            var view = _videoDevice.CreateVideoProcessorInputView(frame, _enumerator!,
+                new VideoProcessorInputViewDescription
+                {
+                    ViewDimension = VideoProcessorInputViewDimension.Texture2D,
+                    Texture2D = new Texture2DVideoProcessorInputView { MipSlice = 0, ArraySlice = 0 }
+                });
+            _inputViews.Add(frame.NativePointer, view);
+            System.Diagnostics.Debug.Assert(_inputViews.Count <= 3,
+                "Конвертер должен получать стабильные текстуры брокера/скейлера, а не кадры WGC");
+            return view;
+        }
+        catch (Exception ex)
+        {
+            var d = frame.Description;
+            var owner = frame.Device; // Vortice кеширует эту обёртку; Dispose здесь её обнулит.
+            throw new InvalidOperationException(
+                $"VP input: {d.Width}x{d.Height} {d.Format}, bind {d.BindFlags}, " +
+                $"usage {d.Usage}, samples {d.SampleDescription.Count}, array {d.ArraySize}, " +
+                $"device 0x{owner.NativePointer:X}/0x{_device.NativePointer:X}, " +
+                $"configured {_srcW}x{_srcH} → {OutWidth}x{OutHeight}", ex);
+        }
+    }
+
     private void ReleaseCore()
     {
+        foreach (var view in _inputViews.Values) view.Dispose();
+        _inputViews.Clear();
         foreach (var v in _outputViews) v?.Dispose();
         foreach (var t in _pool) t?.Dispose();
         _outputViews = []; _pool = [];

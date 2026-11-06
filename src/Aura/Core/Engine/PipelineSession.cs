@@ -29,6 +29,7 @@ internal sealed class PipelineSession(long id)
     public Diagnostics.GpuStageTimer? GpuTimer;
     public VideoEncoder? Encoder;
     public GpuCaptureFrameBroker? FrameBroker;
+    public long FramesProcessed;
 
     /// <summary>
     /// Разобрать в единственно верном порядке: энкодер (его пейсер держит контекст

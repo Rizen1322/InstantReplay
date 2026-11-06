@@ -61,8 +61,6 @@ internal sealed class CursorOverlay : IDisposable
     private long _shapeRevision = long.MinValue;
     private DdaCursorShape? _uploadedShape;
 
-    private ID3D11Texture2D? _target;
-    private ID3D11RenderTargetView? _targetView;
     private ID3D11Texture2D? _maskedBackground;
     private ID3D11ShaderResourceView? _maskedBackgroundView;
 
@@ -83,9 +81,16 @@ internal sealed class CursorOverlay : IDisposable
         _ready && cursor.Visible && cursor.Shape is { Width: > 0, Height: > 0 };
 
     /// <summary>Копирует чистый кадр и накладывает только проверенный снимок курсора.</summary>
+    /// <param name="outputView">
+    /// Вид на <paramref name="output"/>, созданный один раз вместе со слотом кадра.
+    /// Раньше он создавался здесь по <c>ReferenceEquals</c> с прошлой текстурой, но
+    /// слотов у брокера три, они идут по кругу — и условие не срабатывало никогда:
+    /// драйвер 60 раз в секунду уничтожал и заново создавал вид на горячем пути.
+    /// </param>
     public void Compose(
         ID3D11Texture2D clean,
         ID3D11Texture2D output,
+        ID3D11RenderTargetView outputView,
         in DdaCursorSnapshot cursor)
     {
         _context.CopyResource(output, clean);
@@ -106,8 +111,7 @@ internal sealed class CursorOverlay : IDisposable
             if (_shapeType == ShapeMaskedColor)
                 CopyMaskedBackground(output, left, top, frameWidth, frameHeight);
 
-            EnsureTargetView(output);
-            _context.OMSetRenderTargets(_targetView!);
+            _context.OMSetRenderTargets(outputView);
             // Область вывода задаёт положение курсора: за краями экрана она может
             // уходить в минус, растеризатор обрежет сам. Так не нужен ни буфер
             // констант, ни его обновление на каждый кадр.
@@ -197,14 +201,6 @@ internal sealed class CursorOverlay : IDisposable
         _shapeWidth = width;
         _shapeHeight = height;
         _uploadedShape = shape;
-    }
-
-    private void EnsureTargetView(ID3D11Texture2D frame)
-    {
-        if (ReferenceEquals(_target, frame) && _targetView is not null) return;
-        _targetView?.Dispose();
-        _targetView = _device.CreateRenderTargetView(frame);
-        _target = frame;
     }
 
     // ---------------- Шейдеры и смешивание ----------------
@@ -360,7 +356,6 @@ internal sealed class CursorOverlay : IDisposable
     public void Dispose()
     {
         _maskedBackgroundView?.Dispose(); _maskedBackground?.Dispose();
-        _targetView?.Dispose(); _target = null;
         _shapeView?.Dispose(); _shape?.Dispose();
         _blendAlpha?.Dispose(); _blendXor?.Dispose(); _blendAnd?.Dispose();
         _sampler?.Dispose();

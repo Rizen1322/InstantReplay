@@ -1,4 +1,4 @@
-﻿using Vortice.Direct3D11;
+using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Aura.Core.Diagnostics;
 
@@ -19,6 +19,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     private readonly int _height;
     private ID3D11Texture2D? _windowCursorClean;
     private ID3D11Texture2D? _windowCursorComposed;
+    private ID3D11RenderTargetView? _windowCursorComposedView;
     private bool _disposed;
     private long _framesRejected;
 
@@ -133,9 +134,16 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             {
                 slot.Scope = captured.Scope;
                 slot.CleanCurrent = false;
-                // Курсора в кадре не будет: сразу в выходную текстуру, без чистой
-                // копии. CleanCurrent = false, и снимок области возьмёт Output, где
-                // курсора и так нет.
+
+                // БЕЗ КУРСОРА — БЕЗ ЗАМКА. Копия кадра и нормализация окна не зависят от
+                // состояния конвейера (цель рендера, вьюпорт, шейдеры), а поштучную
+                // безопасность параллельных вызовов даёт SetMultithreadProtected.
+                //
+                // ЗАЧЕМ ЭТО ВАЖНО. С замком поток захвата ждал, пока обработчик кадров
+                // закончит свою GPU-работу (скейлер, конвертер, копия в пул с Flush).
+                // Под загруженной видеокартой это секунды: в логе кадр в очереди ждал
+                // 1792 мс, захват замирал на 1833 мс, а WGC за это время забивал свой
+                // пул и переставал отдавать кадры — в клипе получался фриз.
                 if (!_separateCursor || !_cursorOverlay!.WillDraw(cursor))
                 {
                     CopyFrame(captured, slot.Output);
@@ -144,13 +152,25 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
 
                 if (captured.Scope == CaptureSurfaceScope.GameWindow)
                 {
-                    ComposeWindowFrame(captured.Texture, slot.Output, cursor);
+                    // Курсор рисуется поверх: тут нужен общий замок, см. ниже.
+                    lock (_device) ComposeWindowFrame(captured.Texture, slot.Output, cursor);
                     return;
                 }
 
-                CopyFrame(captured, slot.Clean!);
-                slot.CleanCurrent = true;
-                _cursorOverlay!.Compose(slot.Clean!, slot.Output, cursor);
+                // Один immediate context D3D11 на весь конвейер, и потоков у него трое:
+                // захват (здесь), обработчик кадров со скейлером и пейсер с копиями.
+                // Правило: ВСЕ одновременные обращения к контексту должны быть безопасно
+                // сериализованы, а последовательности, зависящие от общего состояния
+                // конвейера («цель рендера → вьюпорт → шейдер → Draw»), дополнительно
+                // неделимы на уровне приложения. Многопоточная защита D3D11 даёт только
+                // первое — по одному вызову, поэтому кадр курсора, вклинившийся между
+                // ними, рисовался бы в чужую цель.
+                lock (_device)
+                {
+                    CopyFrame(captured, slot.Clean!);
+                    slot.CleanCurrent = true;
+                    _cursorOverlay!.Compose(slot.Clean!, slot.Output, slot.OutputView, cursor);
+                }
             });
         }
     }
@@ -162,7 +182,8 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
     {
         EnsureWindowCursorTextures(source.Description);
         _context.CopyResource(_windowCursorClean!, source);
-        _cursorOverlay!.Compose(_windowCursorClean!, _windowCursorComposed!, cursor);
+        _cursorOverlay!.Compose(_windowCursorClean!, _windowCursorComposed!,
+                                _windowCursorComposedView!, cursor);
         (_windowNormalizer ?? throw new InvalidOperationException(
             "Оконный normalizer не создан"))
             .Normalize(_windowCursorComposed!, destination);
@@ -177,6 +198,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             return;
         }
 
+        _windowCursorComposedView?.Dispose();
         _windowCursorComposed?.Dispose();
         _windowCursorClean?.Dispose();
         var description = new Texture2DDescription
@@ -194,6 +216,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         };
         _windowCursorClean = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(description), "курсор окна");
         _windowCursorComposed = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(description), "курсор окна");
+        _windowCursorComposedView = _device.CreateRenderTargetView(_windowCursorComposed);
     }
 
     private void CopyFrame(in CapturedSurface captured, ID3D11Texture2D destination)
@@ -313,6 +336,7 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
             if (_disposed) return;
             _disposed = true;
             _cursorOverlay?.Dispose();
+            _windowCursorComposedView?.Dispose();
             _windowCursorComposed?.Dispose();
             _windowCursorClean?.Dispose();
             _windowNormalizer?.Dispose();
@@ -344,11 +368,15 @@ internal sealed class GpuCaptureFrameSlot : IDisposable
         };
 
         Output = Aura.Core.Diagnostics.GpuResourceLedger.Track(device.CreateTexture2D(description), "брокер кадров");
+        // Вид на выход создаётся один раз на слот: слотов три, они идут по кругу, и
+        // создание вида на каждый кадр было 60 аллокаций драйвера в секунду.
+        OutputView = device.CreateRenderTargetView(Output);
         if (createCleanTexture)
             Clean = Aura.Core.Diagnostics.GpuResourceLedger.Track(device.CreateTexture2D(description), "брокер кадров");
     }
 
     public ID3D11Texture2D Output { get; }
+    public ID3D11RenderTargetView OutputView { get; }
     public ID3D11Texture2D? Clean { get; }
     public CaptureSurfaceScope Scope { get; set; }
 
@@ -363,6 +391,7 @@ internal sealed class GpuCaptureFrameSlot : IDisposable
     public void Dispose()
     {
         Clean?.Dispose();
+        OutputView.Dispose();
         Output.Dispose();
     }
 }

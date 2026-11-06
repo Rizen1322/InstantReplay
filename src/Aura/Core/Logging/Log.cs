@@ -186,7 +186,16 @@ public static class Log
                         // копятся в буфере, в покое лог всегда актуален.
                         if (Queue.Count == 0) file.Flush();
                     }
-                    catch { /* не роняем приложение из-за лога */ }
+                    catch (Exception ex)
+                    {
+                        // Не роняем приложение из-за лога — но и не молчим. Раньше здесь
+                        // стоял пустой catch: если файл лога не открывался, приложение
+                        // работало вообще без следов, и целый разбор пришлось вести
+                        // вслепую. Строку кладём в аварийный файл, причину — туда же
+                        // (не чаще раза в минуту, чтобы не залить диск).
+                        WriteAside(line);
+                        ReportLogFailure(ex);
+                    }
                 }
         }
         finally
@@ -198,6 +207,24 @@ public static class Log
                 _openedFor = "";
             }
         }
+    }
+
+    private static long _logFailures;
+    private static DateTime _lastLogFailureReportUtc = DateTime.MinValue;
+
+    /// <summary>Сколько раз запись лога сорвалась (для диагностики).</summary>
+    public static long Failures => Interlocked.Read(ref _logFailures);
+
+    private static void ReportLogFailure(Exception ex)
+    {
+        Interlocked.Increment(ref _logFailures);
+        System.Diagnostics.Debug.WriteLine($"Лог не пишется: {ex.Message}");
+
+        DateTime now = DateTime.UtcNow;
+        if (now - _lastLogFailureReportUtc < TimeSpan.FromMinutes(1)) return;
+        _lastLogFailureReportUtc = now;
+        WriteAside($"{DateTime.Now:HH:mm:ss.fff} [ERR] [Log] лог не пишется " +
+                   $"({ex.GetType().Name}): {ex.Message}");
     }
 
     /// <summary>
@@ -216,13 +243,32 @@ public static class Log
         try { _file?.Flush(); _file?.Dispose(); } catch { }
         _file = null;
 
-        var stream = new FileStream(Path.Combine(_dir, $"app-{today}{_suffix}.log"),
-                                    FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-        // Полное имя кодировки: внутри Aura.Core короткое Encoding — это наше
-        // пространство имён с кодировщиком видео, а не System.Text.
-        _file = new StreamWriter(stream, System.Text.Encoding.UTF8) { AutoFlush = false };
-        _openedFor = today;
-        return _file;
+        // Основной файл — общий. Если его не отдают (права, атрибут «только чтение»,
+        // чужой эксклюзивный захват), пробуем СВОЙ файл с номером процесса: лог в
+        // другом месте лучше, чем ни одного лога. Молчание здесь дорого стоит —
+        // именно из-за него один раз не осталось ни одной строки о сбоях.
+        Exception? firstError = null;
+        foreach (string name in new[]
+                 {
+                     $"app-{today}{_suffix}.log",
+                     $"app-{today}{_suffix}-{Environment.ProcessId}.log"
+                 })
+        {
+            try
+            {
+                var stream = new FileStream(Path.Combine(_dir, name),
+                                            FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                // Полное имя кодировки: внутри Aura.Core короткое Encoding — это наше
+                // пространство имён с кодировщиком видео, а не System.Text.
+                _file = new StreamWriter(stream, System.Text.Encoding.UTF8) { AutoFlush = false };
+                _openedFor = today;
+                return _file;
+            }
+            catch (Exception ex) { firstError ??= ex; }
+        }
+
+        throw new IOException($"ни один файл лога не открылся в «{_dir}»: {firstError?.Message}",
+                              firstError);
     }
 
     /// <summary>Строка в файл со схлопыванием повторов. Только под FileSync.</summary>

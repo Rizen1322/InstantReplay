@@ -129,6 +129,9 @@ public static class StartupManager
 
     private static void CreateTask()
     {
+#if DEBUG
+        Log.Warn("Startup", "Автозапуск отладочной сборки не создаётся; включите его в установленной Aura");
+#else
         // /RL HIGHEST — запуск с наивысшими правами (без UAC при входе);
         // /SC ONLOGON — при входе текущего пользователя; /F — перезаписать.
         // /TR со вложенным путём: сам путь в кавычках, чтобы работали пробелы.
@@ -137,6 +140,7 @@ public static class StartupManager
             "/Create", "/TN", TaskName, "/TR", tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F");
         if (code == 0) Log.Info("Startup", $"Автозапуск включён (Планировщик задач): {ExePath}");
         else Log.Error("Startup", $"Не удалось создать задачу автозапуска (код {code}): {output.Trim()}");
+#endif
     }
 
     private static void DeleteTask()

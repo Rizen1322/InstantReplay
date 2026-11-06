@@ -34,12 +34,14 @@ public sealed partial class ReplayEngine
     private long _lastSubmitted, _lastEncoded, _lastDropped, _lastDiscardedDuplicates,
                  _lastSuppressedDuplicates, _lastDuplicated, _lastReceived, _lastAccepted;
     private long _lastRequests, _lastPacerBlocked;
+    private long _lastProcessed;
 
     private void StartStatsTimer()
     {
         _lastSubmitted = _lastEncoded = _lastDropped = _lastDiscardedDuplicates =
             _lastSuppressedDuplicates = _lastDuplicated = _lastReceived = _lastAccepted = 0;
         _lastRequests = _lastPacerBlocked = _lastSkippedBeforeConvert = _lastSkippedSameSlot = 0;
+        _lastProcessed = 0;
         _statsWindowStart = DateTime.UtcNow;
         // Счётчики загрузки GPU заводим сразу: первое значение появится к первой минуте
         _gpuLoad ??= new Aura.Core.Hardware.GpuEngineLoad();
@@ -104,6 +106,7 @@ public sealed partial class ReplayEngine
         if (seconds < 2) return; // только что выгружали — нечего показывать
 
         // fps по каждой стадии: сразу видно, кто именно не дотягивает до настроенного.
+        long processed = Interlocked.Read(ref _pipeline.FramesProcessed);
         string captureName = _captureBackend == CaptureBackend.Wgc ? "WGC" : "DDA";
         Log.Info("Engine", $"Конвейер {label} ({seconds:F0} с): {captureName} {rcv - _lastReceived}/{acc - _lastAccepted} " +
             $"(получено/принято), захвачено {s - _lastSubmitted}, " +
@@ -113,7 +116,7 @@ public sealed partial class ReplayEngine
             $"{suppressedDuplicates - _lastSuppressedDuplicates} " +
             $"(буфер {(int)BufferedDuration.TotalSeconds} сек) | " +
             $"fps: {captureName} {(rcv - _lastReceived) / seconds:F1}, подано {(s - _lastSubmitted + dup - _lastDuplicated) / seconds:F1}, " +
-            $"закодировано {(e - _lastEncoded) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
+            $"закодировано {(e - _lastEncoded) / seconds:F1}, обработано {(processed - _lastProcessed) / seconds:F1}, запросов MFT {(req - _lastRequests) / seconds:F1}" +
             $", пресет {enc.QualityPreset}, кадров внутри MFT до {Interlocked.Exchange(ref enc.MaxInFlight, 0)}" +
             (blocked > _lastPacerBlocked ? $"; пейсер молчал {blocked - _lastPacerBlocked} раз (давление очереди/MFT)" : "") +
             (skipped > _lastSkippedBeforeConvert
@@ -172,6 +175,7 @@ public sealed partial class ReplayEngine
         LogMemory();
 
         _lastSubmitted = s; _lastEncoded = e; _lastDropped = d;
+        _lastProcessed = processed;
         _lastSkippedBeforeConvert = skipped;
         _lastSkippedSameSlot = sameSlot;
         _lastDiscardedDuplicates = discardedDuplicates;
@@ -316,6 +320,8 @@ public sealed partial class ReplayEngine
     // Каждые 5 сек проверяем приток кадров; тишина >15 сек запускает общую
     // generation-safe пересборку и при необходимости смену backend.
     private System.Threading.Timer? _watchdog;
+    private CaptureProcessingWatchdog _processingWatchdog = new();
+
     private long _wdLastReceived = -1;
     private DateTime _wdLastActivity = DateTime.UtcNow;
     private bool _wdEpisodeLogged; // логируем только начало эпизода тишины, не каждые 15 сек
@@ -500,6 +506,14 @@ public sealed partial class ReplayEngine
             long holdStarted = Interlocked.Read(ref _windowHoldStartedTimestamp);
             long holdMilliseconds = holdStarted == 0 ? 0 : ElapsedMilliseconds(holdStarted);
 
+            // Строку pull-режима печатаем только когда он включён: в обычном режиме
+            // эти счётчики нулевые и в логе только мешают.
+            string pullDetails = Encoding.PullPacing.Enabled
+                ? $" | pull свежих {Interlocked.Read(ref enc.PullSelected)}/" +
+                  $"повторов {Interlocked.Read(ref enc.PullRepeated)}/" +
+                  $"просрочено {Interlocked.Read(ref enc.PullOverdue)}/" +
+                  $"возраст {Interlocked.Read(ref enc.PullMaxSlotAgeTicks) / 10_000.0:F1} мс"
+                : "";
             Log.Info("Probe", $"получено {fpsRecv}, закодировано {fpsEnc}, запросов {fpsReq}, " +
                               $"дублей {fpsDup}, дропов {fpsDrop} | {captureLabel}/gen {broker.Generation}{routeDetails} " +
                               $"target {targetLabel}/quarantine {episode.Quarantines} | " +
@@ -509,7 +523,7 @@ public sealed partial class ReplayEngine
                               $"invalid {broker.InvalidCursorShapes} | DDA storms {_ddaStormCount}/" +
                               $"window retries {_windowRetryCount}/hold {holdMilliseconds} мс | " +
                               $"очередь {enc.QueueDepth}/{enc.MaxQueue} " +
-                              $"(пул {enc.PoolSlots}) | VRAM {vram}");
+                              $"(пул {enc.PoolSlots}) | VRAM {vram}{pullDetails}");
         }
         catch (Exception ex) { Log.Warn("Probe", $"Диагностика прервана: {ex.Message}"); }
     }
@@ -709,6 +723,7 @@ public sealed partial class ReplayEngine
 
         _wdLastReceived = -1;
         _wdLastRate = 0;
+        _processingWatchdog = new();
         _wdLastActivity = DateTime.UtcNow;
         _wdEvidenceSince = null;
         _wdStaticLogged = false;
@@ -722,219 +737,253 @@ public sealed partial class ReplayEngine
         _wdSilentOurGpu = _wdSilentGraphics = -1;
         _watchdog = new System.Threading.Timer(_ =>
         {
-            var cap = _pipeline.Capture;
-            bool frozen = ProcessWasFrozen(out double frozenSeconds);
-            if (cap is null || !_pipelineOpen || _stopRequested) return;
-
-            if (frozen)
+            try
             {
-                Log.Warn("Engine", $"Процесс Aura стоял {frozenSeconds:F1} с целиком (система не давала работать; " +
-                                   $"{SystemMemory()}) — это не зависание энкодера, проверку начинаю заново");
-                _wdEncoded = -1;
-                _wdEncodedAt = DateTime.UtcNow;
-                _wdLastActivity = DateTime.UtcNow;
-                return;
-            }
+                var pipeline = _pipeline;
+                var cap = pipeline.Capture;
+                bool frozen = ProcessWasFrozen(out double frozenSeconds);
+                if (cap is null || !_pipelineOpen || _stopRequested) return;
 
-            if (EncoderWedged(out double stuck, out bool starving))
-            {
-                // Устройство удалено: это настоящая потеря видеокарты (Windows
-                // сбросила её через TDR), а не тишина. Пересборка на новом устройстве.
-                if (_pipeline.Encoder?.DeviceRemoved() is string removed)
+                if (frozen)
                 {
-                    Log.Error("Engine", $"Энкодер молчит {stuck:F1} с, устройство удалено ({removed}) — пересобираю конвейер");
-                    long lostGeneration = Interlocked.Read(ref _captureGeneration);
+                    Log.Warn("Engine", $"Процесс Aura стоял {frozenSeconds:F1} с целиком (система не давала работать; " +
+                                       $"{SystemMemory()}) — это не зависание энкодера, проверку начинаю заново");
+                    _wdEncoded = -1;
+                    _wdEncodedAt = DateTime.UtcNow;
+                    _wdLastActivity = DateTime.UtcNow;
+                    return;
+                }
+
+                // FramesAccepted растёт ДО Convert: ошибки VP видны только по готовым кадрам.
+                long processed = Interlocked.Read(ref pipeline.FramesProcessed);
+                if (_processingWatchdog.Observe(cap.FramesReceived, processed,
+                        TimeSpan.FromMilliseconds(Environment.TickCount64),
+                        pipeline.Encoder?.InputQueueSaturated == true))
+                {
+                    _processingWatchdog = new();
+                    Log.Error("Engine", $"Живые кадры не обрабатываются 5 с " +
+                                        $"(получено {cap.FramesReceived}, обработано {processed}) — пересобираю конвейер");
                     OnCaptureFailed(new CaptureFailure(
                         CaptureFailureKind.DeviceLost,
-                        new InvalidOperationException($"устройство удалено: {removed}"),
-                        "видеокарта сброшена",
-                        lostGeneration,
-                        ActiveCaptureTarget()?.Revision ?? 0), lostGeneration);
+                        new InvalidOperationException("кадры захвата не обрабатываются"),
+                        "все кадры захвата отбрасываются",
+                        pipeline.Id,
+                        ActiveCaptureTarget()?.Revision ?? 0), pipeline.Id);
                     return;
                 }
-                // Встал прямой NVENC: пишем, на каком вызове, и до перезапуска
-                // программы кодируем через MFT — новая сессия NVENC рядом с
-                // зависшей не оживёт. Но не при голодании: там NVENC жив, а
-                // переход на MFT только очистил бы буфер повтора.
-                bool remoteHost = _pipeline.Encoder is { RemoteNvenc: true };
-                if (_pipeline.Encoder is { DirectNvenc: true } wedgedEncoder)
+
+                if (EncoderWedged(out double stuck, out bool starving))
                 {
-                    Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
-                    if (remoteHost)
+                    // Устройство удалено: это настоящая потеря видеокарты (Windows
+                    // сбросила её через TDR), а не тишина. Пересборка на новом устройстве.
+                    if (_pipeline.Encoder?.DeviceRemoved() is string removed)
                     {
-                        // NVENC в отдельном процессе: хост просто убивается, видеопамять
-                        // освобождает система, новый конвейер поднимет новый хост с тем
-                        // же NVENC — повтор не очищается. Голодание отказом не считается.
-                        wedgedEncoder.AbortHost($"энкодер молчит {stuck:F1} с — хост убит сторожем", countFailure: !starving);
+                        Log.Error("Engine", $"Энкодер молчит {stuck:F1} с, устройство удалено ({removed}) — пересобираю конвейер");
+                        long lostGeneration = Interlocked.Read(ref _captureGeneration);
+                        OnCaptureFailed(new CaptureFailure(
+                            CaptureFailureKind.DeviceLost,
+                            new InvalidOperationException($"устройство удалено: {removed}"),
+                            "видеокарта сброшена",
+                            lostGeneration,
+                            ActiveCaptureTarget()?.Revision ?? 0), lostGeneration);
+                        return;
                     }
-                    else if (!starving)
+                    // Встал прямой NVENC: пишем, на каком вызове, и до перезапуска
+                    // программы кодируем через MFT — новая сессия NVENC рядом с
+                    // зависшей не оживёт. Но не при голодании: там NVENC жив, а
+                    // переход на MFT только очистил бы буфер повтора.
+                    bool remoteHost = _pipeline.Encoder is { RemoteNvenc: true };
+                    if (_pipeline.Encoder is { DirectNvenc: true } wedgedEncoder)
                     {
-                        VideoEncoder.DirectNvencDisabled = true;
-                        Interlocked.Increment(ref NvencStats.FatalErrors);
+                        Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
+                        if (remoteHost)
+                        {
+                            // NVENC в отдельном процессе: хост просто убивается, видеопамять
+                            // освобождает система, новый конвейер поднимет новый хост с тем
+                            // же NVENC — повтор не очищается. Голодание отказом не считается.
+                            wedgedEncoder.AbortHost($"энкодер молчит {stuck:F1} с — хост убит сторожем", countFailure: !starving);
+                        }
+                        else if (!starving)
+                        {
+                            VideoEncoder.DirectNvencDisabled = true;
+                            Interlocked.Increment(ref NvencStats.FatalErrors);
+                        }
                     }
-                }
-                // Второй эпизод за сессию — видеокарта в этом процессе уже не
-                // оправится: каждая следующая пересборка вставала бы снова и
-                // оставляла брошенный конвейер (память и крутящийся в драйвере
-                // поток). Раньше так набегало 12 пересборок, 6 ГБ и 100% процессора.
-                // Сюда попадаем только после 20 с полной тишины (EncoderStallPolicy):
-                // энкодер, которого душит игра, столько не молчит.
-                // С хостом NVENC брошенных конвейеров нет: убитый хост ничего не
-                // оставляет в Aura. Повторы ограничивает счёт отказов хоста (после
-                // третьего MFT), а здесь останавливаемся только без хоста.
-                if (Interlocked.Increment(ref _wedgeCount) > 1 && !remoteHost)
-                {
-                    Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров; {SilenceGpuReport()}) — видеокарта не отвечает, " +
-                                        "повтор выключаю, чтобы не копить брошенные конвейеры");
-                    _ = Task.Run(() =>
+                    // Второй эпизод за сессию — видеокарта в этом процессе уже не
+                    // оправится: каждая следующая пересборка вставала бы снова и
+                    // оставляла брошенный конвейер (память и крутящийся в драйвере
+                    // поток). Раньше так набегало 12 пересборок, 6 ГБ и 100% процессора.
+                    // Сюда попадаем только после 20 с полной тишины (EncoderStallPolicy):
+                    // энкодер, которого душит игра, столько не молчит.
+                    // С хостом NVENC брошенных конвейеров нет: убитый хост ничего не
+                    // оставляет в Aura. Повторы ограничивает счёт отказов хоста (после
+                    // третьего MFT), а здесь останавливаемся только без хоста.
+                    if (Interlocked.Increment(ref _wedgeCount) > 1 && !remoteHost)
                     {
-                        try { Stop(); } catch (Exception ex) { Log.Error("Engine", ex); }
-                        Warning?.Invoke("Запись остановлена: видеокарта перестала отвечать. Перезапустите Aura.");
-                    });
+                        Log.Error("Engine", $"Энкодер снова встал ({stuck:F1} с без кадров; {SilenceGpuReport()}) — видеокарта не отвечает, " +
+                                            "повтор выключаю, чтобы не копить брошенные конвейеры");
+                        _ = Task.Run(() =>
+                        {
+                            try { Stop(); } catch (Exception ex) { Log.Error("Engine", ex); }
+                            Warning?.Invoke("Запись остановлена: видеокарта перестала отвечать. Перезапустите Aura.");
+                        });
+                        return;
+                    }
+                    Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом устройстве " +
+                                        $"({SilenceGpuReport()}) — " +
+                                        (starving ? "видеокарту занимает игра, пересобираю конвейер на том же энкодере"
+                                                  : "взаимная блокировка, пересобираю конвейер"));
+                    long wedgedGeneration = Interlocked.Read(ref _captureGeneration);
+                    // Встал энкодер, а не захват: пересобираем на том же захвате
+                    OnCaptureFailed(new CaptureFailure(
+                        CaptureFailureKind.DeviceLost,
+                        new InvalidOperationException($"энкодер молчит {stuck:F0} с"),
+                        "конвейер встал",
+                        wedgedGeneration,
+                        ActiveCaptureTarget()?.Revision ?? 0), wedgedGeneration);
                     return;
                 }
-                Log.Error("Engine", $"Энкодер не выдал ни одного кадра {stuck:F1} с при живом устройстве " +
-                                    $"({SilenceGpuReport()}) — " +
-                                    (starving ? "видеокарту занимает игра, пересобираю конвейер на том же энкодере"
-                                              : "взаимная блокировка, пересобираю конвейер"));
-                long wedgedGeneration = Interlocked.Read(ref _captureGeneration);
-                // Встал энкодер, а не захват: пересобираем на том же захвате
-                OnCaptureFailed(new CaptureFailure(
-                    CaptureFailureKind.DeviceLost,
-                    new InvalidOperationException($"энкодер молчит {stuck:F0} с"),
-                    "конвейер встал",
-                    wedgedGeneration,
-                    ActiveCaptureTarget()?.Revision ?? 0), wedgedGeneration);
-                return;
-            }
-            if (!checkCaptureSilence) return;
+                if (!checkCaptureSilence) return;
 
-            long received = cap.FramesReceived;
-            if (received != _wdLastReceived)
-            {
-                // Запоминаем темп последнего живого окна: по нему и судим, тишина
-                // это поломка или законное затишье (см. ниже).
-                var now = DateTime.UtcNow;
-                double window = (now - _wdLastActivity).TotalSeconds;
-                if (_wdLastReceived >= 0 && window > 0.5)
-                    _wdLastRate = (received - _wdLastReceived) / window;
-
-                _wdLastReceived = received;
-                _wdLastActivity = now;
-                _wdEpisodeLogged = false;
-                _wdSilenceLogged = false;
-                _wdStaticLogged = false;
-                _wdEvidenceSince = null;
-                _wdCursor = CursorPosition();
-                _wdInputTick = LastInputTick();
-                return;
-            }
-            double silent = (DateTime.UtcNow - _wdLastActivity).TotalSeconds;
-
-            // Порог пересборки зависит от того, ЧТО мы снимаем.
-            //
-            // Игра показывает кадры непрерывно, поэтому её молчание дольше пяти
-            // секунд — это уже сломанный захват, и ждать пятнадцать значит подарить
-            // буферу десять секунд пустоты. На рабочем столе всё наоборот: WGC
-            // отдаёт кадры по композиции, а если на экране ничего не меняется,
-            // композиции может не быть вовсе. Там короткий порог давал бы ложные
-            // пересборки на ровном месте.
-            var target = ActiveCaptureTarget();
-
-            // Судим по ТЕМПУ последнего живого окна, а не по тому, что снимаем.
-            //
-            // WGC отдаёт кадры по композиции рабочего стола. Если на экране ничего
-            // не меняется, композиции может не быть вовсе, и молчание там законно —
-            // короткий порог давал бы пересборки на ровном месте. Но если секунду
-            // назад шло шестьдесят кадров в секунду, а теперь ноль, это поломка,
-            // и ждать пятнадцать секунд значит подарить буферу столько же пустоты.
-            //
-            // Отдельный случай — физически выключенный монитор. Событие питания при
-            // этом не приходит вовсе: для Windows это отключение дисплея от шины,
-            // а не погашенный экран. В логе такой эпизод выглядел как ровные 60 fps
-            // и сразу за ними тишина.
-            // Окно игры рисует кадры непрерывно: его молчание — уже поломка.
-            const double rebuildAfter = 3;
-            if (target is null)
-            {
-                // РАБОЧИЙ СТОЛ. WGC присылает кадры только когда экран меняется, и
-                // молчание статичного экрана — норма, а не поломка. Раньше тишина
-                // после живого потока через 3 секунды пересобирала конвейер и
-                // переводила захват на Desktop Duplication: на каждой паузе у экрана.
-                // Теперь поломкой считается только молчание, когда экран ТОЧНО
-                // должен был измениться: WGC рисует курсор в кадр, и сдвиг мыши
-                // обязан дать кадр. Если курсор не записывается, признак — ввод с
-                // клавиатуры. Выключенный монитор без ввода тоже молчит законно;
-                // вернётся человек, сдвинет мышь — и если WGC не ожил, пересоберём.
-                bool cursorComposed = _settings.Current.RecordCursor;
-                var cursorNow = CursorPosition();
-                // Несколько мониторов: курсор, гуляющий по другому экрану, и ввод в
-                // окно на другом экране записываемый монитор не меняют. Раньше это
-                // считалось доказательством поломки, и захват пересобирался зря.
-                var screen = Aura.Core.Capture.MonitorLayout.For(_settings.Current.MonitorIndex);
-                bool cursorMoved = cursorNow != _wdCursor &&
-                                   (OnScreen(screen, cursorNow) || OnScreen(screen, _wdCursor));
-                bool inputHappened = LastInputTick() != _wdInputTick && ForegroundOnScreen(screen);
-                // Экран блокировки, UAC и Ctrl+Alt+Del живут на отдельном защищённом
-                // рабочем столе, и WGC его не отдаёт. Ввод PIN там выглядел как
-                // «клавиши жмут, а кадров нет» и пересобирал захват на ровном месте.
-                bool secureDesktop = !IsDefaultInputDesktop();
-                bool evidence = !secureDesktop &&
-                                (cursorComposed ? cursorMoved : inputHappened && !cursorMoved);
-                if (!evidence)
+                long received = cap.FramesReceived;
+                if (received != _wdLastReceived)
                 {
+                    // Запоминаем темп последнего живого окна: по нему и судим, тишина
+                    // это поломка или законное затишье (см. ниже).
+                    var now = DateTime.UtcNow;
+                    double window = (now - _wdLastActivity).TotalSeconds;
+                    if (_wdLastReceived >= 0 && window > 0.5)
+                        _wdLastRate = (received - _wdLastReceived) / window;
+
+                    _wdLastReceived = received;
+                    _wdLastActivity = now;
+                    _wdEpisodeLogged = false;
+                    _wdSilenceLogged = false;
+                    _wdStaticLogged = false;
                     _wdEvidenceSince = null;
-                    if (silent >= 3 && !_wdStaticLogged)
-                    {
-                        _wdStaticLogged = true;
-                        Log.Info("Engine", "WGC молчит: экран не меняется — это норма, пейсер держит частоту дубликатами");
-                    }
+                    _wdCursor = CursorPosition();
+                    _wdInputTick = LastInputTick();
                     return;
                 }
-                _wdEvidenceSince ??= DateTime.UtcNow;
-                silent = (DateTime.UtcNow - _wdEvidenceSince.Value).TotalSeconds;
-                // Клавиатура — признак слабый: нажатия бывают и без перемен на экране
-                // (модификаторы, горячие клавиши, ввод в свёрнутое окно). Без курсора в
-                // кадре ждём дольше, чтобы не пересобирать из-за них.
-                if (!cursorComposed) silent -= KeyboardEvidenceGrace;
-            }
+                double silent = (DateTime.UtcNow - _wdLastActivity).TotalSeconds;
 
-            // Ранняя запись в лог: она не чинит захват, но без неё причина эпизода
-            // терялась. Пересборка стирает и очередь, и состояние источника, то есть
-            // всё, по чему потом можно было бы понять, что именно встало.
-            if (silent >= 3 && !_wdSilenceLogged)
+                // Порог пересборки зависит от того, ЧТО мы снимаем.
+                //
+                // Игра показывает кадры непрерывно, поэтому её молчание дольше пяти
+                // секунд — это уже сломанный захват, и ждать пятнадцать значит подарить
+                // буферу десять секунд пустоты. На рабочем столе всё наоборот: WGC
+                // отдаёт кадры по композиции, а если на экране ничего не меняется,
+                // композиции может не быть вовсе. Там короткий порог давал бы ложные
+                // пересборки на ровном месте.
+                var target = ActiveCaptureTarget();
+
+                // Судим по ТЕМПУ последнего живого окна, а не по тому, что снимаем.
+                //
+                // WGC отдаёт кадры по композиции рабочего стола. Если на экране ничего
+                // не меняется, композиции может не быть вовсе, и молчание там законно —
+                // короткий порог давал бы пересборки на ровном месте. Но если секунду
+                // назад шло шестьдесят кадров в секунду, а теперь ноль, это поломка,
+                // и ждать пятнадцать секунд значит подарить буферу столько же пустоты.
+                //
+                // Отдельный случай — физически выключенный монитор. Событие питания при
+                // этом не приходит вовсе: для Windows это отключение дисплея от шины,
+                // а не погашенный экран. В логе такой эпизод выглядел как ровные 60 fps
+                // и сразу за ними тишина.
+                // Окно игры рисует кадры непрерывно: его молчание — уже поломка.
+                const double rebuildAfter = 3;
+                if (target is null)
+                {
+                    // РАБОЧИЙ СТОЛ. WGC присылает кадры только когда экран меняется, и
+                    // молчание статичного экрана — норма, а не поломка. Раньше тишина
+                    // после живого потока через 3 секунды пересобирала конвейер и
+                    // переводила захват на Desktop Duplication: на каждой паузе у экрана.
+                    // Теперь поломкой считается только молчание, когда экран ТОЧНО
+                    // должен был измениться: WGC рисует курсор в кадр, и сдвиг мыши
+                    // обязан дать кадр. Если курсор не записывается, признак — ввод с
+                    // клавиатуры. Выключенный монитор без ввода тоже молчит законно;
+                    // вернётся человек, сдвинет мышь — и если WGC не ожил, пересоберём.
+                    bool cursorComposed = _settings.Current.RecordCursor;
+                    var cursorNow = CursorPosition();
+                    // Несколько мониторов: курсор, гуляющий по другому экрану, и ввод в
+                    // окно на другом экране записываемый монитор не меняют. Раньше это
+                    // считалось доказательством поломки, и захват пересобирался зря.
+                    var screen = Aura.Core.Capture.MonitorLayout.For(_settings.Current.MonitorIndex);
+                    bool cursorMoved = cursorNow != _wdCursor &&
+                                       (OnScreen(screen, cursorNow) || OnScreen(screen, _wdCursor));
+                    bool inputHappened = LastInputTick() != _wdInputTick && ForegroundOnScreen(screen);
+                    // Экран блокировки, UAC и Ctrl+Alt+Del живут на отдельном защищённом
+                    // рабочем столе, и WGC его не отдаёт. Ввод PIN там выглядел как
+                    // «клавиши жмут, а кадров нет» и пересобирал захват на ровном месте.
+                    bool secureDesktop = !IsDefaultInputDesktop();
+                    bool evidence = !secureDesktop &&
+                                    (cursorComposed ? cursorMoved : inputHappened && !cursorMoved);
+                    if (!evidence)
+                    {
+                        _wdEvidenceSince = null;
+                        if (silent >= 3 && !_wdStaticLogged)
+                        {
+                            _wdStaticLogged = true;
+                            Log.Info("Engine", "WGC молчит: экран не меняется — это норма, пейсер держит частоту дубликатами");
+                        }
+                        return;
+                    }
+                    // Между записью и чтением поле может обнулить второй колбэк сторожа
+                    // (старый таймер ещё в полёте после пересоздания), и .Value бросал
+                    // «Nullable object must have a value» — процесс падал вместе с
+                    // несохранённым клипом. Берём копию: она стать null уже не может.
+                    DateTime evidenceSince = _wdEvidenceSince ?? DateTime.UtcNow;
+                    _wdEvidenceSince = evidenceSince;
+                    silent = (DateTime.UtcNow - evidenceSince).TotalSeconds;
+                    // Клавиатура — признак слабый: нажатия бывают и без перемен на экране
+                    // (модификаторы, горячие клавиши, ввод в свёрнутое окно). Без курсора в
+                    // кадре ждём дольше, чтобы не пересобирать из-за них.
+                    if (!cursorComposed) silent -= KeyboardEvidenceGrace;
+                }
+
+                // Ранняя запись в лог: она не чинит захват, но без неё причина эпизода
+                // терялась. Пересборка стирает и очередь, и состояние источника, то есть
+                // всё, по чему потом можно было бы понять, что именно встало.
+                if (silent >= 3 && !_wdSilenceLogged)
+                {
+                    _wdSilenceLogged = true;
+                    string vram = GpuInfo.Usage(cap.D3DDevice) is { } usage
+                        ? $"{usage.UsedMb}/{usage.BudgetMb} МБ"
+                        : "не читается";
+                    string captureName = _captureBackend == CaptureBackend.Wgc ? "WGC" : "DDA";
+                    Log.Warn("Engine", $"Захват молчит {silent:F1} с: backend {captureName}, " +
+                                       $"цель {(target is { } captureTarget ? $"окно 0x{captureTarget.Hwnd:X}/r{captureTarget.Revision}" : "рабочий стол")}, " +
+                                       $"получено всего {received}, темп до тишины {_wdLastRate:F0} кадр/с, " +
+                                       $"очередь энкодера {_pipeline.Encoder?.QueueDepth ?? -1}, " +
+                                       $"видеопамять {vram}; пересборка через {rebuildAfter - silent:F1} с");
+                }
+
+                if (silent < rebuildAfter) return;
+
+                _wdLastActivity = DateTime.UtcNow;
+                _wdSilenceLogged = false;
+                _wdEvidenceSince = null;
+                if (!_wdEpisodeLogged)
+                {
+                    _wdEpisodeLogged = true;
+                    Log.Warn("Engine", $"Захват молчит >{rebuildAfter:F0} сек — пересобираю видеоконвейер");
+                }
+                long generation = Interlocked.Read(ref _captureGeneration);
+                var stalled = new InvalidOperationException(
+                    $"WGC не присылает кадры больше {rebuildAfter:F0} секунд");
+                OnCaptureFailed(new CaptureFailure(
+                    CaptureFailureKind.BackendStalled,
+                    stalled,
+                    "WGC: поток кадров остановился",
+                    generation,
+                    target?.Revision ?? 0), generation);
+            }
+            catch (Exception ex)
             {
-                _wdSilenceLogged = true;
-                string vram = GpuInfo.Usage(cap.D3DDevice) is { } usage
-                    ? $"{usage.UsedMb}/{usage.BudgetMb} МБ"
-                    : "не читается";
-                string captureName = _captureBackend == CaptureBackend.Wgc ? "WGC" : "DDA";
-                Log.Warn("Engine", $"Захват молчит {silent:F1} с: backend {captureName}, " +
-                                   $"цель {(target is null ? "рабочий стол" : $"окно 0x{target.Value.Hwnd:X}/r{target.Value.Revision}")}, " +
-                                   $"получено всего {received}, темп до тишины {_wdLastRate:F0} кадр/с, " +
-                                   $"очередь энкодера {_pipeline.Encoder?.QueueDepth ?? -1}, " +
-                                   $"видеопамять {vram}; пересборка через {rebuildAfter - silent:F1} с");
+                // Сторож не имеет права ронять запись: исключение в колбэке
+                // таймера — это необработанное исключение процесса, и клип
+                // теряется вместе с ним (так уже было при нехватке памяти).
+                Log.Error("Engine", $"Сторож захвата упал: {ex.Message}");
             }
-
-            if (silent < rebuildAfter) return;
-
-            _wdLastActivity = DateTime.UtcNow;
-            _wdSilenceLogged = false;
-            _wdEvidenceSince = null;
-            if (!_wdEpisodeLogged)
-            {
-                _wdEpisodeLogged = true;
-                Log.Warn("Engine", $"Захват молчит >{rebuildAfter:F0} сек — пересобираю видеоконвейер");
-            }
-            long generation = Interlocked.Read(ref _captureGeneration);
-            var stalled = new InvalidOperationException(
-                $"WGC не присылает кадры больше {rebuildAfter:F0} секунд");
-            OnCaptureFailed(new CaptureFailure(
-                CaptureFailureKind.BackendStalled,
-                stalled,
-                "WGC: поток кадров остановился",
-                generation,
-                target?.Revision ?? 0), generation);
         }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
     }
 }

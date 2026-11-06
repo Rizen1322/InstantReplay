@@ -1,4 +1,4 @@
-﻿using Aura.Core.Capture;
+using Aura.Core.Capture;
 using Xunit;
 
 namespace InstantReplay.Tests;
@@ -6,22 +6,24 @@ namespace InstantReplay.Tests;
 public sealed class DdaCursorVisibilityTests
 {
     [Fact]
-    public void Hidden_by_system_hides_even_when_dda_reports_visible()
+    public void Hidden_by_system_does_not_invent_pointer_event()
     {
+        // Сценарий из жалобы: игра прячет курсор и держит его в центре, DDA больше
+        // не присылает обновлений. Спрятать курсор надо, но позиции при этом НЕ
+        // выдумываем: по HasPosition захват решает, изменилась ли картинка, и
+        // «спрятан» превращалось в кадр записи на каждое движение мыши.
         var (hasPosition, visible) = DdaCursorVisibility.Merge(
-            ddaHasPosition: true, ddaVisible: true, systemShowing: false);
+            ddaHasPosition: false, ddaVisible: false, systemShowing: false);
 
-        Assert.True(hasPosition);
+        Assert.False(hasPosition);
         Assert.False(visible);
     }
 
     [Fact]
-    public void Hidden_by_system_hides_when_dda_sent_no_update()
+    public void Hidden_by_system_keeps_real_pointer_update()
     {
-        // Сценарий из жалобы: игра прячет курсор и держит его в центре, DDA больше
-        // не присылает обновлений. Без этого правила курсор так и висел в записи.
         var (hasPosition, visible) = DdaCursorVisibility.Merge(
-            ddaHasPosition: false, ddaVisible: false, systemShowing: false);
+            ddaHasPosition: true, ddaVisible: true, systemShowing: false);
 
         Assert.True(hasPosition);
         Assert.False(visible);
@@ -58,9 +60,12 @@ public sealed class DdaCursorVisibilityTests
         Assert.True(state.Current.Visible);
 
         // Игра перешла в обзор мышью: DDA молчит, система говорит «спрятан».
+        // Позиция остаётся прежней — её никто не присылал.
         var (hasPosition, visible) = DdaCursorVisibility.Merge(false, false, systemShowing: false);
-        state.Apply(1, new CaptureCursorUpdate(CaptureCursorMode.Separate, hasPosition, visible, 0, 0, null));
+        state.Apply(1, new CaptureCursorUpdate(
+            CaptureCursorMode.Separate, hasPosition, visible, 0, 0, null, HasVisibility: true));
 
         Assert.False(state.Current.Visible);
+        Assert.Equal((960, 540), (state.Current.X, state.Current.Y));
     }
 }

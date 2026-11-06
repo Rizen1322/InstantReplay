@@ -302,34 +302,64 @@ public static class ScreenshotService
     /// Кадр 2560×1440 это 14 МБ, и выделять их заново на каждый снимок незачем:
     /// оверлей выделения держит свой буфер между вызовами.
     /// </summary>
+    /// <summary>
+    /// Снимок пикселей с текстурой кадра. Зовётся с чужого потока и НЕ берёт общий
+    /// замок устройства намеренно: копия и Map не зависят от состояния конвейера
+    /// (их поштучную безопасность даёт многопоточная защита D3D11), а Map ждёт
+    /// видеокарту — под общим замком он остановил бы захват на всё это время.
+    /// Кадр держит вызывающий: пока он жив, текстуру никто не перезапишет.
+    ///
+    /// STAGING-ТЕКСТУРА ПЕРЕИСПОЛЬЗУЕТСЯ. Раньше она создавалась и уничтожалась на
+    /// каждый вызов, а живой кадр главного экрана читается раз в пару секунд — это
+    /// десятки созданий и освобождений 14 МБ видеопамяти в минуту прямо во время
+    /// игры. Держим одну на размер; замок свой, чтобы два снимка не сели на неё
+    /// одновременно.
+    /// </summary>
     public static (byte[] Bgra, int W, int H) ReadPixels(
         ID3D11Device device, ID3D11DeviceContext context, ID3D11Texture2D texture, byte[]? into = null)
     {
         var desc = texture.Description;
-        using var staging = device.CreateTexture2D(desc with
+        lock (StagingSync)
         {
-            Usage = ResourceUsage.Staging,
-            BindFlags = BindFlags.None,
-            CPUAccessFlags = CpuAccessFlags.Read,
-            MiscFlags = ResourceOptionFlags.None
-        });
-        context.CopyResource(staging, texture);
-
-        var mapped = context.Map(staging, 0, MapMode.Read);
-        try
-        {
-            int w = (int)desc.Width, h = (int)desc.Height;
-            int size = w * h * 4;
-            var bytes = into is not null && into.Length >= size ? into : new byte[size];
-            unsafe
+            if (_staging is null || _stagingWidth != desc.Width || _stagingHeight != desc.Height ||
+                _stagingFormat != desc.Format)
             {
-                byte* src = (byte*)mapped.DataPointer;
-                for (int row = 0; row < h; row++)
-                    new Span<byte>(src + row * mapped.RowPitch, w * 4)
-                        .CopyTo(bytes.AsSpan(row * w * 4));
+                _staging?.Dispose();
+                _staging = device.CreateTexture2D(desc with
+                {
+                    Usage = ResourceUsage.Staging,
+                    BindFlags = BindFlags.None,
+                    CPUAccessFlags = CpuAccessFlags.Read,
+                    MiscFlags = ResourceOptionFlags.None
+                });
+                _stagingWidth = desc.Width;
+                _stagingHeight = desc.Height;
+                _stagingFormat = desc.Format;
             }
-            return (bytes, w, h);
+
+            context.CopyResource(_staging, texture);
+
+            var mapped = context.Map(_staging, 0, MapMode.Read);
+            try
+            {
+                int w = (int)desc.Width, h = (int)desc.Height;
+                int size = w * h * 4;
+                var bytes = into is not null && into.Length >= size ? into : new byte[size];
+                unsafe
+                {
+                    byte* src = (byte*)mapped.DataPointer;
+                    for (int row = 0; row < h; row++)
+                        new Span<byte>(src + row * mapped.RowPitch, w * 4)
+                            .CopyTo(bytes.AsSpan(row * w * 4));
+                }
+                return (bytes, w, h);
+            }
+            finally { context.Unmap(_staging, 0); }
         }
-        finally { context.Unmap(staging, 0); }
     }
+
+    private static readonly object StagingSync = new();
+    private static ID3D11Texture2D? _staging;
+    private static uint _stagingWidth, _stagingHeight;
+    private static Vortice.DXGI.Format _stagingFormat;
 }

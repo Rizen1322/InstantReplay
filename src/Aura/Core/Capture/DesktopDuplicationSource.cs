@@ -56,7 +56,11 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     private long _minFrameIntervalTicks;
     private long _lastAcceptedTicks;
+    private long _lastImageTicks;
     private bool _firstFrameSinceStart;
+    /// <summary>Отбор по сетке слотов (эксперимент AURA_CAPTURE_GATE=1); null — по времени.</summary>
+    private Encoding.CaptureSlotGate? _slotGate;
+    private readonly DdaCursorTracker _cursorTracker = new();
     private readonly DdaLifecycleMonitor _lifecycle = new(
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(2),
@@ -82,8 +86,11 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             _prepared = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _lastAcceptedTicks = 0;
+            _lastImageTicks = 0;
+            _slotGate = Encoding.CaptureGate.UsesSlotGate && targetFps > 0 ? new Encoding.CaptureSlotGate(targetFps, Encoding.CaptureGate.PerSlot) : null;
             _firstFrameSinceStart = true;
             _lifecycle.Reset();
+            _cursorTracker.Reset();
             _resetCursorOnNextFrame = 1;
             _cursorValidationWarnings.Clear();
             Interlocked.Exchange(ref _framesReceived, 0);
@@ -324,7 +331,11 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // (в тестах: 1000 дропнутых кадров в минуту против нуля).
                 // Desktop Duplication накапливает обновления и отдаёт самый свежий кадр,
                 // так что ожидание ничего не теряет.
-                if (_minFrameIntervalTicks > 0 && _lastAcceptedTicks > 0)
+                //
+                // В экспериментальном режиме (AURA_CAPTURE_GATE=1) ждать нечего: отбор
+                // идёт по сетке слотов, и ждать до фиксированного интервала значило бы
+                // отдавать пейсеру меньше кандидатов, чем он может взять.
+                if (!Encoding.CaptureGate.WantsUnlimitedDelivery && _minFrameIntervalTicks > 0 && _lastAcceptedTicks > 0)
                 {
                     // Тот же предел, что в отборе ниже: ближе к прошлому кадр всё
                     // равно лишний (см. EncoderCfrPolicy.CaptureMinIntervalTicks)
@@ -385,8 +396,9 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // одного кадра, и одноразовый захват отваливался по таймауту.
                 // Позицию и форму курсора забираем ДО отбора кадров: система присылает
                 // их и в кадрах, где картинка не менялась, а второй раз их не повторит.
-                CaptureCursorUpdate cursor = ReadCursorUpdate(dup, frameInfo);
-                bool cursorChanged = cursor.HasPosition || cursor.Shape is not null;
+                // Всё, что не уедет с этим кадром, трекер оставит до следующего.
+                CaptureCursorUpdate cursorUpdate = ReadCursorUpdate(dup, frameInfo);
+                bool cursorChanged = _cursorTracker.Track(cursorUpdate);
 
                 if (!DesktopFramePolicy.ShouldCapture(
                         frameInfo.AccumulatedFrames, _firstFrameSinceStart, cursorChanged))
@@ -399,8 +411,18 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     ? QpcToTicks(frameInfo.LastPresentTime)
                     : QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
 
-                // Слот сетки выбирает энкодер, здесь только предел в два кадра на слот
-                if (Encoding.EncoderCfrPolicy.CaptureTooSoon(ticks, _lastAcceptedTicks, _targetFps)) continue;
+                // Слот сетки выбирает энкодер, здесь только предел в два кадра на слот.
+                // Кадры «только курсор» и настоящие кадры считаются РАЗДЕЛЬНО: иначе
+                // событие мыши, принятое за пару миллисекунд до кадра игры, отменяло
+                // сам кадр — и в запись уходил повтор вместо нового изображения.
+                bool hasNewImage = frameInfo.AccumulatedFrames > 0;
+                long gateTicks = hasNewImage ? _lastImageTicks : _lastAcceptedTicks;
+                bool admitted = _slotGate is { } slotGate
+                    ? slotGate.Admit(ticks)
+                    : !Encoding.EncoderCfrPolicy.CaptureTooSoon(ticks, gateTicks, _targetFps);
+                if (!admitted) continue;
+
+                if (hasNewImage) _lastImageTicks = ticks;
                 _lastAcceptedTicks = ticks;
 
                 Interlocked.Increment(ref _framesAccepted);
@@ -410,9 +432,10 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     texture,
                     ticks,
                     _generation,
-                    cursor,
+                    _cursorTracker.Capture,
                     CaptureSurfaceScope.Monitor,
                     TargetRevision: 0));
+                _cursorTracker.Delivered();
             }
             catch (Exception ex)
             {
@@ -488,10 +511,14 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 CaptureCursorMode.Separate, false, false, 0, 0, null, resetState);
 
         bool ddaHasPosition = info.LastMouseUpdateTime != 0;
+        bool? systemShowing = SystemCursorShowing();
         var (hasPosition, visible) = DdaCursorVisibility.Merge(
             ddaHasPosition,
             info.PointerPosition.Visible,
-            SystemCursorShowing());
+            systemShowing);
+        // Видимость известна, если система ответила (даже «спрятан») или DDA сама
+        // прислала позицию. Без этого скрытие неподвижного курсора не доехало бы.
+        bool hasVisibility = hasPosition || systemShowing.HasValue;
         int x = ddaHasPosition ? info.PointerPosition.Position.X : 0;
         int y = ddaHasPosition ? info.PointerPosition.Position.Y : 0;
         DdaCursorShape? cursorShape = null;
@@ -547,7 +574,8 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             x,
             y,
             cursorShape,
-            resetState);
+            resetState,
+            hasVisibility);
     }
 
     /// <summary>

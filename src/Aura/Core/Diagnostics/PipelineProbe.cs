@@ -92,6 +92,8 @@ public static class PipelineProbe
     public static readonly Stage Convert = new("NV12");
     /// <summary>Копия NV12 в кольцевой пул текстур энкодера + постановка в очередь.</summary>
     public static readonly Stage Submit = new("копия+очередь");
+    public static readonly Stage SharedAcquire = new("ключ пула (CPU)");
+    public static readonly Stage PoolCopy = new("CopyResource пула (CPU)");
     /// <summary>Подача кадра в MFT (ProcessInput).</summary>
     public static readonly Stage ProcessInput = new("MFT-вход");
     /// <summary>Выемка сжатого кадра из MFT + копия битстрима в RAM.</summary>
@@ -112,7 +114,7 @@ public static class PipelineProbe
     /// <summary>Строка для минутного лога. Сбрасывает счётчики.</summary>
     public static string TakeReport()
     {
-        var stages = new[] { CaptureCopy, Convert, Submit, ProcessInput, DrainOutput };
+        var stages = new[] { CaptureCopy, Convert, Submit, SharedAcquire, PoolCopy, ProcessInput, DrainOutput };
         long peak = Interlocked.Exchange(ref _queuePeak, 0);
 
         var parts = new List<string>(stages.Length + 1);

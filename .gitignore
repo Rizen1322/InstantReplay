@@ -65,3 +65,12 @@ artifacts/bitrate-compare/
 # Локальные выхлопы: нативные сборки build_setup.ps1, сравнения и диагностика.
 # Сотни мегабайт — `git add -A` в release.ps1 не должен их втащить.
 artifacts/
+
+# Локальные замеры, настройки агента и архивы исходников.
+.build-temp/
+.vscode/
+src/Aura/Core.7z
+src/Aura/Core.zip
+src/Aura/core_code.txt
+src/Aura/core_part2.txt
+src/Aura/core_part3.txt

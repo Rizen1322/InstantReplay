@@ -62,11 +62,13 @@ public sealed class EncoderQueueAdmissionPolicyTests
     }
 
     [Theory]
-    [InlineData(1, 150, false)]
-    [InlineData(8, 1100, false)]
+    [InlineData(1, 150, true)]
+    [InlineData(8, 1100, true)]
+    [InlineData(20, 0, false)]
+    [InlineData(20, 1100, false)]
     [InlineData(1, 99, true)]
     [InlineData(0, 0, true)]
-    public void Stale_queue_does_not_receive_more_gpu_copies_of_duplicate_frames(
+    public void Queue_age_does_not_leave_holes_in_CFR_when_capacity_is_available(
         int depth, double ageMs, bool append)
     {
         Assert.Equal(append ? EncoderQueueAdmission.Append : EncoderQueueAdmission.RejectDuplicate,

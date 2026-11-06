@@ -78,7 +78,7 @@ internal static class ForegroundGameWindowProbe
         }
         catch (Exception ex)
         {
-            Log.Warn("Capture", $"Игровое окно не определено: {ex.Message}");
+            Log.Warn("Capture", $"Игровое окно не определено (проверка процесса/окна, до WGC): {ex}");
             return null;
         }
     }

@@ -1,5 +1,22 @@
 ﻿namespace Aura.Core.Capture;
 
+/// <summary>Отличает сбой обработки живых кадров от статичного экрана и перегрузки.</summary>
+internal sealed class CaptureProcessingWatchdog
+{
+    private long _received = -1, _processed = -1;
+    private TimeSpan? _stalledSince;
+
+    public bool Observe(long received, long processed, TimeSpan now, bool queueSaturated)
+    {
+        bool stalled = _received >= 0 && received > _received && processed == _processed && !queueSaturated;
+        _received = received;
+        _processed = processed;
+        if (!stalled) { _stalledSince = null; return false; }
+        _stalledSince ??= now;
+        return now - _stalledSince.Value >= TimeSpan.FromSeconds(5);
+    }
+}
+
 internal enum CaptureQuarantine
 {
     Transient,

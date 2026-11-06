@@ -232,7 +232,8 @@ internal sealed class EncoderTexturePool : IDisposable
     /// Лок на устройстве: контекст D3D один на конвейер, а копии делают и поток
     /// захвата, и пейсер.
     /// </summary>
-    public ID3D11Texture2D? TryCopy(ID3D11Texture2D source, ID3D11DeviceContext context)
+    public ID3D11Texture2D? TryCopy(ID3D11Texture2D source, ID3D11DeviceContext context,
+                                  Diagnostics.GpuStageTimer? gpuTimer = null)
     {
         int slot = _ledger.TryTake();
         if (slot < 0) return null;
@@ -242,7 +243,9 @@ internal sealed class EncoderTexturePool : IDisposable
             var shared = _shared[slot]!;
             // Свободный слот энкодер уже вернул ключом 0, так что ждать тут нечего;
             // таймаут — на случай сбоя, чтобы не повесить поток захвата.
+            long acquireStart = Diagnostics.PipelineProbe.Now();
             int acquired = AcquireSync(shared.CaptureLock, 0, 20);
+            Diagnostics.PipelineProbe.SharedAcquire.Add(acquireStart, Diagnostics.PipelineProbe.Now());
             if (acquired == WaitAbandoned)
             {
                 // Слот в карантин: в учёт не возвращаем, пиксели не трогаем
@@ -262,7 +265,14 @@ internal sealed class EncoderTexturePool : IDisposable
                     return null;
                 }
             }
-            lock (_device) context.CopyResource(shared.Capture, source);
+            long copyStart = Diagnostics.PipelineProbe.Now();
+            lock (_device)
+            {
+                gpuTimer?.Mark(context);
+                context.CopyResource(shared.Capture, source);
+                gpuTimer?.Mark(context);
+            }
+            Diagnostics.PipelineProbe.PoolCopy.Add(copyStart, Diagnostics.PipelineProbe.Now());
             shared.CaptureLock.ReleaseSync(1);      // отпускает и отправляет копию видеокарте
             shared.Written = true;
             return shared.Capture;
@@ -289,7 +299,9 @@ internal sealed class EncoderTexturePool : IDisposable
         }
         lock (_device)
         {
+            gpuTimer?.Mark(context);
             context.CopyResource(destination, source);
+            gpuTimer?.Mark(context);
             // Сразу отправить копию видеокарте: энкодер берёт кадр из другого потока,
             // и копия не должна ждать в буфере команд, пока его отправит кто-то ещё.
             context.Flush();

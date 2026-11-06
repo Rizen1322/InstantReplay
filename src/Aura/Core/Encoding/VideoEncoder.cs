@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Vortice.Direct3D11;
 using Vortice.MediaFoundation;
 using Aura.Core.Buffering;
@@ -149,6 +149,34 @@ public sealed class VideoEncoder : IDisposable
     private long _lastRealPts;
     private long _lastRealTicks;          // исходное время захвата того же кадра
     private long _lastRealArrivalWall;
+
+    // ---------------- Экспериментальный pull-пейсинг ----------------
+    //
+    // Здесь слот идёт по ЧАСАМ ВЫХОДНОГО ВИДЕО (см. PullCfrPolicy), а кадр захвата
+    // его не занимает: он становится кандидатом, и пейсер в момент слота берёт самый
+    // свежий. Пока переменная AURA_PULL_PACING не задана, работает прежний путь
+    // целиком — он не тронут ни одной строкой.
+
+    /// <summary>Читается один раз: смена сетки посреди записи разорвала бы PTS.</summary>
+    private readonly bool _pullPacing = PullPacing.Enabled;
+    private readonly object _pullLock = new();
+    private PullCandidate _pullCandidate;
+    private long _pullSequence;
+    private long _pullLastClosedSlot = -1;
+    private long _pullLastContentTicks = long.MinValue;
+
+    /// <summary>Сколько слотов закрывать за один тик пейсера при догонянии.</summary>
+    private const int PullMaxBurstPerTick = 4;
+
+    // Телеметрия pull-режима: по ней и решается, лучше ли стало на живом экране.
+    /// <summary>Слотов закрыто свежим кадром.</summary>
+    public long PullSelected;
+    /// <summary>Слотов закрыто повтором (кадр не успел или не изменился).</summary>
+    public long PullRepeated;
+    /// <summary>Слотов, просроченных сверх потолка догоняния (пейсер не успевал).</summary>
+    public long PullOverdue;
+    /// <summary>Максимальный возраст выбранного кадра относительно слота, тики.</summary>
+    public long PullMaxSlotAgeTicks;
 
     // Статистика для диагностики (скидывается в лог движком)
     public long FramesSubmitted;
@@ -1594,7 +1622,8 @@ public sealed class VideoEncoder : IDisposable
     /// держит всё, что есть). Текстура занята ссылкой вызывающего, см.
     /// <see cref="EncoderTexturePool"/>.
     /// </summary>
-    private ID3D11Texture2D? CopyIntoPool(ID3D11Texture2D src) => _copyPool!.TryCopy(src, _context!);
+    private ID3D11Texture2D? CopyIntoPool(ID3D11Texture2D src, Diagnostics.GpuStageTimer? gpuTimer = null) =>
+        _copyPool!.TryCopy(src, _context!, gpuTimer);
 
     /// <summary>Кадр вышел из энкодера: слот его входа свободен.</summary>
     private void ReleaseSubmitted()
@@ -1628,6 +1657,10 @@ public sealed class VideoEncoder : IDisposable
     /// </summary>
     public bool SameSlotAsLastFrame(long ticks)
     {
+        // В pull-модели слот выбирает пейсер по своим часам: кадр, «попавший в тот же
+        // слот», — это просто более свежий кандидат, и выбрасывать его нельзя.
+        if (_pullPacing) return false;
+
         lock (_cfrLock)
         {
             if (_cfrBase < 0 || Fps <= 0) return false;
@@ -1640,10 +1673,17 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
-    public void SubmitFrame(ID3D11Texture2D nv12PoolTexture, long ticks, ID3D11DeviceContext context)
+    public void SubmitFrame(ID3D11Texture2D nv12PoolTexture, long ticks, ID3D11DeviceContext context,
+                            Diagnostics.GpuStageTimer? gpuTimer = null)
     {
         if (!_running) return;
         _context ??= context;
+
+        if (_pullPacing)
+        {
+            SubmitPullCandidate(nv12PoolTexture, ticks, gpuTimer);
+            return;
+        }
 
         lock (_cfrLock)
         {
@@ -1675,7 +1715,7 @@ public sealed class VideoEncoder : IDisposable
                 pts = placed;
             }
 
-            var copy = CopyIntoPool(nv12PoolTexture);
+            var copy = CopyIntoPool(nv12PoolTexture, gpuTimer);
             if (copy is null)
             {
                 // Все слоты держит энкодер: кадр теряем, конвейер не ждёт
@@ -1740,6 +1780,151 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
+    // ---------------- pull-модель (AURA_PULL_PACING=1) ----------------
+
+    /// <summary>
+    /// Кадр не занимает слот сам: он становится кандидатом. Слот закроет пейсер по
+    /// часам выходного видео и возьмёт на этот момент самый свежий кандидат.
+    /// </summary>
+    private void SubmitPullCandidate(ID3D11Texture2D nv12PoolTexture, long captureTicks,
+                                     Diagnostics.GpuStageTimer? gpuTimer)
+    {
+        var copy = _copyPool!.TryCopy(nv12PoolTexture, _context!, gpuTimer);
+        if (copy is null)
+        {
+            Interlocked.Increment(ref FramesDroppedNoSlot);
+            return;
+        }
+
+        long ready = NowQpcTicks();
+        ID3D11Texture2D? replaced;
+        lock (_pullLock)
+        {
+            replaced = _pullCandidate.Texture;
+            _pullCandidate = new PullCandidate(copy, captureTicks, ready, ++_pullSequence);
+        }
+
+        // Прошлый кандидат в энкодер не уходил, поэтому его слот пула свободен.
+        if (replaced is not null) _copyPool.Release(replaced);
+    }
+
+    /// <summary>Один тик пейсера в pull-модели: закрыть созревшие слоты.</summary>
+    private void PullTick()
+    {
+        lock (_cfrLock)
+        {
+            if (_copyPool is null || _context is null) return;
+
+            long now = NowQpcTicks();
+            PullCandidate candidate;
+            lock (_pullLock) candidate = _pullCandidate;
+
+            if (_cfrBase < 0)
+            {
+                if (!candidate.HasTexture) return;
+                // База сетки — время первого кадра: раньше него слотов не существует.
+                _cfrBase = candidate.CaptureTicks;
+                _lastRealPts = _cfrBase;
+                _lastRealTicks = candidate.CaptureTicks;
+                _lastRealArrivalWall = candidate.ReadyQpc;
+            }
+
+            PullSlotPlan plan = PullCfrScheduler.Plan(now, _pullLastClosedSlot, _cfrBase, Fps,
+                PullMaxBurstPerTick, candidate.HasTexture, candidate.CaptureTicks, _pullLastContentTicks);
+            if (plan.CloseCount == 0) return;
+
+            // Сколько слотов пришлось бы закрыть без потолка — для телеметрии.
+            long wanted = PullCfrPolicy.DueCount(now, _pullLastClosedSlot, _cfrBase, Fps, int.MaxValue);
+            if (wanted > plan.CloseCount)
+                Interlocked.Add(ref PullOverdue, wanted - plan.CloseCount);
+
+            bool encoderBehind = EncoderIsBehind();
+
+            for (int i = 0; i < plan.CloseCount; i++)
+            {
+                bool last = i == plan.CloseCount - 1;
+                long slot = _pullLastClosedSlot + 1;
+                long pts = PullCfrPolicy.SlotPts(slot, _cfrBase, Fps);
+                bool takeFresh = last && plan.UseCandidate;
+
+                if (takeFresh && !PutCandidateIntoFrame(candidate, pts)) break;
+                if (!takeFresh && !PutRepeatIntoFrame(pts, encoderBehind)) break;
+
+                _pullLastClosedSlot = slot;
+            }
+        }
+    }
+
+    /// <summary>Свежий кадр в слот. false — очередь не приняла или кандидата уже заменили.</summary>
+    private bool PutCandidateIntoFrame(in PullCandidate candidate, long pts)
+    {
+        ID3D11Texture2D? texture;
+        long captureTicks;
+        lock (_pullLock)
+        {
+            texture = _pullCandidate.Texture;
+            captureTicks = _pullCandidate.CaptureTicks;
+            // Пока считали план, пришёл более свежий кадр: старую копию не трогаем
+            // (её уже мог вернуть в пул поток кадра), слот закроем на следующем тике.
+            if (texture is null || captureTicks != candidate.CaptureTicks) return false;
+            _pullCandidate = PullCandidate.Empty;
+        }
+
+        // Источник повторов — отдельная копия, а не текстура, уходящая в NVENC.
+        _copyPool!.KeepLatest(texture, _context!);
+
+        if (!Enqueue(texture, pts, isDuplicate: false, encoderBehind: false))
+        {
+            _copyPool.Release(texture);
+            return false;
+        }
+
+        _pullLastContentTicks = captureTicks;
+        _lastRealPts = pts;
+        _lastRealTicks = captureTicks;
+        _lastRealArrivalWall = NowQpcTicks();
+
+        long lead = pts - captureTicks;
+        if (lead > Interlocked.Read(ref MaxPtsLeadTicks)) Interlocked.Exchange(ref MaxPtsLeadTicks, lead);
+        if (lead < Interlocked.Read(ref MinPtsLeadTicks)) Interlocked.Exchange(ref MinPtsLeadTicks, lead);
+
+        long age = NowQpcTicks() - captureTicks;
+        if (age > Interlocked.Read(ref PullMaxSlotAgeTicks)) Interlocked.Exchange(ref PullMaxSlotAgeTicks, age);
+
+        Interlocked.Increment(ref FramesSubmitted);
+        Interlocked.Increment(ref PullSelected);
+        return true;
+    }
+
+    /// <summary>Повтор прошлого кадра. false — повтор делать нечем или очередь его не приняла.</summary>
+    private bool PutRepeatIntoFrame(long pts, bool encoderBehind)
+    {
+        if (_copyPool!.Latest is null) return false;
+        if (!CanEnqueueDuplicate(encoderBehind))
+        {
+            Interlocked.Increment(ref FramesSuppressedDuplicates);
+            Interlocked.Increment(ref PacerBlocked);
+            return false;
+        }
+
+        var duplicate = _copyPool.TryCopy(_copyPool.Latest, _context!);
+        if (duplicate is null)
+        {
+            Interlocked.Increment(ref PacerBlocked);
+            return false;
+        }
+        if (!Enqueue(duplicate, pts, isDuplicate: true, encoderBehind))
+        {
+            _copyPool.Release(duplicate);
+            Interlocked.Increment(ref PacerBlocked);
+            return false;
+        }
+
+        Interlocked.Increment(ref FramesDuplicated);
+        Interlocked.Increment(ref PullRepeated);
+        return true;
+    }
+
     private bool Enqueue(
         ID3D11Texture2D tex,
         long pts,
@@ -1763,13 +1948,24 @@ public sealed class VideoEncoder : IDisposable
                 }
             }
 
-            EncoderQueueAdmission admission = EncoderQueueAdmissionPolicy.Decide(
-                isDuplicate,
-                _inputQueue.Count,
-                _maxInputQueue,
-                encoderBehind,
-                firstDuplicate,
-                OldestQueuedAgeMillisecondsLocked());
+            // Молчащий захват: повторы обязаны закрывать слоты, даже если очередь
+            // успела состариться (она стареет сама, без вины энкодера). Без этого
+            // послабления в сетке CFR остаются дыры: клип выходит короче реального
+            // времени и звук уезжает вперёд. См. CanEnqueueDuplicate.
+            bool silentCapture = isDuplicate &&
+                                 NowQpcTicks() - Interlocked.Read(ref _lastRealArrivalWall) > SilentCaptureTicks;
+
+            EncoderQueueAdmission admission = silentCapture
+                ? (_inputQueue.Count < _maxInputQueue
+                    ? EncoderQueueAdmission.Append
+                    : EncoderQueueAdmission.RejectDuplicate)
+                : EncoderQueueAdmissionPolicy.Decide(
+                    isDuplicate,
+                    _inputQueue.Count,
+                    _maxInputQueue,
+                    encoderBehind,
+                    firstDuplicate,
+                    OldestQueuedAgeMillisecondsLocked());
             if (admission == EncoderQueueAdmission.RejectDuplicate)
             {
                 Interlocked.Increment(ref FramesSuppressedDuplicates);
@@ -1797,10 +1993,28 @@ public sealed class VideoEncoder : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Можно ли закрыть слот повтором.
+    ///
+    /// МОЛЧАЩИЙ ЗАХВАТ — ОТДЕЛЬНЫЙ СЛУЧАЙ, и раньше он был ошибкой. Пока настоящих
+    /// кадров нет, очередь «стареет» сама собой, и правило свежести (не догонять
+    /// старую очередь повторами) запрещало ВСЕ повторы. Сетка CFR получала дыры:
+    /// картинка в клипе замирала, звук уезжал вперёд, а длительность не сходилась
+    /// (в логе: 6183 кадра за 110,5 с вместо 6600 — почти 7 секунд расхождения).
+    ///
+    /// Пока захват молчит, повторы обязаны закрывать слоты: сам повтор почти ничего
+    /// не стоит (одинаковые кадры), а настоящий кадр, пришедший следом, вытеснит
+    /// дубликат из очереди (см. EncoderQueueAdmissionPolicy).
+    /// </summary>
     private bool CanEnqueueDuplicate(bool encoderBehind)
     {
+        long silence = NowQpcTicks() - Interlocked.Read(ref _lastRealArrivalWall);
         lock (_queueLock)
         {
+            if (_inputQueue.Count >= _maxInputQueue) return false;
+
+            if (silence > SilentCaptureTicks) return true;
+
             return EncoderQueueAdmissionPolicy.Decide(
                 incomingDuplicate: true,
                 queueDepth: _inputQueue.Count,
@@ -1810,6 +2024,9 @@ public sealed class VideoEncoder : IDisposable
                 oldestAgeMs: OldestQueuedAgeMillisecondsLocked()) == EncoderQueueAdmission.Append;
         }
     }
+
+    /// <summary>Сколько тишины захвата считаем провалом, а не «очередь отстала».</summary>
+    private const long SilentCaptureTicks = 100 * 10_000;   // 100 мс
 
     private double OldestQueuedAgeMillisecondsLocked() => _inputQueue.Count == 0
         ? 0
@@ -1901,6 +2118,13 @@ public sealed class VideoEncoder : IDisposable
                            Interlocked.Read(ref FramesDroppedRealQueue));
             SampleQueue();
             TickNvencAdapter();
+
+            if (_pullPacing)
+            {
+                PullTick();
+                continue;
+            }
+
             lock (_cfrLock)
             {
                 if (_copyPool?.Latest is null || _cfrBase < 0 || _context is null) continue;
@@ -2372,4 +2596,27 @@ public sealed class VideoEncoder : IDisposable
         _deviceManager?.Dispose();
         OutputMediaType?.Dispose();
     }
+}
+
+/// <summary>
+/// Кадр-кандидат pull-модели: последний готовый кадр, из которого пейсер выберет
+/// содержимое очередного слота.
+/// </summary>
+/// <param name="Texture">Копия в пуле. Владение переходит к энкодеру только при постановке в очередь.</param>
+/// <param name="CaptureTicks">
+/// Время ЗАХВАТА содержимого (метка источника, часы QPC). Не путать со временем
+/// слота: слот идёт по своим часам, а это — когда картинка реально появилась.
+/// </param>
+/// <param name="ReadyQpc">
+/// Когда копия легла в очередь видеокарты. Между этими двумя моментами копия может
+/// быть ещё не выполнена на GPU, но D3D гарантирует порядок команд на одном
+/// контексте: к моменту чтения текстуры энкодером копия уже завершена.
+/// </param>
+/// <param name="Sequence">Порядковый номер: по нему видно, что кандидат заменён.</param>
+internal readonly record struct PullCandidate(
+    ID3D11Texture2D? Texture, long CaptureTicks, long ReadyQpc, long Sequence)
+{
+    public static PullCandidate Empty => new(null, 0, 0, 0);
+
+    public bool HasTexture => Texture is not null;
 }

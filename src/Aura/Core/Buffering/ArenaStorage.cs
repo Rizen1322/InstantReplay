@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using Aura.Core.Logging;
 
@@ -108,11 +108,12 @@ public abstract class ArenaStorage
     protected static extern bool VirtualUnlock(IntPtr address, nuint size);
 
     /// <summary>Пройти страницы блока, чтобы система выдала их сейчас, а не на горячем пути.</summary>
-    protected static unsafe void Touch(IntPtr start, int bytes)
+    protected internal static unsafe void Touch(IntPtr start, int bytes)
     {
         byte* p = (byte*)start;
         for (int offset = 0; offset < bytes; offset += 4096)
-            p[offset] = 0;
+            // Писатель уже может работать: атомарный OR касается страницы, не затирая данные.
+            Interlocked.Or(ref *(int*)(p + offset), 0);
     }
 }
 
@@ -120,8 +121,15 @@ public abstract class ArenaStorage
 public sealed class NativeArenaStorage : ArenaStorage
 {
     private IntPtr _base;
-    // 0 — блок не выдан, 1 — выдан. Меняется под замком буфера или в Prepare.
-    private readonly int[] _committed;
+
+    // Состояние блока: StateFree — память не выдана, StateCommitting — выдана, страницы
+    // прогреваются (писать уже можно), StateReady — выдана и прогрета.
+    private const int StateFree = 0;
+    private const int StateCommitting = 1;
+    private const int StateReady = 2;
+
+    private readonly object _gate = new();
+    private readonly int[] _state;
     private int _resident;
 
     public NativeArenaStorage(long capacity) : base(capacity)
@@ -131,7 +139,7 @@ public sealed class NativeArenaStorage : ArenaStorage
             throw new OutOfMemoryException(
                 $"Не удалось зарезервировать {capacity >> 20} МБ адресов под буфер повтора " +
                 $"(ошибка {Marshal.GetLastWin32Error()})");
-        _committed = new int[ChunkCount];
+        _state = new int[ChunkCount];
     }
 
     public override IntPtr Base => _base;
@@ -140,35 +148,49 @@ public sealed class NativeArenaStorage : ArenaStorage
 
     public override void EnsureChunk(int index)
     {
-        if (Volatile.Read(ref _committed[index]) != 0) return;
+        // StateCommitting считается выданным: VirtualAlloc уже отработал, страницы
+        // существуют, и писать в них можно, даже пока фон их прогревает.
+        if (Volatile.Read(ref _state[index]) != StateFree) return;
         Commit(index);
     }
 
     public override void Prepare(int index)
     {
-        if (Volatile.Read(ref _committed[index]) != 0) return;
-        // Проход по страницам — под тем же замком, что и возврат блока системе:
-        // иначе параллельный ReleaseChunk снял бы память прямо под рукой, и запись
-        // в неё уронила бы процесс.
-        lock (_committed)
+        if (Volatile.Read(ref _state[index]) != StateFree) return;
+        if (!Commit(index, preparing: true)) return;
+
+        // Проход по страницам — ВНЕ замка. Их тысячи (16 МБ по 4 КБ), и держать под
+        // ним замок _gate значит останавливать поток, забирающий кадры у энкодера
+        // (ReplayVideoBuffer.Add -> EnsureChunk -> Commit) на всё это время. Раньше
+        // фоновая подготовка блока подвешивала запись живого кадра.
+        try
         {
-            if (Commit(index))
-                Touch(_base + index * (nint)ChunkBytes, ChunkBytes);
+            Touch(_base + index * (nint)ChunkBytes, ChunkBytes);
+        }
+        finally
+        {
+            // Блок обязан выйти из StateCommitting даже при сбое прохода: иначе он
+            // навсегда останется «выданным» — ReleaseChunk его не тронет, и 16 МБ
+            // не вернутся системе до конца сеанса.
+            lock (_gate)
+            {
+                if (_state[index] == StateCommitting) _state[index] = StateReady;
+            }
         }
     }
 
-    private bool Commit(int index)
+    private bool Commit(int index, bool preparing = false)
     {
-        lock (_committed)
+        lock (_gate)
         {
-            if (_committed[index] != 0) return false;
+            if (_state[index] != StateFree) return false;
             if (_base == IntPtr.Zero) throw new ObjectDisposedException(nameof(NativeArenaStorage));
             IntPtr at = _base + index * (nint)ChunkBytes;
             if (VirtualAlloc(at, ChunkBytes, MemCommit, PageReadWrite) == IntPtr.Zero)
                 throw new OutOfMemoryException(
                     $"Система не выдала {ChunkBytes >> 20} МБ под буфер повтора " +
                     $"(ошибка {Marshal.GetLastWin32Error()})");
-            Volatile.Write(ref _committed[index], 1);
+            _state[index] = preparing ? StateCommitting : StateReady;
             Interlocked.Increment(ref _resident);
             return true;
         }
@@ -176,22 +198,32 @@ public sealed class NativeArenaStorage : ArenaStorage
 
     public override void ReleaseChunk(int index)
     {
-        lock (_committed)
+        lock (_gate)
         {
-            if (_committed[index] == 0) return;
-            VirtualFree(_base + index * (nint)ChunkBytes, ChunkBytes, MemDecommit);
-            _committed[index] = 0;
-            Interlocked.Decrement(ref _resident);
+            if (_state[index] == StateFree) return;
+            // Блок прямо сейчас прогревают: снять память из-под прохода по страницам —
+            // это падение. Пропускаем: его отпустит следующая проверка, когда проход
+            // закончится (ReleaseUnusedChunks зовётся на каждой границе блока).
+            if (_state[index] == StateCommitting) return;
+            DecommitLocked(index);
         }
+    }
+
+    private void DecommitLocked(int index)
+    {
+        if (_state[index] == StateFree) return;
+        VirtualFree(_base + index * (nint)ChunkBytes, ChunkBytes, MemDecommit);
+        _state[index] = StateFree;
+        Interlocked.Decrement(ref _resident);
     }
 
     protected override void Free()
     {
-        lock (_committed)
+        lock (_gate)
         {
             var at = Interlocked.Exchange(ref _base, IntPtr.Zero);
             if (at != IntPtr.Zero) VirtualFree(at, 0, MemRelease);
-            Array.Clear(_committed);
+            Array.Clear(_state);
             Volatile.Write(ref _resident, 0);
         }
     }

@@ -32,6 +32,8 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private bool _started;
     private long _minFrameIntervalTicks;
     private long _lastAcceptedTicks;
+    /// <summary>Отбор по сетке слотов (эксперимент AURA_CAPTURE_GATE=1); null — по времени.</summary>
+    private Encoding.CaptureSlotGate? _slotGate;
     private long _framesReceived;
     private long _framesAccepted;
     private int _callbacksInFlight;
@@ -101,6 +103,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             _started = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
             _lastAcceptedTicks = 0;
+            _slotGate = Encoding.CaptureGate.UsesSlotGate && targetFps > 0 ? new Encoding.CaptureSlotGate(targetFps, Encoding.CaptureGate.PerSlot) : null;
             Interlocked.Exchange(ref _framesReceived, 0);
             Interlocked.Exchange(ref _framesAccepted, 0);
             Interlocked.Exchange(ref _closedReported, 0);
@@ -165,6 +168,9 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private void LimitUpdateRate(int targetFps)
     {
         if (targetFps <= 0 || _session is null) return;
+        // Под игровой нагрузкой MinUpdateInterval даёт неравномерную доставку;
+        // при отборе по слотам частоту уже ограничивает CaptureSlotGate.
+        if (Encoding.CaptureGate.UsesSlotGate) return;
         try
         {
             // Просим ПОЛОВИНУ интервала кадра, а не весь.
@@ -292,7 +298,15 @@ internal sealed class WgcCaptureSession : IScreenCapture
             long ticks = frame.SystemRelativeTime.Ticks;
             Interlocked.Increment(ref _framesReceived);
             RecordArrivalLag(ticks);
-            if (_minFrameIntervalTicks > 0)
+            if (_slotGate is { } slotGate)
+            {
+                // Эксперимент AURA_CAPTURE_GATE=1: не больше двух кадров на слот сетки
+                // захвата. Предел ставит наш отбор, системный MinUpdateInterval в этом
+                // режиме не просим — иначе WGC сам не отдал бы второй кадр слота.
+                if (!slotGate.Admit(ticks)) continue;
+                _lastAcceptedTicks = ticks;
+            }
+            else if (_minFrameIntervalTicks > 0)
             {
                 // Слот сетки выбирает энкодер, здесь только предел в два кадра на слот:
                 // см. EncoderCfrPolicy.CaptureTooSoon

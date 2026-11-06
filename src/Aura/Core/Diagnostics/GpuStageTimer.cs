@@ -35,11 +35,11 @@ public sealed class GpuStageTimer : IDisposable
     /// </summary>
     private const int Slots = 4;
 
-    /// <summary>Границы стадий. Меток на одну больше, чем стадий.</summary>
+    /// <summary>По две метки на стадию: ожидание ключа между стадиями не входит в копию.</summary>
     public const int StageConvert = 0;
     public const int StageCopyToPool = 1;
     private const int StageCount = 2;
-    private const int MarkCount = StageCount + 1;
+    private const int MarkCount = StageCount * 2;
 
     private sealed class Measurement
     {
@@ -195,8 +195,9 @@ public sealed class GpuStageTimer : IDisposable
 
             for (int stage = 0; stage < StageCount; stage++)
             {
-                if (marks[stage + 1] < marks[stage]) continue;
-                double ms = (marks[stage + 1] - marks[stage]) * 1000.0 / disjoint.Frequency;
+                int start = stage * 2;
+                if (marks[start + 1] < marks[start]) continue;
+                double ms = (marks[start + 1] - marks[start]) * 1000.0 / disjoint.Frequency;
                 _total[stage] += ms;
                 if (ms > _peak[stage]) _peak[stage] = ms;
             }
@@ -214,7 +215,8 @@ public sealed class GpuStageTimer : IDisposable
             string report =
                 $"Время видеокарты (среднее/пик мс, {_samples} замеров): " +
                 $"NV12 {_total[StageConvert] / _samples:F2}/{_peak[StageConvert]:F2}, " +
-                $"копия в пул {_total[StageCopyToPool] / _samples:F2}/{_peak[StageCopyToPool]:F2}";
+                $"копия в пул {_total[StageCopyToPool] / _samples:F2}/{_peak[StageCopyToPool]:F2} " +
+                "(GPU-метки вокруг CopyResource; ожидание ключа измеряется отдельно на CPU)";
 
             Array.Clear(_total);
             Array.Clear(_peak);

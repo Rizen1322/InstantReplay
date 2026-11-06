@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -67,11 +67,11 @@ public partial class App : Application
         // --dev поднимает отдельную копию рядом с рабочей (проверка вёрстки).
         bool dev = e.Args.Contains("--dev");
         _singleInstance = new Mutex(true, dev ? InstanceMutexName + ".dev" : InstanceMutexName, out bool isNew);
-        if (!isNew && !dev)
+        if (!isNew)
         {
             try
             {
-                if (EventWaitHandle.TryOpenExisting(ShowWindowEventName, out var signal))
+                if (!dev && EventWaitHandle.TryOpenExisting(ShowWindowEventName, out var signal))
                     using (signal) signal.Set();
             }
             catch { }
@@ -1150,11 +1150,59 @@ public partial class App : Application
             menu.Focus();
         };
 
+        TryLoadTrayIconFromFile();
         TryCreateTray(attempt: 1);
     }
 
-    /// <summary>Сколько раз пробуем создать значок, прежде чем сдаться.</summary>
-    private const int TrayAttempts = 8;
+    /// <summary>
+    /// HICON для трея задаём СИНХРОННО, из .ico напрямую.
+    ///
+    /// ПОЧЕМУ. H.NotifyIcon принимает IconSource и превращает его в HICON асинхронно
+    /// (ToIconAsync). Если к моменту Create превращение не случилось, Shell_NotifyIcon
+    /// получает hIcon = 0 и отказывает — и все последующие попытки тоже, пока Icon
+    /// остаётся нулём. В логе это ровно «TryCreate failed.» на каждом запуске, хотя
+    /// проба чистого Shell_NotifyIcon на этой же машине проходит успешно.
+    /// </summary>
+    private void TryLoadTrayIconFromFile(int size = 32)
+    {
+        if (_tray is null) return;
+        try
+        {
+            string path = Path.Combine(AppContext.BaseDirectory, "Assets", "tray.ico");
+            nint handle = LoadImage(0, path, ImageIcon, size, size, LoadFromFile);
+            if (handle == 0)
+            {
+                Log.Warn("App", $"Значок tray.ico не загрузился для трея " +
+                                $"(ошибка {System.Runtime.InteropServices.Marshal.GetLastWin32Error()})");
+                return;
+            }
+            _trayIconHandle = handle;
+            _tray.TrayIcon.Icon = handle;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("App", $"Значок для трея не подготовлен: {ex.Message}");
+        }
+    }
+
+    private nint _trayIconHandle;
+
+    private const uint ImageIcon = 1;
+    private const uint LoadFromFile = 0x00000010;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern nint LoadImage(nint instance, string name, uint type, int cx, int cy, uint load);
+
+    /// <summary>
+    /// Сколько раз пробуем создать значок, прежде чем сдаться.
+    ///
+    /// Было 8 (около полутора минут), и в логе это видно: при старте во время игры
+    /// оболочка отказывает все восемь раз — «Область уведомлений ещё не готова
+    /// (TryCreate failed.)» — и приложение живёт без значка до перезапуска. Полный
+    /// экран, ранний автозапуск и перезагрузка оболочки могут занимать минуты,
+    /// поэтому ждём дольше: 20 попыток с потолком паузы в 30 с — это около восьми минут.
+    /// </summary>
+    private const int TrayAttempts = 20;
 
     /// <summary>
     /// Создать значок в трее, повторяя попытки с растущей паузой.
@@ -1172,17 +1220,23 @@ public partial class App : Application
         {
             _tray!.ForceCreate();
             UpdateTray();
-            if (attempt > 1) Log.Info("App", $"Значок в трее создан с попытки {attempt}");
+            Log.Info("App", $"Значок в трее создан с попытки {attempt}; окно 0x{_tray.TrayIcon.WindowHandle:X}");
             return;
         }
         catch (Exception ex)
         {
+            // В лог — тип, код и состояние значка: по «TryCreate failed.» ничего не
+            // понять, а по окну/HICON/окну сообщений видно, чего именно не хватило.
             if (attempt == 1)
-                Log.Warn("App", $"Область уведомлений ещё не готова ({ex.Message}) — повторю попытки");
+                Log.Warn("App", $"Область уведомлений ещё не готова ({ex.GetType().Name}: {ex.Message}" +
+                                $", 0x{ex.HResult:X8}); окно 0x{_tray?.TrayIcon.WindowHandle:X}, " +
+                                $"HICON 0x{_tray?.TrayIcon.Icon:X}, окно сообщений {_tray?.TrayIcon.MessageWindow.IsCreated} " +
+                                "— повторю попытки");
 
             if (attempt >= TrayAttempts)
             {
-                Log.Error("App", $"Значок в трее так и не создался за {TrayAttempts} попыток — " +
+                Log.Error("App", $"Значок в трее так и не создался за {TrayAttempts} попыток " +
+                                 $"({ex.GetType().Name}: {ex.Message}, 0x{ex.HResult:X8}) — " +
                                  "приложение работает без него");
                 return;
             }
