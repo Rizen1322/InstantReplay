@@ -79,4 +79,27 @@ public sealed class AuraArenaChunkTests
         }
         finally { storage.Release(); }
     }
+
+    /// <summary>
+    /// Освобождение арены во время фонового прогрева: память не должна исчезнуть из-под
+    /// прохода по страницам (иначе нарушение доступа и падение процесса).
+    /// </summary>
+    [Fact]
+    public async Task Release_during_prepare_waits_for_the_page_walk()
+    {
+        for (int round = 0; round < 20; round++)
+        {
+            var storage = new NativeArenaStorage(ArenaStorage.ChunkBytes * 8);
+            var prepares = Enumerable.Range(0, 8)
+                .Select(i => Task.Run(() =>
+                {
+                    try { storage.Prepare(i); }
+                    catch (ObjectDisposedException) { }   // арену уже освободили — штатно
+                }))
+                .ToArray();
+            storage.Release();
+            await Task.WhenAll(prepares);
+            Assert.Equal(0, storage.ResidentChunks);
+        }
+    }
 }

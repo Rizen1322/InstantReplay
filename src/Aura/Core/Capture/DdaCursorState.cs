@@ -131,6 +131,27 @@ internal static class DdaCursorVisibility
 
         return (ddaHasPosition, ddaHasPosition && ddaVisible);
     }
+
+    /// <summary>
+    /// Что применить к курсору в этом кадре: позицию, видимость и знаем ли мы её.
+    ///
+    /// ЗАЧЕМ ОТДЕЛЬНО ОТ <see cref="Merge"/>. Когда мышь стоит, а картинка меняется,
+    /// DDA про указатель молчит, и Merge отдаёт «не виден» — это значит лишь «DDA не
+    /// сообщала». Раньше вызывающий всё равно считал видимость известной (система же
+    /// ответила), и стоящий видимый курсор прятался на каждом кадре без движения мыши.
+    /// Теперь при молчании DDA и «показан» от системы берётся последняя видимость,
+    /// которую DDA сообщала сама: так и не прячем стоящий курсор, и возвращаем его
+    /// после того, как игра его прятала (DDA этого не заметила).
+    /// </summary>
+    /// <param name="lastDdaVisible">Видимость из последнего обновления указателя от DDA.</param>
+    public static (bool HasPosition, bool Visible, bool HasVisibility) Resolve(
+        bool ddaHasPosition, bool ddaVisible, bool? systemShowing, bool lastDdaVisible)
+    {
+        if (systemShowing == false) return (ddaHasPosition, false, true);
+        if (ddaHasPosition) return (true, ddaVisible, true);
+        if (systemShowing == true) return (false, lastDdaVisible, true);
+        return (false, false, false);   // ни DDA, ни система ничего не сказали
+    }
 }
 
 internal enum CaptureCursorMode

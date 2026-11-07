@@ -157,7 +157,8 @@ public sealed class NativeArenaStorage : ArenaStorage
     public override void Prepare(int index)
     {
         if (Volatile.Read(ref _state[index]) != StateFree) return;
-        if (!Commit(index, preparing: true)) return;
+        IntPtr at = Commit(index, preparing: true);
+        if (at == IntPtr.Zero) return;
 
         // Проход по страницам — ВНЕ замка. Их тысячи (16 МБ по 4 КБ), и держать под
         // ним замок _gate значит останавливать поток, забирающий кадры у энкодера
@@ -165,7 +166,7 @@ public sealed class NativeArenaStorage : ArenaStorage
         // фоновая подготовка блока подвешивала запись живого кадра.
         try
         {
-            Touch(_base + index * (nint)ChunkBytes, ChunkBytes);
+            Touch(at, ChunkBytes);
         }
         finally
         {
@@ -175,15 +176,17 @@ public sealed class NativeArenaStorage : ArenaStorage
             lock (_gate)
             {
                 if (_state[index] == StateCommitting) _state[index] = StateReady;
+                Monitor.PulseAll(_gate);   // Free ждёт конца прохода
             }
         }
     }
 
-    private bool Commit(int index, bool preparing = false)
+    /// <summary>Выдать блок. Адрес блока; IntPtr.Zero — уже выдан.</summary>
+    private IntPtr Commit(int index, bool preparing = false)
     {
         lock (_gate)
         {
-            if (_state[index] != StateFree) return false;
+            if (_state[index] != StateFree) return IntPtr.Zero;
             if (_base == IntPtr.Zero) throw new ObjectDisposedException(nameof(NativeArenaStorage));
             IntPtr at = _base + index * (nint)ChunkBytes;
             if (VirtualAlloc(at, ChunkBytes, MemCommit, PageReadWrite) == IntPtr.Zero)
@@ -192,7 +195,7 @@ public sealed class NativeArenaStorage : ArenaStorage
                     $"(ошибка {Marshal.GetLastWin32Error()})");
             _state[index] = preparing ? StateCommitting : StateReady;
             Interlocked.Increment(ref _resident);
-            return true;
+            return at;
         }
     }
 
@@ -221,7 +224,11 @@ public sealed class NativeArenaStorage : ArenaStorage
     {
         lock (_gate)
         {
-            var at = Interlocked.Exchange(ref _base, IntPtr.Zero);
+            var at = Interlocked.Exchange(ref _base, IntPtr.Zero);   // новых выдач больше нет
+            // Фоновый Prepare может ещё проходить страницы вне замка: освободить память
+            // под ним — падение процесса. Ждём конца прохода (он короткий).
+            while (Array.IndexOf(_state, StateCommitting) >= 0)
+                Monitor.Wait(_gate, 100);
             if (at != IntPtr.Zero) VirtualFree(at, 0, MemRelease);
             Array.Clear(_state);
             Volatile.Write(ref _resident, 0);

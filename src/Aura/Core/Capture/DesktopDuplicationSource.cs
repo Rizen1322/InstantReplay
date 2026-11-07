@@ -61,6 +61,8 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     /// <summary>Отбор по сетке слотов (эксперимент AURA_CAPTURE_GATE=1); null — по времени.</summary>
     private Encoding.CaptureSlotGate? _slotGate;
     private readonly DdaCursorTracker _cursorTracker = new();
+    /// <summary>Видимость из последнего обновления указателя от DDA (см. DdaCursorVisibility.Resolve).</summary>
+    private bool _lastDdaVisible;
     private readonly DdaLifecycleMonitor _lifecycle = new(
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(2),
@@ -91,6 +93,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             _firstFrameSinceStart = true;
             _lifecycle.Reset();
             _cursorTracker.Reset();
+            _lastDdaVisible = false;
             _resetCursorOnNextFrame = 1;
             _cursorValidationWarnings.Clear();
             Interlocked.Exchange(ref _framesReceived, 0);
@@ -511,14 +514,12 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 CaptureCursorMode.Separate, false, false, 0, 0, null, resetState);
 
         bool ddaHasPosition = info.LastMouseUpdateTime != 0;
-        bool? systemShowing = SystemCursorShowing();
-        var (hasPosition, visible) = DdaCursorVisibility.Merge(
+        if (ddaHasPosition) _lastDdaVisible = info.PointerPosition.Visible;
+        var (hasPosition, visible, hasVisibility) = DdaCursorVisibility.Resolve(
             ddaHasPosition,
             info.PointerPosition.Visible,
-            systemShowing);
-        // Видимость известна, если система ответила (даже «спрятан») или DDA сама
-        // прислала позицию. Без этого скрытие неподвижного курсора не доехало бы.
-        bool hasVisibility = hasPosition || systemShowing.HasValue;
+            SystemCursorShowing(),
+            _lastDdaVisible);
         int x = ddaHasPosition ? info.PointerPosition.Position.X : 0;
         int y = ddaHasPosition ? info.PointerPosition.Position.Y : 0;
         DdaCursorShape? cursorShape = null;
