@@ -321,7 +321,11 @@ public static class ScreenshotService
         var desc = texture.Description;
         lock (StagingSync)
         {
-            if (_staging is null || _stagingWidth != desc.Width || _stagingHeight != desc.Height ||
+            // Устройство сверяем тоже: после пересборки у захвата новое, а копия в
+            // staging чужого устройства ломала контекст — WGC замолкал, копии в пул
+            // энкодера терялись, и запись крутила 24 старых кадра (7 ноября 2026).
+            if (_staging is null || _stagingDevice != device.NativePointer ||
+                _stagingWidth != desc.Width || _stagingHeight != desc.Height ||
                 _stagingFormat != desc.Format)
             {
                 _staging?.Dispose();
@@ -332,6 +336,8 @@ public static class ScreenshotService
                     CPUAccessFlags = CpuAccessFlags.Read,
                     MiscFlags = ResourceOptionFlags.None
                 });
+                // staging держит ссылку на своё устройство, так что адрес не переиспользуется
+                _stagingDevice = device.NativePointer;
                 _stagingWidth = desc.Width;
                 _stagingHeight = desc.Height;
                 _stagingFormat = desc.Format;
@@ -360,6 +366,7 @@ public static class ScreenshotService
 
     private static readonly object StagingSync = new();
     private static ID3D11Texture2D? _staging;
+    private static nint _stagingDevice;
     private static uint _stagingWidth, _stagingHeight;
     private static Vortice.DXGI.Format _stagingFormat;
 }

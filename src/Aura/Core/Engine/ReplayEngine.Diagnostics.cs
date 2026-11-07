@@ -46,7 +46,7 @@ public sealed partial class ReplayEngine
         // Счётчики загрузки GPU заводим сразу: первое значение появится к первой минуте
         _gpuLoad ??= new Aura.Core.Hardware.GpuEngineLoad();
         _statsTimer?.Dispose();
-        _statsTimer = new System.Threading.Timer(_ => DumpStats("за минуту"),
+        _statsTimer = new System.Threading.Timer(_ => { Capture.ProcessQos.Ensure(); DumpStats("за минуту"); },
             null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
     }
 
@@ -79,6 +79,23 @@ public sealed partial class ReplayEngine
         Warning?.Invoke("Игра забирает видеокарту, и запись проседает. Выключи «Планирование графического процессора " +
                         "с аппаратным ускорением» в Параметры → Дисплей → Графика и перезагрузи ПК: тогда Aura " +
                         "получит приоритет выше игры");
+    }
+
+    /// <summary>
+    /// Pull за окно: кандидатов пришло, сколько тики взяли свежими, сколько кадров
+    /// перекрыто следующими до тика, сколько слотов закрыто повтором и сколько пропущено.
+    /// </summary>
+    private static string PullWindowSummary(Encoding.VideoEncoder enc)
+    {
+        long candidates = Interlocked.Exchange(ref enc.PullCandidatesWindow, 0);
+        long fresh = Interlocked.Exchange(ref enc.PullFreshWindow, 0);
+        long repeats = Interlocked.Exchange(ref enc.PullRepeatWindow, 0);
+        long skipped = Interlocked.Exchange(ref enc.PullSkippedWindow, 0);
+        long streak = Interlocked.Exchange(ref enc.PullMaxRepeatStreak, 0);
+        long age = Interlocked.Exchange(ref enc.PullMaxSlotAgeTicks, 0);
+        return $"; pull: кандидатов {candidates}, свежих {fresh}, перекрыто {Math.Max(0, candidates - fresh)}, " +
+               $"повторов {repeats}, пропущено слотов {skipped}, повторов подряд до {streak}, " +
+               $"возраст кадра до {age / 10_000.0:F0} мс";
     }
 
     private void DumpStats(string label)
@@ -133,7 +150,8 @@ public sealed partial class ReplayEngine
                 : "") +
             (enc.FramesDroppedNoSlot > _lastNoSlot
                 ? $"; нет свободной текстуры пула {enc.FramesDroppedNoSlot - _lastNoSlot} раз"
-                : ""));
+                : "") +
+            (Encoding.PullPacing.Enabled ? PullWindowSummary(enc) : ""));
         _lastNoSlot = enc.FramesDroppedNoSlot;
         _lastLate = enc.FramesDroppedLate;
 

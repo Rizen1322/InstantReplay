@@ -67,6 +67,9 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     private readonly IntPtr _job;
     private readonly object _call = new();
     private readonly WaitHandle[] _waits;
+    private readonly ManualResetEvent _cancel = new(false);
+    private bool _awaitingResponse;   // под _call: запрос отправлен, ответа хоста ещё не было
+    private Task? _retire;
     private volatile bool _dead;
     private volatile string _currentCall = "";
     private long _callStarted;
@@ -102,7 +105,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         _process = process;
         _job = job;
         ProcessId = process.Id;
-        _waits = [response, new ProcessWaitHandle(process)];
+        _waits = [response, new ProcessWaitHandle(process), _cancel];
         byte* pointer = null;
         view.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
         _base = pointer + view.PointerOffset;
@@ -145,8 +148,11 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
             psi.ArgumentList.Add("--parent");
             psi.ArgumentList.Add(Environment.ProcessId.ToString());
             process = Process.Start(psi) ?? throw new InvalidOperationException("процесс не запустился");
-            // Хост умирает вместе с Aura, даже если та упала: задание с KILL_ON_JOB_CLOSE
-            job = JobObject.CreateKillOnClose(process);
+            // Без задания KILL_ON_JOB_CLOSE: оно убивало хост посреди работы на видеокарте при
+            // любом закрытии Aura (установщик, сбой), драйвер сбрасывал GPU, и падала игра
+            // (RE4, 8 ноября 2026). Хост сам следит за Aura (--parent) и, когда её не стало,
+            // закрывает сессию штатно после текущего вызова.
+            job = IntPtr.Zero;
 
             session = new RemoteNvencSession(mapping, view, request, response, process, job);
             if (!response.WaitOne(5000) || session.ReadInt(OffMagic) != HostMagic)
@@ -356,25 +362,60 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         _currentCall = type.ToString();
         Interlocked.Exchange(ref _callStarted, Stopwatch.GetTimestamp());
         WriteInt(OffType, (int)type);
+        _awaitingResponse = true;
         _request.Set();
         int index = WaitHandle.WaitAny(_waits, timeoutMs);
         _currentCall = "";
-        if (index == 0) return ReadInt(OffResult);
+        if (index == 0) { _awaitingResponse = false; return ReadInt(OffResult); }
+        if (index == 2) return HostDead;   // отключён через Kill, пока ждали
         Kill(index == 1
             ? $"хост NVENC завершился посреди вызова {type} (код {SafeExitCode()})"
             : $"хост NVENC не ответил на {type} за {timeoutMs / 1000.0:F0} с");
         return HostDead;
     }
 
-    /// <summary>Убить хост: зависший драйвер в нём не мешает Aura, а память освободит Windows.</summary>
+    /// <summary>
+    /// Отключить хост: Aura сразу работает дальше, а сам процесс закрывается штатно.
+    ///
+    /// Не убиваем сразу: хост, убитый посреди работы на видеокарте, сбрасывает её
+    /// (nvlddmkm 153), и вместе с ним падает игра — RE4 с DXGI_ERROR_DEVICE_HUNG ровно
+    /// в секунду каждого такого убийства (6–8 ноября 2026, пять раз). Его вызов под
+    /// нагрузкой игрой обычно возвращается через несколько секунд; ждём ответа,
+    /// закрываем через Destroy и убиваем только того, кто молчит минуту.
+    /// </summary>
     public void Kill(string reason, bool expected = false)
     {
         if (_dead) return;
         _dead = true;
         DeathReason = reason;
         ExpectedDeath = expected;
-        Log.Warn("Encoder", $"{reason} — хост NVENC (PID {ProcessId}) убит, его видеопамять освободит система");
-        try { if (!_process.HasExited) _process.Kill(); } catch { }
+        Log.Warn("Encoder", $"{reason} — хост NVENC (PID {ProcessId}) отключён, закроется сам после ответа видеокарты");
+        _cancel.Set();
+        _retire = Task.Run(Retire);
+    }
+
+    private void Retire()
+    {
+        try
+        {
+            lock (_call)   // дождаться, пока поток кодирования выйдет из CallLocked
+            {
+                if (_process.HasExited) return;
+                bool idle = !_awaitingResponse ||
+                            WaitHandle.WaitAny([_response, _waits[1]], 60_000) == 0;
+                if (idle && !_process.HasExited)
+                {
+                    WriteInt(OffType, (int)Request.Destroy);
+                    _request.Set();
+                }
+            }
+            if (!_process.WaitForExit(15_000))
+            {
+                Log.Warn("Encoder", $"хост NVENC (PID {ProcessId}) минуту не закрылся — убит");
+                _process.Kill();
+            }
+        }
+        catch (Exception ex) { Log.Warn("Encoder", $"Закрытие хоста NVENC: {ex.Message}"); }
     }
 
     private string SafeExitCode()
@@ -402,10 +443,17 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
             lock (_call) CallLocked(Request.Destroy, 3000);
             try
             {
-                if (!_process.WaitForExit(2000)) Kill("хост NVENC не вышел после закрытия");
+                if (!_dead && !_process.WaitForExit(2000)) Kill("хост NVENC не вышел после закрытия");
             }
             catch { }
         }
+        // Хост ещё закрывается: процесс, общая память и события нужны ему до конца
+        if (_retire is { IsCompleted: false } retire) { retire.ContinueWith(_ => Release()); return; }
+        Release();
+    }
+
+    private void Release()
+    {
         try { _process.WaitForExit(2000); } catch { }
         _process.Dispose();
         JobObject.Close(_job);
@@ -414,6 +462,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         _mapping.Dispose();
         _request.Dispose();
         _response.Dispose();
+        _cancel.Dispose();
     }
 
     /// <summary>Ожидание завершения процесса как WaitHandle: хост умер — ответа не будет.</summary>

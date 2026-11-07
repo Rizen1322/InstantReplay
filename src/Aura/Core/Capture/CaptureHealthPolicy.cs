@@ -81,7 +81,10 @@ internal sealed class CaptureHealthPolicy
                               sample.Uptime >= Warmup &&
                               sample.GameForeground &&
                               sample.TargetFps > 0 &&
-                              sample.FramesReceived < sample.TargetFps * 0.60 &&
+                              // 25%, не 60%: тяжёлая сцена RE4 честно даёт 33–36 fps, и
+                              // пересборка на этом только рвала запись (7 ноября 2026).
+                              // Настоящий отказ WGC — 0–3 кадра в секунду.
+                              sample.FramesReceived < sample.TargetFps * 0.25 &&
                               sample.FramesEncoded >= sample.TargetFps * 0.75 &&
                               sample.FramesDuplicated >= sample.FramesEncoded * 0.35;
             bool frozenDda = sample.Backend == CaptureBackend.DesktopDuplication &&

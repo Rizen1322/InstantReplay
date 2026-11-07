@@ -168,9 +168,10 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private void LimitUpdateRate(int targetFps)
     {
         if (targetFps <= 0 || _session is null) return;
-        // Под игровой нагрузкой MinUpdateInterval даёт неравномерную доставку;
-        // при отборе по слотам частоту уже ограничивает CaptureSlotGate.
-        if (Encoding.CaptureGate.UsesSlotGate) return;
+        // Нужен и при CaptureSlotGate: без явного интервала WGC держит свой предел
+        // ~16.7 мс, и на 164 Гц отдавал лишь каждый третий импульс — 54.7 кадра/с
+        // (замер по счётчику в пикселях, 7 ноября 2026). Половина интервала отдаёт
+        // каждый второй импульс, а один кадр на слот выбирает CaptureSlotGate.
         try
         {
             // Просим ПОЛОВИНУ интервала кадра, а не весь.
@@ -223,12 +224,13 @@ internal sealed class WgcCaptureSession : IScreenCapture
 
     private int PoolSizeFor(int height)
     {
-        // Каждый кадр копируется в брокер прямо в обработчике и сразу отпускается,
-        // так что копить их в пуле незачем. Двенадцать буферов на 4K это 400 МБ
-        // видеопамяти рядом с игрой, а после заминки система выдавала пачку
-        // устаревших кадров, и каждый копировался зря. OBS берёт два; третий
-        // на случай, когда обработчик на миг задержался.
-        int generous = 3;
+        // Под тяжёлой игрой (RE4, 3D 87%) наша копия из буфера выполняется через
+        // 57–82 мс (пик 365): она ждёт и готовность кадра у DWM, и нашу очередь. При
+        // трёх буферах WGC пропускал кадры: 66% уникальных по пикселям; при шести —
+        // 76–80% (7 ноября 2026). Отдельное устройство для копий и приоритет +7 не
+        // помогли: 66–70%. Двенадцать буферов на 4K — 400 МБ, и после заминки система
+        // выдавала пачку устаревших кадров.
+        int generous = 6;
         if (GpuInfo.Usage(D3DDevice) is not { } vram || vram.BudgetMb <= 0) return generous;
 
         long frameMb = Math.Max((long)Math.Max(Width, 1) * height * 4 >> 20, 1);
@@ -298,11 +300,18 @@ internal sealed class WgcCaptureSession : IScreenCapture
             long ticks = frame.SystemRelativeTime.Ticks;
             Interlocked.Increment(ref _framesReceived);
             RecordArrivalLag(ticks);
-            if (_slotGate is { } slotGate)
+            if (Encoding.PullPacing.Enabled)
+            {
+                // Как у OBS: кадр выбирает тик видеопотока (последний пришедший), а не
+                // метка времени. Под тяжёлой игрой метки сбиваются в кучи, и отбор по слоту
+                // выбрасывал до 40% настоящих кадров (получено 93/с, принято 55/с, Outlast).
+                // Частоту ограничивает MinUpdateInterval.
+            }
+            else if (_slotGate is { } slotGate)
             {
                 // Эксперимент AURA_CAPTURE_GATE=1: не больше двух кадров на слот сетки
-                // захвата. Предел ставит наш отбор, системный MinUpdateInterval в этом
-                // режиме не просим — иначе WGC сам не отдал бы второй кадр слота.
+                // захвата. Системный MinUpdateInterval — половина слота, второй кадр
+                // слота он пропускает (см. LimitUpdateRate).
                 if (!slotGate.Admit(ticks)) continue;
                 _lastAcceptedTicks = ticks;
             }
@@ -333,6 +342,55 @@ internal sealed class WgcCaptureSession : IScreenCapture
                 cursor,
                 _scope,
                 _targetRevision));
+            _copyProbe.Track(D3DDevice, D3DContext, _sourceName, "копия кадра WGC");
+        }
+    }
+
+    // Буфер WGC вернётся системе, только когда видеокарта выполнит нашу копию из него.
+    // Если копия ждёт долго, а пул из 2–3 буферов занят, система пропускает кадры.
+    private readonly CompletionProbe _copyProbe = new();
+
+    /// <summary>Сколько проходит от постановки команд в очередь до их выполнения на GPU.</summary>
+    private sealed class CompletionProbe
+    {
+        private readonly Queue<(ID3D11Query Query, long Issued)> _pending = new();
+        private readonly Stack<ID3D11Query> _free = new();
+        private long _sum, _max, _count;
+        private int _pendingMax;
+
+        public void Track(ID3D11Device device, ID3D11DeviceContext context, string source, string what)
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            while (_pending.TryPeek(out var head) &&
+                   context.GetData(head.Query, IntPtr.Zero, 0, AsyncGetDataFlags.DoNotFlush) == SharpGen.Runtime.Result.Ok)
+            {
+                _pending.Dequeue();
+                _free.Push(head.Query);
+                long lag = now - head.Issued;
+                _sum += lag; _count++;
+                if (lag > _max) _max = lag;
+            }
+            if (_pending.Count > _pendingMax) _pendingMax = _pending.Count;
+            if (_pending.Count >= 32) return;   // видеокарта стоит: не плодим запросы
+
+            var query = _free.Count > 0 ? _free.Pop() : device.CreateQuery(new QueryDescription(QueryType.Event));
+            context.End(query);
+            _pending.Enqueue((query, now));
+
+            if (_count >= 1800)
+            {
+                double f = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                Log.Info("Capture", $"{source}: {what} выполнена на GPU в среднем через " +
+                                    $"{_sum * f / _count:F1} мс (пик {_max * f:F1}), невыполненных до {_pendingMax}");
+                _sum = _max = _count = 0;
+                _pendingMax = 0;
+            }
+        }
+
+        public void Dispose()
+        {
+            while (_pending.TryDequeue(out var p)) p.Query.Dispose();
+            while (_free.TryPop(out var f)) f.Dispose();
         }
     }
 
@@ -424,6 +482,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
         }
 
         _session?.Dispose();
+        _copyProbe.Dispose();
         _session = null;
         _framePool?.Dispose();
         _framePool = null;

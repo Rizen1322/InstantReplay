@@ -50,13 +50,17 @@ public static class StartupManager
         {
             HardenInstallDirectory();
             RemoveLegacyRunEntry();
-            var (code, output) = RunSchtasks(capture: true, "/Query", "/TN", TaskName, "/FO", "LIST", "/V");
+            var (code, output) = RunSchtasks(capture: true, "/Query", "/TN", TaskName, "/XML");
             bool exists = code == 0;
             bool pathOk = exists && output.Contains(ExePath, StringComparison.OrdinalIgnoreCase);
+            // Старые задачи созданы без приоритета: Планировщик ставит 7 (ниже обычного)
+            bool priorityOk = exists && output.Contains("<Priority>4</Priority>", StringComparison.Ordinal);
 
-            if (wanted && !pathOk)
+            if (wanted && (!pathOk || !priorityOk))
             {
-                Log.Warn("Startup", exists ? "Путь автозапуска устарел — обновляю" : "Задача автозапуска отсутствовала — создаю");
+                Log.Warn("Startup", !exists ? "Задача автозапуска отсутствовала — создаю"
+                                   : !pathOk ? "Путь автозапуска устарел — обновляю"
+                                   : "Приоритет автозапуска ниже обычного — обновляю");
                 CreateTask();
             }
             else if (!wanted && exists)
@@ -135,9 +139,40 @@ public static class StartupManager
         // /RL HIGHEST — запуск с наивысшими правами (без UAC при входе);
         // /SC ONLOGON — при входе текущего пользователя; /F — перезаписать.
         // /TR со вложенным путём: сам путь в кавычках, чтобы работали пробелы.
-        string tr = $"\"{ExePath}\" --minimized";
-        var (code, output) = RunSchtasks(capture: true,
-            "/Create", "/TN", TaskName, "/TR", tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F");
+        // Через XML: только так задаются приоритет и лимиты. По умолчанию Планировщик
+        // запускает с приоритетом 7 (ниже обычного), останавливает задачу через 72 часа
+        // и не стартует от батареи. Aura в классе ниже обычного под игрой теряла кадры.
+        string user = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
+        string xml = $"""
+            <?xml version="1.0" encoding="UTF-16"?>
+            <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+              <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{System.Security.SecurityElement.Escape(user)}</UserId></LogonTrigger></Triggers>
+              <Principals><Principal id="Author">
+                <UserId>{System.Security.SecurityElement.Escape(user)}</UserId>
+                <LogonType>InteractiveToken</LogonType>
+                <RunLevel>HighestAvailable</RunLevel>
+              </Principal></Principals>
+              <Settings>
+                <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+                <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+                <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+                <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+                <Priority>4</Priority>
+              </Settings>
+              <Actions Context="Author"><Exec>
+                <Command>"{System.Security.SecurityElement.Escape(ExePath)}"</Command>
+                <Arguments>--minimized</Arguments>
+              </Exec></Actions>
+            </Task>
+            """;
+        string file = Path.Combine(Path.GetTempPath(), $"aura-task-{Guid.NewGuid():N}.xml");
+        int code; string output;
+        try
+        {
+            File.WriteAllText(file, xml, System.Text.Encoding.Unicode);
+            (code, output) = RunSchtasks(capture: true, "/Create", "/TN", TaskName, "/XML", file, "/F");
+        }
+        finally { try { File.Delete(file); } catch { } }
         if (code == 0) Log.Info("Startup", $"Автозапуск включён (Планировщик задач): {ExePath}");
         else Log.Error("Startup", $"Не удалось создать задачу автозапуска (код {code}): {output.Trim()}");
 #endif

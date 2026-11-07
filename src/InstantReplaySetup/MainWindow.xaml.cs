@@ -287,11 +287,20 @@ public partial class MainWindow : Window
         // При обновлении Aura закрывается сама: дописывает запись и сохраняет
         // настройки. Ждём её, и только если она не успела, завершаем силой —
         // раньше установщик сразу убивал процесс, и запись оставалась недописанной.
+        // Сначала просим выйти штатно (Aura --quit слушает это событие): убийство процесса
+        // с живой сессией NVENC сбрасывало видеокарту, и вместе с ней падала игра.
+        bool asked = false;
+        try
+        {
+            if (System.Threading.EventWaitHandle.TryOpenExisting(@"Global\Aura.Quit", out var quit))
+                using (quit) asked = quit.Set();
+        }
+        catch { }
         foreach (string name in new[] { ProcessName, OldProcessName })
             foreach (var p in Process.GetProcessesByName(name))
                 try
                 {
-                    if (!p.WaitForExit(App.UpdateMode ? 20000 : 0)) { p.Kill(); p.WaitForExit(3000); }
+                    if (!p.WaitForExit(App.UpdateMode || asked ? 20000 : 0)) { p.Kill(); p.WaitForExit(3000); }
                 }
                 catch { }
 

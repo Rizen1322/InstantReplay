@@ -83,6 +83,12 @@ typedef LONG(WINAPI* SetPriorityClassFn)(HANDLE, int);
 // Приоритет очереди видеокарты для процесса хоста, как у Aura (см. App.RaiseGpuPriority):
 // без него кадры энкодера под нагрузкой игрой стоят в общей очереди последними.
 static void raise_gpu_priority(int priorityClass) {
+    // Не ниже Normal и без EcoQoS: в Idle/режиме эффективности кадры ждут на GPU десятки мс
+    DWORD cls = GetPriorityClass(GetCurrentProcess());
+    if (cls == IDLE_PRIORITY_CLASS || cls == BELOW_NORMAL_PRIORITY_CLASS)
+        SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    PROCESS_POWER_THROTTLING_STATE eco = { PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, 0 };
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &eco, sizeof eco);
     if (priorityClass <= 0) return;
     HMODULE gdi = GetModuleHandleA("gdi32.dll");
     if (!gdi) gdi = LoadLibraryA("gdi32.dll");

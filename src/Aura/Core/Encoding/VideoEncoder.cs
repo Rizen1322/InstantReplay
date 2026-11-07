@@ -154,8 +154,8 @@ public sealed class VideoEncoder : IDisposable
     //
     // Здесь слот идёт по ЧАСАМ ВЫХОДНОГО ВИДЕО (см. PullCfrPolicy), а кадр захвата
     // его не занимает: он становится кандидатом, и пейсер в момент слота берёт самый
-    // свежий. Пока переменная AURA_PULL_PACING не задана, работает прежний путь
-    // целиком — он не тронут ни одной строкой.
+    // свежий. Режим по умолчанию (см. PullPacing); AURA_PULL_PACING=0 возвращает
+    // прежний push-путь.
 
     /// <summary>Читается один раз: смена сетки посреди записи разорвала бы PTS.</summary>
     private readonly bool _pullPacing = PullPacing.Enabled;
@@ -177,6 +177,18 @@ public sealed class VideoEncoder : IDisposable
     public long PullOverdue;
     /// <summary>Максимальный возраст выбранного кадра относительно слота, тики.</summary>
     public long PullMaxSlotAgeTicks;
+    // Поминутные (обнуляются в DumpStats): где свежие кадры не доходят до энкодера.
+    /// <summary>Кадров пришло кандидатами.</summary>
+    public long PullCandidatesWindow;
+    /// <summary>Слотов закрыто свежим кадром.</summary>
+    public long PullFreshWindow;
+    /// <summary>Слотов закрыто повтором.</summary>
+    public long PullRepeatWindow;
+    /// <summary>Слотов пропущено: повтор не принят (дыра в записи).</summary>
+    public long PullSkippedWindow;
+    /// <summary>Самая длинная серия повторов подряд.</summary>
+    public long PullMaxRepeatStreak;
+    private long _pullRepeatStreak;
 
     // Статистика для диагностики (скидывается в лог движком)
     public long FramesSubmitted;
@@ -551,17 +563,13 @@ public sealed class VideoEncoder : IDisposable
         NvencSession? session = null;
         try
         {
-            using (var dxgi = device.QueryInterface<Vortice.DXGI.IDXGIDevice>())
-            using (var gpu = dxgi.GetAdapter())
-            {
-                D3D11.D3D11CreateDevice(gpu, Vortice.Direct3D.DriverType.Unknown, DeviceCreationFlags.None,
-                    [Vortice.Direct3D.FeatureLevel.Level_11_1, Vortice.Direct3D.FeatureLevel.Level_11_0],
-                    out encoderDevice, out _, out encoderContext).CheckError();
-            }
-            Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice!, "NVENC");
-            using (var multithread = encoderDevice!.QueryInterface<ID3D11Multithread>())
-                multithread.SetMultithreadProtected(true);
-            Capture.GpuPriority.TryRaise(encoderDevice);
+            // NVENC на САМОМ устройстве захвата, как MFT: без второго устройства и keyed mutex.
+            // Отдельное устройство (в хосте или здесь) под RE4 давало 78–86% настоящих кадров
+            // и остановки по 5 с: копия на нём стояла в очереди видеокарты за игрой, пока
+            // устройство захвата с абсолютным приоритетом ждало ключ (8 ноября 2026).
+            // Свои ссылки (AddRef): Dispose ниже отпускает только их, а не устройство захвата.
+            encoderDevice = device.QueryInterface<ID3D11Device>();
+            encoderContext = encoderDevice.ImmediateContext;
 
             var config = NvencSession.ConfigFor(codec, width, height, fps, bitrateBps, TenBit, BitrateMode);
             session = NvencSession.TryCreate(encoderDevice.NativePointer, config, out string error);
@@ -590,9 +598,8 @@ public sealed class VideoEncoder : IDisposable
             };
             var inputs = new ID3D11Texture2D[buffers];
             for (int i = 0; i < buffers; i++) inputs[i] = Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(inputDesc), "входы NVENC");
-            // Общий пул нужен только на время от копии захвата до переноса на
-            // устройство энкодера — очередь плюс запас.
-            var pool = new EncoderTexturePool(device, encoderDevice, width, height, tenBit, slots: 24);
+            // Обычный пул на устройстве захвата: очередь плюс запас, без ключей
+            var pool = new EncoderTexturePool(device, width, height, tenBit, minSlots: 24);
             // Пул сломан, а не NVENC: пересобираем конвейер, прямой NVENC не запрещаем
             pool.Corrupted += reason =>
             {
@@ -619,7 +626,7 @@ public sealed class VideoEncoder : IDisposable
             return false;
         }
 
-        StartNvenc(session, width, height, fps, bitrateBps, codec, "своё устройство D3D11, один поток");
+        StartNvenc(session, width, height, fps, bitrateBps, codec, "на устройстве захвата, один поток");
         return true;
     }
 
@@ -655,11 +662,16 @@ public sealed class VideoEncoder : IDisposable
     // ---------------- NVENC в отдельном процессе ----------------
 
     /// <summary>
-    /// Хост NVENC выключен: AURA_NVENC_INPROCESS=1 или хост уже не раз умирал за этот
+    /// Хост NVENC выключен: нет AURA_NVENC_HOST=1 или хост уже не раз умирал за этот
     /// запуск. Тогда NVENC работает в процессе Aura, как до выноса.
     /// </summary>
+    // По умолчанию NVENC работает в процессе Aura на устройстве захвата: хост с отдельным
+    // устройством и keyed mutex под RE4 давал 78–86% настоящих кадров и остановки по
+    // несколько секунд, а NVENC на устройстве захвата — 93–99% и отправку до 1,4 мс
+    // (8 ноября 2026). Хост остаётся для проверок: AURA_NVENC_HOST=1.
     internal static bool RemoteHostDisabled =>
-        Environment.GetEnvironmentVariable("AURA_NVENC_INPROCESS") == "1" || Volatile.Read(ref s_hostFailures) >= MaxHostFailures;
+        Environment.GetEnvironmentVariable("AURA_NVENC_HOST") != "1" ||
+        Volatile.Read(ref s_hostFailures) >= MaxHostFailures;
 
     /// <summary>
     /// Сколько раз хост NVENC умирал или зависал. Каждый раз Aura поднимает новый —
@@ -963,6 +975,17 @@ public sealed class VideoEncoder : IDisposable
     private void SubmitInProcess(NvencSession session, EncoderInputFrame item)
     {
         var pool = _copyPool!;
+        if (!pool.Shared)
+        {
+            // Одно устройство с захватом: копия слота во вход NVENC на общем контексте под
+            // тем же замком, что копии захвата. Сам вызов NVENC — вне замка: прежде он ждал
+            // видеокарту внутри замка устройства, и вставал весь конвейер.
+            var slotInput = _nvencInputs[(int)(_nvencSubmitted % _nvencInputs.Length)];
+            lock (_device!) _nvencContext!.CopyResource(slotInput, item.Texture);
+            pool.Release(item.Texture);   // перезапись слота встанет на видеокарте после этой копии
+            EncodeInProcess(session, item, slotInput);
+            return;
+        }
         var shared = pool.AcquireForEncoder(item.Texture, 200);
         if (shared is null)
         {
@@ -978,9 +1001,14 @@ public sealed class VideoEncoder : IDisposable
             return;
         }
         var input = _nvencInputs[(int)(_nvencSubmitted % _nvencInputs.Length)];
-        long start = Diagnostics.PipelineProbe.Now();
         _nvencContext!.CopyResource(input, shared);
         pool.ReleaseFromEncoder(item.Texture);        // слот свободен: копия уже в очереди видеокарты
+        EncodeInProcess(session, item, input);
+    }
+
+    private void EncodeInProcess(NvencSession session, EncoderInputFrame item, ID3D11Texture2D input)
+    {
+        long start = Diagnostics.PipelineProbe.Now();
 
         // Просьба ключевого кадра (буфер потерял кадр или начал копить заново)
         bool forceIdr = _keyframeRequested;
@@ -1785,27 +1813,25 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>
     /// Кадр не занимает слот сам: он становится кандидатом. Слот закроет пейсер по
     /// часам выходного видео и возьмёт на этот момент самый свежий кандидат.
+    ///
+    /// КАК У OBS. Кадр только обновляет одну свою текстуру «последний кадр» (обычную,
+    /// без межпроцессного ключа); в пул энкодера она копируется на тике, ровно 60 раз
+    /// в секунду. Раньше кандидат сразу шёл в общий пул, а источник повторов потом
+    /// читался из общей текстуры без её ключа — повторы показывали прошлое содержимое
+    /// слота, и запись прыгала вперёд-назад (замер в RE4, 7 ноября 2026).
     /// </summary>
     private void SubmitPullCandidate(ID3D11Texture2D nv12PoolTexture, long captureTicks,
                                      Diagnostics.GpuStageTimer? gpuTimer)
     {
-        var copy = _copyPool!.TryCopy(nv12PoolTexture, _context!, gpuTimer);
-        if (copy is null)
-        {
-            Interlocked.Increment(ref FramesDroppedNoSlot);
-            return;
-        }
-
+        // Метки вокруг копии нужны и здесь: без второй стадии замер не закрывается и
+        // время преобразования на видеокарте в лог не попадало вовсе.
+        gpuTimer?.Mark(_context!);
+        _copyPool!.KeepLatest(nv12PoolTexture, _context!);
+        gpuTimer?.Mark(_context!);
+        Interlocked.Increment(ref PullCandidatesWindow);
         long ready = NowQpcTicks();
-        ID3D11Texture2D? replaced;
         lock (_pullLock)
-        {
-            replaced = _pullCandidate.Texture;
-            _pullCandidate = new PullCandidate(copy, captureTicks, ready, ++_pullSequence);
-        }
-
-        // Прошлый кандидат в энкодер не уходил, поэтому его слот пула свободен.
-        if (replaced is not null) _copyPool.Release(replaced);
+            _pullCandidate = new PullCandidate(_copyPool.Latest, captureTicks, ready, ++_pullSequence);
     }
 
     /// <summary>Один тик пейсера в pull-модели: закрыть созревшие слоты.</summary>
@@ -1847,31 +1873,43 @@ public sealed class VideoEncoder : IDisposable
                 long pts = PullCfrPolicy.SlotPts(slot, _cfrBase, Fps);
                 bool takeFresh = last && plan.UseCandidate;
 
-                if (takeFresh && !PutCandidateIntoFrame(candidate, pts)) break;
-                if (!takeFresh && !PutRepeatIntoFrame(pts, encoderBehind)) break;
+                if (takeFresh)
+                {
+                    if (!PutCandidateIntoFrame(candidate, pts)) break;
+                    Interlocked.Increment(ref PullFreshWindow);
+                    _pullRepeatStreak = 0;
+                }
+                // Просроченный слот без повтора пропускаем, а не встаём на нём: иначе при
+                // забитой очереди цикл каждый тик ломался на первом же повторе и свежий
+                // кадр не попадал в запись десятки секунд (Outlast, GPU 93%, 7 ноября 2026).
+                // Как у OBS: отставший видеопоток не догоняет каждый слот, а берёт последний.
+                else
+                {
+                    Interlocked.Increment(ref PutRepeatIntoFrame(pts, encoderBehind) ? ref PullRepeatWindow : ref PullSkippedWindow);
+                    if (++_pullRepeatStreak > Interlocked.Read(ref PullMaxRepeatStreak))
+                        Interlocked.Exchange(ref PullMaxRepeatStreak, _pullRepeatStreak);
+                }
 
                 _pullLastClosedSlot = slot;
             }
         }
     }
 
-    /// <summary>Свежий кадр в слот. false — очередь не приняла или кандидата уже заменили.</summary>
+    /// <summary>Свежий кадр в слот. false — нет свободного слота пула или очередь не приняла.</summary>
     private bool PutCandidateIntoFrame(in PullCandidate candidate, long pts)
     {
-        ID3D11Texture2D? texture;
+        // Самый свежий на этот момент: если после плана пришёл ещё кадр, «последний
+        // кадр» уже его — берём его время, а не устаревшее из плана.
         long captureTicks;
-        lock (_pullLock)
-        {
-            texture = _pullCandidate.Texture;
-            captureTicks = _pullCandidate.CaptureTicks;
-            // Пока считали план, пришёл более свежий кадр: старую копию не трогаем
-            // (её уже мог вернуть в пул поток кадра), слот закроем на следующем тике.
-            if (texture is null || captureTicks != candidate.CaptureTicks) return false;
-            _pullCandidate = PullCandidate.Empty;
-        }
+        lock (_pullLock) captureTicks = Math.Max(_pullCandidate.CaptureTicks, candidate.CaptureTicks);
+        if (_copyPool!.Latest is null) return false;
 
-        // Источник повторов — отдельная копия, а не текстура, уходящая в NVENC.
-        _copyPool!.KeepLatest(texture, _context!);
+        var texture = _copyPool.TryCopy(_copyPool.Latest, _context!);
+        if (texture is null)
+        {
+            Interlocked.Increment(ref FramesDroppedNoSlot);
+            return false;
+        }
 
         if (!Enqueue(texture, pts, isDuplicate: false, encoderBehind: false))
         {

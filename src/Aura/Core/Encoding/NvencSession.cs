@@ -104,13 +104,12 @@ internal sealed partial class NvencSession : INvencSession
 
     /// <summary>Есть ли смысл пробовать NVENC: видеокарта NVIDIA и прослойка на месте.</summary>
     /// <remarks>
-    /// AURA_NO_NVENC=1 (или AURA_DIRECT_NVENC=0) — сразу MFT. Если прямой NVENC всё же
+    /// AURA_NO_NVENC=1 — сразу MFT. Если прямой NVENC всё же
     /// встанет, сторож движка переключит программу на MFT до её перезапуска
     /// (<see cref="VideoEncoder.DirectNvencDisabled"/>).
     /// </remarks>
     public static bool Available(string adapterDescription) =>
         adapterDescription.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) &&
-        Environment.GetEnvironmentVariable("AURA_DIRECT_NVENC") != "0" &&
         Environment.GetEnvironmentVariable("AURA_NO_NVENC") != "1" &&
         File.Exists(Path.Combine(AppContext.BaseDirectory, Dll));
 
@@ -128,7 +127,8 @@ internal sealed partial class NvencSession : INvencSession
                                    BitrateMode mode = BitrateMode.Quality)
     {
         double pixelRate = (double)width * height * fps;           // пикселей в секунду
-        bool heavy = pixelRate > 2560.0 * 1440 * 60 * 1.05;        // больше 1440p60
+        // 1440p60 и больше: рядом с RE4 на P5 NVENC давал провалы отправки до 2,4 с (8 ноября 2026)
+        bool heavy = pixelRate > 2560.0 * 1440 * 60 * 0.95;
         // B-кадры и второй проход — только ниже 1440p60. На 2560×1440@60 рядом с
         // CS2 NVENC с ними не успевал: отправка кадра в среднем 5–11 мс, пики до
         // 350 мс, и за полчаса игры 51 провал записи до 33–60 кадров. Без них в
@@ -166,11 +166,16 @@ internal sealed partial class NvencSession : INvencSession
             // 1440p60 и тяжелее не включаем: там NVENC рядом с игрой на пределе темпа.
             // Переменные AURA_NVENC_BFRAMES / AURA_NVENC_MULTIPASS для проверок.
             BFrames = extras ? 2 : 0,
-            SpatialAq = 1,
+            // На 1440p60 и тяжелее без AQ: его возврат регулятором нагрузки совпадал с провалами
+            // отправки до 2,4 с под RE4. С выключенными AQ и вторым проходом у регулятора одна
+            // ступень, и энкодер на ходу не перенастраивается (8 ноября 2026).
+            SpatialAq = heavy ? 0 : 1,
             TemporalAq = 0,
             AqStrength = 8,
             Multipass = extras ? 1 : 0,
-            BufferCount = 0,                                         // прослойка посчитает сама
+            // Запас кадров в полёте, как у OBS (buf_count ~12): с четырьмя одна задержка
+            // видеокарты под игрой сразу останавливала подачу новых кадров
+            BufferCount = 8,
         });
     }
 

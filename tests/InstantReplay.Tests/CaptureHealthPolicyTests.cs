@@ -253,10 +253,19 @@ public sealed class CaptureHealthPolicyTests
         Assert.Equal(CaptureBackend.Wgc, afterSecondWgcStall);
     }
 
+    [Fact]
+    public void SlowGameAtThirtyThreeFpsIsNotStarvation()
+    {
+        var policy = new CaptureHealthPolicy();
+        var slowGame = StarvedWgc() with { FramesReceived = 33, FramesDuplicated = 27 };
+        for (int i = 0; i < 60; i++)
+            Assert.False(policy.Observe(slowGame, Now.AddSeconds(i)).SwitchBackend);
+    }
+
     private static CaptureHealthSample StarvedWgc() => new(
         Backend: CaptureBackend.Wgc,
         TargetFps: 60,
-        FramesReceived: 30,
+        FramesReceived: 10,
         FramesEncoded: 55,
         FramesDuplicated: 25,
         GameForeground: true,

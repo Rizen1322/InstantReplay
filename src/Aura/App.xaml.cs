@@ -52,9 +52,11 @@ public partial class App : Application
 {
     private const string InstanceMutexName = @"Global\Aura.SingleInstance";
     private const string ShowWindowEventName = @"Global\Aura.ShowWindow";
+    private const string QuitEventName = @"Global\Aura.Quit";
 
     private static Mutex? _singleInstance;
     private static EventWaitHandle? _showWindowSignal;
+    private static bool _devInstance;
     private MainWindow? _main;
     private TaskbarIcon? _tray;
     private MenuItem? _trayToggle, _traySave;
@@ -65,13 +67,17 @@ public partial class App : Application
 
         // Одна копия: вторая не умирает молча, а просит первую показать окно.
         // --dev поднимает отдельную копию рядом с рабочей (проверка вёрстки).
-        bool dev = e.Args.Contains("--dev");
+        bool dev = _devInstance = e.Args.Contains("--dev");
+        // --quit: попросить работающую копию выйти штатно (закрыть NVENC и запись).
+        // Убийство процесса с живой сессией NVENC роняло видеокарту вместе с игрой.
+        bool quit = e.Args.Contains("--quit");
         _singleInstance = new Mutex(true, dev ? InstanceMutexName + ".dev" : InstanceMutexName, out bool isNew);
-        if (!isNew)
+        if (!isNew || quit)
         {
             try
             {
-                if (!dev && EventWaitHandle.TryOpenExisting(ShowWindowEventName, out var signal))
+                string name = quit ? (dev ? QuitEventName + ".dev" : QuitEventName) : ShowWindowEventName;
+                if ((quit || !dev) && !isNew && EventWaitHandle.TryOpenExisting(name, out var signal))
                     using (signal) signal.Set();
             }
             catch { }
@@ -87,8 +93,8 @@ public partial class App : Application
 
         // --dev --force-mft: кодировать через MFT (проверка запасного пути)
         if (dev && e.Args.Contains("--force-mft")) Core.Encoding.VideoEncoder.DirectNvencDisabled = true;
-        // --dev --nvenc-inprocess: NVENC в процессе Aura, без хоста (проверка запасного пути)
-        if (dev && e.Args.Contains("--nvenc-inprocess")) Environment.SetEnvironmentVariable("AURA_NVENC_INPROCESS", "1");
+        // --dev --nvenc-host: NVENC в отдельном процессе-хосте (старый путь, для проверок)
+        if (dev && e.Args.Contains("--nvenc-host")) Environment.SetEnvironmentVariable("AURA_NVENC_HOST", "1");
 
         // Копия --dev пишет в свой файл: она работает рядом с обычной, а лог открыт
         // на общий доступ — в один файл две копии писали бы вперемешку.
@@ -581,6 +587,7 @@ public partial class App : Application
     /// </summary>
     private static void RaiseGpuPriority()
     {
+        Core.Capture.ProcessQos.Ensure(atStart: true);
         try
         {
             HagsEnabled = Core.Hardware.GpuScheduling.HagsEnabled();
@@ -1294,6 +1301,18 @@ public partial class App : Application
             }
         })
         { IsBackground = true, Name = "ShowWindowSignal" }.Start();
+
+        // Штатный выход по просьбе снаружи (Aura.exe --quit): установщик и проверки
+        EventWaitHandle quit;
+        try { quit = new EventWaitHandle(false, EventResetMode.AutoReset, _devInstance ? QuitEventName + ".dev" : QuitEventName); }
+        catch (Exception ex) { Log.Warn("App", $"Сигнал выхода недоступен: {ex.Message}"); return; }
+        new Thread(() =>
+        {
+            try { quit.WaitOne(); } catch { return; }
+            Log.Info("App", "Выход по просьбе снаружи (--quit)");
+            Services.Ui.Enqueue(ExitApp);
+        })
+        { IsBackground = true, Name = "QuitSignal" }.Start();
     }
 
     public void ShowMainWindow() => Services.Ui.Enqueue(() =>

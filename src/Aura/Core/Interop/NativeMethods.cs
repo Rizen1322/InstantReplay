@@ -293,6 +293,14 @@ internal static partial class NativeMethods
     [DllImport("kernel32.dll")]
     internal static extern IntPtr GetCurrentProcess();
 
+    // Режим эффективности (EcoQoS): ProcessPowerThrottling = 4, EXECUTION_SPEED = 1
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PROCESS_POWER_THROTTLING_STATE { public uint Version, ControlMask, StateMask; }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetProcessInformation(IntPtr hProcess, int infoClass,
+        ref PROCESS_POWER_THROTTLING_STATE info, int size);
+
     // ---------------- Фоновый режим потока (низкий приоритет ввода-вывода) ----------------
     // THREAD_MODE_BACKGROUND_BEGIN опускает потоку и процессорный приоритет, и приоритет
     // ДИСКОВЫХ операций. Именно это нужно потоку сохранения клипа, пока идёт игра:

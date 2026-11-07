@@ -127,15 +127,17 @@ internal static class PullCfrScheduler
 }
 
 /// <summary>
-/// Экспериментальный pull-пейсинг включается переменной окружения и НЕ МЕНЯЕТСЯ на
-/// ходу: у пейсера и у захвата на всю сессию записи должна быть одна и та же сетка,
-/// иначе видео поедет по одной, а захват по другой. Переключатель отдельный от
-/// ограничителя захвата специально — чтобы по записи было видно, что именно дало
-/// эффект.
+/// Pull-пейсинг, как видеопоток OBS: тик 60 Гц берёт последний пришедший кадр, а не
+/// раскладывает кадры по слотам по их меткам времени. Режим по умолчанию: под тяжёлой
+/// игрой метки WGC сбиваются в кучи, и push-отбор выбрасывал настоящие кадры
+/// (Outlast, GPU ~90%: уникальных 81–90% против 70–81%, дыр в записи в разы меньше,
+/// 7 ноября 2026). AURA_PULL_PACING=0 возвращает push. Не меняется на ходу: у пейсера
+/// и у захвата на всю сессию должна быть одна сетка.
 /// </summary>
 internal static class PullPacing
 {
-    public static bool Enabled { get; } = IsEnabled("AURA_PULL_PACING");
+    public static bool Enabled { get; } = !string.Equals(
+        Environment.GetEnvironmentVariable("AURA_PULL_PACING"), "0", StringComparison.Ordinal);
 
     internal static bool IsEnabled(string variable) =>
         string.Equals(Environment.GetEnvironmentVariable(variable), "1", StringComparison.Ordinal) ||

@@ -155,6 +155,143 @@ public sealed class VideoProcessorNv12 : IDisposable
                     throw new InvalidOperationException("Видеопроцессор не отдал пул кадров в NV12");
             }
             _poolIndex = 0;
+
+            // Без масштабирования — свои шейдеры вместо видеопроцессора драйвера
+            if (srcWidth == OutWidth && srcHeight == OutHeight &&
+                Environment.GetEnvironmentVariable("AURA_VP_CONVERT") != "1")
+            {
+                try
+                {
+                    _shader = new ShaderConverter(_device, _context, _pool, OutputFormat, OutWidth, OutHeight);
+                    Logging.Log.Info("Capture", $"Цвет в {OutputFormat} переводят свои шейдеры (как у OBS), не видеопроцессор");
+                }
+                catch (Exception ex)
+                {
+                    Logging.Log.Warn("Capture", $"Шейдерный перевод цвета не поднялся ({ex.Message}) — остаётся видеопроцессор");
+                    _shader = null;
+                }
+            }
+        }
+    }
+
+    private ShaderConverter? _shader;
+
+    /// <summary>
+    /// BGRA → NV12/P010 пиксельными шейдерами, как у OBS (libobs format_conversion).
+    ///
+    /// ЗАЧЕМ. VideoProcessorBlt под игрой шёл на видеокарте 25–29 мс на кадр (пик 35)
+    /// против 0,06 мс у копии того же кадра: при 90 кадрах в секунду очередь Aura
+    /// не успевала, копия кадра WGC ждала 150 мс, WGC отдавал 40–50 кадров (RE4, GPU 88%,
+    /// 8 ноября 2026). Два прохода: яркость по пикселю и цветность средним по блоку 2×2.
+    /// Матрица та же, что у видеопроцессора: BT.709, студийный диапазон.
+    /// </summary>
+    private sealed class ShaderConverter : IDisposable
+    {
+        private const string Source = """
+            Texture2D<float4> Src : register(t0);
+            cbuffer Map : register(b0) { float4 Range; };   // Y: множитель, сдвиг; UV: множитель, сдвиг
+
+            float4 VsMain(uint id : SV_VertexID) : SV_Position
+            {
+                float2 uv = float2((id << 1) & 2, id & 2);
+                return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+            }
+
+            float PsY(float4 pos : SV_Position) : SV_Target
+            {
+                float3 rgb = Src.Load(int3(pos.xy, 0)).rgb;
+                return dot(rgb, float3(0.2126, 0.7152, 0.0722)) * Range.x + Range.y;
+            }
+
+            float2 PsUV(float4 pos : SV_Position) : SV_Target
+            {
+                int2 p = int2(pos.xy) * 2;
+                float3 rgb = (Src.Load(int3(p, 0)).rgb + Src.Load(int3(p + int2(1, 0), 0)).rgb +
+                              Src.Load(int3(p + int2(0, 1), 0)).rgb + Src.Load(int3(p + int2(1, 1), 0)).rgb) * 0.25;
+                float cb = dot(rgb, float3(-0.114572, -0.385428, 0.5));
+                float cr = dot(rgb, float3(0.5, -0.454153, -0.045847));
+                return float2(cb, cr) * Range.z + Range.w;
+            }
+            """;
+
+        private readonly ID3D11Device _device;
+        private readonly ID3D11DeviceContext _context;
+        private readonly ID3D11VertexShader _vs;
+        private readonly ID3D11PixelShader _psY, _psUV;
+        private readonly ID3D11Buffer _range;
+        private readonly ID3D11RenderTargetView[] _y, _uv;
+        private readonly Dictionary<nint, ID3D11ShaderResourceView> _sources = [];
+        private readonly int _width, _height;
+
+        public ShaderConverter(ID3D11Device device, ID3D11DeviceContext context, ID3D11Texture2D?[] pool,
+                               Format format, int width, int height)
+        {
+            _device = device;
+            _context = context;
+            _width = width;
+            _height = height;
+            _vs = device.CreateVertexShader(Vortice.D3DCompiler.Compiler.Compile(Source, "VsMain", "nv12.hlsl", "vs_5_0").Span);
+            _psY = device.CreatePixelShader(Vortice.D3DCompiler.Compiler.Compile(Source, "PsY", "nv12.hlsl", "ps_5_0").Span);
+            _psUV = device.CreatePixelShader(Vortice.D3DCompiler.Compiler.Compile(Source, "PsUV", "nv12.hlsl", "ps_5_0").Span);
+
+            bool tenBit = format == Format.P010;
+            // Коды студийного диапазона в долях UNORM: 8 бит — /255; P010 — 10 бит в старших
+            // разрядах 16-битного слова, то есть код·64/65535.
+            float unit = tenBit ? 64f / 65535f : 1f / 255f;
+            float k = tenBit ? 4 : 1;
+            _range = device.CreateBuffer(
+                new System.Numerics.Vector4(219 * k * unit, 16 * k * unit, 224 * k * unit, 128 * k * unit),
+                new BufferDescription(16, BindFlags.ConstantBuffer, ResourceUsage.Immutable));
+
+            Format yFormat = tenBit ? Format.R16_UNorm : Format.R8_UNorm;
+            Format uvFormat = tenBit ? Format.R16G16_UNorm : Format.R8G8_UNorm;
+            _y = new ID3D11RenderTargetView[pool.Length];
+            _uv = new ID3D11RenderTargetView[pool.Length];
+            for (int i = 0; i < pool.Length; i++)
+            {
+                _y[i] = device.CreateRenderTargetView(pool[i]!, new RenderTargetViewDescription(RenderTargetViewDimension.Texture2D, yFormat));
+                _uv[i] = device.CreateRenderTargetView(pool[i]!, new RenderTargetViewDescription(RenderTargetViewDimension.Texture2D, uvFormat));
+            }
+        }
+
+        public void Convert(ID3D11Texture2D source, int index)
+        {
+            if (!_sources.TryGetValue(source.NativePointer, out var view))
+            {
+                view = _device.CreateShaderResourceView(source);
+                _sources.Add(source.NativePointer, view);
+            }
+
+            _context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
+            _context.IASetInputLayout(null);
+            _context.VSSetShader(_vs);
+            _context.RSSetState(null);
+            _context.OMSetBlendState(null);
+            _context.OMSetDepthStencilState(null);
+            _context.PSSetConstantBuffer(0, _range);
+            _context.PSSetShaderResource(0, view);
+
+            _context.OMSetRenderTargets(_y[index]);
+            _context.RSSetViewport(0, 0, _width, _height);
+            _context.PSSetShader(_psY);
+            _context.Draw(3, 0);
+
+            _context.OMSetRenderTargets(_uv[index]);
+            _context.RSSetViewport(0, 0, _width / 2, _height / 2);
+            _context.PSSetShader(_psUV);
+            _context.Draw(3, 0);
+
+            _context.PSSetShaderResource(0, null!);
+            _context.OMSetRenderTargets((ID3D11RenderTargetView)null!);
+        }
+
+        public void Dispose()
+        {
+            foreach (var v in _sources.Values) v.Dispose();
+            foreach (var v in _y) v.Dispose();
+            foreach (var v in _uv) v.Dispose();
+            _range.Dispose();
+            _psY.Dispose(); _psUV.Dispose(); _vs.Dispose();
         }
     }
 
@@ -301,6 +438,12 @@ public sealed class VideoProcessorNv12 : IDisposable
             int i = _poolIndex;
             _poolIndex = (_poolIndex + 1) % PoolSize;
 
+            if (_shader is not null)
+            {
+                _shader.Convert(bgraFrame, i);
+                return _pool[i]!;
+            }
+
             // Здесь текстуры брокера/скейлера, а не WGC: view живёт вместе с конвертером.
             var inputView = CreateInputView(bgraFrame);
 
@@ -344,6 +487,7 @@ public sealed class VideoProcessorNv12 : IDisposable
 
     private void ReleaseCore()
     {
+        _shader?.Dispose(); _shader = null;
         foreach (var view in _inputViews.Values) view.Dispose();
         _inputViews.Clear();
         foreach (var v in _outputViews) v?.Dispose();
