@@ -23,8 +23,9 @@ public static class ClipCleanup
     /// сжатая копия «клип (25 МБ).mp4» — самостоятельная запись, она видна в панораме,
     /// и уносить её вместе с оригиналом без спроса нельзя.
     /// </summary>
-    private static readonly string[] SidecarExtensions =
-        [".tmp", ".part", ".thumb", ".meta", ".srt", ".vtt", ".json", ".log", ".txt"];
+    // Только то, что Aura сама кладёт рядом с записью. Папку выбирает человек, и
+    // «фильм.srt» или «фильм.txt» рядом с «фильм.mp4» в ней — его файлы, а не наши.
+    private static readonly string[] SidecarExtensions = [".part"];
 
     /// <summary>
     /// Убрать всё, что осталось от записи: кэш миниатюры, файлы-спутники рядом

@@ -597,9 +597,15 @@ public sealed class VideoEncoder : IDisposable
                 BindFlags = BindFlags.RenderTarget,
             };
             var inputs = new ID3D11Texture2D[buffers];
-            for (int i = 0; i < buffers; i++) inputs[i] = Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(inputDesc), "входы NVENC");
-            // Обычный пул на устройстве захвата: очередь плюс запас, без ключей
-            var pool = new EncoderTexturePool(device, width, height, tenBit, minSlots: 24);
+            for (int i = 0; i < buffers; i++)
+                inputs[i] = EncoderTexturePool.KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(inputDesc), "входы NVENC"));
+            // Обычный пул на устройстве захвата: очередь плюс запас, без ключей.
+            // На 1440p60 и тяжелее пул 12 слотов вместо 24: очередь там в рабочих
+            // сессиях не глубже одного кадра (8 ноября 2026), а 12 кадров P010 —
+            // это 130 МБ видеопамяти, которые нужны игре. Ниже — как было.
+            bool heavyStream = !NvencSession.UsesExtras(width, height, fps);
+            var pool = new EncoderTexturePool(device, width, height, tenBit,
+                                              minSlots: heavyStream ? 12 : 24, maxSlots: heavyStream ? 12 : 96);
             // Пул сломан, а не NVENC: пересобираем конвейер, прямой NVENC не запрещаем
             pool.Corrupted += reason =>
             {
@@ -2236,10 +2242,19 @@ public sealed class VideoEncoder : IDisposable
 
     private long _nextAdapterCheck = NvencLoadAdapter.WindowMs;
 
-    private void NoteDequeued(EncoderInputFrame item) =>
-        _freezeMinute.Add(item.Ticks, item.IsDuplicate,
-                          Interlocked.Read(ref FramesDroppedRealQueue) + Interlocked.Read(ref FramesDroppedLate),
-                          1000.0 / Math.Max(1, Fps));
+    private void NoteDequeued(EncoderInputFrame item)
+    {
+        var (gapMs, pipeline) = _freezeMinute.Add(item.Ticks, item.IsDuplicate,
+            Interlocked.Read(ref FramesDroppedRealQueue) + Interlocked.Read(ref FramesDroppedLate),
+            1000.0 / Math.Max(1, Fps));
+        if (gapMs <= 100) return;
+        // Каждый заметный стоп-кадр отдельной строкой со временем: по минутной сводке
+        // не видно, совпал ли он с чтением кадра в память или с чем-то ещё в логе
+        var (readEndedMs, readWaitedMs) = Capture.ScreenshotService.LastReadback;
+        bool duringReadback = readWaitedMs > 0 && Environment.TickCount64 - readEndedMs < gapMs + 250;
+        Log.Info("Encoder", $"Стоп-кадр {gapMs:F0} мс ({(pipeline ? "конвейер" : "захват")}), в очереди {_inputQueue.Count}" +
+                            (duringReadback ? $"; рядом шло чтение кадра в память, ждало {readWaitedMs:F0} мс" : ""));
+    }
 
     /// <summary>Глубина очереди и возраст самого старого кадра в ней; зовётся пейсером раз в 4 мс.</summary>
     private void SampleQueue()

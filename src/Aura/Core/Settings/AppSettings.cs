@@ -235,7 +235,8 @@ public sealed class AppSettings
 
     // ---------- Система ----------
     public bool AutoStartWithWindows { get; set; } = false;
-    public bool StartMinimizedToTray { get; set; } = false;
+    /// <summary>При запуске вместе с Windows не показывать окно, только значок в трее.</summary>
+    public bool StartMinimizedToTray { get; set; } = true;
     /// <summary>Автоматически включать Instant Replay при запуске приложения.</summary>
     public bool AutoStartReplayBuffer { get; set; } = true;
     public bool CheckForUpdates { get; set; } = true;

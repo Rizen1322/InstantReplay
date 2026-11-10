@@ -344,8 +344,23 @@ public static class ScreenshotService
             }
 
             context.CopyResource(_staging, texture);
+            context.Flush();   // DoNotWait сам копию видеокарте не отправит
 
-            var mapped = context.Map(_staging, 0, MapMode.Read);
+            // Обычный Map ждёт видеокарту ВНУТРИ вызова, а при многопоточной защите
+            // устройства вызов идёт под его замком: захват, пейсер и конвертер стояли
+            // всё это время (лента буфера читает кадр раз в 15 секунд прямо в игре).
+            // DoNotWait сразу возвращает «ещё рисуется», и ждём мы уже без замка.
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            MappedSubresource mapped;
+            while (context.Map(_staging, 0, MapMode.Read, MapFlags.DoNotWait, out mapped).Failure)
+            {
+                if (System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds > 3000)
+                    throw new TimeoutException("видеокарта не отдала кадр за 3 секунды");
+                Thread.Sleep(2);
+            }
+            double waitedMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            LastReadback = (Environment.TickCount64, waitedMs);
+            if (waitedMs > 50) Log.Info("Screenshot", $"Чтение кадра в память ждало видеокарту {waitedMs:F0} мс");
             try
             {
                 int w = (int)desc.Width, h = (int)desc.Height;
@@ -363,6 +378,9 @@ public static class ScreenshotService
             finally { context.Unmap(_staging, 0); }
         }
     }
+
+    /// <summary>Когда закончилось последнее чтение кадра (TickCount64) и сколько оно ждало: для строки стоп-кадра.</summary>
+    internal static (long EndedMs, double WaitedMs) LastReadback { get; private set; }
 
     private static readonly object StagingSync = new();
     private static ID3D11Texture2D? _staging;

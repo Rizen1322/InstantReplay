@@ -397,6 +397,27 @@ public static class Mp4Defragment
     /// переименованием) тоже публикуется, а не удаляется.
     /// null — ни целого фрагмента, ни готового файла.
     /// </summary>
+    /// <summary>
+    /// Файл начат записью Aura: сразу за ftyp стоит заглушка «free» на 16 байт
+    /// (FragmentedMp4Writer). По ней недописанную запись отличают от чужого
+    /// «.mp4.part» (недокачанный файл браузера) в папке, которую выбрал человек.
+    /// </summary>
+    public static bool HasRecordingStub(string path)
+    {
+        try
+        {
+            using var file = File.OpenRead(path);
+            Span<byte> head = stackalloc byte[8];
+            file.ReadExactly(head);
+            uint ftypSize = BinaryPrimitives.ReadUInt32BigEndian(head);
+            if (!head[4..].SequenceEqual("ftyp"u8) || ftypSize < 8) return false;
+            file.Position = ftypSize;
+            file.ReadExactly(head);
+            return BinaryPrimitives.ReadUInt32BigEndian(head) == 16 && head[4..].SequenceEqual("free"u8);
+        }
+        catch { return false; }
+    }
+
     public static string? RecoverPart(string partPath)
     {
         if (!partPath.EndsWith(".part", StringComparison.OrdinalIgnoreCase)) return null;

@@ -44,8 +44,14 @@ public static class StartupManager
     /// Сверка при старте: восстановить пропавшую задачу и обновить устаревший путь
     /// (после переустановки/переноса папки).
     /// </summary>
-    public static void Reconcile(bool wanted)
+    /// <returns>
+    /// true — найдена задача прежнего вида, которая всегда запускала с --minimized.
+    /// Вызывающий включает «Стартовать свёрнутым в трей», чтобы после обновления
+    /// Aura при входе в Windows вела себя как раньше, а переключатель говорил правду.
+    /// </returns>
+    public static bool Reconcile(bool wanted)
     {
+        bool legacyMinimized = false;
         try
         {
             HardenInstallDirectory();
@@ -56,11 +62,17 @@ public static class StartupManager
             // Старые задачи созданы без приоритета: Планировщик ставит 7 (ниже обычного)
             bool priorityOk = exists && output.Contains("<Priority>4</Priority>", StringComparison.Ordinal);
 
-            if (wanted && (!pathOk || !priorityOk))
+            // Старые задачи всегда запускали с --minimized, и переключатель «Стартовать
+            // свёрнутым в трей» при автозапуске ничего не решал
+            legacyMinimized = exists && output.Contains("--minimized", StringComparison.Ordinal);
+            bool argsOk = exists && output.Contains("--autostart", StringComparison.Ordinal);
+
+            if (wanted && (!pathOk || !priorityOk || !argsOk))
             {
                 Log.Warn("Startup", !exists ? "Задача автозапуска отсутствовала — создаю"
                                    : !pathOk ? "Путь автозапуска устарел — обновляю"
-                                   : "Приоритет автозапуска ниже обычного — обновляю");
+                                   : !priorityOk ? "Приоритет автозапуска ниже обычного — обновляю"
+                                   : "Задача автозапуска прежнего вида — обновляю");
                 CreateTask();
             }
             else if (!wanted && exists)
@@ -69,6 +81,7 @@ public static class StartupManager
             }
         }
         catch (Exception ex) { Log.Warn("Startup", $"Сверка автозапуска: {ex.Message}"); }
+        return legacyMinimized;
     }
 
     /// <summary>
@@ -161,7 +174,7 @@ public static class StartupManager
               </Settings>
               <Actions Context="Author"><Exec>
                 <Command>"{System.Security.SecurityElement.Escape(ExePath)}"</Command>
-                <Arguments>--minimized</Arguments>
+                <Arguments>--autostart</Arguments>
               </Exec></Actions>
             </Task>
             """;

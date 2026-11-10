@@ -813,7 +813,9 @@ public sealed partial class ReplayEngine
                     bool remoteHost = _pipeline.Encoder is { RemoteNvenc: true };
                     if (_pipeline.Encoder is { DirectNvenc: true } wedgedEncoder)
                     {
-                        Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{wedgedEncoder.NvencTrace()}");
+                        string nvencTrace = wedgedEncoder.NvencTrace() ?? "";
+                        Diagnostics.StallDump.Request();
+                        Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{nvencTrace}");
                         if (remoteHost)
                         {
                             // NVENC в отдельном процессе: хост просто убивается, видеопамять
@@ -821,7 +823,12 @@ public sealed partial class ReplayEngine
                             // же NVENC — повтор не очищается. Голодание отказом не считается.
                             wedgedEncoder.AbortHost($"энкодер молчит {stuck:F1} с — хост убит сторожем", countFailure: !starving);
                         }
-                        else if (!starving)
+                        // Поток пять секунд и дольше сидит внутри вызова драйвера — это не
+                        // голодание: 8 ноября 2026 новая сессия NVENC рядом с такой встала на
+                        // 12-м кадре на 21 с. Строку пишет aura_nvenc_trace (nvenc_shim.c).
+                        else if (!starving ||
+                                 (System.Text.RegularExpressions.Regex.Match(nvencTrace, @"ВНУТРИ ВЫЗОВА уже (\d+) мс") is { Success: true } inCall &&
+                                  long.Parse(inCall.Groups[1].Value) >= 5000))
                         {
                             VideoEncoder.DirectNvencDisabled = true;
                             Interlocked.Increment(ref NvencStats.FatalErrors);

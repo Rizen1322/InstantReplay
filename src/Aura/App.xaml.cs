@@ -65,6 +65,14 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // --dump PID ФАЙЛ: помощник, пишет дамп зависшей Aura и выходит (см. StallDump)
+        int dumpArg = Array.IndexOf(e.Args, "--dump");
+        if (dumpArg >= 0 && dumpArg + 2 < e.Args.Length && int.TryParse(e.Args[dumpArg + 1], out int dumpPid))
+        {
+            Environment.Exit(Core.Diagnostics.StallDump.Write(dumpPid, e.Args[dumpArg + 2]));
+            return;
+        }
+
         // Одна копия: вторая не умирает молча, а просит первую показать окно.
         // --dev поднимает отдельную копию рядом с рабочей (проверка вёрстки).
         bool dev = _devInstance = e.Args.Contains("--dev");
@@ -172,7 +180,9 @@ public partial class App : Application
         // Отладочная копия автозапуск не трогает: раньше каждый запуск с --dev
         // переписывал задачу Планировщика на свой путь, и после перезагрузки
         // стартовала копия из папки сборки вместо установленной Aura.
-        if (!dev) StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows);
+        if (!dev && StartupManager.Reconcile(Services.Settings.Current.AutoStartWithWindows) &&
+            !Services.Settings.Current.StartMinimizedToTray)
+            Services.Settings.Update(s => s.StartMinimizedToTray = true, "app");
         // Снимок вёрстки и самопроверка идут рядом с настоящей Aura: перехватывать
         // её сочетания клавиш им нельзя.
         bool headless = e.Args.Contains("--snapshot") || e.Args.Contains("--selftest-record") ||
@@ -194,8 +204,12 @@ public partial class App : Application
 
         // В режиме --dev окно показываем всегда: иначе с включённым «стартовать
         // свёрнутым в трей» отладочная копия молча уходит в трей.
+        // Переключатель «Стартовать свёрнутым в трей» относится к запуску вместе с
+        // Windows (--autostart от задачи Планировщика). Запуск руками окно показывает
+        // всегда. --minimized оставлен для задач прежних версий.
         bool minimized = !dev &&
-            (e.Args.Contains("--minimized") || Services.Settings.Current.StartMinimizedToTray);
+            (e.Args.Contains("--minimized") ||
+             (e.Args.Contains("--autostart") && Services.Settings.Current.StartMinimizedToTray));
         _main = new MainWindow();
         int pageArg = Array.IndexOf(e.Args, "--page");
         if (pageArg >= 0 && pageArg + 1 < e.Args.Length) _main.StartPage = e.Args[pageArg + 1];
@@ -504,9 +518,15 @@ public partial class App : Application
         int removed = 0;
         long freed = 0;
         var recovered = new List<string>();
-        foreach (string file in Directory.EnumerateFiles(root, "*.part", SearchOption.AllDirectories))
+        // Папку выбирает человек, и в ней могут лежать чужие «.mp4.part» (недокачанный
+        // файл браузера). Всё подряд разбираем только в своей папке «Aura»; в любой
+        // другой трогаем лишь файлы с меткой записи Aura, остальные не наши.
+        bool ownFolder = Path.GetFileName(Path.TrimEndingDirectorySeparator(root))
+            .Equals("Aura", StringComparison.OrdinalIgnoreCase);
+        foreach (string file in Directory.EnumerateFiles(root, "*.mp4.part", SearchOption.AllDirectories))
             try
             {
+                if (!ownFolder && !Core.Saving.Mp4.Mp4Defragment.HasRecordingStub(file)) continue;
                 // Свежий .part может принадлежать идущему прямо сейчас сохранению
                 var info = new FileInfo(file);
                 if (DateTime.UtcNow - info.LastWriteTimeUtc < TimeSpan.FromMinutes(10)) continue;

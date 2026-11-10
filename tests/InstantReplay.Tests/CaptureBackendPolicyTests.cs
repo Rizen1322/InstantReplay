@@ -19,6 +19,31 @@ public sealed class CaptureBackendPolicyTests
         Assert.Equal(4, selection.Target?.Revision);
     }
 
+    [Fact]
+    public void OpenGl_game_moves_monitor_capture_off_wgc_once()
+    {
+        GameCaptureTarget zomboid = Target("ProjectZomboid64", "Project Zomboid", revision: 3);
+
+        var fromWgc = CaptureBackendPolicy.SelectForForeground(
+            CaptureBackend.Wgc, activeTarget: null, zomboid, forcedBackend: false, foregroundUsesOpenGl: true);
+        Assert.True(fromWgc.RestartRequired);
+        Assert.Equal(CaptureBackend.DesktopDuplication, fromWgc.Backend);
+
+        // Уже на дупликации — больше ничего не пересобираем, в том числе после выхода из игры
+        var onDda = CaptureBackendPolicy.SelectForForeground(
+            CaptureBackend.DesktopDuplication, activeTarget: null, zomboid, forcedBackend: false, foregroundUsesOpenGl: true);
+        Assert.False(onDda.RestartRequired);
+
+        // Принудительный выбор и Minecraft со своим хуком сильнее
+        Assert.False(CaptureBackendPolicy.SelectForForeground(
+            CaptureBackend.Wgc, null, zomboid, forcedBackend: true, foregroundUsesOpenGl: true).RestartRequired);
+        Assert.Equal(CaptureBackend.MinecraftOpenGl, CaptureBackendPolicy.SelectForForeground(
+            CaptureBackend.Wgc, null, Target("javaw", "Minecraft", revision: 1), false, foregroundUsesOpenGl: true).Backend);
+
+        Assert.True(CaptureBackendPolicy.UsesOpenGl(["KERNEL32.DLL", "OpenGL32.dll"]));
+        Assert.False(CaptureBackendPolicy.UsesOpenGl(["d3d11.dll", "dxgi.dll"]));
+    }
+
     [Theory]
     [InlineData("cs2", "Counter-Strike 2")]
     [InlineData("javaw", "Desktop")]

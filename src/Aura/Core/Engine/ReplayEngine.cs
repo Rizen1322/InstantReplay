@@ -328,7 +328,8 @@ public sealed partial class ReplayEngine : IDisposable
                 desired,
                 activeTarget: null,
                 desiredTarget,
-                _captureBackendForced);
+                _captureBackendForced,
+                foregroundUsesOpenGl: desired == CaptureBackend.Wgc && OpenGlProcessProbe.UsesOpenGl(desiredTarget));
             desired = proactive.Backend;
             desiredTarget = proactive.Target;
         }

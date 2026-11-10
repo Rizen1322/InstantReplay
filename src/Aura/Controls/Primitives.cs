@@ -126,6 +126,18 @@ public sealed class Segmented : ListBox
         SelectionMode = SelectionMode.Single;
         Focusable = false;
     }
+
+    // ListBox после нажатия держит захват мыши и выбирает сегмент, оказавшийся под
+    // курсором. Если выбор сдвигает раскладку («Размер интерфейса» масштабирует всё
+    // окно), под неподвижным курсором оказывается соседний сегмент, и выбор скачет.
+    protected override void OnSelectionChanged(SelectionChangedEventArgs e)
+    {
+        if (IsMouseCaptured) ReleaseMouseCapture();
+        // И после обработки нажатия: порядок «захват, потом выбор» внутри ListBox не обещан
+        Dispatcher.BeginInvoke(() => { if (IsMouseCaptured) ReleaseMouseCapture(); },
+                               System.Windows.Threading.DispatcherPriority.Input);
+        base.OnSelectionChanged(e);
+    }
 }
 
 /// <summary>Клавиши сочетания («Alt + F10») в виде клавиатурных колпачков.</summary>

@@ -89,7 +89,7 @@ internal sealed class EncoderTexturePool : IDisposable
     /// раньше: слотов должно хватать и на очередь, и на всё, что внутри энкодера.
     /// </param>
     public EncoderTexturePool(ID3D11Device device, int width, int height, bool tenBit = false,
-                              int minSlots = 0, bool renderTarget = false)
+                              int minSlots = 0, bool renderTarget = false, int maxSlots = 96)
     {
         _renderTarget = renderTarget;
         _device = device;
@@ -99,9 +99,22 @@ internal sealed class EncoderTexturePool : IDisposable
         // иначе пул выйдет за отведённую долю бюджета.
         long pixels = (long)width * height;
         long frameBytes = Math.Max(tenBit ? pixels * 3 : pixels * 3 / 2, 1);
-        long bySlots = Math.Clamp(BudgetBytes(device) / frameBytes, 24, 96);
+        long bySlots = Math.Clamp(BudgetBytes(device) / frameBytes, Math.Min(24, maxSlots), maxSlots);
         _slots = new ID3D11Texture2D?[Math.Max(bySlots, minSlots)];
         _ledger = new PoolSlotLedger(_slots.Length);
+    }
+
+    /// <summary>
+    /// Просьба системе вытеснять эту текстуру из видеопамяти последней (так делает
+    /// OBS со всеми своими текстурами, nvenc-d3d11.c). Вытесненный кадр возвращается
+    /// в видеопамять через шину, и всё, что его ждёт, стоит. Это порядок вытеснения,
+    /// а не бронь: память под игрой всё равно может кончиться.
+    /// </summary>
+    public static ID3D11Texture2D KeepResident(ID3D11Texture2D texture)
+    {
+        try { texture.EvictionPriority = 0xC8000000; }   // DXGI_RESOURCE_PRIORITY_MAXIMUM
+        catch { /* драйвер вправе отказать: работаем как раньше */ }
+        return texture;
     }
 
     /// <summary>
@@ -285,7 +298,7 @@ internal sealed class EncoderTexturePool : IDisposable
         {
             desc.BindFlags = _renderTarget ? BindFlags.RenderTarget : BindFlags.None;
             desc.MiscFlags = ResourceOptionFlags.None;
-            var created = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "пул энкодера");
+            var created = KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "пул энкодера"));
             lock (_sync)
             {
                 if (destination is not null)
@@ -335,7 +348,7 @@ internal sealed class EncoderTexturePool : IDisposable
             desc.BindFlags = BindFlags.None;
             desc.MiscFlags = ResourceOptionFlags.None;
             _latest?.Dispose();
-            _latest = Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "последний кадр");
+            _latest = KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "последний кадр"));
         }
         lock (_device) context.CopyResource(_latest, source);
     }

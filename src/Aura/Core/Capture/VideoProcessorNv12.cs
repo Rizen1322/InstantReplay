@@ -41,7 +41,9 @@ public sealed class VideoProcessorNv12 : IDisposable
     /// <summary>Пишем ли мы сейчас десять бит.</summary>
     public bool TenBit => OutputFormat == Format.P010;
 
-    private const int PoolSize = 8;
+    // Энкодер копирует кадр к себе сразу в SubmitFrame, поэтому дольше одного кадра
+    // выход конвертера никто не держит. Было 8: на 1440p P010 лишние 55 МБ видеопамяти.
+    private const int PoolSize = 3;
     private readonly object _sync = new();
 
     public VideoProcessorNv12(ID3D11Device device, ID3D11DeviceContext context)

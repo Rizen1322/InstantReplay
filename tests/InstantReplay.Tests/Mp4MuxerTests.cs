@@ -507,4 +507,28 @@ public class Mp4MuxerTests
             Assert.Equal(1000, format.ToUnits(69_444));
         Assert.Equal(2000, format.ToUnits(2 * 69_444));
     }
+
+    /// <summary>Чужой «.mp4.part» (недокачанный файл) не принимается за запись Aura.</summary>
+    [Fact]
+    public void RecordingStub_OnlyRightAfterFtyp()
+    {
+        static byte[] Box(string type, int size)
+        {
+            var b = new byte[size];
+            BinaryPrimitives.WriteUInt32BigEndian(b, (uint)size);
+            System.Text.Encoding.ASCII.GetBytes(type, b.AsSpan(4));
+            return b;
+        }
+        string ours = Path.GetTempFileName(), foreign = Path.GetTempFileName(), junk = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(ours, [.. Box("ftyp", 24), .. Box("free", 16), .. Box("moov", 8)]);
+            File.WriteAllBytes(foreign, [.. Box("ftyp", 24), .. Box("moov", 8), .. Box("free", 16)]);
+            File.WriteAllBytes(junk, [1, 2, 3]);
+            Assert.True(Mp4Defragment.HasRecordingStub(ours));
+            Assert.False(Mp4Defragment.HasRecordingStub(foreign));
+            Assert.False(Mp4Defragment.HasRecordingStub(junk));
+        }
+        finally { File.Delete(ours); File.Delete(foreign); File.Delete(junk); }
+    }
 }

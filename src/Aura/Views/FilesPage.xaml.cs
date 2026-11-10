@@ -136,28 +136,31 @@ public partial class FilesPage : PageBase
         };
         if (dialog.ShowDialog() != true) return;
 
-        string folder = AuraFolderIn(dialog.FolderName);
-        Directory.CreateDirectory(folder);
-        Services.Settings.Update(s => s.ScreenshotFolder = folder, "storage");
+        if (!TryUseFolder(dialog.FolderName)) return;
+        Services.Settings.Update(s => s.ScreenshotFolder = dialog.FolderName, "storage");
         Load();
         ClipCommands.NotifyLibraryChanged();
     }
 
     /// <summary>
-    /// Своя папка внутри выбранной: человек указывает «Документы», а файлы должны
-    /// лечь в «Документы\Aura» — сваливать их прямо в пользовательскую папку нельзя,
-    /// её потом не разгрести. Если выбрана уже сама Aura, второй такой же
-    /// вложенности не делаем.
+    /// Выбранная папка берётся как есть, без своей подпапки. false — в неё нельзя
+    /// писать (диск отключён, нет прав): настройку не меняем и говорим почему.
     /// </summary>
-    private static string AuraFolderIn(string chosen)
+    private static bool TryUseFolder(string folder)
     {
         try
         {
-            string name = new DirectoryInfo(chosen).Name;
-            if (name.Equals("Aura", StringComparison.OrdinalIgnoreCase)) return chosen;
+            Directory.CreateDirectory(folder);
+            string probe = Path.Combine(folder, $".aura-{Guid.NewGuid():N}.tmp");
+            File.WriteAllBytes(probe, []);
+            File.Delete(probe);
+            return true;
         }
-        catch { /* нераспознаваемый путь — просто добавим подпапку */ }
-        return Path.Combine(chosen, "Aura");
+        catch (Exception ex)
+        {
+            Services.Notifications.Show(Core.Notifications.NotificationKind.Warning, "В эту папку нельзя сохранять", ex.Message);
+            return false;
+        }
     }
 
     /// <summary>
@@ -173,9 +176,8 @@ public partial class FilesPage : PageBase
         };
         if (dialog.ShowDialog() != true) return;
 
-        string folder = AuraFolderIn(dialog.FolderName);
-        Directory.CreateDirectory(folder);
-        Services.Settings.Update(s => s.SaveRootPath = folder, "storage");
+        if (!TryUseFolder(dialog.FolderName)) return;
+        Services.Settings.Update(s => s.SaveRootPath = dialog.FolderName, "storage");
         Load();
         ShowStats(Services.Storage.GetStats());
     }

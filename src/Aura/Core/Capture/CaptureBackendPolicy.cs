@@ -52,7 +52,8 @@ internal static class CaptureBackendPolicy
         GameCaptureTarget? foregroundTarget,
         bool forcedBackend,
         CaptureEpisode episode = default,
-        bool allowWgc = true)
+        bool allowWgc = true,
+        bool foregroundUsesOpenGl = false)
     {
         if (forcedBackend)
             return new(activeBackend, activeTarget, RestartRequired: false);
@@ -78,11 +79,24 @@ internal static class CaptureBackendPolicy
             return new(CaptureBackend.MinecraftOpenGl, activeTarget, RestartRequired: false);
         }
 
-        return foregroundTarget is GameCaptureTarget minecraft &&
-               IsMinecraftOpenGlTarget(minecraft)
-            ? new(CaptureBackend.MinecraftOpenGl, minecraft, RestartRequired: true)
-            : new(activeBackend, activeTarget, RestartRequired: false);
+        if (foregroundTarget is GameCaptureTarget minecraft && IsMinecraftOpenGlTarget(minecraft))
+            return new(CaptureBackend.MinecraftOpenGl, minecraft, RestartRequired: true);
+
+        // WGC на время записи переводит систему на программный курсор, а OpenGL-игра
+        // на весь экран (Project Zomboid) идёт мимо композитора, и курсор в ней
+        // пропадает с экрана, пока Aura пишет. У Desktop Duplication этого нет
+        // (microsoft/Windows.UI.Composition-Win32-Samples#128). Обратно на WGC не
+        // возвращаемся до следующего включения повтора: игру сворачивают и разворачивают.
+        if (activeBackend == CaptureBackend.Wgc && foregroundUsesOpenGl &&
+            foregroundTarget is GameCaptureTarget openGl)
+            return new(CaptureBackend.DesktopDuplication, openGl, RestartRequired: true);
+
+        return new(activeBackend, activeTarget, RestartRequired: false);
     }
+
+    /// <summary>Игра рисует через OpenGL: по списку загруженных в её процесс модулей.</summary>
+    public static bool UsesOpenGl(IEnumerable<string> loadedModules) =>
+        loadedModules.Any(name => name.Equals("opengl32.dll", StringComparison.OrdinalIgnoreCase));
 
     public static bool IsMinecraftOpenGlTarget(in GameCaptureTarget target)
     {

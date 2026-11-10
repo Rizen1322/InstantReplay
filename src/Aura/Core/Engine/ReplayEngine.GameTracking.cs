@@ -34,6 +34,9 @@ public sealed partial class ReplayEngine
     private readonly object _gameSync = new();
     private System.Threading.Timer? _gameTimer;
 
+    /// <summary>Процесс игры, ради которой уже уходили с WGC (PID и время запуска).</summary>
+    private (int Pid, long Start) _movedOffWgcFor;
+
     private GameCaptureTarget? RefreshCaptureTarget()
     {
         lock (_captureTargetSync)
@@ -64,6 +67,15 @@ public sealed partial class ReplayEngine
             try
             {
                 GameCaptureTarget? foregroundTarget = RefreshCaptureTarget();
+                // Уход с WGC ради OpenGL-игры — один раз на её процесс. Если дупликация
+                // не поднялась и восстановление вернуло WGC, вторая попытка через две
+                // секунды дала бы пересборку конвейера по кругу.
+                bool moveOffWgc = _captureBackend == CaptureBackend.Wgc &&
+                                  foregroundTarget is GameCaptureTarget seen &&
+                                  _movedOffWgcFor != (seen.ProcessId, seen.ProcessStartTicks) &&
+                                  OpenGlProcessProbe.UsesOpenGl(foregroundTarget);
+                if (moveOffWgc && foregroundTarget is GameCaptureTarget moved)
+                    _movedOffWgcFor = (moved.ProcessId, moved.ProcessStartTicks);
                 CaptureBackendTargetSelection targetSelection =
                     CaptureBackendPolicy.SelectForForeground(
                         _captureBackend,
@@ -71,7 +83,8 @@ public sealed partial class ReplayEngine
                         foregroundTarget,
                         _captureBackendForced,
                         _gameCaptureRecovery.Episode,
-                        ScreenCaptureFactory.WgcAllowed);
+                        ScreenCaptureFactory.WgcAllowed,
+                        moveOffWgc);
                 if (targetSelection.RestartRequired)
                     RequestProactiveCaptureTransition(targetSelection);
 
@@ -130,7 +143,9 @@ public sealed partial class ReplayEngine
             _gameCaptureRecovery.Episode.Align(target));
         RequestCaptureRestart(
             decision,
-            $"обнаружен Minecraft fullscreen: PID {target.ProcessId}, revision {target.Revision}",
+            (selection.Backend == CaptureBackend.DesktopDuplication
+                ? $"OpenGL-игра {target.ExecutableName} на весь экран: с WGC в ней пропадает курсор"
+                : "обнаружен Minecraft fullscreen") + $": PID {target.ProcessId}, revision {target.Revision}",
             CaptureFailureKind.BackendUnavailable,
             generation);
     }

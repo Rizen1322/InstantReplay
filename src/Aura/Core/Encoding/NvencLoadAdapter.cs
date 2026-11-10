@@ -104,12 +104,14 @@ internal sealed class FreezeStats
     public string LongestCause = "";
 
     /// <summary>Кадр пошёл в энкодер. lostSoFar — счётчик потерянных настоящих кадров.</summary>
-    public void Add(long ticks, bool duplicate, long lostSoFar, double frameMs)
+    /// <returns>Длина стоп-кадра, который закрыл этот кадр, мс (0 — его не было) и чья вина.</returns>
+    public (double GapMs, bool Pipeline) Add(long ticks, bool duplicate, long lostSoFar, double frameMs)
     {
+        (double, bool) freeze = default;
         lock (_sync)
         {
             Frames++;
-            if (duplicate) { Duplicates++; return; }
+            if (duplicate) { Duplicates++; return freeze; }
             RealFrames++;
             if (_lastRealTicks >= 0)
             {
@@ -123,11 +125,13 @@ internal sealed class FreezeStats
                     if (pipeline) PipelineFreezes++;
                     FrozenMs += gap - frameMs;
                     if (gap > LongestMs) { LongestMs = gap; LongestCause = pipeline ? "конвейер" : "захват"; }
+                    freeze = (gap, pipeline);
                 }
             }
             _lastRealTicks = ticks;
             _lastLost = lostSoFar;
         }
+        return freeze;
     }
 
     public FreezeStats TakeAndReset()
