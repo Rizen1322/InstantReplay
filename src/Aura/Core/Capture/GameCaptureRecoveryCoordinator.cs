@@ -34,10 +34,24 @@ internal sealed class GameCaptureRecoveryCoordinator
         get { lock (_sync) return _target; }
     }
 
+    /// <summary>
+    /// До следующего включения повтора WGC не выбирать ни в каком виде, как на
+    /// Windows 10. Ставится, когда запись ушла с WGC ради OpenGL-игры: иначе
+    /// первая же потеря дупликации на Alt-Tab возвращала WGC (монитора или окна),
+    /// и курсор в игре пропадал снова.
+    /// </summary>
+    public bool AvoidWgc
+    {
+        get { lock (_sync) return _avoidWgc; }
+        set { lock (_sync) _avoidWgc = value; }
+    }
+    private bool _avoidWgc;
+
     public void Resume()
     {
         lock (_sync)
         {
+            _avoidWgc = false;
             _stopped = false;
             _target = null;
             _episode = CaptureEpisode.Empty;
@@ -88,7 +102,7 @@ internal sealed class GameCaptureRecoveryCoordinator
                 _target,
                 _episode,
                 _preferredMonitorBackend,
-                _allowWgc));
+                _allowWgc && !_avoidWgc));
             _episode = decision.Episode;
             if (_episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
                 _lastHookFailure = _episode;

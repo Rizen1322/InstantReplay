@@ -121,6 +121,38 @@ public sealed class GameCaptureRecoveryScenarioTests
         preferredMonitorBackend: CaptureBackend.Wgc,
         forcedBackend: false);
 
+    /// <summary>
+    /// Ушли с WGC ради OpenGL-игры: Alt-Tab рвёт дупликацию, и раньше восстановление
+    /// возвращало WGC (монитора без игры на экране, окна — с игрой), а с ним пропадал курсор.
+    /// </summary>
+    [Fact]
+    public void After_leaving_wgc_alt_tab_storms_never_bring_wgc_back()
+    {
+        var coordinator = CreateCoordinator();
+        GameCaptureTarget zomboid = Minecraft(revision: 2) with
+        {
+            ExecutableName = "ProjectZomboid64", GameName = "Project Zomboid"
+        };
+        coordinator.AvoidWgc = true;
+
+        coordinator.ObserveTarget(null);   // свернули игру
+        Assert.True(coordinator.TryDecide(CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendTransitionStorm, out var onDesktop));
+        Assert.Equal(CaptureBackend.DesktopDuplication, onDesktop.Backend);
+
+        coordinator.ObserveTarget(zomboid);   // вернулись в игру
+        Assert.True(coordinator.TryDecide(CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendTransitionStorm, out var inGame));
+        Assert.Equal(CaptureBackend.DesktopDuplication, inGame.Backend);
+        Assert.True(coordinator.TryDecide(CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendStalled, out var stalled));
+        Assert.Equal(CaptureBackend.DesktopDuplication, stalled.Backend);
+
+        // Новое включение повтора начинает с чистого листа
+        coordinator.Resume();
+        Assert.False(coordinator.AvoidWgc);
+    }
+
     [Fact]
     public void Failed_hook_is_not_reselected_after_later_monitor_failure_in_same_game()
     {

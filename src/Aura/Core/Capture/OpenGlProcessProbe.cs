@@ -13,6 +13,18 @@ internal static class OpenGlProcessProbe
     private static readonly object Sync = new();
     private static (int Pid, long Start, bool OpenGl, long CheckedMs) _last;
 
+    /// <summary>Жив ли тот самый процесс: PID мог достаться другому, поэтому сверяем и время запуска.</summary>
+    public static bool IsAlive(int processId, long startTicks)
+    {
+        if (processId <= 0) return false;
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == startTicks;
+        }
+        catch { return false; }
+    }
+
     public static bool UsesOpenGl(GameCaptureTarget? target)
     {
         if (target is not GameCaptureTarget game) return false;

@@ -34,9 +34,6 @@ public sealed partial class ReplayEngine
     private readonly object _gameSync = new();
     private System.Threading.Timer? _gameTimer;
 
-    /// <summary>Процесс игры, ради которой уже уходили с WGC (PID и время запуска).</summary>
-    private (int Pid, long Start) _movedOffWgcFor;
-
     private GameCaptureTarget? RefreshCaptureTarget()
     {
         lock (_captureTargetSync)
@@ -56,6 +53,16 @@ public sealed partial class ReplayEngine
         lock (_captureTargetSync) return _activeCaptureTarget;
     }
 
+    /// <summary>Процесс OpenGL-игры, ради которой запись ушла с WGC (PID и время запуска).</summary>
+    private (int Pid, long Start) _openGlGame;
+
+    /// <summary>С этой игрой WGC не берём; вернёмся к нему, когда её процесс завершится.</summary>
+    private void AvoidWgcFor(in GameCaptureTarget game)
+    {
+        _openGlGame = (game.ProcessId, game.ProcessStartTicks);
+        _gameCaptureRecovery.AvoidWgc = true;
+    }
+
     private void StartGameTracker(bool preserveHistory = false)
     {
         if (!preserveHistory)
@@ -67,15 +74,33 @@ public sealed partial class ReplayEngine
             try
             {
                 GameCaptureTarget? foregroundTarget = RefreshCaptureTarget();
-                // Уход с WGC ради OpenGL-игры — один раз на её процесс. Если дупликация
-                // не поднялась и восстановление вернуло WGC, вторая попытка через две
-                // секунды дала бы пересборку конвейера по кругу.
+                // Уход с WGC ради OpenGL-игры. С этого момента и до выключения повтора
+                // восстановление WGC не выбирает (AvoidWgc): пересборки по кругу
+                // «дупликация не поднялась → WGC → снова дупликация» быть не может.
                 bool moveOffWgc = _captureBackend == CaptureBackend.Wgc &&
-                                  foregroundTarget is GameCaptureTarget seen &&
-                                  _movedOffWgcFor != (seen.ProcessId, seen.ProcessStartTicks) &&
                                   OpenGlProcessProbe.UsesOpenGl(foregroundTarget);
-                if (moveOffWgc && foregroundTarget is GameCaptureTarget moved)
-                    _movedOffWgcFor = (moved.ProcessId, moved.ProcessStartTicks);
+                if (moveOffWgc && foregroundTarget is GameCaptureTarget openGlGame)
+                    AvoidWgcFor(openGlGame);
+
+                // Игра, ради которой ушли с WGC, закрыта — возвращаемся на обычный для
+                // Windows 11 способ. Свёрнутая игра жива, на Alt-Tab ничего не меняется.
+                if (_gameCaptureRecovery.AvoidWgc &&   // без этого процессы незачем и опрашивать
+                    CaptureBackendPolicy.ShouldReturnToWgc(
+                        _captureBackend, _preferredCaptureBackend, _captureBackendForced,
+                        _gameCaptureRecovery.AvoidWgc,
+                        gameAlive: OpenGlProcessProbe.IsAlive(_openGlGame.Pid, _openGlGame.Start),
+                        foregroundUsesOpenGl: OpenGlProcessProbe.UsesOpenGl(foregroundTarget)) &&
+                    Interlocked.CompareExchange(ref _recovering, 1, 0) == 0)
+                {
+                    _gameCaptureRecovery.AvoidWgc = false;
+                    RequestCaptureRestart(
+                        new CaptureRecoveryDecision(CaptureRecoveryAction.Restart, CaptureBackend.Wgc,
+                                                    0, TimeSpan.Zero, CaptureEpisode.Empty),
+                        "OpenGL-игра закрыта: возвращаю захват через WGC",
+                        CaptureFailureKind.BackendUnavailable,
+                        Interlocked.Read(ref _captureGeneration));
+                    return;
+                }
                 CaptureBackendTargetSelection targetSelection =
                     CaptureBackendPolicy.SelectForForeground(
                         _captureBackend,
@@ -83,7 +108,7 @@ public sealed partial class ReplayEngine
                         foregroundTarget,
                         _captureBackendForced,
                         _gameCaptureRecovery.Episode,
-                        ScreenCaptureFactory.WgcAllowed,
+                        ScreenCaptureFactory.WgcAllowed && !_gameCaptureRecovery.AvoidWgc,
                         moveOffWgc);
                 if (targetSelection.RestartRequired)
                     RequestProactiveCaptureTransition(targetSelection);

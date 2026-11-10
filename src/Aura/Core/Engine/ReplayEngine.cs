@@ -330,6 +330,10 @@ public sealed partial class ReplayEngine : IDisposable
                 desiredTarget,
                 _captureBackendForced,
                 foregroundUsesOpenGl: desired == CaptureBackend.Wgc && OpenGlProcessProbe.UsesOpenGl(desiredTarget));
+            // Стартуем сразу на дупликации ради OpenGL-игры — и дальше WGC не берём
+            if (desired == CaptureBackend.Wgc && proactive.Backend == CaptureBackend.DesktopDuplication &&
+                desiredTarget is GameCaptureTarget openGlGame)
+                AvoidWgcFor(openGlGame);
             desired = proactive.Backend;
             desiredTarget = proactive.Target;
         }
@@ -395,7 +399,7 @@ public sealed partial class ReplayEngine : IDisposable
         backend == CaptureBackend.MinecraftOpenGl
             ? _preferredCaptureBackend
             // На Windows 10 запасного мониторного источника нет: WGC дал бы рамку.
-            : !ScreenCaptureFactory.WgcAllowed
+            : !ScreenCaptureFactory.WgcAllowed || _gameCaptureRecovery.AvoidWgc
             ? CaptureBackend.DesktopDuplication
             : CaptureBackendPolicy.Alternative(backend);
 

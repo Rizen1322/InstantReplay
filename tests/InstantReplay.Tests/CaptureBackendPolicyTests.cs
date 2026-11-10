@@ -45,6 +45,24 @@ public sealed class CaptureBackendPolicyTests
     }
 
     [Theory]
+    // игра закрыта, на экране не OpenGL — возвращаемся
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.Wgc, false, true, false, false, true)]
+    // игра жива (свёрнута по Alt-Tab) — остаёмся
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.Wgc, false, true, true, false, false)]
+    // закрыта, но на экране уже другая OpenGL-игра — остаёмся
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.Wgc, false, true, false, true, false)]
+    // Windows 10: дупликация и есть обычный способ
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.DesktopDuplication, false, true, false, false, false)]
+    // с WGC не уходили или способ задан принудительно
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.Wgc, false, false, false, false, false)]
+    [InlineData(CaptureBackend.DesktopDuplication, CaptureBackend.Wgc, true, true, false, false, false)]
+    public void Wgc_returns_only_after_the_opengl_game_exits(
+        CaptureBackend active, CaptureBackend preferred, bool forced,
+        bool avoiding, bool gameAlive, bool foregroundOpenGl, bool expected) =>
+        Assert.Equal(expected, CaptureBackendPolicy.ShouldReturnToWgc(
+            active, preferred, forced, avoiding, gameAlive, foregroundOpenGl));
+
+    [Theory]
     [InlineData("cs2", "Counter-Strike 2")]
     [InlineData("javaw", "Desktop")]
     [InlineData("notepad", "Minecraft")]

@@ -94,6 +94,16 @@ internal static class CaptureBackendPolicy
         return new(activeBackend, activeTarget, RestartRequired: false);
     }
 
+    /// <summary>
+    /// Пора ли вернуться на WGC после записи OpenGL-игры через Desktop Duplication:
+    /// только когда её процесс завершился и на экране нет другой такой же игры.
+    /// </summary>
+    public static bool ShouldReturnToWgc(
+        CaptureBackend active, CaptureBackend preferred, bool forcedBackend,
+        bool avoidingWgc, bool gameAlive, bool foregroundUsesOpenGl) =>
+        avoidingWgc && !forcedBackend && !gameAlive && !foregroundUsesOpenGl &&
+        active == CaptureBackend.DesktopDuplication && preferred == CaptureBackend.Wgc;
+
     /// <summary>Игра рисует через OpenGL: по списку загруженных в её процесс модулей.</summary>
     public static bool UsesOpenGl(IEnumerable<string> loadedModules) =>
         loadedModules.Any(name => name.Equals("opengl32.dll", StringComparison.OrdinalIgnoreCase));
