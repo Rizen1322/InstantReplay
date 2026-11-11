@@ -74,8 +74,7 @@ public sealed class VideoProcessorNv12 : IDisposable
 
             _srcW = srcWidth; _srcH = srcHeight;
             var (baseWidth, baseHeight) = outputBase ?? (srcWidth, srcHeight);
-            OutHeight = Math.Min(targetVertical, baseHeight) & ~1;
-            OutWidth = (int)Math.Round((double)baseWidth / baseHeight * OutHeight) & ~1;
+            (OutWidth, OutHeight) = Engine.RecordingOutputLock.OutputFor((baseWidth, baseHeight), targetVertical);
 
             if (outputBase is not null && (long)srcWidth * baseHeight != (long)srcHeight * baseWidth)
                 Logging.Log.Info("Capture", $"Экран {srcWidth}x{srcHeight} растягивается в запись " +

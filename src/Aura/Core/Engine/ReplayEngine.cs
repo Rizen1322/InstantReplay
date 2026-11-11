@@ -48,6 +48,7 @@ public sealed partial class ReplayEngine : IDisposable
     /// </summary>
     private int _pipelineMonitorIndex;
     private (int Width, int Height)? _pipelineCanvas;
+    private readonly RecordingOutputLock _outputLock = new();
     private readonly AudioMixerEngine _audio = new();
     private readonly CaptureHealthPolicy _captureHealth = new();
     private readonly GameCaptureRecoveryCoordinator _gameCaptureRecovery;
@@ -493,11 +494,19 @@ public sealed partial class ReplayEngine : IDisposable
                 Log.Info("Capture", $"Границы монитора {bounds.Width}x{bounds.Height}, дупликация " +
                                     $"{canvasWidth}x{canvasHeight} — конвейер собираю под дупликацию");
 
-            // Размер записи фиксируется по разрешению рабочего стола, а не по текущему
-            // режиму экрана. Иначе игра, переключающая экран на своё разрешение, меняла
-            // формат видео при каждом сворачивании, и буфер повтора очищался. Кадр
-            // другой пропорции растягивается на весь выход.
-            var outputBase = MonitorLayout.DesktopModeFor(s.MonitorIndex);
+            // Размер записи закреплён на весь сеанс (см. RecordingOutputLock): берётся
+            // из разрешения рабочего стола при первом старте и не перечитывается на
+            // пересборках, когда система посреди смены режима может показывать чужой
+            // размер. Кадр другого размера или пропорции растягивается на весь выход.
+            var desktopMode = MonitorLayout.DesktopModeFor(s.MonitorIndex);
+            (int Width, int Height)? outputBase = _outputLock.Resolve(
+                s.MonitorIndex, s.VerticalResolution, desktopMode, (canvasWidth, canvasHeight), out bool outputReused);
+            Log.Info("Capture", $"Размеры: {_captureBackend}, монитор #{s.MonitorIndex}; источник {canvasWidth}x{canvasHeight}, " +
+                                $"границы {(monitorCanvas is { } b ? $"{b.Width}x{b.Height}" : "?")}, " +
+                                $"рабочий стол {(desktopMode is { } d ? $"{d.Width}x{d.Height}" : "?")}; база записи " +
+                                $"{outputBase.Value.Width}x{outputBase.Value.Height} " +
+                                (outputReused ? "(закреплена в сеансе)" : "(закреплена сейчас)") +
+                                $", вертикаль в настройках {s.VerticalResolution}");
 
             // Десять бит просим только у HEVC: см. AppSettings.BitDepth.
             bool wantTenBit = VideoEncoder.SupportsTenBit(s.Codec) &&
@@ -568,7 +577,9 @@ public sealed partial class ReplayEngine : IDisposable
                 if (!_videoBuffer.PrepareForCaptureRestart(compatible, s.BitrateBps, effectiveReplaySeconds))
                 {
                     _bufferSequenceHeader = null;
-                    Log.Warn("Engine", "Формат видео изменился — несовместимая часть RAM-буфера очищена");
+                    Log.Warn("Engine", $"Формат видео изменился ({_bufferCodec} {_bufferWidth}x{_bufferHeight}@{_bufferFps} → " +
+                                       $"{s.Codec} {_pipeline.Processor.OutWidth}x{_pipeline.Processor.OutHeight}@{s.Fps}) — " +
+                                       "несовместимая часть RAM-буфера очищена");
                 }
                 else if (_videoBuffer.TotalBytes > 0)
                 {
@@ -957,6 +968,7 @@ public sealed partial class ReplayEngine : IDisposable
             // Выключил человек — системной паузе тут больше нечего держать.
             ForgetSystemSuspend();
             StopLocked();
+            _outputLock.Reset();
         }
         // Повтор выключен: часть до сбоя уже не сохранить из него
         ExpireRescued(force: true);

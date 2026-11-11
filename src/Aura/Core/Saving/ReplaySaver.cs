@@ -101,7 +101,7 @@ public static class ReplaySaver
         string published = Publish(partPath, filePath);
         long ms = sw.ElapsedMilliseconds;
         string fps = clipSeconds > 0.5 ? $", реально {video.Count / clipSeconds:F1} fps" : "";
-        Log.Info("Saver", $"Сохранено: {published} ({video.Count} кадров за {clipSeconds:F1} с{fps}, " +
+        Log.Info("Saver", $"Сохранено: {published} ({videoFormat.Width}x{videoFormat.Height}, {video.Count} кадров за {clipSeconds:F1} с{fps}, " +
                           $"звук: {inputs.Count} дорожк., {audioFrames} кадров AAC); " +
                           $"{fileBytes / (1024 * 1024)} МБ за {ms} мс" +
                           (ms > 0 ? $", {fileBytes / 1024.0 / 1024 / (ms / 1000.0):F0} МБ/с" : "") +
