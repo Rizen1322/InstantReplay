@@ -79,11 +79,12 @@ public sealed class CaptureFrameBrokerTests
         using var broker = CreateBroker();
         broker.Reset(11);
         broker.Publish(11, 100, slot => slot.Value = 10);
-        using var waiting = new ManualResetEventSlim();
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task<(bool Leased, bool Fresh, int Value, long Timestamp)> reader = Task.Run(() =>
+        // The blocking reader must not starve the pool that resumes the publisher on CI.
+        Task<(bool Leased, bool Fresh, int Value, long Timestamp)> reader = Task.Factory.StartNew(() =>
         {
-            waiting.Set();
+            waiting.SetResult();
             bool leased = broker.TryLeaseFreshest(
                 11,
                 TimeSpan.FromSeconds(2),
@@ -91,9 +92,9 @@ public sealed class CaptureFrameBrokerTests
                 out bool fresh);
             using (lease)
                 return (leased, fresh, lease?.Slot.Value ?? -1, lease?.Timestamp ?? -1);
-        });
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-        Assert.True(waiting.Wait(TimeSpan.FromSeconds(1)));
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.Delay(75);
         Assert.True(broker.Publish(11, 200, slot => slot.Value = 20));
 
@@ -109,17 +110,17 @@ public sealed class CaptureFrameBrokerTests
     {
         using var broker = CreateBroker();
         broker.Reset(13);
-        using var waiting = new ManualResetEventSlim();
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task<(bool Fresh, int Value)> reader = Task.Run(() =>
+        Task<(bool Fresh, int Value)> reader = Task.Factory.StartNew(() =>
         {
-            waiting.Set();
+            waiting.SetResult();
             broker.TryLeaseFreshest(13, TimeSpan.FromSeconds(2),
                 out CaptureFrameLease<FakeSlot>? lease, out bool fresh, notBefore: 150);
             using (lease) return (fresh, lease?.Slot.Value ?? -1);
-        });
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-        Assert.True(waiting.Wait(TimeSpan.FromSeconds(1)));
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.Delay(75);
         // Опубликован после запроса, но снят раньше — как кадры из пула WGC после заморозки
         Assert.True(broker.Publish(13, 100, slot => slot.Value = 10));
