@@ -17,13 +17,15 @@ static unsafe void Upload(ID3D11DeviceContext context, ID3D11Texture2D texture, 
 
 const int width = 640, height = 360, fps = 60;
 var prepareProperty = typeof(VideoEncoder).GetProperty("PreparePullFrame", BindingFlags.Instance | BindingFlags.NonPublic)!;
+string? previousBFrames = Environment.GetEnvironmentVariable("AURA_NVENC_BFRAMES");
 MediaFactory.MFStartup();
 try
 {
     var supported = HardwareEncoders.ProbeSupport().Codecs;
-    foreach (bool mft in new[] { false, true })
+    foreach (var (mft, bFrames) in new[] { (false, 0), (false, 2), (true, 0) })
     foreach (var codec in new[] { VideoCodec.H264, VideoCodec.HEVC, VideoCodec.AV1 })
     {
+        Environment.SetEnvironmentVariable("AURA_NVENC_BFRAMES", bFrames.ToString());
         D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
             DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport,
             [Vortice.Direct3D.FeatureLevel.Level_11_0],
@@ -91,10 +93,23 @@ try
             Require(result.All(p => p.Length > 0) && result.Any(p => p.Key), "Invalid or keyframe-free bitstream");
             Require(result.Zip(result.Skip(1), (a, b) => b.Dts > a.Dts).All(x => x), "Non-monotonic DTS");
             long[] presentation = result.Select(p => p.Pts).Order().ToArray();
-            Require(presentation.Zip(presentation.Skip(1), (a, b) => b - a is >= 166666 and <= 166667).All(x => x),
-                "Output is not a contiguous 60fps grid");
-            Console.WriteLine($"PASS: {codec} {(tenBit ? 10 : 8)}bit, request={(mft ? "MFT" : "native")}, backend={backend}, encoded={result.Length}, prepared={prepared}, monotonic DTS, contiguous 60fps PTS");
+            // Replay disposal discards delayed B-picture output; validate the complete presentation prefix.
+            long[] complete = bFrames == 0 ? presentation : presentation.Where(p => p < presentation[^1] - bFrames * 166667L).ToArray();
+            Require(complete.Length >= result.Length - 2 * bFrames - 1, "Incomplete presentation prefix");
+            var gaps = complete.Zip(complete.Skip(1), (a, b) => (At: a, Gap: b - a))
+                .Where(p => p.Gap is < 166666 or > 166667).ToArray();
+            Require(gaps.Length == 0,
+                $"Output is not a contiguous 60fps grid: {backend}, encoded={result.Length}, prepared={prepared}; " +
+                $"submitted={encoder.FramesSubmitted}, duplicated={encoder.FramesDuplicated}, " +
+                $"droppedReal={encoder.FramesDroppedRealQueue}, droppedQueue={encoder.FramesDroppedQueue}, " +
+                $"discardedDuplicates={encoder.FramesDiscardedDuplicates}, skippedSlots={encoder.PullSkippedWindow}; " +
+                string.Join(", ", gaps.Take(8).Select(p => $"{(p.At - presentation[0]) / 10_000_000.0:F3}s: {p.Gap}")));
+            Console.WriteLine($"PASS: {codec} {(tenBit ? 10 : 8)}bit, request={(mft ? "MFT" : "native")}, B={bFrames}, backend={backend}, encoded={result.Length}, prepared={prepared}, monotonic DTS, contiguous 60fps PTS{(bFrames > 0 ? " before reorder tail" : "")}");
         }
     }
 }
-finally { MediaFactory.MFShutdown(); }
+finally
+{
+    Environment.SetEnvironmentVariable("AURA_NVENC_BFRAMES", previousBFrames);
+    MediaFactory.MFShutdown();
+}

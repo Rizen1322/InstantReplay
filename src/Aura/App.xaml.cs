@@ -1360,19 +1360,21 @@ public partial class App : Application
     /// </summary>
     private void StartShowWindowListener()
     {
-        if (_devInstance) return;
-        try { _showWindowSignal = AppSignals.CreateEvent(ShowWindowEventName); }
-        catch (Exception ex) { Log.Warn("App", $"Сигнал показа окна недоступен: {ex.Message}"); return; }
-
-        new Thread(() =>
+        if (!_devInstance)
         {
-            while (true)
+            try { _showWindowSignal = AppSignals.CreateEvent(ShowWindowEventName); }
+            catch (Exception ex) { Log.Warn("App", $"Сигнал показа окна недоступен: {ex.Message}"); }
+
+            if (_showWindowSignal is not null) new Thread(() =>
             {
-                try { _showWindowSignal.WaitOne(); } catch { return; }
-                Services.Ui.Enqueue(ShowMainWindow);
-            }
-        })
-        { IsBackground = true, Name = "ShowWindowSignal" }.Start();
+                while (true)
+                {
+                    try { _showWindowSignal.WaitOne(); } catch { return; }
+                    Services.Ui.Enqueue(ShowMainWindow);
+                }
+            })
+            { IsBackground = true, Name = "ShowWindowSignal" }.Start();
+        }
 
         // Штатный выход по просьбе снаружи (Aura.exe --quit): установщик и проверки
         EventWaitHandle quit;

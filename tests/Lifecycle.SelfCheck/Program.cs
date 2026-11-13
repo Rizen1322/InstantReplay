@@ -122,3 +122,14 @@ dispatchThread.Start();
 Require(dispatchThread.Join(3000), "UI dispatch did not complete");
 Require(dispatchError is null, "UI dispatch failed: " + dispatchError);
 Console.WriteLine("PASS: same-thread UI events queue asynchronously and are delivered");
+
+var appType = typeof(Aura.App);
+var devFlag = appType.GetField("_devInstance", BindingFlags.Static | BindingFlags.NonPublic)!;
+devFlag.SetValue(null, true);
+appType.GetMethod("StartShowWindowListener", Private)!.Invoke(RuntimeHelpers.GetUninitializedObject(appType), null);
+Require(EventWaitHandle.TryOpenExisting(@"Global\Aura.Quit.dev", out var devQuit), "Dev instance did not register its quit signal");
+devQuit!.Dispose();
+Require(appType.GetField("_showWindowSignal", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null) is null,
+    "Dev instance registered the production show-window signal");
+devFlag.SetValue(null, false);
+Console.WriteLine("PASS: dev instance registers its own quit signal without the production show-window listener");
