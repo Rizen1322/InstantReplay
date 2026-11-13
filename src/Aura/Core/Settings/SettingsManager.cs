@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Aura.Core.Logging;
 
@@ -54,6 +55,7 @@ public sealed class SettingsManager
 
     /// <summary>Защищает файл настроек и подмену объекта Current.</summary>
     private readonly object _sync = new();
+    private bool _readFailed;
 
     public AppSettings Current { get; private set; } = new();
 
@@ -66,21 +68,19 @@ public sealed class SettingsManager
         {
             try
             {
-                if (File.Exists(FilePath))
-                {
-                    Current = ReadOrRecover();
-                    Current.Normalize();
+                _readFailed = false;
+                Directory.CreateDirectory(Dir);
+                Current = ReadOrRecover();
+                Current.Normalize();
 
-                    // Discord поднял лимит вложения с 10 МБ до 20. Настройку никто руками не
-                    // задаёт — поля в интерфейсе нет, — так что записанная старая десятка это
-                    // просто прежнее значение по умолчанию, застрявшее в файле.
-                    if (Current.AttachmentSizeMb == AppSettings.LegacyAttachmentSizeMb)
-                        Current.AttachmentSizeMb = AppSettings.DefaultAttachmentSizeMb;
-                }
+                // Discord's attachment limit changed; the old default was never user-editable.
+                if (Current.AttachmentSizeMb == AppSettings.LegacyAttachmentSizeMb)
+                    Current.AttachmentSizeMb = AppSettings.DefaultAttachmentSizeMb;
             }
             catch (Exception ex)
             {
                 Log.Error("Settings", $"Не удалось прочитать settings.json: {ex.Message}. Использую значения по умолчанию.");
+                _readFailed = true;
                 Current = new();
             }
             try { Directory.CreateDirectory(Current.SaveRootPath); }
@@ -104,9 +104,9 @@ public sealed class SettingsManager
     {
         try
         {
-            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOpts)
-                   ?? throw new JsonException("файл пуст");
+            return Deserialize(ReadText(FilePath));
         }
+        catch (FileNotFoundException) { return new AppSettings(); }
         catch (Exception ex) when (ex is JsonException or NotSupportedException or ArgumentException)
         {
             string broken = Path.Combine(Dir, $"settings.json.broken-{DateTime.Now:yyyyMMdd-HHmmss}");
@@ -115,19 +115,52 @@ public sealed class SettingsManager
             try
             {
                 if (File.Exists(BackupPath) &&
-                    JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(BackupPath), JsonOpts) is { } backup)
+                    Deserialize(ReadText(BackupPath)) is { } backup)
                 {
                     Log.Warn("Settings", "Настройки восстановлены из settings.json.bak");
                     // Испорченный файл уже отложен. Иначе следующее сохранение
                     // переложило бы его на место резервной копии.
-                    try { File.Copy(BackupPath, FilePath, overwrite: true); } catch { }
+                    File.Copy(BackupPath, FilePath, overwrite: true);
                     return backup;
                 }
             }
-            catch (Exception bex) { Log.Warn("Settings", $"settings.json.bak тоже не читается: {bex.Message}"); }
+            catch (Exception bex) when (bex is JsonException or NotSupportedException or ArgumentException)
+            { Log.Warn("Settings", $"settings.json.bak тоже не читается: {bex.Message}"); }
             Log.Warn("Settings", "Резервной копии нет, использую значения по умолчанию");
             return new AppSettings();
         }
+    }
+
+    private static string ReadText(string path)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try { return File.ReadAllText(path); }
+            catch (IOException) when (attempt < 2) { Thread.Sleep(100); }
+        }
+    }
+
+    internal static AppSettings Deserialize(string json)
+    {
+        var node = JsonNode.Parse(json) as JsonObject ?? throw new JsonException("Ожидался объект настроек.");
+        // Future enum names keep this version's field default, preserving other settings.
+        foreach (var property in typeof(AppSettings).GetProperties())
+        {
+            if (!property.PropertyType.IsEnum || node[property.Name] is not JsonValue value) continue;
+            if (value.TryGetValue<string>(out var text) &&
+                (!Enum.TryParse(property.PropertyType, text, true, out var parsed) ||
+                 !Enum.IsDefined(property.PropertyType, parsed!)))
+                node.Remove(property.Name);
+        }
+        return node.Deserialize<AppSettings>(JsonOpts) ?? throw new JsonException("файл пуст");
+    }
+
+    internal void NotifyChanged(string group)
+    {
+        if (Changed is not { } handlers) return;
+        foreach (Action<string> handler in handlers.GetInvocationList())
+            try { handler(group); }
+            catch (Exception ex) { Log.Error("Settings", $"Применение настроек ({group}): {ex.Message}"); }
     }
 
     /// <summary>Полный сброс к значениям по умолчанию.</summary>
@@ -135,11 +168,12 @@ public sealed class SettingsManager
     {
         lock (_sync)
         {
+            _readFailed = false;
             Current = new AppSettings();
             Directory.CreateDirectory(Current.SaveRootPath);
             SaveLocked();
         }
-        Changed?.Invoke("");
+        NotifyChanged("");
     }
 
     /// <summary>
@@ -156,7 +190,7 @@ public sealed class SettingsManager
             change(Current);
             SaveLocked();
         }
-        Changed?.Invoke(changedGroup);
+        NotifyChanged(changedGroup);
     }
 
     /// <summary>
@@ -174,7 +208,7 @@ public sealed class SettingsManager
             _deferredSave.Change(400, Timeout.Infinite);
             _savePending = true;
         }
-        Changed?.Invoke(changedGroup);
+        NotifyChanged(changedGroup);
     }
 
     private System.Threading.Timer? _deferredSave;
@@ -200,12 +234,17 @@ public sealed class SettingsManager
 
         // Обработчики зовём ВНЕ лока: на "video"/"audio"/"replay" движок целиком
         // пересобирает конвейер, и держать на этом лок настроек незачем и опасно.
-        Changed?.Invoke(changedGroup);
+        NotifyChanged(changedGroup);
     }
 
     private void SaveLocked()
     {
         _savePending = false;
+        if (_readFailed)
+        {
+            Log.Warn("Settings", "Сохранение пропущено: файл настроек не удалось прочитать. Повторите загрузку или выполните явный сброс.");
+            return;
+        }
         string tmp = TempPath;
         try
         {

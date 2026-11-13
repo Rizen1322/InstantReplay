@@ -1,4 +1,4 @@
-﻿namespace Aura.Core.Capture;
+namespace Aura.Core.Capture;
 
 /// <summary>Отличает сбой обработки живых кадров от статичного экрана и перегрузки.</summary>
 internal sealed class CaptureProcessingWatchdog
@@ -126,6 +126,12 @@ internal sealed class CaptureHealthPolicy
             _frozenDdaSamples = 0;
             return CaptureHealthDecision.Healthy;
         }
+    }
+
+    public bool TryStartupFallback(CaptureBackend failed, CaptureBackend alternative, DateTimeOffset now, bool temporary)
+    {
+        if (!temporary) Quarantine(failed, now, CaptureQuarantine.Transient);
+        return alternative != failed && CanUse(alternative, now) && (temporary || TryRecordSwitch(now));
     }
 
     public void Quarantine(CaptureBackend backend, DateTimeOffset now, CaptureQuarantine duration)

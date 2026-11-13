@@ -33,8 +33,6 @@ public sealed class WasapiSource : IDisposable
     private readonly int _inChannels;
     private float[] _converted = new float[4096];
 
-    public string? FellBackTo { get; }
-
     /// <summary>Процесс, чей звук пишется; null — весь звук устройства.</summary>
     public int? ProcessId { get; }
 
@@ -42,37 +40,47 @@ public sealed class WasapiSource : IDisposable
 
     public WasapiSource(bool loopback, string? deviceId, AudioTimeline timeline)
     {
-        _loopback = loopback;
-        _timeline = timeline;
-        using var enumerator = new MMDeviceEnumerator();
-        var flow = loopback ? DataFlow.Render : DataFlow.Capture;
-        (_device, FellBackTo) = Resolve(enumerator, flow, deviceId, loopback);
-        _name = $"{(loopback ? "loopback" : "mic")} {_device.FriendlyName}";
-
-        _client = _device.AudioClient;
-        _format = _client.MixFormat;
-        _inChannels = _format.Channels;
-        _matrix = BuildMatrix(_inChannels, timeline.Channels);
-
-        var flags = AudioClientStreamFlags.EventCallback;
-        if (loopback) flags |= AudioClientStreamFlags.Loopback;
-        // 100 мс буфера устройства: пакеты забираем по событию, но под нагрузкой
-        // игры поток может проснуться с опозданием — запас не даёт потерять звук.
-        _client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, _format, Guid.Empty);
-        _client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
-        _capture = _client.AudioCaptureClient;
-
-        _thread = new Thread(Loop)
+        try
         {
-            IsBackground = true,
-            Name = loopback ? "Audio.Loopback" : "Audio.Mic",
-            Priority = ThreadPriority.Highest
-        };
-        _client.Start();
-        _thread.Start();
+            _loopback = loopback;
+            _timeline = timeline;
+            using var enumerator = new MMDeviceEnumerator();
+            var flow = loopback ? DataFlow.Render : DataFlow.Capture;
+            // Keep an explicit selection unavailable until that device returns.
+            _device = deviceId is not null ? enumerator.GetDevice(deviceId) :
+                enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
+            _name = $"{(loopback ? "loopback" : "mic")} {_device.FriendlyName}";
 
-        Log.Info("Audio", $"Источник запущен: {_name} ({_format.SampleRate} Гц, {_format.Channels} кан., " +
-                          $"{Describe(_format)})");
+            _client = _device.AudioClient;
+            _format = _client.MixFormat;
+            _inChannels = _format.Channels;
+            _matrix = BuildMatrix(_inChannels, timeline.Channels);
+
+            var flags = AudioClientStreamFlags.EventCallback;
+            if (loopback) flags |= AudioClientStreamFlags.Loopback;
+            // 100 мс буфера устройства: пакеты забираем по событию, но под нагрузкой
+            // игры поток может проснуться с опозданием — запас не даёт потерять звук.
+            _client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, _format, Guid.Empty);
+            _client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
+            _capture = _client.AudioCaptureClient;
+
+            _thread = new Thread(Loop)
+            {
+                IsBackground = true,
+                Name = loopback ? "Audio.Loopback" : "Audio.Mic",
+                Priority = ThreadPriority.Highest
+            };
+            _client.Start();
+            _thread.Start();
+
+            Log.Info("Audio", $"Источник запущен: {_name} ({_format.SampleRate} Гц, {_format.Channels} кан., " +
+                              $"{Describe(_format)})");
+        }
+        catch
+        {
+            ReleaseFailedInitialization();
+            throw;
+        }
     }
 
     /// <summary>
@@ -82,55 +90,73 @@ public sealed class WasapiSource : IDisposable
     /// </summary>
     public WasapiSource(int processId, string processName, AudioTimeline timeline)
     {
-        _loopback = true;
-        _timeline = timeline;
-        ProcessId = processId;
-        _name = $"loopback процесса {processName} ({processId})";
-        // float32, а не 16 бит: система всё равно сводит звук во float, и перевод
-        // в 16 бит только добавлял шум квантования на тихих местах.
-        var floatFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
-        _inChannels = 2;
-        _matrix = BuildMatrix(_inChannels, timeline.Channels);
-
-        // Клиент loopback процесса живёт в многопоточном апартаменте COM, и для
-        // него нет прокси. Из потока интерфейса (STA) приведение к IAudioClient
-        // падало с «Unable to cast COM object», и Aura молча писала весь звук.
-        // Поэтому всё общение с клиентом идёт в MTA: пул потоков и наш поток захвата.
-        var flags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.Loopback |
-                    AudioClientStreamFlags.AutoConvertPcm | AudioClientStreamFlags.SrcDefaultQuality;
-        (_client, _capture, _format) = InMta(() =>
+        try
         {
-            // float32 не принят (на старых сборках бывает): тот же клиент заново
-            // не инициализировать, поэтому новый и 16 бит, как раньше
-            try { return Open(floatFormat); }
-            catch (Exception ex) when (ex is COMException or ArgumentException)
-            {
-                Log.Warn("Audio", $"Loopback процесса не принял float32 ({ex.Message}), беру 16 бит");
-                return Open(new WaveFormat(48000, 16, 2));
-            }
-        });
+            _loopback = true;
+            _timeline = timeline;
+            ProcessId = processId;
+            _name = $"loopback процесса {processName} ({processId})";
+            // float32, а не 16 бит: система всё равно сводит звук во float, и перевод
+            // в 16 бит только добавлял шум квантования на тихих местах.
+            var floatFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
+            _inChannels = 2;
+            _matrix = BuildMatrix(_inChannels, timeline.Channels);
 
-        (AudioClient, AudioCaptureClient, WaveFormat) Open(WaveFormat format)
-        {
-            var client = ProcessLoopback.Activate(processId, TimeSpan.FromSeconds(5));
-            try
+            // Клиент loopback процесса живёт в многопоточном апартаменте COM, и для
+            // него нет прокси. Из потока интерфейса (STA) приведение к IAudioClient
+            // падало с «Unable to cast COM object», и Aura молча писала весь звук.
+            // Поэтому всё общение с клиентом идёт в MTA: пул потоков и наш поток захвата.
+            var flags = AudioClientStreamFlags.EventCallback | AudioClientStreamFlags.Loopback |
+                        AudioClientStreamFlags.AutoConvertPcm | AudioClientStreamFlags.SrcDefaultQuality;
+            (_client, _capture, _format) = InMta(() =>
             {
-                client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, format, Guid.Empty);
-                client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
-                return (client, client.AudioCaptureClient, format);
-            }
-            catch
+                // float32 не принят (на старых сборках бывает): тот же клиент заново
+                // не инициализировать, поэтому новый и 16 бит, как раньше
+                try { return Open(floatFormat); }
+                catch (Exception ex) when (ex is COMException or ArgumentException)
+                {
+                    Log.Warn("Audio", $"Loopback процесса не принял float32 ({ex.Message}), беру 16 бит");
+                    return Open(new WaveFormat(48000, 16, 2));
+                }
+            });
+
+            (AudioClient, AudioCaptureClient, WaveFormat) Open(WaveFormat format)
             {
-                client.Dispose();
-                throw;
+                var client = ProcessLoopback.Activate(processId, TimeSpan.FromSeconds(5));
+                try
+                {
+                    client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, format, Guid.Empty);
+                    client.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
+                    return (client, client.AudioCaptureClient, format);
+                }
+                catch
+                {
+                    client.Dispose();
+                    throw;
+                }
             }
+
+            _thread = new Thread(Loop) { IsBackground = true, Name = "Audio.Process", Priority = ThreadPriority.Highest };
+            _thread.SetApartmentState(ApartmentState.MTA);
+            InMta(() => { _client.Start(); return 0; });
+            _thread.Start();
+            Log.Info("Audio", $"Источник запущен: {_name} (48000 Гц, 2 кан., {Describe(_format)})");
         }
+        catch
+        {
+            InMta(() => { ReleaseFailedInitialization(); return 0; });
+            throw;
+        }
+    }
 
-        _thread = new Thread(Loop) { IsBackground = true, Name = "Audio.Process", Priority = ThreadPriority.Highest };
-        _thread.SetApartmentState(ApartmentState.MTA);
-        InMta(() => { _client.Start(); return 0; });
-        _thread.Start();
-        Log.Info("Audio", $"Источник запущен: {_name} (48000 Гц, 2 кан., {Describe(_format)})");
+    private void ReleaseFailedInitialization()
+    {
+        _running = false;
+        try { _client?.Stop(); } catch { }
+        _capture?.Dispose();
+        _client?.Dispose();
+        _device?.Dispose();
+        _packetReady.Dispose();
     }
 
     /// <summary>Выполнить в MTA: уже в нём — сразу, иначе в пуле потоков.</summary>
@@ -138,21 +164,6 @@ public sealed class WasapiSource : IDisposable
         Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA
             ? action()
             : Task.Run(action).GetAwaiter().GetResult();
-
-    private static (MMDevice, string?) Resolve(MMDeviceEnumerator enumerator, DataFlow flow, string? deviceId, bool loopback)
-    {
-        if (deviceId is not null)
-            try { return (enumerator.GetDevice(deviceId), null); }
-            catch (Exception ex)
-            {
-                var fallback = enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
-                Log.Warn("Audio", $"Выбранное устройство ({(loopback ? "звук игры" : "микрофон")}) " +
-                                  $"не найдено ({ex.Message}) — беру по умолчанию: {fallback.FriendlyName}");
-                return (fallback, fallback.FriendlyName);
-            }
-
-        return (enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia), null);
-    }
 
     private void Loop()
     {

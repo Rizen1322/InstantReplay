@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -708,12 +708,11 @@ public partial class ClipEditorWindow : Window
 
         // Сведённый звук готовим сразу, в фоне: к моменту, когда человек нажмёт
         // «Вместе», он уже лежит на диске, и переключение мгновенное.
-        if (_ffmpeg is not null) _mixPreparation = PrepareMixAsync();
+        _mixPreparation = PrepareMixAsync();
 
         // По умолчанию — «Вместе»: так ведёт себя и LosslessCut (в файл попадает
         // весь звук), а раньше редактор молча сохранял одну игру без микрофона.
-        // Без ffmpeg предпросмотр общего звука невозможен — там остаётся игра.
-        AudioSegment.SelectedItem = _ffmpeg is not null ? together : AudioSegment.Items[0];
+        AudioSegment.SelectedItem = together;
     }
 
     private async void AudioTrack_Changed(object sender, SelectionChangedEventArgs e)
@@ -726,14 +725,6 @@ public partial class ClipEditorWindow : Window
         {
             ApplyAudioSelection();
             SetStatus("Готово к сохранению", DefaultHint());
-            return;
-        }
-
-        if (_ffmpeg is null)
-        {
-            _player.SetAudioTrack(_audioTrackIds[0]);
-            SetStatus("В предпросмотре звучит игра",
-                      "В сохранённом фрагменте игра и микрофон будут сведены в одну дорожку.");
             return;
         }
 
@@ -760,10 +751,9 @@ public partial class ClipEditorWindow : Window
         catch (Exception ex)
         {
             Log.Warn("Editor", $"Предпросмотр общего звука: {ex.Message}");
-            if (_disposed || _player is null) return;
-            _player.SetAudioTrack(_audioTrackIds[0]);
-            SetStatus("Общий звук в предпросмотре недоступен",
-                      "В сохранённый фрагмент игра и микрофон всё равно попадут вместе.");
+            if (_disposed || _player is null || _audioSelection >= 0) return;
+            AudioSegment.SelectedIndex = 0;
+            SetStatus("Не удалось подготовить общий звук", ex.Message);
         }
     }
 
@@ -789,11 +779,14 @@ public partial class ClipEditorWindow : Window
 
     private Task EnsureMixedAudioAsync()
     {
-        if (_ffmpeg is null || _audioTrackIds.Length < 2) return Task.CompletedTask;
+        if (_audioTrackIds.Length < 2) return Task.CompletedTask;
         if (_mixGenerationTask is not null) return _mixGenerationTask;
         _mixedAudioPath = Path.Combine(Path.GetTempPath(), $"aura-editor-audio-{Guid.NewGuid():N}.m4a");
-        _mixGenerationTask = Ffmpeg.CreateMixedAudioPreviewAsync(
-            _ffmpeg, _item.FullPath, _audioTrackIds.Length, _mixedAudioPath, _previewMixCancellation.Token);
+        string output = _mixedAudioPath;
+        _mixGenerationTask = Task.Run(() => Core.Saving.Mp4.Mp4Trim.MixAudio(
+            _item.FullPath, output, tracks => Core.Audio.AudioMixdown.Mix(tracks, _previewMixCancellation.Token),
+            _previewMixCancellation.Token),
+            _previewMixCancellation.Token);
         return _mixGenerationTask;
     }
 
@@ -813,7 +806,11 @@ public partial class ClipEditorWindow : Window
 
         _mixAttached = true;
         var media = new VlcMedia(_libVlc, new Uri(_item.FullPath));
-        media.AddSlave(MediaSlaveType.Audio, 4, new Uri(_mixedAudioPath).AbsoluteUri);
+        if (!media.AddSlave(MediaSlaveType.Audio, 4, new Uri(_mixedAudioPath).AbsoluteUri))
+        {
+            media.Dispose();
+            throw new InvalidOperationException("Не удалось подключить сведённую дорожку.");
+        }
         _reopenRestore = ((long)Math.Round(CurrentSeconds * 1000), _player.IsPlaying);
 
         // Смена файла синхронно останавливает текущий — в потоке окна это та самая
@@ -821,7 +818,8 @@ public partial class ClipEditorWindow : Window
         var player = _player;
         var previous = _media;
         _media = media;
-        await Task.Run(() => player.Play(media));
+        if (!await Task.Run(() => player.Play(media)))
+            throw new InvalidOperationException("Не удалось переоткрыть предпросмотр с общим звуком.");
         previous?.Dispose();
         // Предел ожидания: если после переоткрытия плеер так и не начал играть
         // (ошибка декодирования), поиск дорожки не начнётся вовсе, и выбор «Вместе»
@@ -1174,6 +1172,7 @@ public partial class ClipEditorWindow : Window
         _frameRefresh?.Stop();
         _exportCancellation?.Cancel();
         _previewMixCancellation.Cancel();
+        _mixTrackSearch.TrySetResult();
         Preview.MediaPlayer = null;
 
         // Остановку и освобождение LibVLC уносим из потока окна. Stop синхронный
@@ -1185,15 +1184,17 @@ public partial class ClipEditorWindow : Window
         var engine = _libVlc;
         var mixPath = _mixedAudioPath;
         var mixTask = _mixGenerationTask;
+        var preparation = _mixPreparation;
         var mixCancellation = _previewMixCancellation;
         _player = null; _media = null; _libVlc = null;
         _ = Task.Run(async () =>
         {
+            try { if (preparation is not null) await preparation; } catch { }
             try { player?.Stop(); } catch { }
             media?.Dispose();
             player?.Dispose();
             engine?.Dispose();
-            // ffmpeg мог ещё дописывать сведённый звук — дожидаемся отмены, иначе
+            // Микшер мог ещё дописывать сведённый звук — дожидаемся отмены, иначе
             // файл удалить нельзя: он занят.
             try { if (mixTask is not null) await mixTask; } catch { }
             mixCancellation.Dispose();

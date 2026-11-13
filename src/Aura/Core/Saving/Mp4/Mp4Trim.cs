@@ -121,6 +121,29 @@ public static class Mp4Trim
             picked.Add((memory, 0, memory.Sizes.Length - 1));
         }
 
+        WriteSelection(source, output, picked, start, end, anchor, ftyp, moov, progress, ct);
+    }
+
+    /// <summary>Свести звук в отдельный M4A для предпросмотра тем же микшером, что и при экспорте.</summary>
+    public static void MixAudio(string input, string output, AudioMixer mix, CancellationToken ct = default)
+    {
+        using var source = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        byte[] moov = Mp4Keyframes.ReadTopLevel(source, "moov") ?? throw new NotSupportedException("в файле нет moov");
+        var tracks = Mp4Keyframes.Find(moov, 8, moov.Length, "mvex") is not null
+            ? FromFragments(Mp4Defragment.ReadFragmented(source) ?? throw new NotSupportedException("фрагменты не разобрать"))
+            : ReadTracks(moov);
+        var clips = tracks.Where(t => t.Audio && t.Sizes.Length > 0)
+            .Select(t => Clip(source, t, 0, t.Sizes.Length - 1)).ToList();
+        ct.ThrowIfCancellationRequested();
+        var mixed = InMemory(mix(clips));
+        double end = mixed.DtsTime(mixed.Sizes.Length - 1) + (double)mixed.LastDuration / mixed.Timescale;
+        WriteSelection(source, output, [(mixed, 0, mixed.Sizes.Length - 1)], 0, end, 0, null, moov, null, ct);
+    }
+
+    private static void WriteSelection(Stream source, string output,
+        List<(SourceTrack Track, int First, int Last)> picked, double start, double end, double anchor,
+        byte[]? ftyp, byte[] moov, Action<double>? progress, CancellationToken ct)
+    {
         // Порядок данных в mdat: куски по полсекунды от каждой дорожки по очереди
         var order = new List<(int Track, int First, int Count)>();
         var cursor = picked.Select(p => p.First).ToArray();

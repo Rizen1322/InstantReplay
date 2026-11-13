@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -351,13 +351,11 @@ public sealed partial class ReplayEngine : IDisposable
                     ? desiredTarget
                     : null);
         }
-        catch when (!_captureBackendForced)
+        catch (Exception ex) when (!_captureBackendForced)
         {
-            _captureHealth.Quarantine(candidate, now, CaptureQuarantine.Transient);
             CaptureBackend alternative = MonitorFallbackFor(candidate);
-            if (alternative == candidate ||
-                !_captureHealth.CanUse(alternative, now) ||
-                !_captureHealth.TryRecordSwitch(now)) throw;
+            if (!_captureHealth.TryStartupFallback(candidate, alternative, now,
+                    DesktopDuplicationSource.IsTemporaryDuplicationFailure(ex))) throw;
 
             Log.Warn("Engine", $"Захват {candidate} не запустился — пробую {alternative}");
             // Неудачный Start очистил частично собранный pipeline как UserStop и
@@ -743,16 +741,25 @@ public sealed partial class ReplayEngine : IDisposable
     private sealed class FrameWorkerToken
     {
         public volatile bool Running = true;
+        public long LastConvertedTicks = long.MinValue;
     }
 
     private void StartFrameWorker(long generation)
     {
-        if (_frameWorker is not null)
+        if (_frameWorkerToken is not null)
             throw new InvalidOperationException("Обработчик кадров уже запущен");
 
-        var ready = _frameReady = new AutoResetEvent(false);
         var token = new FrameWorkerToken();
         _frameWorkerToken = token;
+        if (PullPacing.Enabled)
+        {
+            _pipeline.Encoder!.PreparePullFrame = () =>
+            {
+                if (token.Running) ProcessLatestFrame(generation, token);
+            };
+            return;
+        }
+        var ready = _frameReady = new AutoResetEvent(false);
         _frameWorker = new Thread(() => FrameWorkerLoop(token, generation, ready))
         {
             IsBackground = true,
@@ -769,11 +776,11 @@ public sealed partial class ReplayEngine : IDisposable
         {
             if (!ready.WaitOne(100)) continue;
             if (!token.Running) break;
-            ProcessLatestFrame(generation);
+            ProcessLatestFrame(generation, token);
         }
     }
 
-    private void ProcessLatestFrame(long generation)
+    private void ProcessLatestFrame(long generation, FrameWorkerToken token)
     {
         if (generation != Interlocked.Read(ref _captureGeneration) ||
             !_frameGate.TryEnterReadLock(0)) return;
@@ -788,6 +795,7 @@ public sealed partial class ReplayEngine : IDisposable
             GpuCaptureFrameLease current = lease!;
             using (current)
             {
+                if (current.Timestamp <= token.LastConvertedTicks) return;
                 // Очередь энкодера забита — кадр всё равно вытеснит другой такой же.
                 // Тратить на него видеокарту, которая и так не справляется, незачем:
                 // см. VideoEncoder.InputQueueSaturated.
@@ -819,6 +827,7 @@ public sealed partial class ReplayEngine : IDisposable
                     if (timed) pipeline.GpuTimer!.Mark(context);
 
                     pipeline.Encoder!.SubmitFrame(nv12, current.Timestamp, context, timed ? pipeline.GpuTimer : null);
+                    token.LastConvertedTicks = current.Timestamp;
                     Interlocked.Increment(ref pipeline.FramesProcessed);
 
                     Diagnostics.PipelineProbe.Convert.Add(t0, t1);
@@ -855,6 +864,7 @@ public sealed partial class ReplayEngine : IDisposable
         FrameWorkerToken? token = _frameWorkerToken;
         _frameWorkerToken = null;
         if (token is not null) token.Running = false;
+        if (_pipeline.Encoder is { } encoder) encoder.PreparePullFrame = null;
         _frameReady?.Set();
 
         Thread? worker = _frameWorker;

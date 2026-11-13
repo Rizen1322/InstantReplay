@@ -127,7 +127,6 @@ public static class GameDetector
         @"\GOG Games\", @"\GOG Galaxy\Games\", @"\Ubisoft Game Launcher\games\",
         @"\EA Games\", @"\Rockstar Games\", @"\Wargaming.net\", @"\Lesta\",
         @"\VK Play\", @"\itch\apps\", @"\Battle.net\", @"\WindowsApps\",
-        @"\Games\", @"\Игры\",
     ];
 
     internal static bool IsGameLibraryPath(string? path) =>
@@ -174,17 +173,23 @@ public static class GameDetector
         try
         {
             string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-            return path.StartsWith(windows, StringComparison.OrdinalIgnoreCase);
+            return windows.Length > 0 && path.StartsWith(Path.TrimEndingDirectorySeparator(windows) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
         catch { return false; }
     }
 
     /// <summary>Имя папки без запрещённых символов.</summary>
-    private static string Sanitize(string name)
+    internal static string Sanitize(string name)
     {
         foreach (char c in Path.GetInvalidFileNameChars())
             name = name.Replace(c, '_');
         name = name.Trim().TrimEnd('.');
+        if (name.Length > 100) name = name[..100].TrimEnd('.', ' ');
+        if (name.Length > 0 && char.IsHighSurrogate(name[^1])) name = name[..^1];
+        string stem = name.Split('.')[0].TrimEnd(' ').ToUpperInvariant();
+        if (stem is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$" ||
+            (stem.Length == 4 && (stem.StartsWith("COM") || stem.StartsWith("LPT")) &&
+             "123456789¹²³".Contains(stem[3]))) name = "_" + name;
         return string.IsNullOrWhiteSpace(name) ? "Desktop" : name;
     }
 }

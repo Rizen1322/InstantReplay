@@ -443,7 +443,7 @@ public partial class SystemPage : PageBase
 
         try
         {
-            Process.Start(new ProcessStartInfo(_driver.DownloadUrl) { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_driver.DownloadUrl}\"") { UseShellExecute = true });
         }
         catch (Exception ex)
         {

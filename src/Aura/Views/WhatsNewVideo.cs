@@ -61,13 +61,13 @@ public static class WhatsNewVideo
     }
 
     /// <summary>Показать ролик модально и дождаться конца.</summary>
-    public static void Show(string path)
+    public static async Task ShowAsync(string path)
     {
         var window = Create(path);
         Log.Info("App", $"Показываю ролик «что нового»: {Path.GetFileName(path)}");
         window.ShowDialog();
         // LibVLC освобождается в фоне; файл можно удалить, только когда он отпущен
-        if (window.Tag is Task released) released.Wait(TimeSpan.FromSeconds(3));
+        if (window.Tag is Task released) await released.WaitAsync(TimeSpan.FromSeconds(3));
     }
 
     /// <summary>

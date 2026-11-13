@@ -27,10 +27,14 @@ public static class Dialogs
     /// остальные диалоги, поэтому окно выглядит одинаково родным и в тёмной теме,
     /// и в светлой — отдельной вёрстки под каждую не требуется.
     /// </summary>
+    private static bool _changelogVisible;
+
     public static void ShowChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries)
     {
-        if (entries.Count == 0 || Application.Current is null) return;
-        CreateChangelogWindow(entries).ShowDialog();
+        if (_changelogVisible || entries.Count == 0 || Application.Current is null) return;
+        _changelogVisible = true;
+        try { CreateChangelogWindow(entries).ShowDialog(); }
+        finally { _changelogVisible = false; }
     }
 
     /// <summary>

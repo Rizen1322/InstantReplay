@@ -164,6 +164,10 @@ public sealed class VideoEncoder : IDisposable
     private long _pullSequence;
     private long _pullLastClosedSlot = -1;
     private long _pullLastContentTicks = long.MinValue;
+    private long _pullLastPreparedSlot = -1;
+
+    /// <summary>Prepare latest capture on the output tick, before this tick selects its candidate.</summary>
+    internal Action? PreparePullFrame { get; set; }
 
     /// <summary>Сколько слотов закрывать за один тик пейсера при догонянии.</summary>
     private const int PullMaxBurstPerTick = 4;
@@ -1843,6 +1847,14 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Один тик пейсера в pull-модели: закрыть созревшие слоты.</summary>
     private void PullTick()
     {
+        long preparedAt = -1;
+        if (PreparePullFrame is { } prepare && PullCfrPolicy.ShouldPrepareFrame(
+                NowQpcTicks(), _pullLastClosedSlot, _pullLastPreparedSlot, _cfrBase, Fps))
+        {
+            // Outside _cfrLock: the engine's frame gate owns conversion and shutdown draining.
+            prepare();
+            preparedAt = NowQpcTicks();
+        }
         lock (_cfrLock)
         {
             if (_copyPool is null || _context is null) return;
@@ -1860,6 +1872,9 @@ public sealed class VideoEncoder : IDisposable
                 _lastRealTicks = candidate.CaptureTicks;
                 _lastRealArrivalWall = candidate.ReadyQpc;
             }
+
+            if (preparedAt >= 0)
+                _pullLastPreparedSlot = PullCfrPolicy.SlotIndex(preparedAt, _cfrBase, Fps);
 
             PullSlotPlan plan = PullCfrScheduler.Plan(now, _pullLastClosedSlot, _cfrBase, Fps,
                 PullMaxBurstPerTick, candidate.HasTexture, candidate.CaptureTicks, _pullLastContentTicks);
@@ -2154,7 +2169,10 @@ public sealed class VideoEncoder : IDisposable
         using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.Pacer");
         while (_running)
         {
-            timer.Wait(40_000); // 4 мс
+            long wait = _pullPacing && PreparePullFrame is not null
+                ? PullCfrPolicy.PacerWaitTicks(NowQpcTicks(), _pullLastClosedSlot, _cfrBase, Fps, 40_000)
+                : 40_000;
+            timer.Wait(wait); // До 4 мс; конвертация не должна отнимать время следующего слота.
             // Вне _cfrLock: смена пресета не должна держать подачу кадров
             _quality?.Tick(Interlocked.Read(ref FramesEncoded),
                            Interlocked.Read(ref FramesSubmitted),

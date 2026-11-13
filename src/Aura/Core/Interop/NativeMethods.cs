@@ -1,9 +1,14 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 
 namespace Aura.Core.Interop;
 
 internal static partial class NativeMethods
 {
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool OpenProcessToken(IntPtr process, uint access,
+        out Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token);
+
     // ---------------- user32 ----------------
     [LibraryImport("user32.dll")] internal static partial IntPtr GetForegroundWindow();
     [LibraryImport("user32.dll")] internal static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);

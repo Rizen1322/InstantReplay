@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Runtime.InteropServices;
 using Aura.Core.Interop;
 using Aura.Core.Logging;
 using Aura.Core.Settings;
@@ -35,6 +36,7 @@ public sealed class HotkeyService : IDisposable
     private readonly SettingsManager _settings;
     private Thread? _thread;
     private uint _threadId;
+    private volatile bool _disposed;
     private IntPtr _hook;
     private IntPtr _mouseHook;
     private HookProc? _hookProc;      // держим делегаты, чтобы GC их не собрал
@@ -65,7 +67,9 @@ public sealed class HotkeyService : IDisposable
     /// <summary>Нажатие или отпускание кнопки: не наша ли это push-to-talk.</summary>
     private void TrackPushToTalk(uint vk, bool down)
     {
-        if (_pushToTalk is not { } key || key.vk != vk) return;
+        (uint vk, bool ctrl, bool shift, bool alt, bool win)? binding;
+        lock (_mapLock) binding = _pushToTalk;
+        if (binding is not { } key || key.vk != vk) return;
         if (down)
         {
             if (_pushToTalkHeld) return;
@@ -93,13 +97,16 @@ public sealed class HotkeyService : IDisposable
     public HotkeyService(SettingsManager settings)
     {
         _settings = settings;
-        _settings.Changed += g => { if (g is "" or "hotkeys") RebuildMap(); };
+        _settings.Changed += SettingsChanged;
         RebuildMap();
     }
 
+    private void SettingsChanged(string group) { if (group is "" or "hotkeys") RebuildMap(); }
+
+    [SupportedOSPlatform("windows")]
     public void Start()
     {
-        if (_thread is not null) return;
+        if (_disposed || _thread is not null) return;
         _thread = new Thread(HookThread) { IsBackground = true, Name = "HotkeyHook" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
@@ -107,6 +114,7 @@ public sealed class HotkeyService : IDisposable
 
     private void HookThread()
     {
+        PeekMessageW(out _, IntPtr.Zero, 0, 0, 0);
         _threadId = GetCurrentThreadIdNative(); // нативный id нужен для PostThreadMessage
 
         _hookProc = HookCallback;
@@ -114,7 +122,6 @@ public sealed class HotkeyService : IDisposable
         if (_hook == IntPtr.Zero)
         {
             Log.Error("Hotkeys", $"SetWindowsHookEx failed: {Marshal.GetLastWin32Error()}");
-            return;
         }
 
         // Хук мыши живёт на ТОМ ЖЕ потоке и обслуживается тем же циклом сообщений.
@@ -132,11 +139,21 @@ public sealed class HotkeyService : IDisposable
         using var watchdog = new System.Threading.Timer(_ =>
         {
             if (_threadId != 0) PostThreadMessageW(_threadId, WmCheckHook, IntPtr.Zero, IntPtr.Zero);
-        }, null, 5000, 5000);
+        }, null, 250, 250);
 
-        while (GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
+        while (!_disposed && GetMessageW(out var msg, IntPtr.Zero, 0, 0) > 0)
         {
-            if (msg.message == WmUpdateMouseHook) { UpdateMouseHook(); continue; }
+            if (msg.message == WmUpdateMouseHook)
+            {
+                if (_pushToTalkHeld)
+                {
+                    _pushToTalkHeld = false;
+                    try { PushToTalkChanged?.Invoke(false, NowTicks()); }
+                    catch (Exception ex) { Log.Warn("Hotkeys", ex.Message); }
+                }
+                UpdateMouseHook();
+                continue;
+            }
             if (msg.message == WmCheckHook) { CheckHookAlive(); continue; }
             TranslateMessage(ref msg);
             DispatchMessageW(ref msg);
@@ -144,7 +161,12 @@ public sealed class HotkeyService : IDisposable
         if (_mouseHook != IntPtr.Zero) { UnhookWindowsHookEx(_mouseHook); _mouseHook = IntPtr.Zero; }
         UnhookWindowsHookEx(_hook);
         _hook = IntPtr.Zero;
+        _threadId = 0;
     }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PeekMessageW(out MSG message, IntPtr window, uint min, uint max, uint flags);
 
     [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")]
     private static extern uint GetCurrentThreadIdNative();
@@ -156,27 +178,20 @@ public sealed class HotkeyService : IDisposable
     private long _lastKeyboardEvent;
     private long _lastReinstall;
 
-    /// <summary>
-    /// Windows молча снимает низкоуровневый хук, если его обработчик не уложился
-    /// в LowLevelHooksTimeout: так бывает под тяжёлой игрой, после сна или
-    /// блокировки. Узнать об этом нельзя, горячие клавиши просто перестают
-    /// работать до перезапуска Aura. Признак: человек что-то вводил (GetLastInputInfo
-    /// новее), а наш хук давно ничего не видел. Тогда ставим хук заново: сначала
-    /// новый, потом снимаем старый, чтобы не остаться без хука ни на миг.
-    /// Ввод бывает и одной мышью, поэтому переустановка не чаще раза в минуту.
-    /// </summary>
+    /// <summary>Compare physical keyboard/button state with events received by our hooks.</summary>
     private void CheckHookAlive()
     {
         long now = Environment.TickCount64;
-        long lastKeyboard = Interlocked.Read(ref _lastKeyboardEvent);
-        if (now - lastKeyboard < 60_000 || now - _lastReinstall < 60_000) return;
-
-        var info = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
-        if (!GetLastInputInfo(ref info)) return;
-        // Тики GetLastInputInfo 32-битные: сравниваем возраст ввода, а не значения
-        long inputAge = (uint)Environment.TickCount - info.Time;
-        if (inputAge >= 5000) return;               // человек сейчас ничего не вводит
-
+        if (_mouseBound && _mouseHook == IntPtr.Zero) UpdateMouseHook();
+        if (now - _lastReinstall < 1000) return;
+        bool missedPress = false;
+        if (now - _lastKeyboardEvent >= 250)
+            for (uint vk = 4; vk < 256; vk++)
+                if (vk is not 0x10 and not 0x11 and not 0x12 &&
+                    (GetAsyncKeyState((int)vk) & 0x8000) != 0 && !_keysDown.Contains(vk))
+                { missedPress = true; break; }
+        if (_hook != IntPtr.Zero && !missedPress) return;
+        // shortcut: a lost hook is detected on held input; use Raw Input if sub-250ms recovery is required.
         _lastReinstall = now;
         IntPtr fresh = SetWindowsHookExW(WH_KEYBOARD_LL, _hookProc!, IntPtr.Zero, 0);
         if (fresh == IntPtr.Zero)
@@ -193,19 +208,14 @@ public sealed class HotkeyService : IDisposable
             _mouseHook = IntPtr.Zero;
             UpdateMouseHook();
         }
-        _keysDown.Clear();
-        _consumedKeys.Clear();
+        // Keep held/consumed keys across reinstalls; only discard keys released while the hook was missing.
+        _keysDown.RemoveWhere(vk => (GetAsyncKeyState((int)vk) & 0x8000) == 0);
+        _consumedKeys.RemoveWhere(vk => (GetAsyncKeyState((int)vk) & 0x8000) == 0);
         if (Interlocked.Increment(ref _reinstalls) is 1 or 10 or 100)
-            Log.Info("Hotkeys", $"Хук клавиатуры переустановлен: давно не видел ввода ({_reinstalls}-й раз)");
+            Log.Info("Hotkeys", $"Хук клавиатуры восстановлен ({_reinstalls}-й раз)");
     }
 
     private long _reinstalls;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LastInputInfo { public uint Size; public uint Time; }
-
-    [DllImport("user32.dll")]
-    private static extern bool GetLastInputInfo(ref LastInputInfo info);
 
     /// <summary>Своё сообщение потоку хука: пересмотреть, нужен ли хук мыши.</summary>
     private const uint WmUpdateMouseHook = 0x8000 + 0x51; // WM_APP + 0x51
@@ -284,35 +294,26 @@ public sealed class HotkeyService : IDisposable
     /// </summary>
     private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0)
+        int message = (int)wParam;
+        if (nCode >= 0 && message is WM_MBUTTONDOWN or WM_MBUTTONUP or WM_XBUTTONDOWN or WM_XBUTTONUP)
         {
-            // Push-to-talk на кнопке мыши: и нажатие, и отпускание, дальше по цепочке
-            int button = (int)wParam;
-            if (button is WM_MBUTTONDOWN or WM_MBUTTONUP or WM_XBUTTONDOWN or WM_XBUTTONUP && _pushToTalk is not null)
+            uint vk = 0x04;
+            if (message is WM_XBUTTONDOWN or WM_XBUTTONUP)
             {
-                uint pttVk = 0x04;
-                if (button is WM_XBUTTONDOWN or WM_XBUTTONUP)
-                {
-                    uint data = (uint)Marshal.ReadInt32(lParam, MouseDataOffset) >> 16;
-                    pttVk = data == XBUTTON1 ? 0x05u : data == XBUTTON2 ? 0x06u : 0u;
-                }
-                TrackPushToTalk(pttVk, down: button is WM_MBUTTONDOWN or WM_XBUTTONDOWN);
+                uint button = (uint)Marshal.ReadInt32(lParam, MouseDataOffset) >> 16;
+                vk = button == XBUTTON1 ? 0x05u : button == XBUTTON2 ? 0x06u : 0u;
             }
-        }
-        if (nCode >= 0 && !Suspended)
-        {
-            int message = (int)wParam;
-            if (message is WM_MBUTTONDOWN or WM_XBUTTONDOWN)
+            bool down = message is WM_MBUTTONDOWN or WM_XBUTTONDOWN;
+            TrackPushToTalk(vk, down);
+            if (!down)
             {
-                uint vk = 0x04; // VK_MBUTTON
-                if (message == WM_XBUTTONDOWN)
-                {
-                    // Какая боковая — в старшем слове mouseData
-                    uint mouseData = (uint)Marshal.ReadInt32(lParam, MouseDataOffset);
-                    uint button = mouseData >> 16;
-                    vk = button == XBUTTON1 ? 0x05u : button == XBUTTON2 ? 0x06u : 0u;
-                }
-                if (vk != 0 && TryFire(vk)) return new IntPtr(1);
+                _keysDown.Remove(vk);
+                if (_consumedKeys.Remove(vk)) return new IntPtr(1);
+            }
+            else if (vk != 0 && _keysDown.Add(vk) && !Suspended && TryFire(vk))
+            {
+                _consumedKeys.Add(vk);
+                return new IntPtr(1);
             }
         }
         return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
@@ -327,6 +328,7 @@ public sealed class HotkeyService : IDisposable
     /// </summary>
     private bool TryFire(uint vk)
     {
+        if (_disposed) return false;
         bool ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0;
         bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0;
         bool alt = (GetAsyncKeyState(0x12) & 0x8000) != 0;
@@ -336,10 +338,30 @@ public sealed class HotkeyService : IDisposable
         lock (_mapLock)
             if (!_map.TryGetValue((vk, ctrl, shift, alt, win), out action)) return false;
 
+        if (alt || win)
+            SendInput((uint)MenuMask.Length, MenuMask, Marshal.SizeOf<KeyboardInput>());
         // Обработку уводим из хука мгновенно — колбэк должен вернуться за <1 мс
-        ThreadPool.QueueUserWorkItem(_ => HotkeyPressed?.Invoke(action));
+        ThreadPool.QueueUserWorkItem(_ => { if (!_disposed) HotkeyPressed?.Invoke(action); });
         return true;
     }
+
+    // VK_E8 is unassigned: mark Alt/Win as used so releasing them does not open menus.
+    private static readonly KeyboardInput[] MenuMask =
+    [
+        new() { Type = 1, VirtualKey = 0xE8 },
+        new() { Type = 1, VirtualKey = 0xE8, Flags = 2 }
+    ];
+
+    [StructLayout(LayoutKind.Explicit, Size = 40)] // x64 INPUT
+    private struct KeyboardInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort VirtualKey;
+        [FieldOffset(12)] public uint Flags;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, KeyboardInput[] inputs, int size);
 
     private void RebuildMap()
     {
@@ -357,12 +379,6 @@ public sealed class HotkeyService : IDisposable
             TryAdd(s.HotkeyOpenFolder, HotkeyAction.OpenFolder);
             _pushToTalk = !string.IsNullOrWhiteSpace(s.HotkeyPushToTalk) &&
                           HotkeyParser.TryParse(s.HotkeyPushToTalk, out var ptt) ? ptt : null;
-            // Сочетание сменили, пока клавиша зажата: микрофон не должен остаться открытым
-            if (_pushToTalkHeld)
-            {
-                _pushToTalkHeld = false;
-                PushToTalkChanged?.Invoke(false, NowTicks());
-            }
             _mouseBound = _map.Keys.Any(k => HotkeyParser.IsMouseButton(k.vk)) ||
                           _pushToTalk is { } p && HotkeyParser.IsMouseButton(p.vk);
         }
@@ -382,8 +398,11 @@ public sealed class HotkeyService : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
+        _settings.Changed -= SettingsChanged;
         if (_threadId != 0) PostThreadMessageW(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
-        _thread?.Join(500);
+        if (_thread is not null && !_thread.Join(2000))
+            Log.Warn("Hotkeys", "Поток хука не завершился за 2 секунды");
     }
 }
 

@@ -93,6 +93,14 @@
     <Compile Include="..\..\src\Aura\Core\Encoding\EncodedStreamCompatibility.cs" Link="App\EncodedStreamCompatibility.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\RecordingQualityPolicy.cs" Link="App\RecordingQualityPolicy.cs" />
     <Compile Include="..\..\src\AuraUninstall\UninstallLayout.cs" Link="App\UninstallLayout.cs" />
+    <Compile Include="..\..\src\Aura\Core\Interop\NativeMethods.cs" Link="App\NativeMethods.cs" />
+    <Compile Include="..\..\src\Aura\Core\Hotkeys\HotkeyService.cs" Link="App\HotkeyService.cs" />
+    <Compile Include="..\..\src\Aura\Core\GameDetection\GameDetector.cs" Link="App\GameDetector.cs" />
+    <Compile Include="..\..\src\Aura\Core\Settings\SettingsManager.cs" Link="App\SettingsManager.cs" />
+    <Compile Include="..\..\src\Aura\Core\System\AppSignals.cs" Link="App\AppSignals.cs" />
+    <Compile Include="..\..\src\Aura\Core\System\StartupManager.cs" Link="App\StartupManager.cs" />
+    <Compile Include="..\..\src\Aura\Core\Tools\ExecutableTrust.cs" Link="App\ExecutableTrust.cs" />
+    <Compile Include="..\..\src\InstantReplaySetup\InstallTransaction.cs" Link="App\InstallTransaction.cs" />
     <Compile Include="..\..\src\InstantReplaySetup\InstallerAudioState.cs" Link="App\InstallerAudioState.cs" />
   </ItemGroup>
 

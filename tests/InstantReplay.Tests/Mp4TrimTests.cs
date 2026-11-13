@@ -181,6 +181,29 @@ public class Mp4TrimTests : IDisposable
     }
 
     [Fact]
+    public void Mixed_preview_contains_only_audio_and_preserves_start_delays()
+    {
+        string source = Source();
+        string output = Path.Combine(_dir, "preview.m4a");
+        IReadOnlyList<Mp4Trim.AacClip>? given = null;
+        byte[] config = Mp4AudioFormat.AacLcConfig(48000, 2);
+        Mp4Trim.MixAudio(source, output, tracks =>
+        {
+            given = tracks;
+            return new Mp4Trim.AacClip(48000, 2, config, 192000, tracks[0].Frames, 0);
+        });
+        Assert.NotNull(given);
+        Assert.Equal(2, given.Count);
+        Assert.Equal(0, given[0].StartSeconds, 4);
+        Assert.Equal(0.5, given[1].StartSeconds, 4);
+        var (_, _, tracks) = Open(output);
+        var audio = Assert.Single(tracks);
+        Assert.True(audio.Audio);
+        Assert.Equal("Mixed audio", audio.Name);
+        Assert.Equal(given[0].Frames.Count, audio.Sizes.Length);
+    }
+
+    [Fact]
     public void Mixed_audio_replaces_the_separate_tracks_with_one()
     {
         string source = Source();

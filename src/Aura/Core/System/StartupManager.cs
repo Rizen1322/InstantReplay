@@ -1,4 +1,6 @@
-using System.Diagnostics;
+using System.Runtime.Versioning;
+using System.Xml.Linq;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using Aura.Core.Logging;
 
@@ -22,20 +24,25 @@ public static class StartupManager
 
     private static string ExePath => Environment.ProcessPath ?? "";
 
+    [SupportedOSPlatform("windows")]
     public static void SetEnabled(bool enabled)
     {
-        RemoveLegacyRunEntry();
-        if (enabled) CreateTask();
-        else DeleteTask();
+        try
+        {
+            RemoveLegacyRunEntry();
+            if (enabled) CreateTask();
+            else DeleteTask();
+        }
+        catch (Exception ex) { Log.Warn("Startup", $"Автозапуск: {ex.Message}"); }
     }
 
     /// <summary>Есть ли задача автозапуска на ТЕКУЩИЙ путь exe.</summary>
+    [SupportedOSPlatform("windows")]
     public static bool IsEnabled()
     {
         try
         {
-            var (code, _) = RunSchtasks(capture: true, "/Query", "/TN", TaskName);
-            return code == 0;
+            return TaskMatches(ReadTaskXml(), ExePath);
         }
         catch { return false; }
     }
@@ -49,6 +56,7 @@ public static class StartupManager
     /// Вызывающий включает «Стартовать свёрнутым в трей», чтобы после обновления
     /// Aura при входе в Windows вела себя как раньше, а переключатель говорил правду.
     /// </returns>
+    [SupportedOSPlatform("windows")]
     public static bool Reconcile(bool wanted)
     {
         bool legacyMinimized = false;
@@ -56,9 +64,9 @@ public static class StartupManager
         {
             HardenInstallDirectory();
             RemoveLegacyRunEntry();
-            var (code, output) = RunSchtasks(capture: true, "/Query", "/TN", TaskName, "/XML");
-            bool exists = code == 0;
-            bool pathOk = exists && output.Contains(ExePath, StringComparison.OrdinalIgnoreCase);
+            string output = ReadTaskXml();
+            bool exists = output.Length > 0;
+            bool pathOk = TaskMatches(output, ExePath);
             // Старые задачи созданы без приоритета: Планировщик ставит 7 (ниже обычного)
             bool priorityOk = exists && output.Contains("<Priority>4</Priority>", StringComparison.Ordinal);
 
@@ -92,6 +100,7 @@ public static class StartupManager
     /// вторая линия: старые установки закрываются при первом же запуске.
     /// Трогаем только настоящую раскладку установки: &lt;корень&gt;\app\Aura.exe и метка.
     /// </summary>
+    [SupportedOSPlatform("windows")]
     private static void HardenInstallDirectory()
     {
         try
@@ -103,6 +112,7 @@ public static class StartupManager
             if (!WritableByUsers(root)) return;
 
             var security = new System.Security.AccessControl.DirectorySecurity();
+            security.SetOwner(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null));
             security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
             var inherit = System.Security.AccessControl.InheritanceFlags.ContainerInherit |
                           System.Security.AccessControl.InheritanceFlags.ObjectInherit;
@@ -122,10 +132,14 @@ public static class StartupManager
     }
 
     /// <summary>Может ли в папку писать кто-то, кроме администраторов и системы.</summary>
+    [SupportedOSPlatform("windows")]
     private static bool WritableByUsers(string directory)
     {
-        var rules = new DirectoryInfo(directory).GetAccessControl()
-            .GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
+        var acl = new DirectoryInfo(directory).GetAccessControl();
+        string owner = acl.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Value;
+        if (owner is not ("S-1-5-18" or "S-1-5-32-544" or "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"))
+            return true;
+        var rules = acl.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier));
         const System.Security.AccessControl.FileSystemRights write =
             System.Security.AccessControl.FileSystemRights.WriteData |
             System.Security.AccessControl.FileSystemRights.AppendData |
@@ -144,6 +158,7 @@ public static class StartupManager
         return false;
     }
 
+    [SupportedOSPlatform("windows")]
     private static void CreateTask()
     {
 #if DEBUG
@@ -155,7 +170,9 @@ public static class StartupManager
         // Через XML: только так задаются приоритет и лимиты. По умолчанию Планировщик
         // запускает с приоритетом 7 (ниже обычного), останавливает задачу через 72 часа
         // и не стартует от батареи. Aura в классе ниже обычного под игрой теряла кадры.
-        string user = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
+        if (!Tools.ExecutableTrust.IsProtected(ExePath))
+            throw new InvalidOperationException("Автозапуск с повышенными правами разрешён только из защищённой папки установки.");
+        string user = TaskUserSid();
         string xml = $"""
             <?xml version="1.0" encoding="UTF-16"?>
             <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -175,28 +192,48 @@ public static class StartupManager
               <Actions Context="Author"><Exec>
                 <Command>"{System.Security.SecurityElement.Escape(ExePath)}"</Command>
                 <Arguments>--autostart</Arguments>
+                <WorkingDirectory>{System.Security.SecurityElement.Escape(Path.GetDirectoryName(ExePath))}</WorkingDirectory>
               </Exec></Actions>
             </Task>
             """;
-        string file = Path.Combine(Path.GetTempPath(), $"aura-task-{Guid.NewGuid():N}.xml");
-        int code; string output;
-        try
+        WithTaskFolder(folder =>
         {
-            File.WriteAllText(file, xml, System.Text.Encoding.Unicode);
-            (code, output) = RunSchtasks(capture: true, "/Create", "/TN", TaskName, "/XML", file, "/F");
-        }
-        finally { try { File.Delete(file); } catch { } }
-        if (code == 0) Log.Info("Startup", $"Автозапуск включён (Планировщик задач): {ExePath}");
-        else Log.Error("Startup", $"Не удалось создать задачу автозапуска (код {code}): {output.Trim()}");
+            object task = folder.RegisterTask(TaskName, xml, 6, null, null, 3, null);
+            Marshal.FinalReleaseComObject(task);
+            return true;
+        });
+        Log.Info("Startup", $"Автозапуск включён (Планировщик задач): {ExePath}");
 #endif
     }
 
-    private static void DeleteTask()
+    [SupportedOSPlatform("windows")]
+    private static string TaskUserSid()
     {
-        var (code, _) = RunSchtasks(capture: false, "/Delete", "/TN", TaskName, "/F");
-        Log.Info("Startup", code == 0 ? "Автозапуск выключен" : "Задача автозапуска и так отсутствовала");
+        using var current = System.Security.Principal.WindowsIdentity.GetCurrent();
+        IntPtr shell = Interop.NativeMethods.GetShellWindow();
+        if (shell == IntPtr.Zero) throw new InvalidOperationException("Оболочка Windows пока недоступна.");
+        Interop.NativeMethods.GetWindowThreadProcessId(shell, out uint pid);
+        using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+        if (!Interop.NativeMethods.OpenProcessToken(process.Handle, 8, out var token))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        using (token)
+        using (var interactive = new System.Security.Principal.WindowsIdentity(token.DangerousGetHandle()))
+        {
+            if (current.User != interactive.User)
+                throw new InvalidOperationException("Автозапуск нельзя настроить от имени другого администратора. Запустите Aura под учётной записью пользователя Windows.");
+        }
+        return current.User!.Value;
     }
 
+    [SupportedOSPlatform("windows")]
+    private static void DeleteTask()
+    {
+        if (ReadTaskXml().Length == 0) return;
+        WithTaskFolder(folder => { folder.DeleteTask(TaskName, 0); return true; });
+        Log.Info("Startup", "Автозапуск выключен");
+    }
+
+    [SupportedOSPlatform("windows")]
     private static void RemoveLegacyRunEntry()
     {
         try
@@ -211,21 +248,40 @@ public static class StartupManager
         catch { }
     }
 
-    private static (int Code, string Output) RunSchtasks(bool capture, params string[] args)
+    // COM avoids writable task files and console encoding/pipe timeouts.
+    [SupportedOSPlatform("windows")]
+    private static T WithTaskFolder<T>(Func<dynamic, T> action)
     {
-        var psi = new ProcessStartInfo("schtasks.exe")
+        dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service")!)!;
+        object? folder = null;
+        try
         {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = capture,
-            RedirectStandardError = capture
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a); // корректное экранирование за нас
-        using var p = Process.Start(psi)!;
-        string output = "";
-        if (capture)
-            output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-        p.WaitForExit(8000);
-        return (p.HasExited ? p.ExitCode : -1, output);
+            service.Connect();
+            folder = service.GetFolder(@"\");
+            return action(folder);
+        }
+        finally
+        {
+            if (folder is not null) Marshal.FinalReleaseComObject(folder);
+            Marshal.FinalReleaseComObject(service);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string ReadTaskXml() => WithTaskFolder(folder =>
+    {
+        object? task = null;
+        try { task = folder.GetTask(TaskName); return (string)((dynamic)task).Xml; }
+        catch (COMException ex) when (ex.HResult == unchecked((int)0x80070002)) { return ""; }
+        finally { if (task is not null) Marshal.FinalReleaseComObject(task); }
+    });
+
+    internal static bool TaskMatches(string xml, string exePath)
+    {
+        if (xml.Length == 0) return false;
+        XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        var exec = XDocument.Parse(xml).Root?.Element(ns + "Actions")?.Element(ns + "Exec");
+        return string.Equals(exec?.Element(ns + "Command")?.Value.Trim('"'), exePath,
+                             StringComparison.OrdinalIgnoreCase);
     }
 }

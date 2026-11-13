@@ -149,7 +149,9 @@ public static class NotificationSounds
             w.Write((short)(Math.Clamp(left[i] * norm * f, -1, 1) * short.MaxValue));
             w.Write((short)(Math.Clamp(right[i] * norm * f, -1, 1) * short.MaxValue));
         }
-        return stream.ToArray();
+        var wav = GC.AllocateArray<byte>((int)stream.Length, pinned: true);
+        stream.GetBuffer().AsSpan(0, wav.Length).CopyTo(wav);
+        return wav;
     }
 
     private const uint SND_ASYNC = 0x0001, SND_NODEFAULT = 0x0002, SND_MEMORY = 0x0004, SND_FILENAME = 0x00020000;

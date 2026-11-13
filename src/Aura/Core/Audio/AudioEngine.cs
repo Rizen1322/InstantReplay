@@ -1,4 +1,4 @@
-﻿using NAudio.CoreAudioApi;
+using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using Aura.Core.Buffering;
 using Aura.Core.Logging;
@@ -250,6 +250,8 @@ public sealed class AudioMixerEngine : IDisposable
             IsBackground = true, Name = "AudioMixer", Priority = ThreadPriority.Highest
         };
         _thread.Start();
+        if (captureGame && !ProcessMode && _game is null) RestartSource(DataFlow.Render);
+        if (captureMic && _mic is null) RestartSource(DataFlow.Capture);
     }
 
     private WasapiSource? OpenSource(bool loopback)
@@ -259,10 +261,6 @@ public sealed class AudioMixerEngine : IDisposable
         {
             var source = new WasapiSource(loopback, loopback ? _renderDeviceId : _captureDeviceId, line);
             source.Failed += _ => RestartSource(loopback ? DataFlow.Render : DataFlow.Capture);
-            if (source.FellBackTo is { } name)
-                Warning?.Invoke(loopback
-                    ? $"Выбранное устройство вывода не найдено — пишу звук с «{name}»"
-                    : $"Выбранный микрофон не найден — пишу с «{name}»");
             return source;
         }
         catch (Exception ex)

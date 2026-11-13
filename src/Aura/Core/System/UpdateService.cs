@@ -1,4 +1,4 @@
-﻿using System.Net.Http;
+using System.Net.Http;
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Security.AccessControl;
@@ -112,24 +112,24 @@ public sealed class UpdateService
 
     public async Task<UpdateInfo?> CheckAsync(string repo = Repo)
     {
-        if (string.IsNullOrWhiteSpace(repo) || !repo.Contains('/')) return null;
+        if (repo != Repo) throw new ArgumentException("Источник обновлений должен быть официальным репозиторием.", nameof(repo));
         try
         {
             var release = await Http.GetFromJsonAsync<GithubRelease>(
                 $"https://api.github.com/repos/{repo}/releases/latest");
-            if (release?.TagName is null) return null;
+            if (release?.TagName is null) throw new InvalidDataException("GitHub не вернул версию релиза.");
 
             var remote = ParseVersion(release.TagName);
             var local = typeof(UpdateService).Assembly.GetName().Version ?? new Version(1, 0, 0);
-            if (remote is null || remote <= local) { Available = null; return null; }
+            if (remote is null) throw new InvalidDataException("Не удалось разобрать версию релиза.");
+            if (remote <= local) { Available = null; return null; }
 
-            string? asset = AssetUrl(release, n =>
-                n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
-                n.EndsWith(".msi", StringComparison.OrdinalIgnoreCase) ||
-                n.EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
-            string? digest = AssetUrl(release, n => n.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase));
-            string? signature = AssetUrl(release, n => n.EndsWith(".sig", StringComparison.OrdinalIgnoreCase));
-            string? versionSignature = AssetUrl(release, n => n.EndsWith(".sig2", StringComparison.OrdinalIgnoreCase));
+            const string installerName = "InstantReplaySetup.exe";
+            string? asset = AssetUrl(release, n => n.Equals(installerName, StringComparison.OrdinalIgnoreCase));
+            if (asset is null) throw new InvalidDataException("В релизе нет установщика InstantReplaySetup.exe.");
+            string? digest = AssetUrl(release, n => n.Equals(installerName + ".sha256", StringComparison.OrdinalIgnoreCase));
+            string? signature = AssetUrl(release, n => n.Equals(installerName + ".sig", StringComparison.OrdinalIgnoreCase));
+            string? versionSignature = AssetUrl(release, n => n.Equals(installerName + ".sig2", StringComparison.OrdinalIgnoreCase));
 
             Available = new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "",
                                        digest, signature, versionSignature);
@@ -138,7 +138,7 @@ public sealed class UpdateService
         catch (Exception ex)
         {
             Log.Warn("Update", $"Проверка обновлений не удалась: {ex.Message}");
-            return null;
+            throw;
         }
     }
 
@@ -177,6 +177,9 @@ public sealed class UpdateService
         if (!UpdateVerification.IsTrustedHost(update.DownloadUrl))
             throw new InvalidOperationException("Ссылка на обновление ведёт не на GitHub — загрузка отменена.");
 
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromMinutes(10));
+        ct = timeout.Token;
         string dir = CreateDownloadDirectory();
         // Имя файла прежнее — под ним установщик лежит в релизе, и по нему
         // обновляются установленные версии 1.0.x
@@ -184,43 +187,42 @@ public sealed class UpdateService
         // Файл мог остаться от прошлой попытки
         try { if (File.Exists(file)) File.Delete(file); } catch { }
 
-        using (var response = await Http.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
-        {
-            response.EnsureSuccessStatusCode();
-
-            long total = response.Content.Headers.ContentLength ?? -1;
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using var target = File.Create(file);
-            var buffer = new byte[128 * 1024];
-            long read = 0;
-            int n;
-            while ((n = await source.ReadAsync(buffer, ct)) > 0)
-            {
-                await target.WriteAsync(buffer.AsMemory(0, n), ct);
-                read += n;
-                progress?.Report(total > 0 ? read / (double)total : -1);
-            }
-        }
-
-        VerifiedInstaller installer;
         try
         {
+            using (var response = await Http.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+            {
+                response.EnsureSuccessStatusCode();
+
+                long total = response.Content.Headers.ContentLength ?? -1;
+                if (total > 0) Aura.Core.Storage.DiskSpace.Require(dir, total, "обновления");
+                await using var source = await response.Content.ReadAsStreamAsync(ct);
+                await using var target = File.Create(file);
+                var buffer = new byte[128 * 1024];
+                long read = 0;
+                int n;
+                while ((n = await source.ReadAsync(buffer, ct)) > 0)
+                {
+                    await target.WriteAsync(buffer.AsMemory(0, n), ct);
+                    read += n;
+                    progress?.Report(total > 0 ? read / (double)total : -1);
+                }
+            }
+
             string? digest = await TryGetTextAsync(update.DigestUrl, ct);
             byte[]? signature = DecodeSignature(await TryGetBytesAsync(update.SignatureUrl, ct));
             byte[]? versionSignature = DecodeSignature(await TryGetBytesAsync(update.VersionSignatureUrl, ct));
             // Проверяем ровно те байты, которые останутся под замком, и замок берём
             // до возврата: с этого момента подменить файл уже нельзя
-            installer = new VerifiedInstaller(file, UpdateVerification.OpenVerified(
+            var installer = new VerifiedInstaller(file, UpdateVerification.OpenVerified(
                 file, digest, signature, update.Version, versionSignature));
+            Log.Info("Update", $"Установщик скачан и проверен: {file} ({installer.Length / (1024 * 1024)} МБ)");
+            return installer;
         }
         catch
         {
             try { File.Delete(file); } catch { }
             throw;
         }
-
-        Log.Info("Update", $"Установщик скачан и проверен: {file} ({installer.Length / (1024 * 1024)} МБ), файл под замком до запуска");
-        return installer;
     }
 
     /// <summary>
@@ -296,6 +298,7 @@ public sealed class UpdateService
     {
         if (!UpdateVerification.IsTrustedHost(url)) return null;
         try { return await Http.GetStringAsync(url!, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex) { Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}"); return null; }
     }
 
@@ -303,6 +306,7 @@ public sealed class UpdateService
     {
         if (!UpdateVerification.IsTrustedHost(url)) return null;
         try { return await Http.GetByteArrayAsync(url!, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex) { Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}"); return null; }
     }
 

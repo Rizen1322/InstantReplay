@@ -41,11 +41,18 @@ public static class ClipCleanup
     /// <summary>То же самое для файла, о котором известен только путь (автоочистка).</summary>
     public static void RemoveTraces(string path, string saveRoot)
     {
-        RemoveSidecars(path);
-        RemoveEmptyFolder(Path.GetDirectoryName(path), saveRoot);
+        try
+        {
+            Core.Storage.UserFileAccess.Run(() =>
+            {
+                RemoveSidecars(path);
+                RemoveEmptyFolder(Path.GetDirectoryName(path), saveRoot);
+            });
+        }
+        catch (Exception ex) { Log.Warn("Library", $"Уборка: {ex.Message}"); }
     }
 
-    /// <summary>Файлы с тем же именем и служебным расширением: «клип.mp4.part», «клип.srt».</summary>
+    /// <summary>Файлы с тем же именем и служебным расширением: «клип.mp4.part».</summary>
     private static void RemoveSidecars(string path)
     {
         try
@@ -59,7 +66,7 @@ public static class ClipCleanup
             foreach (string candidate in Directory.EnumerateFiles(dir, bare + ".*"))
             {
                 string name = Path.GetFileName(candidate);
-                // «клип.mp4.part» и «клип.srt» — да; «клип 2.mp4» — нет, шаблон
+                // «клип.mp4.part» — да; «клип 2.mp4» — нет, шаблон
                 // и так его не поймает, но проверяем основу имени явно.
                 bool ours = name.StartsWith(full + ".", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(Path.GetFileNameWithoutExtension(name), bare,

@@ -248,55 +248,6 @@ public sealed class NvidiaDriverService
         return null;
     }
 
-    /// <summary>
-    /// Скачивает установщик драйвера в Загрузки с прогрессом (скачано, всего байт).
-    /// Возвращает путь к exe. Повторный вызов доиспользует уже скачанный файл.
-    /// </summary>
-    public async Task<string> DownloadDriverAsync(
-        string url, IProgress<(long Done, long Total)> progress, CancellationToken ct = default)
-    {
-        string downloads = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-        Directory.CreateDirectory(downloads);
-        string fileName = Path.GetFileName(new Uri(url).LocalPath);
-        if (string.IsNullOrWhiteSpace(fileName)) fileName = "nvidia-driver.exe";
-        string dest = Path.Combine(downloads, fileName);
-        string tmp = dest + ".part";
-
-        using var response = await DownloadHttp.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-        long total = response.Content.Headers.ContentLength ?? -1;
-
-        // Уже скачан целиком? Не качаем заново.
-        if (File.Exists(dest) && total > 0 && new FileInfo(dest).Length == total)
-        {
-            progress.Report((total, total));
-            return dest;
-        }
-
-        await using (var http = await response.Content.ReadAsStreamAsync(ct))
-        await using (var file = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
-        {
-            var buffer = new byte[1 << 20];
-            long done = 0;
-            int read;
-            var lastReport = DateTime.MinValue;
-            while ((read = await http.ReadAsync(buffer, ct)) > 0)
-            {
-                await file.WriteAsync(buffer.AsMemory(0, read), ct);
-                done += read;
-                if ((DateTime.UtcNow - lastReport).TotalMilliseconds > 100)
-                {
-                    lastReport = DateTime.UtcNow;
-                    progress.Report((done, total));
-                }
-            }
-            progress.Report((done, total));
-        }
-        File.Move(tmp, dest, overwrite: true);
-        Log.Info("Nvidia", $"Драйвер скачан: {dest}");
-        return dest;
-    }
 
     /// <summary>WMI-версия "32.0.15.6603" → GeForce-версия "566.03" (последние 5 цифр).</summary>
     public static string WmiToGeforceVersion(string wmiVersion)

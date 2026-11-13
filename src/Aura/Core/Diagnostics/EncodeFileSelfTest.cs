@@ -21,6 +21,8 @@ internal static class EncodeFileSelfTest
 {
     public static void Run(string file, int warmupSeconds, int mbps, BitrateMode mode, int height = 1440)
     {
+        string ffmpegPath = Tools.Ffmpeg.Find(null, null) ??
+            throw new InvalidOperationException("Для самопроверки нужен ffmpeg.exe в защищённой папке (например, Program Files).");
         const int fps = 60;
         int width = height * 16 / 9;
         D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
@@ -77,8 +79,10 @@ internal static class EncodeFileSelfTest
         long warmBytes = Interlocked.Read(ref encodedBytes);
         Log.Info("SelfTest", $"статичный кадр {warmupSeconds} с: {warmBytes * 8.0 / Math.Max(1, warmupSeconds) / 1e6:F2} Мбит/с");
 
-        var psi = new ProcessStartInfo("ffmpeg")
+        var psi = new ProcessStartInfo(Tools.ExecutableTrust.RequireProtected(ffmpegPath))
         {
+            WorkingDirectory = Path.GetDirectoryName(ffmpegPath),
+            Environment = { ["PATH"] = Path.GetDirectoryName(ffmpegPath) + Path.PathSeparator + Environment.SystemDirectory },
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
         };
         foreach (string a in new[] { "-v", "error", "-ss", "60", "-t", "60", "-i", file, "-f", "rawvideo",

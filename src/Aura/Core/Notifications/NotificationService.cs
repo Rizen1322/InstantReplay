@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -166,7 +166,6 @@ public sealed class UiDispatcher(Dispatcher dispatcher)
 {
     public void Enqueue(Action action)
     {
-        if (dispatcher.CheckAccess()) action();
-        else dispatcher.BeginInvoke(action);
+        dispatcher.BeginInvoke(action, DispatcherPriority.Background);
     }
 }

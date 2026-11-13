@@ -1,4 +1,4 @@
-﻿using Aura.Core.Logging;
+using Aura.Core.Logging;
 using Aura.Core.Settings;
 
 namespace Aura.Core.Storage;
@@ -181,11 +181,7 @@ public sealed class StorageManager : IDisposable
                    DateTime.UtcNow - when <= OwnChangeWindow;
     }
 
-    private static long FreeSpace(string root)
-    {
-        try { return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(root))!).AvailableFreeSpace; }
-        catch { return 0; }
-    }
+    private static long FreeSpace(string root) => DiskSpace.FreeBytes(root) ?? 0;
 
     public void Dispose() => _watcher.Dispose();
 }

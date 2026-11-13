@@ -1,4 +1,4 @@
-﻿using Aura.Core.Capture;
+using Aura.Core.Capture;
 using Xunit;
 
 namespace InstantReplay.Tests;
@@ -6,6 +6,28 @@ namespace InstantReplay.Tests;
 public sealed class CaptureHealthPolicyTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 11, 20, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void Desktop_not_ready_does_not_quarantine_backends_or_consume_switch_budget()
+    {
+        var policy = new CaptureHealthPolicy();
+        for (int i = 0; i < 60; i++)
+            Assert.True(policy.TryStartupFallback(CaptureBackend.Wgc, CaptureBackend.DesktopDuplication,
+                Now.AddSeconds(i * 2), temporary: true));
+        Assert.True(policy.CanUse(CaptureBackend.Wgc, Now.AddMinutes(2)));
+        Assert.True(policy.CanUse(CaptureBackend.DesktopDuplication, Now.AddMinutes(2)));
+        Assert.True(policy.TryRecordSwitch(Now.AddMinutes(2)));
+        Assert.True(policy.TryRecordSwitch(Now.AddMinutes(2)));
+        Assert.False(policy.TryRecordSwitch(Now.AddMinutes(2)));
+    }
+
+    [Fact]
+    public void Persistent_startup_failure_still_quarantines_the_failed_backend()
+    {
+        var policy = new CaptureHealthPolicy();
+        Assert.True(policy.TryStartupFallback(CaptureBackend.Wgc, CaptureBackend.DesktopDuplication, Now, temporary: false));
+        Assert.False(policy.CanUse(CaptureBackend.Wgc, Now));
+    }
 
     [Fact]
     public void OneBadWgcSecondDoesNotSwitch()

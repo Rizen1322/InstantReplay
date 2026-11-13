@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
@@ -43,6 +43,7 @@ public partial class MainWindow : Window
 
     // Снимаются с UI ДО фоновой работы: PathBox трогать из другого потока нельзя
     private string _root = "", _appDir = "", _mainExe = "";
+    private bool _mayRestartPrevious;
 
     /// <summary>
     /// Папка установки по умолчанию: Program Files. Раньше Aura ставилась в
@@ -123,8 +124,14 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Log($"Обновление не удалось: {ex.Message}");
+            try
+            {
+                if (_mayRestartPrevious && File.Exists(_mainExe))
+                    Process.Start(new ProcessStartInfo(_mainExe) { WorkingDirectory = _appDir, UseShellExecute = true });
+            }
+            catch (Exception restart) { Log($"Не удалось запустить Aura после отката: {restart.Message}"); }
             MessageBox.Show(this,
-                $"Не удалось обновить Aura:\n\n{ex.Message}\n\nПрежняя версия осталась на месте.",
+                $"Не удалось обновить Aura:\n\n{ex.Message}\n\nПредыдущие файлы сохранены; подробности — в журнале установщика.",
                 "Ошибка обновления", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         Close();
@@ -272,6 +279,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            try
+            {
+                if (_mayRestartPrevious && File.Exists(_mainExe))
+                    Process.Start(new ProcessStartInfo(_mainExe) { WorkingDirectory = _appDir, UseShellExecute = true });
+            }
+            catch (Exception restart) { Log($"Не удалось запустить Aura после отката: {restart.Message}"); }
             MessageBox.Show(this, ex.Message, "Ошибка установки", MessageBoxButton.OK, MessageBoxImage.Error);
             PageProgress.Visibility = Visibility.Collapsed;
             PageOptions.Visibility = Visibility.Visible;
@@ -280,6 +293,13 @@ public partial class MainWindow : Window
 
     private void DoInstall(bool desktopShortcut, bool autostart)
     {
+        _mayRestartPrevious = false;
+        if (App.UpdateMode) InstallTransaction.ValidateUpdateRoot(App.UpdateTarget ?? _root);
+        _root = Path.GetFullPath(_root);
+        _appDir = Path.Combine(_root, "app");
+        _mainExe = Path.Combine(_appDir, ExeName);
+        InstallTransaction.ValidateTargetRoot(_root);
+        _mayRestartPrevious = Aura.Core.Tools.ExecutableTrust.IsProtected(_mainExe);
         SetStatus("Подготовка…", 2);
 
         // Закрываем и новое приложение, и старое: при обновлении с 1.0.x работает
@@ -296,7 +316,7 @@ public partial class MainWindow : Window
                 using (quit) asked = quit.Set();
         }
         catch { }
-        foreach (string name in new[] { ProcessName, OldProcessName })
+        foreach (string name in new[] { ProcessName, OldProcessName, "Aura.EncoderHost" })
             foreach (var p in Process.GetProcessesByName(name))
                 try
                 {
@@ -309,20 +329,9 @@ public partial class MainWindow : Window
 
         Directory.CreateDirectory(_root);
         HardenDirectory(_root);
-        File.WriteAllText(
-            Path.Combine(_root, InstallMarkerName),
-            "Aura installation root. This marker is required by AuraUninstall.exe.\n");
+        InstallTransaction.EnsureMarker(_root);
 
-        // Чистая переустановка: иначе от прошлых версий остаются лишние файлы
-        // (языковые папки, выпиленные библиотеки) и папка «пухнет».
-        // Пользовательские данные тут не живут — настройки и записи лежат отдельно.
-        if (Directory.Exists(_appDir))
-        {
-            SetStatus("Удаление предыдущей версии…", 3);
-            try { Directory.Delete(_appDir, recursive: true); }
-            catch (Exception ex) { Log($"Не удалось очистить {_appDir}: {ex.Message}"); }
-        }
-        Directory.CreateDirectory(_appDir);
+        using var transaction = new InstallTransaction(_root);
 
         // Распаковка полезной нагрузки: бинарники аккуратно в подпапку app\
         using (var stream = OpenResource("payload.zip")
@@ -333,7 +342,9 @@ public partial class MainWindow : Window
             long bytes = 0;
             foreach (var entry in zip.Entries)
             {
-                string target = Path.Combine(_appDir, entry.FullName);
+                string target = Path.GetFullPath(Path.Combine(transaction.StagingDirectory, entry.FullName));
+                if (!target.StartsWith(transaction.StagingDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Недопустимый путь в payload.zip: " + entry.FullName);
                 if (string.IsNullOrEmpty(entry.Name)) { Directory.CreateDirectory(target); continue; }
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 entry.ExtractToFile(target, overwrite: true);
@@ -343,6 +354,7 @@ public partial class MainWindow : Window
                     SetStatus($"Распаковка файлов… {done} из {total}", 4 + done * 82.0 / total);
             }
 
+            transaction.Install();
             SetStatus("Создание ярлыков…", 90);
             // Установка на весь компьютер — ярлык в общем «Пуске». Прежний личный
             // ярлык указывал бы на удалённую папку.
@@ -408,6 +420,7 @@ public partial class MainWindow : Window
             SetStatus("Удаление прежней установки…", 99);
             RemovePreviousRoot(old);
         }
+        transaction.Complete();
         SetStatus("Готово", 100);
     }
 
@@ -500,6 +513,7 @@ public partial class MainWindow : Window
         try
         {
             var security = new System.Security.AccessControl.DirectorySecurity();
+            security.SetOwner(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null));
             security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
             var inherit = System.Security.AccessControl.InheritanceFlags.ContainerInherit |
                           System.Security.AccessControl.InheritanceFlags.ObjectInherit;
@@ -518,7 +532,7 @@ public partial class MainWindow : Window
                 System.Security.AccessControl.FileSystemRights.ReadAndExecute, inherit, none, allow));
             new DirectoryInfo(root).SetAccessControl(security);
         }
-        catch (Exception ex) { Log($"Права на папку установки не выставлены: {ex.Message}"); }
+        catch (Exception ex) { throw new IOException("Не удалось защитить папку установки.", ex); }
     }
 
     /// <summary>
@@ -538,7 +552,7 @@ public partial class MainWindow : Window
 
         string script =
             $"Get-AppxPackage -Name '{IdentityPackageName}' | Remove-AppxPackage -ErrorAction SilentlyContinue; " +
-            $"Add-AppxPackage -Path '{msix}' -ExternalLocation '{_appDir}'";
+            $"Add-AppxPackage -Path '{msix.Replace("'", "''")}' -ExternalLocation '{_appDir.Replace("'", "''")}'";
 
         var (code, output) = RunPowerShell(script);
         Log(code == 0

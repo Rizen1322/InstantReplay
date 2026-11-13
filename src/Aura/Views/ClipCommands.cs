@@ -203,12 +203,17 @@ public static class ClipCommands
         if (ffmpeg is null)
         {
             bool ok = Dialogs.Ask("Нужен ffmpeg",
-                "Сжатие делает ffmpeg. Покажи ffmpeg.exe, и Aura запомнит путь и сможет также резать клипы без потери качества.",
+                "Для сжатия нужен ffmpeg.exe в папке, защищённой от записи обычными пользователями, например в Program Files. Aura запомнит путь.",
                 "Выбрать");
             if (!ok) return;
 
             var dialog = new Microsoft.Win32.OpenFileDialog { Title = "ffmpeg.exe", Filter = "ffmpeg|ffmpeg.exe" };
             if (dialog.ShowDialog() != true) return;
+            if (!Core.Tools.ExecutableTrust.IsProtected(dialog.FileName))
+            {
+                Dialogs.Say("Папка ffmpeg не защищена", "Поместите ffmpeg в Program Files и выберите его снова.");
+                return;
+            }
             ffmpeg = dialog.FileName;
             Services.Settings.Update(s => s.FfmpegPath = ffmpeg, "tools");
         }

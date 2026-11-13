@@ -36,6 +36,18 @@ internal static class PullCfrPolicy
             ? baseTicks + slot
             : baseTicks + (slot * TicksPerSecond + fps - 1) / fps;
 
+    /// <summary>Prepare at most one candidate per output slot, even while catching up after a stall.</summary>
+    public static bool ShouldPrepareFrame(long now, long lastClosedSlot, long lastPreparedSlot, long baseTicks, int fps) =>
+        fps > 0 && (baseTicks < 0 || SlotIndex(now, baseTicks, fps) > Math.Max(lastClosedSlot, lastPreparedSlot));
+
+    /// <summary>Keep polling bounded, but do not sleep past a slot after synchronous conversion.</summary>
+    public static long PacerWaitTicks(long now, long lastClosedSlot, long baseTicks, int fps, long maxPollTicks)
+    {
+        if (baseTicks < 0 || fps <= 0) return maxPollTicks;
+        long remaining = SlotPts(lastClosedSlot + 1, baseTicks, fps) - now;
+        return remaining > 0 ? Math.Min(maxPollTicks, remaining) : maxPollTicks;
+    }
+
     /// <summary>
     /// Номер слота, в который попадает момент <paramref name="ticks"/>: наибольший
     /// k, для которого <c>SlotPts(k) &lt;= ticks</c>. Обратная к <see cref="SlotPts"/>.

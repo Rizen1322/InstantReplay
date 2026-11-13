@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Windows.Interop;
 using Aura.Core.Interop;
 using Aura.Core.Logging;
@@ -47,6 +47,7 @@ public sealed class SystemActivityWatcher : IDisposable
     /// </summary>
     private static readonly TimeSpan DisplaySettle = TimeSpan.FromMilliseconds(700);
     private int _displayEpoch;
+    private int _sleepEpoch;
 
     private HwndSource? _window;
     private IntPtr _displayNotification;
@@ -182,6 +183,7 @@ public sealed class SystemActivityWatcher : IDisposable
         switch (e.Mode)
         {
             case PowerModes.Suspend:
+                Interlocked.Increment(ref _sleepEpoch);
                 Suspend(ReasonSleep);
                 break;
             case PowerModes.Resume:
@@ -196,10 +198,14 @@ public sealed class SystemActivityWatcher : IDisposable
 
     private async void DelayedResume(string reason, TimeSpan delay)
     {
+        int epoch = Interlocked.Increment(ref _sleepEpoch);
         try
         {
             await Task.Delay(delay).ConfigureAwait(false);
-            if (!_disposed) Resume(reason);
+            RunOffThread(r =>
+            {
+                if (Volatile.Read(ref _sleepEpoch) == epoch) _resume(r);
+            }, reason);
         }
         catch (Exception ex) { Log.Warn("System", $"Возобновление после сна: {ex.Message}"); }
     }

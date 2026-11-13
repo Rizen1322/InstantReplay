@@ -2,61 +2,111 @@ using Aura.Core.Saving.Mp4;
 
 namespace Aura.Core.Audio;
 
-/// <summary>
-/// Сведение звуковых дорожек фрагмента в одну — так же, как микшер сводит их вживую
-/// (дорожка «Вместе» в записи): моно-микрофон в оба канала, сумма, лимитер −1 дБ,
-/// AAC-LC стерео 192 кбит/с. Всё штатными средствами Windows, без ffmpeg.
-/// </summary>
+/// <summary>Игра и микрофон в одну AAC-дорожку штатными кодеками Windows, без ffmpeg.</summary>
 public static class AudioMixdown
 {
-    private const int BlockFrames = 480;   // 10 мс, как у живого микшера
+    private const int BlockFrames = 480;
 
-    public static Mp4Trim.AacClip Mix(IReadOnlyList<Mp4Trim.AacClip> tracks)
+    public static Mp4Trim.AacClip Mix(IReadOnlyList<Mp4Trim.AacClip> tracks) => Mix(tracks, CancellationToken.None);
+
+    public static Mp4Trim.AacClip Mix(IReadOnlyList<Mp4Trim.AacClip> tracks, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         const int rate = AacEncoder.SampleRate;
         if (tracks.Count == 0) throw new ArgumentException("нечего сводить");
         if (tracks.Any(t => t.SampleRate != rate || t.Channels is < 1 or > 2))
             throw new NotSupportedException("сведение умеет только 48 кГц моно и стерео");
 
         double start = tracks.Min(t => t.StartSeconds);
-        var decoded = tracks.Select(t => (Offset: (int)Math.Round((t.StartSeconds - start) * rate), Stereo: DecodeStereo(t))).ToList();
-        int total = decoded.Max(d => d.Offset + d.Stereo.Length / 2);
-
-        // Сумма плюс хвост длиной в задержку лимитера: он отдаёт звук на 96 сэмплов позже
-        var mix = new float[(total + Limiter.LookaheadFrames) * 2];
-        foreach (var (offset, stereo) in decoded)
-            for (int i = 0; i < stereo.Length; i++) mix[offset * 2 + i] += stereo[i];
-        new Limiter(2).Process(mix, total + Limiter.LookaheadFrames);
-        var aligned = mix.AsSpan(Limiter.LookaheadFrames * 2, total * 2);
-
-        int bitrate = AudioMixerEngine.GameBitrate;
-        var frames = new List<byte[]>();
-        using var encoder = new AacEncoder(2, bitrate);
-        encoder.FrameReady += (frame, _) => frames.Add(frame.ToArray());
-        // Тишина в конце дотягивает последний неполный кадр
-        int expected = (total + Mp4AudioFormat.FrameSamples - 1) / Mp4AudioFormat.FrameSamples;
-        var block = new float[BlockFrames * 2];
-        for (int at = 0; frames.Count < expected && at < total + 4 * Mp4AudioFormat.FrameSamples; at += BlockFrames)
+        var readers = new List<TrackReader>();
+        try
         {
+            foreach (var track in tracks) readers.Add(new TrackReader(track, start));
+            int total = readers.Max(r => r.End);
+            int bitrate = AudioMixerEngine.GameBitrate;
+            var frames = new List<byte[]>();
+            using var encoder = new AacEncoder(2, bitrate);
+            encoder.FrameReady += (frame, _) => frames.Add(frame.ToArray());
+            var limiter = new Limiter(2);
+            var block = new float[BlockFrames * 2];
+            int skip = Limiter.LookaheadFrames, emitted = 0;
+
+            // Decode only the current block: full-length PCM would consume gigabytes on long recordings.
+            for (int at = 0; at < checked(total + Limiter.LookaheadFrames); at = checked(at + BlockFrames))
+            {
+                ct.ThrowIfCancellationRequested();
+                Array.Clear(block);
+                foreach (var reader in readers) reader.AddTo(block, at);
+                if (readers.All(r => r.Ended)) total = readers.Max(r => r.ActualEnd);
+                limiter.Process(block, BlockFrames);
+                int first = Math.Min(skip, BlockFrames);
+                skip -= first;
+                int have = Math.Min(BlockFrames - first, total - emitted);
+                if (have <= 0) continue;
+                encoder.Encode(block.AsSpan(first * 2, have * 2), have, (long)emitted * 10_000_000 / rate);
+                emitted += have;
+            }
+            int expected = checked((total + Mp4AudioFormat.FrameSamples - 1) / Mp4AudioFormat.FrameSamples);
             Array.Clear(block);
-            int have = Math.Clamp(total - at, 0, BlockFrames);
-            if (have > 0) aligned.Slice(at * 2, have * 2).CopyTo(block);
-            encoder.Encode(block, BlockFrames, (long)at * 10_000_000 / rate);
+            for (int tail = 0; frames.Count < expected && tail < 4 * Mp4AudioFormat.FrameSamples; tail += BlockFrames)
+            {
+                ct.ThrowIfCancellationRequested();
+                encoder.Encode(block, BlockFrames, (long)(emitted + tail) * 10_000_000 / rate);
+            }
+            if (frames.Count < expected) throw new InvalidOperationException("AAC-энкодер не выдал весь сведённый звук");
+            if (frames.Count > expected) frames.RemoveRange(expected, frames.Count - expected);
+            return new Mp4Trim.AacClip(rate, 2, encoder.AudioSpecificConfig, bitrate, frames, start);
         }
-        if (frames.Count > expected) frames.RemoveRange(expected, frames.Count - expected);
-        return new Mp4Trim.AacClip(rate, 2, encoder.AudioSpecificConfig, bitrate, frames, start);
+        finally { foreach (var reader in readers) reader.Dispose(); }
     }
 
-    /// <summary>Декодировать дорожку в стерео float: моно раскладывается в оба канала.</summary>
-    private static float[] DecodeStereo(Mp4Trim.AacClip clip)
+    private sealed class TrackReader : IDisposable
     {
-        var pcm = new List<float>(clip.Frames.Count * Mp4AudioFormat.FrameSamples * clip.Channels);
-        using (var decoder = new AacDecoder(clip.SampleRate, clip.Channels, clip.Config))
-            for (int i = 0; i < clip.Frames.Count; i++)
-                decoder.Decode(clip.Frames[i], (long)i * Mp4AudioFormat.FrameSamples * 10_000_000 / clip.SampleRate, pcm);
-        if (clip.Channels == 2) return pcm.ToArray();
-        var stereo = new float[pcm.Count * 2];
-        for (int i = 0; i < pcm.Count; i++) stereo[2 * i] = stereo[2 * i + 1] = pcm[i];
-        return stereo;
+        private readonly Mp4Trim.AacClip _clip;
+        private readonly AacDecoder _decoder;
+        private readonly List<float> _pcm = [];
+        private readonly int _offset;
+        private int _frame, _sample, _decodedFrames;
+        public int End { get; }
+        public int ActualEnd => checked(_offset + _decodedFrames);
+        public bool Ended => _frame >= _clip.Frames.Count && _sample >= _pcm.Count;
+
+        public TrackReader(Mp4Trim.AacClip clip, double start)
+        {
+            _clip = clip;
+            _offset = checked((int)Math.Round((clip.StartSeconds - start) * clip.SampleRate));
+            End = checked(_offset + clip.Frames.Count * Mp4AudioFormat.FrameSamples);
+            _decoder = new AacDecoder(clip.SampleRate, clip.Channels, clip.Config);
+        }
+
+        public void AddTo(float[] block, int at)
+        {
+            int first = Math.Clamp(_offset - at, 0, BlockFrames);
+            int last = Math.Clamp(End - at, 0, BlockFrames);
+            while (first < last)
+            {
+                if (_sample >= _pcm.Count)
+                {
+                    if (_frame >= _clip.Frames.Count) return;
+                    _pcm.Clear();
+                    _sample = 0;
+                    _decoder.Decode(_clip.Frames[_frame], (long)_frame * Mp4AudioFormat.FrameSamples *
+                        10_000_000 / _clip.SampleRate, _pcm);
+                    _frame++;
+                    if (_pcm.Count % _clip.Channels != 0) throw new InvalidDataException("Декодер вернул неполный звуковой кадр");
+                    _decodedFrames = checked(_decodedFrames + _pcm.Count / _clip.Channels);
+                    continue;
+                }
+                int have = Math.Min(last - first, (_pcm.Count - _sample) / _clip.Channels);
+                for (int i = 0; i < have; i++)
+                {
+                    block[(first + i) * 2] += _pcm[_sample++];
+                    block[(first + i) * 2 + 1] += _clip.Channels == 1 ? _pcm[_sample - 1] : _pcm[_sample++];
+                }
+                first += have;
+            }
+        }
+
+        public void Dispose() => _decoder.Dispose();
     }
 }

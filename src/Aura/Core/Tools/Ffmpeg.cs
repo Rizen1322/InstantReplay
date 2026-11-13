@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Aura.Core.Logging;
 using Aura.Core.Storage;
 
@@ -15,7 +15,12 @@ public static class Ffmpeg
     /// <summary>Найти ffmpeg.exe: рядом с LosslessCut, в PATH или там, где указали.</summary>
     public static string? Find(string? saved, string? losslessCutPath)
     {
-        if (!string.IsNullOrWhiteSpace(saved) && File.Exists(saved)) return saved;
+        if (!string.IsNullOrWhiteSpace(saved) &&
+            string.Equals(Path.GetFileName(saved), "ffmpeg.exe", StringComparison.OrdinalIgnoreCase) &&
+            ExecutableTrust.IsProtected(saved)) return Path.GetFullPath(saved);
+
+        string bundled = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+        if (ExecutableTrust.IsProtected(bundled)) return bundled;
 
         // LosslessCut носит ffmpeg с собой — в своей папке или в resources\
         if (!string.IsNullOrWhiteSpace(losslessCutPath))
@@ -28,7 +33,7 @@ public static class Ffmpeg
                              Path.Combine(dir, "resources", "ffmpeg.exe"),
                              Path.Combine(dir, "resources", "app.asar.unpacked", "node_modules", "ffmpeg-static", "ffmpeg.exe"),
                          })
-                    if (File.Exists(candidate)) return candidate;
+                    if (ExecutableTrust.IsProtected(candidate)) return Path.GetFullPath(candidate);
         }
 
         foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
@@ -37,7 +42,7 @@ public static class Ffmpeg
             try
             {
                 string candidate = Path.Combine(dir.Trim(), "ffmpeg.exe");
-                if (File.Exists(candidate)) return candidate;
+                if (ExecutableTrust.IsProtected(candidate)) return Path.GetFullPath(candidate);
             }
             catch { }
         }
@@ -76,8 +81,10 @@ public static class Ffmpeg
         string output = FileNaming.NextAvailablePath(desiredOutput, File.Exists);
         string partPath = output + ".part";
 
-        var psi = new ProcessStartInfo(ffmpeg)
+        var psi = new ProcessStartInfo(ExecutableTrust.RequireProtected(ffmpeg))
         {
+            WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)),
+            Environment = { ["PATH"] = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)) + Path.PathSeparator + System.Environment.SystemDirectory },
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardError = true
@@ -158,8 +165,9 @@ public static class Ffmpeg
             Path.GetDirectoryName(output)!,
             ".aura-edit-" + Guid.NewGuid().ToString("N") + ".part.mp4");
 
-        var psi = new ProcessStartInfo(ffmpeg)
+        var psi = new ProcessStartInfo(ExecutableTrust.RequireProtected(ffmpeg))
         {
+            WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)),
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardError = true
@@ -244,82 +252,6 @@ public static class Ffmpeg
         catch
         {
             try { File.Delete(partPath); } catch { }
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Создать лёгкую аудиокопию для предпросмотра режима «все дорожки».
-    /// Основной HEVC-файл при этом продолжает декодировать только видеоплеер:
-    /// повторное открытие того же видео двумя экземплярами LibVLC нестабильно на
-    /// некоторых драйверах и может уронить весь процесс нативным исключением.
-    /// </summary>
-    public static async Task CreateMixedAudioPreviewAsync(
-        string ffmpeg, string input, int audioTrackCount, string output, CancellationToken ct = default)
-    {
-        if (audioTrackCount < 2) throw new ArgumentOutOfRangeException(nameof(audioTrackCount));
-
-        var psi = new ProcessStartInfo(ffmpeg)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true
-        };
-        string inputs = string.Concat(Enumerable.Range(0, audioTrackCount).Select(i => $"[0:a:{i}]"));
-        psi.ArgumentList.Add("-y");
-        psi.ArgumentList.Add("-hide_banner");
-        // ffmpeg по умолчанию слушает stdin (клавиша «q» и прочее). У процесса без
-        // консоли stdin — унаследованный дескриптор приложения, и чтение из него
-        // может встать намертво: ffmpeg ждёт ввода, мы ждём ffmpeg.
-        psi.ArgumentList.Add("-nostdin");
-        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
-        psi.ArgumentList.Add("-filter_complex");
-        psi.ArgumentList.Add(MixFilter(inputs, audioTrackCount));
-        psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("[aout]");
-        psi.ArgumentList.Add("-vn");
-        psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
-        psi.ArgumentList.Add("-b:a"); psi.ArgumentList.Add("192k");
-        psi.ArgumentList.Add("-movflags"); psi.ArgumentList.Add("+faststart");
-        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("ipod");
-        psi.ArgumentList.Add(output);
-
-        Log.Info("Editor", $"Готовлю общий звук для {Path.GetFileName(input)}");
-        // Предел по времени: сведение звука трёхминутного клипа занимает секунды, и
-        // если ffmpeg за минуту не справился, он уже не справится — а редактор не
-        // должен ждать его вечно с надписью «свожу звук».
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(60));
-        try
-        {
-            using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
-            string errors;
-            try
-            {
-                errors = await process.StandardError.ReadToEndAsync(timeout.Token);
-                await process.WaitForExitAsync(timeout.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-                try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
-                // Отмена снаружи (редактор закрыли) — это отмена. Сработал наш предел —
-                // это ошибка, и о ней надо сказать, а не молча оставить «свожу звук».
-                if (!ct.IsCancellationRequested)
-                    throw new TimeoutException("ffmpeg не успел свести звук за минуту");
-                throw;
-            }
-
-            if (process.ExitCode != 0)
-            {
-                string tail = string.Join(" ", errors.Split('\n').TakeLast(4)).Trim();
-                throw new InvalidOperationException($"не удалось свести звук: {tail}");
-            }
-            if (!File.Exists(output) || new FileInfo(output).Length == 0)
-                throw new InvalidOperationException("не удалось создать общий звук");
-        }
-        catch
-        {
-            try { File.Delete(output); } catch { }
             throw;
         }
     }

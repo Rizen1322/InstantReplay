@@ -79,7 +79,9 @@ public partial class App : Application
         // --quit: попросить работающую копию выйти штатно (закрыть NVENC и запись).
         // Убийство процесса с живой сессией NVENC роняло видеокарту вместе с игрой.
         bool quit = e.Args.Contains("--quit");
-        _singleInstance = new Mutex(true, dev ? InstanceMutexName + ".dev" : InstanceMutexName, out bool isNew);
+        bool isNew;
+        _singleInstance = dev ? new Mutex(true, InstanceMutexName + ".dev", out isNew) :
+            AppSignals.CreateMutex(InstanceMutexName, out isNew);
         if (!isNew || quit)
         {
             try
@@ -498,7 +500,7 @@ public partial class App : Application
             var s = Services.Settings.Current;
             Core.Library.ClipThumbnails.PruneOrphans(
                 Core.Library.ClipLibrary.ScanAll(s.SaveRootPath, s.ScreenshotFolder));
-            PruneUnfinishedFiles(s.SaveRootPath);
+            Core.Storage.UserFileAccess.Run(() => PruneUnfinishedFiles(s.SaveRootPath));
         }
         catch (Exception ex) { Log.Warn("App", $"Уборка кэша: {ex.Message}"); }
     });
@@ -833,10 +835,16 @@ public partial class App : Application
         Views.RegionCaptureWindow.Failed += ex =>
             n.Show(NotificationKind.Warning, "Не удалось сделать скриншот", ex.Message);
 
+        bool autostart = Services.Settings.Current.AutoStartWithWindows;
         Services.Settings.Changed += group =>
         {
-            if (group is "" or "system")
-                StartupManager.SetEnabled(Services.Settings.Current.AutoStartWithWindows);
+            bool wanted = Services.Settings.Current.AutoStartWithWindows;
+            if ((group is "" or "system") && wanted != autostart)
+            {
+                autostart = wanted;
+                if (!Environment.GetCommandLineArgs().Contains("--dev"))
+                    StartupManager.SetEnabled(wanted);
+            }
             if (group is "" or "ui")
             {
                 Loc.Lang = Services.Settings.Current.Language;
@@ -900,7 +908,7 @@ public partial class App : Application
     /// </summary>
     private static bool _changelogVisible;
 
-    private static void PresentChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries, Version current)
+    private static async void PresentChangelog(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries, Version current)
     {
         if (_changelogVisible) return;
         _changelogVisible = true;
@@ -909,7 +917,7 @@ public partial class App : Application
         var lastSeen = Core.SystemIntegration.Changelog.Parse(Services.Settings.Current.LastSeenVersion) ?? new Version(0, 0);
         if (Views.WhatsNewVideo.FileBetween(lastSeen, current) is { } video)
         {
-            try { Views.WhatsNewVideo.Show(video); }
+            try { await Views.WhatsNewVideo.ShowAsync(video); }
             catch (Exception ex) { Log.Warn("App", $"Ролик «что нового»: {ex.Message}"); }
         }
         Views.WhatsNewVideo.DeleteAll();
@@ -973,9 +981,9 @@ public partial class App : Application
         {
             try
             {
-                SafeStartEngine(ex => retrying.Elapsed < TimeSpan.FromMinutes(2) &&
-                                      Core.Capture.DesktopDuplicationSource.IsTemporaryDuplicationFailure(ex));
-                if (attempt > 1)
+                await Task.Run(() => SafeStartEngine(ex => retrying.Elapsed < TimeSpan.FromMinutes(2) &&
+                                      Core.Capture.DesktopDuplicationSource.IsTemporaryDuplicationFailure(ex), allowPermissionPrompt: false));
+                if (attempt > 1 && Services.Engine.ReplayActive)
                     Log.Info("App", $"Захват экрана стал доступен через {retrying.Elapsed.TotalSeconds:F0} с, попытка {attempt}");
                 return;
             }
@@ -1013,12 +1021,16 @@ public partial class App : Application
     public static void SafeStartEngine() => SafeStartEngine(null);
 
     /// <param name="rethrowIf">Ошибки, которые вызывающий повторит сам: их не показываем.</param>
-    public static void SafeStartEngine(Func<Exception, bool>? rethrowIf)
+    public static void SafeStartEngine(Func<Exception, bool>? rethrowIf, bool allowPermissionPrompt = true)
     {
         try
         {
             Services.Engine.Start();
-            AskBorderlessPermission();
+            Services.Ui.Enqueue(() =>
+            {
+                try { AskBorderlessPermission(allowPermissionPrompt); }
+                catch (Exception ex) { Log.Warn("App", $"Разрешение захвата без рамки: {ex.Message}"); }
+            });
         }
         catch (Core.Storage.InsufficientDiskSpaceException ex)
         {
@@ -1038,7 +1050,7 @@ public partial class App : Application
     /// открываем её сами — но ровно один раз за всё время: отказ тоже ответ, и
     /// открывать «Параметры» при каждом включении повтора было бы навязчиво.
     /// </summary>
-    private static void AskBorderlessPermission()
+    private static void AskBorderlessPermission(bool allowPrompt)
     {
         if (Services.Engine.ActiveCaptureBackend != Core.Capture.CaptureBackend.Wgc) return;
         if (Core.Capture.CaptureAccess.BorderlessGranted) return;
@@ -1046,7 +1058,7 @@ public partial class App : Application
         Services.Notifications.Show(NotificationKind.Warning, "Windows рисует рамку записи",
             "Разрешите захват без рамки в параметрах конфиденциальности");
 
-        if (Services.Settings.Current.BorderlessPermissionAsked) return;
+        if (!allowPrompt || Services.Settings.Current.BorderlessPermissionAsked) return;
         Services.Settings.Update(s => s.BorderlessPermissionAsked = true, "system");
         Core.Capture.CaptureAccess.OpenPermissionSettings();
     }
@@ -1151,10 +1163,14 @@ public partial class App : Application
 
     private static async Task CheckUpdatesAsync()
     {
-        var info = await Services.Updates.CheckAsync();
-        if (info is null) return;
-        Services.Notifications.Show(NotificationKind.Warning, $"Есть версия {info.Version}",
-                                    "Обновить можно в разделе «Приложение»");
+        try
+        {
+            var info = await Services.Updates.CheckAsync();
+            if (info is null) return;
+            Services.Notifications.Show(NotificationKind.Warning, $"Есть версия {info.Version}",
+                                        "Обновить можно в разделе «Приложение»");
+        }
+        catch (Exception ex) { Log.Warn("Update", ex.Message); }
     }
 
     // ---------------- Трей ----------------
@@ -1344,7 +1360,8 @@ public partial class App : Application
     /// </summary>
     private void StartShowWindowListener()
     {
-        try { _showWindowSignal = new EventWaitHandle(false, EventResetMode.AutoReset, ShowWindowEventName); }
+        if (_devInstance) return;
+        try { _showWindowSignal = AppSignals.CreateEvent(ShowWindowEventName); }
         catch (Exception ex) { Log.Warn("App", $"Сигнал показа окна недоступен: {ex.Message}"); return; }
 
         new Thread(() =>
@@ -1359,7 +1376,7 @@ public partial class App : Application
 
         // Штатный выход по просьбе снаружи (Aura.exe --quit): установщик и проверки
         EventWaitHandle quit;
-        try { quit = new EventWaitHandle(false, EventResetMode.AutoReset, _devInstance ? QuitEventName + ".dev" : QuitEventName); }
+        try { quit = _devInstance ? new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName + ".dev") : AppSignals.CreateEvent(QuitEventName); }
         catch (Exception ex) { Log.Warn("App", $"Сигнал выхода недоступен: {ex.Message}"); return; }
         new Thread(() =>
         {
@@ -1451,11 +1468,10 @@ public partial class App : Application
         Step("настройки", () => Services.Settings.FlushDeferred());
         Step("события системы", () => Services.Activity.Dispose());
         Step("слежение за папкой", () => Services.Storage.Dispose());
-        Step("движок", () => Services.Engine.Dispose());
         Step("хоткеи", () => Services.Hotkeys.Dispose());
+        Step("движок", () => Services.Engine.Dispose());
         Step("значок в трее", () => _tray?.Dispose());
         Step("Media Foundation", () => MediaFactory.MFShutdown());
-        Step("таймер", () => Core.Interop.NativeMethods.timeEndPeriod(1));
 
         // Environment.Exit убивает фоновый поток лога на месте — сначала даём ему
         // дописать хвост, иначе итоги остановки конвейера до диска не доезжают.

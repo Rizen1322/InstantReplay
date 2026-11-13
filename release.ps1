@@ -1,4 +1,4 @@
-﻿# Выпуск новой версии Aura одной командой:
+# Выпуск новой версии Aura одной командой:
 #   .\release.ps1                  — патч (1.1.0 → 1.1.1)
 #   .\release.ps1 -Bump minor      — 1.1.0 → 1.2.0
 #   .\release.ps1 -Bump major      — 1.1.0 → 2.0.0
@@ -98,6 +98,7 @@ try {
     git rev-parse --git-dir 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "Это не git-репозиторий" }
 
+    if (git status --porcelain) { Fail "Перед релизом закоммитьте изменения: скрипт публикует только подготовленное дерево." }
     $existing = git tag --list $tag
     if ($existing) { Fail "Тег $tag уже существует. Укажи другой -Bump или удали тег." }
 
@@ -185,9 +186,9 @@ Push-Location $root
 # Успех git здесь проверяется по $LASTEXITCODE.
 $ErrorActionPreference = 'Continue'
 try {
-    git add -A
+    git add -- src/Aura/Aura.csproj
     git commit -q -m "Release $tag"
-    if ($LASTEXITCODE -ne 0) { Write-Host "   Нечего коммитить (версия уже была поднята)" }
+    if ($LASTEXITCODE -ne 0) { Fail "Не удалось закоммитить версию; тег и релиз не созданы" }
     git tag $tag
     if ($LASTEXITCODE -ne 0) { Fail "Не удалось создать тег $tag" }
     Write-Host "   Коммит и тег $tag созданы"
@@ -224,7 +225,7 @@ $assets = @($setupExe, $shaFile)
 # GitHub. Слепок, выложенный злоумышленником, он же и подпишет — а вот подписать
 # НАШИМ ключом не сможет: ключ на GitHub никогда не попадает.
 if ($signRelease) {
-    $sigDer = Join-Path $env:TEMP 'aura-release-signature.der'
+    $sigDer = "$setupExe.signature.der"
     & $openssl dgst -sha256 -sign $signKey -out $sigDer $setupExe
     if ($LASTEXITCODE -ne 0) { Fail "openssl не смог подписать установщик" }
 
@@ -240,9 +241,9 @@ if ($signRelease) {
     # Без неё старый честно подписанный установщик можно выложить под новым
     # номером и откатить всех на версию с уже исправленной дырой. Текст обязан
     # совпадать с приложением байт в байт: UTF-8 без BOM, один перевод строки.
-    $versionMessage = Join-Path $env:TEMP 'aura-release-version.txt'
+    $versionMessage = "$setupExe.version.txt"
     [IO.File]::WriteAllText($versionMessage, "Aura release $new`n$sha", $utf8)
-    $sig2Der = Join-Path $env:TEMP 'aura-release-signature2.der'
+    $sig2Der = "$setupExe.signature2.der"
     & $openssl dgst -sha256 -sign $signKey -out $sig2Der $versionMessage
     if ($LASTEXITCODE -ne 0) { Fail "openssl не смог подписать версию" }
     $sig2File = "$setupExe.sig2"
@@ -252,8 +253,10 @@ if ($signRelease) {
     Write-Host "   Подпись версии: $([IO.Path]::GetFileName($sig2File))"
 }
 
-& $gh release create $tag @assets --title $tag --notes $Notes
-if ($LASTEXITCODE -ne 0) { Fail "Не удалось создать релиз (тег уже отправлен — можно повторить вручную)" }
+& $gh release create $tag @assets --title $tag --notes $Notes --draft
+if ($LASTEXITCODE -ne 0) { Fail "Не удалось создать черновик релиза (тег уже отправлен — можно повторить вручную)" }
+& $gh release edit $tag --draft=false
+if ($LASTEXITCODE -ne 0) { Fail "Не удалось опубликовать подготовленный релиз" }
 
 $size = (Get-Item $setupExe).Length / 1MB
 Write-Host "`nГотово: релиз $tag опубликован ($('{0:0}' -f $size) МБ)" -ForegroundColor Green
