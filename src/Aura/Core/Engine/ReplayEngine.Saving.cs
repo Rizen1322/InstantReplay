@@ -53,6 +53,7 @@ public sealed partial class ReplayEngine
 
     private void SaveReplayLocked(int? secondsOverride)
     {
+        var saveClock = System.Diagnostics.Stopwatch.StartNew();
         if (_state == EngineState.Stopped)
         {
             SaveFailed?.Invoke("Повтор выключен — сохранять нечего");
@@ -124,7 +125,9 @@ public sealed partial class ReplayEngine
         }
 
         long wanted = TimeSpan.FromSeconds(secondsOverride ?? s.ReplayLengthSeconds).Ticks;
+        long snapshotStart = saveClock.ElapsedMilliseconds;
         VideoSnapshot video = _videoBuffer.TakeSnapshot(wanted, out long snapshotToken);
+        long snapshotMs = saveClock.ElapsedMilliseconds - snapshotStart;
         var lease = new SnapshotLease(_videoBuffer, snapshotToken, video);
         if (video.Count == 0)
         {
@@ -187,14 +190,19 @@ public sealed partial class ReplayEngine
             string? file = null;
             try
             {
+                long audioStart = saveClock.ElapsedMilliseconds;
                 var audio = WaitAndSnapshotAudio(clipStart, clipEnd);
+                long audioMs = saveClock.ElapsedMilliseconds - audioStart;
                 file = ReserveFilePath(game, "replay", capturedAt);
+                Log.Info("Saver", $"До записи: {saveClock.ElapsedMilliseconds} мс с начала обработки сохранения, " +
+                                  $"снимок видео {snapshotMs} мс, ожидание/снимок AAC {audioMs} мс; файл {file}");
                 string published = SaveWithRescue(file, video, videoFormat, audio, audioTracks, inGame);
                 _storage.RegisterSaved(published);
                 // ГРУППА ОБЯЗАНА ОСТАВАТЬСЯ "stats": обработчик групп video/audio/replay
                 // берёт _lifecycle, а Stop() в это время ждёт ЭТУ задачу под тем же замком.
                 _settings.Update(x => x.TotalReplaysSaved++, "stats");
                 ReplaySaved?.Invoke(published, Math.Max(seconds, 1));
+                Log.Info("Saver", $"До уведомления включительно: {saveClock.ElapsedMilliseconds} мс с начала обработки сохранения; файл {published}");
                 // Часть повтора до смены энкодера, если она ещё в окне: отдельным клипом
                 if (PublishRescued(wanted) is { } rescued) RecordingPartSaved?.Invoke(rescued.Path);
             }

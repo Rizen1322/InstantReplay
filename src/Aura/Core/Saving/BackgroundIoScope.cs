@@ -101,13 +101,22 @@ internal static class BackgroundIoScope
     public static bool ReleaseForCurrentThread()
     {
         if (!_active) return false;
-        _active = false;
         try
         {
-            NativeMethods.SetThreadPriority(
-                NativeMethods.GetCurrentThread(), NativeMethods.THREAD_MODE_BACKGROUND_END);
+            if (!NativeMethods.SetThreadPriority(
+                    NativeMethods.GetCurrentThread(), NativeMethods.THREAD_MODE_BACKGROUND_END))
+            {
+                int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                Log.Warn("Saver", $"Не удалось снять фоновый режим ввода-вывода: Win32 {error}");
+                return false;
+            }
+            _active = false;
+            return true;
         }
-        catch { }
-        return true;
+        catch (Exception ex)
+        {
+            Log.Warn("Saver", $"Не удалось снять фоновый режим ввода-вывода: {ex.Message}");
+            return false;
+        }
     }
 }

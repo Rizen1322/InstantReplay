@@ -65,6 +65,7 @@ public static class ReplaySaver
         string partPath = filePath + ".part";
         long fileBytes;
         long flushMs;
+        long openMs, prepareMs, writeMs, bufferedFlushMs;
         bool written = false;
         try
         {
@@ -72,9 +73,15 @@ public static class ReplaySaver
                                              1 << 20, FileOptions.SequentialScan))
             using (var stream = new GentleWriteStream(file, gentleIo))
             {
+                openMs = sw.ElapsedMilliseconds;
                 fileBytes = Mp4ProgressiveWriter.Write(stream, videoFormat, new SnapshotSource(video),
                                                        inputs, progress);
+                prepareMs = stream.FirstWriteMs;
+                writeMs = stream.WriteElapsedMs;
+                stream.FinishIo();
+                long bufferedFlushStart = sw.ElapsedMilliseconds;
                 stream.Flush();
+                bufferedFlushMs = sw.ElapsedMilliseconds - bufferedFlushStart;
                 // До переименования данные должны быть на диске, а не в кэше: иначе
                 // при выключении питания остаётся файл с именем клипа и нулями внутри
                 long flushStart = sw.ElapsedMilliseconds;
@@ -98,6 +105,7 @@ public static class ReplaySaver
             }
         }
 
+        long publishStart = sw.ElapsedMilliseconds;
         string published = Publish(partPath, filePath);
         long ms = sw.ElapsedMilliseconds;
         string fps = clipSeconds > 0.5 ? $", реально {video.Count / clipSeconds:F1} fps" : "";
@@ -106,6 +114,9 @@ public static class ReplaySaver
                           $"{fileBytes / (1024 * 1024)} МБ за {ms} мс" +
                           (ms > 0 ? $", {fileBytes / 1024.0 / 1024 / (ms / 1000.0):F0} МБ/с" : "") +
                           $" (из них сброс на диск {flushMs} мс)");
+        Log.Info("Saver", $"Этапы: открытие/подготовка входа {openMs} мс, таблицы до первой записи {prepareMs} мс, " +
+                          $"подача в FileStream {writeMs} мс, Flush {bufferedFlushMs} мс, " +
+                          $"Flush(true) {flushMs} мс, публикация {ms - publishStart} мс");
         return published;
     }
 
@@ -160,25 +171,37 @@ public static class ReplaySaver
     /// и файл дописывается в полную силу: клип важнее пары секунд чужой подгрузки.
     /// Режим снимается и в Dispose — поток вернётся в пул без него.
     /// </summary>
-    private sealed class GentleWriteStream : Stream
+    internal sealed class GentleWriteStream : Stream
     {
         private const long BudgetMs = 1500;
 
         private readonly Stream _inner;
         private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
         private bool _escalated;
+        private readonly bool _gentle;
+        private readonly ThreadPriority _previousPriority = Thread.CurrentThread.Priority;
+        public long FirstWriteMs { get; private set; } = -1;
+        public long WriteElapsedMs => _clock.ElapsedMilliseconds - FirstWriteMs;
+        private long _bytesWritten;
 
         public GentleWriteStream(Stream inner, bool gentle)
         {
             _inner = inner;
-            BackgroundIoScope.EnterIf(gentle);
+            _gentle = gentle;
         }
 
         public override void Write(byte[] buffer, int offset, int count) => Write(buffer.AsSpan(offset, count));
 
         public override void Write(ReadOnlySpan<byte> buffer)
         {
+            if (FirstWriteMs < 0)
+            {
+                FirstWriteMs = _clock.ElapsedMilliseconds;
+                // Таблицы MP4 уже построены; фоновый режим нужен только для вывода.
+                BackgroundIoScope.EnterIf(_gentle);
+            }
             _inner.Write(buffer);
+            _bytesWritten += buffer.Length;
             if (!_escalated && _clock.ElapsedMilliseconds > BudgetMs)
             {
                 _escalated = true;
@@ -188,17 +211,29 @@ public static class ReplaySaver
                 // Прежний приоритет вернёт finally в ReplayEngine.SaveReplay.
                 var self = Thread.CurrentThread;
                 if (self.Priority < ThreadPriority.Normal) self.Priority = ThreadPriority.Normal;
-                Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс) — " +
+                Log.Info("Saver", $"Запись затянулась ({_clock.ElapsedMilliseconds} мс, передано {_bytesWritten} байт) — " +
                                   (wasGentle ? "фоновый режим ввода-вывода снят, " : "") +
-                                  "приоритет поднят до обычного, дописываем в полную силу");
+                                  $"background active={BackgroundIoScope.IsActive}, приоритет {self.Priority}");
             }
+        }
+
+        public void FinishIo()
+        {
+            BackgroundIoScope.ReleaseForCurrentThread();
+            // Финальный сброс не должен ждать свободного времени между запросами игры.
+            if (Thread.CurrentThread.Priority < ThreadPriority.Normal)
+                Thread.CurrentThread.Priority = ThreadPriority.Normal;
         }
 
         public override void Flush() => _inner.Flush();
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) BackgroundIoScope.ReleaseForCurrentThread();
+            if (disposing)
+            {
+                BackgroundIoScope.ReleaseForCurrentThread();
+                Thread.CurrentThread.Priority = _previousPriority;
+            }
             base.Dispose(disposing);
         }
 

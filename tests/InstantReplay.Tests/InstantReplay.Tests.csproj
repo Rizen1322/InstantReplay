@@ -40,6 +40,8 @@
     <Compile Include="..\..\src\Aura\Core\Buffering\ReplayVideoBuffer.cs" Link="App\ReplayVideoBuffer.cs" />
     <Compile Include="..\..\src\Aura\Core\Buffering\ArenaStorage.cs" Link="App\ArenaStorage.cs" />
     <Compile Include="..\..\src\Aura\Core\Saving\Mp4\*.cs" Link="App\Mp4\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\Aura\Core\Saving\BackgroundIoScope.cs" Link="App\BackgroundIoScope.cs" />
+    <Compile Include="..\..\src\Aura\Core\Saving\ReplaySaver.cs" Link="App\ReplaySaver.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioTimeline.cs" Link="App\AudioTimeline.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioDsp.cs" Link="App\AudioDsp.cs" />
     <Compile Include="..\..\src\Aura\Core\Storage\DiskSpace.cs" Link="App\DiskSpace.cs" />
