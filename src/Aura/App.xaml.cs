@@ -462,11 +462,8 @@ public partial class App : Application
         // Самопроверки (--selftest-*) идут без окон: их запускают, пока человек
         // может быть в игре, и ни главное окно, ни список изменений не должны
         // всплывать у него на экране.
-        if (!(dev && headless))
-        {
-            if (!minimized) _main.Show();
-            ShowChangelogIfUpdated();
-        }
+        bool windows = !(dev && headless);
+        if (windows && !minimized) _main.Show();
 
         if (Services.Settings.Current.AutoStartReplayBuffer) _ = StartEngineWhenDesktopReadyAsync();
         if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
@@ -477,6 +474,11 @@ public partial class App : Application
         Services.Activity.Start();
 
         CleanLeftovers();
+
+        // Последним: список изменений модальный, и пока его не закроют, код ниже
+        // по запуску ждёт. Раньше он стоял выше, и повтор после обновления не
+        // включался, пока человек не закроет окно.
+        if (windows) ShowChangelogIfUpdated();
     }
 
     /// <summary>
