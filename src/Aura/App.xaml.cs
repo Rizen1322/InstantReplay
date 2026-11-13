@@ -960,7 +960,32 @@ public partial class App : Application
             // Человек мог включить повтор сам, пока ждали
             if (Services.Engine.State != EngineState.Stopped) return;
         }
-        SafeStartEngine();
+
+        // Даже на готовом рабочем столе DuplicateOutput какое-то время отвечает
+        // E_ACCESSDENIED: ввод ещё у secure desktop (UAC, экран входа). Microsoft
+        // советует повторять после смены рабочего стола, OBS и WebRTC просто
+        // пересоздают дупликацию по таймеру. Раньше была одна попытка, и повтор
+        // оставался выключенным до ручного включения.
+        var retrying = System.Diagnostics.Stopwatch.StartNew();
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                SafeStartEngine(ex => retrying.Elapsed < TimeSpan.FromMinutes(2) &&
+                                      Core.Capture.DesktopDuplicationSource.IsTemporaryDuplicationFailure(ex));
+                if (attempt > 1)
+                    Log.Info("App", $"Захват экрана стал доступен через {retrying.Elapsed.TotalSeconds:F0} с, попытка {attempt}");
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (attempt == 1)
+                    Log.Warn("App", $"Захват экрана пока недоступен ({ex.Message.Trim()}) — повторяю каждые 2 с до 2 минут");
+            }
+            await Task.Delay(2000);
+            // Человек мог включить повтор сам, пока ждали
+            if (Services.Engine.State != EngineState.Stopped) return;
+        }
     }
 
     /// <summary>
@@ -981,7 +1006,12 @@ public partial class App : Application
         finally { NativeMethods.CloseDesktop(desktop); }
     }
 
-    public static void SafeStartEngine()
+    // Отдельная перегрузка, а не необязательный параметр: Dispatcher.Invoke(SafeStartEngine)
+    // иначе связался бы с Invoke(Delegate) и падал при вызове без аргумента.
+    public static void SafeStartEngine() => SafeStartEngine(null);
+
+    /// <param name="rethrowIf">Ошибки, которые вызывающий повторит сам: их не показываем.</param>
+    public static void SafeStartEngine(Func<Exception, bool>? rethrowIf)
     {
         try
         {
@@ -992,7 +1022,10 @@ public partial class App : Application
         {
             Services.Notifications.Show(NotificationKind.Warning, "Повтор не включён: нет места на диске", ex.Message);
         }
-        catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось включить повтор", ex.Message); }
+        catch (Exception ex) when (rethrowIf?.Invoke(ex) != true)
+        {
+            Services.Notifications.Show(NotificationKind.Warning, "Не удалось включить повтор", ex.Message);
+        }
     }
 
     /// <summary>

@@ -693,7 +693,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         }
     }
 
-    private static bool IsTemporaryDuplicationFailure(Exception ex)
+    internal static bool IsTemporaryDuplicationFailure(Exception ex)
     {
         for (Exception? current = ex; current is not null; current = current.InnerException)
         {

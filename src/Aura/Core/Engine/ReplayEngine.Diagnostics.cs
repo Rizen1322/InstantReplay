@@ -66,7 +66,7 @@ public sealed partial class ReplayEngine
     /// <summary>
     /// Запись проседает, потому что игра забрала видеокарту, а поднять Aura выше
     /// игры мешает включённый HAGS (см. App.RaiseGpuPriority). Один раз за запуск
-    /// говорим, что поможет: выключить HAGS в настройках Windows.
+    /// пишем в лог, что поможет: выключить HAGS в настройках Windows.
     /// </summary>
     private void AdviseHagsIfStarved(FreezeStats freezes, (double Graphics, double Encode)? gpu)
     {
@@ -76,9 +76,7 @@ public sealed partial class ReplayEngine
         _hagsAdvised = true;
         Log.Warn("Engine", $"Игра заняла видеокарту на {load.Graphics:F0}%, стоп-кадров дольше 100 мс за минуту: " +
                            $"{freezes.Over100}. Включён HAGS, поэтому Aura не может встать в очередь впереди игры");
-        Warning?.Invoke("Игра забирает видеокарту, и запись проседает. Выключи «Планирование графического процессора " +
-                        "с аппаратным ускорением» в Параметры → Дисплей → Графика и перезагрузи ПК: тогда Aura " +
-                        "получит приоритет выше игры");
+        // Только в лог: всплывающий совет в игре мешал больше, чем помогал
     }
 
     /// <summary>
