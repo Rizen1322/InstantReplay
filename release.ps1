@@ -120,8 +120,9 @@ try {
     # как тег уже отправлен, — значит выложить релиз без подписи: установленные копии
     # такой релиз отклонят, а тег придётся удалять руками из двух мест.
     $verifier = Join-Path $root 'src\Aura\Core\System\UpdateVerification.cs'
-    $publicKey = [regex]::Match([IO.File]::ReadAllText($verifier, $utf8),
-                                'PublicKeyBase64\s*=\s*"([^"]*)"').Groups[1].Value
+    $keyAssignment = [regex]::Match([IO.File]::ReadAllText($verifier, $utf8),
+                                '(?s)PublicKeyBase64\s*=\s*(.*?);').Groups[1].Value
+    $publicKey = (@([regex]::Matches($keyAssignment, '"([A-Za-z0-9+/=]*)"') | ForEach-Object { $_.Groups[1].Value }) -join '')
     $signRelease = $publicKey.Length -gt 0
 
     if ($signRelease) {
