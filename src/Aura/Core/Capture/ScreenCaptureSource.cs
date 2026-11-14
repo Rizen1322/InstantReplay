@@ -18,8 +18,7 @@ internal sealed class ScreenCaptureSource : IScreenCapture
             CaptureSurfaceScope.Monitor,
             targetRevision: 0,
             sourceName: "WGC monitor",
-            forceCursorDisabled: false,
-            targetCanClose: false);
+            forceCursorDisabled: false);
     }
 
     public ID3D11Device D3DDevice => _inner.D3DDevice;

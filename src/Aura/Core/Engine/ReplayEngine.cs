@@ -897,7 +897,7 @@ public sealed partial class ReplayEngine : IDisposable
         // Источник, probe и watchdog могут одновременно увидеть один и тот же
         // обрыв. Забираем право на восстановление ДО изменения health-policy,
         // иначе дубль зря карантинил backend и съедал второй switch-slot.
-        if (Interlocked.CompareExchange(ref _recovering, 1, 0) != 0) return;
+        if (!TryBeginCaptureRecovery(failure)) return;
         if (failure.Kind == CaptureFailureKind.BackendTransitionStorm)
             Interlocked.Increment(ref _ddaStormCount);
 
@@ -907,7 +907,7 @@ public sealed partial class ReplayEngine : IDisposable
             // выключить replay. В таком случае ничего не перезапускаем.
             if (observedGeneration != Interlocked.Read(ref _captureGeneration) || _stopRequested)
             {
-                Interlocked.Exchange(ref _recovering, 0);
+                FinishCaptureRecovery();
                 return;
             }
 
@@ -917,7 +917,7 @@ public sealed partial class ReplayEngine : IDisposable
                     failure.Kind,
                     out CaptureRecoveryDecision decision))
             {
-                Interlocked.Exchange(ref _recovering, 0);
+                FinishCaptureRecovery();
                 return;
             }
 
@@ -929,7 +929,7 @@ public sealed partial class ReplayEngine : IDisposable
         }
         catch
         {
-            Interlocked.Exchange(ref _recovering, 0);
+            FinishCaptureRecovery();
             throw;
         }
     }
@@ -970,7 +970,7 @@ public sealed partial class ReplayEngine : IDisposable
     {
         _stopRequested = true;
         Interlocked.Exchange(ref _pendingSave, 0);
-        _recoveryCancellation?.Cancel();
+        CancelCaptureRecovery();
         lock (_lifecycle)
         {
             _continuousRecordingRequested = false;
@@ -1183,7 +1183,7 @@ public sealed partial class ReplayEngine : IDisposable
         if (intent == PipelineStopIntent.UserStop)
         {
             _continuousRecordingRequested = false;
-            _recoveryCancellation?.Cancel();
+            CancelCaptureRecovery();
             _gameCaptureRecovery.Stop();
             Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
         }

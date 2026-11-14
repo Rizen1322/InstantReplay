@@ -23,7 +23,6 @@ internal sealed class WindowGraphicsCaptureSource : IScreenCapture
             target.Revision,
             sourceName: $"WGC window {target.ExecutableName} r{target.Revision}",
             forceCursorDisabled: true,
-            targetCanClose: true,
             sampleCursor: () => _cursorSampler.Sample(_captureCursor));
     }
 

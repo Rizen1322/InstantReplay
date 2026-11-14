@@ -133,3 +133,58 @@ Require(appType.GetField("_showWindowSignal", BindingFlags.Static | BindingFlags
     "Dev instance registered the production show-window signal");
 devFlag.SetValue(null, false);
 Console.WriteLine("PASS: dev instance registers its own quit signal without the production show-window listener");
+
+// Никакого захвата экрана: проверяем гонки восстановления на пустом движке.
+var recoveryEngine = (ReplayEngine)RuntimeHelpers.GetUninitializedObject(engineType);
+engineType.GetField("_recoverySync", Private)!.SetValue(recoveryEngine, new object());
+engineType.GetField("_captureGeneration", Private)!.SetValue(recoveryEngine, 7L);
+var beginRecovery = engineType.GetMethod("TryBeginCaptureRecovery", Private)!;
+var finishRecovery = engineType.GetMethod("FinishCaptureRecovery", Private)!;
+var cancelRecovery = engineType.GetMethod("CancelCaptureRecovery", Private)!;
+var failureHandler = engineType.GetMethod("OnCaptureFailed", Private)!;
+var pendingFailure = engineType.GetField("_pendingCaptureFailure", Private)!;
+Require((bool)beginRecovery.Invoke(recoveryEngine, [null])!, "Recovery did not acquire ownership");
+var failure = new Aura.Core.Capture.CaptureFailure(Aura.Core.Capture.CaptureFailureKind.CaptureTargetClosed,
+    new InvalidOperationException("test source closed"), "test", 7);
+failureHandler.Invoke(recoveryEngine, [failure, 7L]);
+Require(Equals(pendingFailure.GetValue(recoveryEngine), failure), "Failure during recovery was lost");
+failureHandler.Invoke(recoveryEngine, [failure with { Generation = 6 }, 6L]);
+Require(Equals(pendingFailure.GetValue(recoveryEngine), failure), "Stale source replaced the pending failure");
+engineType.GetField("_stopRequested", Private)!.SetValue(recoveryEngine, true);
+finishRecovery.Invoke(recoveryEngine, [null]);
+Require(pendingFailure.GetValue(recoveryEngine) is null &&
+    (int)engineType.GetField("_recovering", Private)!.GetValue(recoveryEngine)! == 0,
+    "User stop did not discard the queued recovery");
+var cancellationField = engineType.GetField("_recoveryCancellation", Private)!;
+for (int i = 0; i < 500; i++)
+{
+    var cancellation = new CancellationTokenSource();
+    cancellationField.SetValue(recoveryEngine, cancellation);
+    using var startRace = new ManualResetEventSlim(false);
+    Task cancel = Task.Run(() => { startRace.Wait(); cancelRecovery.Invoke(recoveryEngine, null); });
+    Task dispose = Task.Run(() => { startRace.Wait(); finishRecovery.Invoke(recoveryEngine, [cancellation]); });
+    startRace.Set();
+    await Task.WhenAll(cancel, dispose);
+    Require(cancellationField.GetValue(recoveryEngine) is null, "Completed recovery retained a disposed CTS");
+    try { _ = cancellation.Token; throw new Exception("Recovery CTS leaked"); }
+    catch (ObjectDisposedException) { }
+}
+Console.WriteLine("PASS: recovery retains new failures, rejects stale sources, respects user stop; 500 concurrent cancel/dispose races");
+
+var wgcType = engineType.Assembly.GetType("Aura.Core.Capture.WgcCaptureSession")!;
+object wgc = RuntimeHelpers.GetUninitializedObject(wgcType);
+wgcType.GetField("_prepared", Private)!.SetValue(wgc, true);
+wgcType.GetField("_generation", Private)!.SetValue(wgc, 9L);
+wgcType.GetField("_sourceName", Private)!.SetValue(wgc, "WGC monitor");
+int closures = 0;
+wgcType.GetField("Failed", Private)!.SetValue(wgc, (Action<Aura.Core.Capture.CaptureFailure>)(closed =>
+{
+    Require(closed.Generation == 9 && closed.Kind == Aura.Core.Capture.CaptureFailureKind.CaptureTargetClosed,
+        "Monitor close lost source identity");
+    closures++;
+}));
+var onClosed = wgcType.GetMethod("OnItemClosed", Private)!;
+onClosed.Invoke(wgc, [null, null]);
+onClosed.Invoke(wgc, [null, null]);
+Require(closures == 1, "Monitor close did not report exactly one failure");
+Console.WriteLine("PASS: closed WGC monitor reports recovery once without starting desktop capture");

@@ -24,6 +24,49 @@ public sealed partial class ReplayEngine
     // ---------------- Восстановление и автосмена backend ----------------
 
     private int _recovering;
+    private readonly object _recoverySync = new();
+    private CaptureFailure? _pendingCaptureFailure;
+
+    private bool TryBeginCaptureRecovery(CaptureFailure? failure = null)
+    {
+        lock (_recoverySync)
+        {
+            if (_recovering != 0)
+            {
+                // Новый источник может сломаться ещё до выхода из StartLocked.
+                if (failure is { } next &&
+                    (_pendingCaptureFailure is not { } pending || next.Generation >= pending.Generation))
+                    _pendingCaptureFailure = next;
+                return false;
+            }
+            _recovering = 1;
+            return true;
+        }
+    }
+
+    private void FinishCaptureRecovery(CancellationTokenSource? cancellation = null)
+    {
+        CaptureFailure? pending;
+        lock (_recoverySync)
+        {
+            if (cancellation is not null)
+            {
+                if (ReferenceEquals(_recoveryCancellation, cancellation))
+                    _recoveryCancellation = null;
+                cancellation.Dispose();
+            }
+            _recovering = 0;
+            pending = _pendingCaptureFailure;
+            _pendingCaptureFailure = null;
+        }
+        if (pending is { } failure) OnCaptureFailed(failure, failure.Generation);
+    }
+
+    private void CancelCaptureRecovery()
+    {
+        // Cancel и Dispose принадлежат разным потокам: защищаем сам CTS, не lifecycle.
+        lock (_recoverySync) _recoveryCancellation?.Cancel();
+    }
 
     private void RequestCaptureRestart(
         CaptureRecoveryDecision initialDecision,
@@ -41,9 +84,12 @@ public sealed partial class ReplayEngine
                 0);
         }
         var cancellation = new CancellationTokenSource();
-        CancellationTokenSource? replaced = Interlocked.Exchange(
-            ref _recoveryCancellation, cancellation);
-        replaced?.Cancel();
+        lock (_recoverySync)
+        {
+            _recoveryCancellation?.Cancel();
+            _recoveryCancellation = cancellation;
+            if (_stopRequested) cancellation.Cancel();
+        }
 
         Task.Run(() =>
         {
@@ -169,13 +215,7 @@ public sealed partial class ReplayEngine
             }
             finally
             {
-                if (ReferenceEquals(
-                        Interlocked.CompareExchange(ref _recoveryCancellation, null, cancellation),
-                        cancellation))
-                {
-                    cancellation.Dispose();
-                }
-                Interlocked.Exchange(ref _recovering, 0);
+                FinishCaptureRecovery(cancellation);
             }
         });
     }

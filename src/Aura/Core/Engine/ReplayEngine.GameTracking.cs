@@ -90,7 +90,7 @@ public sealed partial class ReplayEngine
                         _gameCaptureRecovery.AvoidWgc,
                         gameAlive: OpenGlProcessProbe.IsAlive(_openGlGame.Pid, _openGlGame.Start),
                         foregroundUsesOpenGl: OpenGlProcessProbe.UsesOpenGl(foregroundTarget)) &&
-                    Interlocked.CompareExchange(ref _recovering, 1, 0) == 0)
+                    TryBeginCaptureRecovery())
                 {
                     _gameCaptureRecovery.AvoidWgc = false;
                     RequestCaptureRestart(
@@ -154,7 +154,7 @@ public sealed partial class ReplayEngine
         if (selection.Target is not GameCaptureTarget target ||
             _gameCaptureRecovery.Episode.Align(target).IsQuarantined(selection.Backend) ||
             !_pipelineOpen || _stopRequested ||
-            Interlocked.CompareExchange(ref _recovering, 1, 0) != 0)
+            !TryBeginCaptureRecovery())
         {
             return;
         }

@@ -17,7 +17,6 @@ internal sealed class WgcCaptureSession : IScreenCapture
     private readonly long _targetRevision;
     private readonly string _sourceName;
     private readonly bool _forceCursorDisabled;
-    private readonly bool _targetCanClose;
     private readonly Func<CaptureCursorUpdate>? _sampleCursor;
     private readonly IDirect3DDevice _winrtDevice;
     private readonly object _sync = new();
@@ -46,7 +45,6 @@ internal sealed class WgcCaptureSession : IScreenCapture
         long targetRevision,
         string sourceName,
         bool forceCursorDisabled,
-        bool targetCanClose,
         Func<CaptureCursorUpdate>? sampleCursor = null)
     {
         _createItem = createItem ?? throw new ArgumentNullException(nameof(createItem));
@@ -54,7 +52,6 @@ internal sealed class WgcCaptureSession : IScreenCapture
         _targetRevision = targetRevision;
         _sourceName = sourceName;
         _forceCursorDisabled = forceCursorDisabled;
-        _targetCanClose = targetCanClose;
         _sampleCursor = sampleCursor;
 
         var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
@@ -109,7 +106,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
             Interlocked.Exchange(ref _closedReported, 0);
 
             _item = _createItem();
-            if (_targetCanClose) _item.Closed += OnItemClosed;
+            _item.Closed += OnItemClosed;
             Width = _item.Size.Width;
             Height = _item.Size.Height;
             if (Width <= 0 || Height <= 0)
@@ -435,7 +432,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
         Failed?.Invoke(new CaptureFailure(
             CaptureFailureKind.CaptureTargetClosed,
             error,
-            $"{_sourceName}: игровое окно закрыто",
+            $"{_sourceName}: источник захвата закрыт",
             _generation,
             _targetRevision));
     }
@@ -462,7 +459,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
         _prepared = false;
         _started = false;
         if (_framePool is not null) _framePool.FrameArrived -= OnFrameArrived;
-        if (_item is not null && _targetCanClose) _item.Closed -= OnItemClosed;
+        if (_item is not null) _item.Closed -= OnItemClosed;
         _item = null;
 
         // Сначала дожидаемся колбэка, и только потом закрываем пул кадров: закрытие
