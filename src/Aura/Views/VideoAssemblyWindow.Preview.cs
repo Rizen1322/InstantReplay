@@ -74,6 +74,7 @@ public partial class VideoAssemblyWindow
 
     private async void Segments_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        Timeline.SelectedIndex = Segments.SelectedIndex;
         if (!_changingAssembly) await SelectAssemblyClipAsync();
     }
 
@@ -86,6 +87,7 @@ public partial class VideoAssemblyWindow
             if (!_sourceInfo.TryGetValue(part.Path, out var info))
                 _sourceInfo[part.Path] = info = await VideoAssembly.ReadInfoAsync(part.Path, _lifetime.Token);
             if (revision != _selectionRevision || _lifetime.IsCancellationRequested) return;
+            ProjectItem(part.Path).Duration = info.Duration;
             _changingAssembly = true;
             SelectedClipName.Text = part.Name;
             TrimStart.Maximum = TrimEnd.Maximum = info.Duration.TotalSeconds;
@@ -190,9 +192,9 @@ public partial class VideoAssemblyWindow
                 _assemblyPlayer.SetAudioTrack(audio);
                 if (_assemblyPlayer.IsPlaying) _assemblyPlayer.Time = _assemblyPlayer.Time;
             }
-            if (!_wantAssemblyPlaying) _assemblyPlayer.SetPause(true);
+            if (!_wantAssemblyPlaying || _assemblyScrubbing) _assemblyPlayer.SetPause(true);
         }
-        if (_wantAssemblyPlaying && time >= _segments[_previewIndex].End.TotalSeconds - 0.08) { AdvanceAssembly(); return; }
+        if (!_assemblyScrubbing && _wantAssemblyPlaying && time >= _segments[_previewIndex].End.TotalSeconds - 0.08) { AdvanceAssembly(); return; }
         double global = _segments.Take(_previewIndex).Sum(s => s.Duration.TotalSeconds) +
             Math.Clamp(time - _segments[_previewIndex].Start.TotalSeconds, 0, _segments[_previewIndex].Duration.TotalSeconds);
         if (!_assemblyScrubbing)
@@ -200,6 +202,8 @@ public partial class VideoAssemblyWindow
             _changingAssembly = true;
             AssemblyPosition.Value = global;
             _changingAssembly = false;
+            Timeline.Position = global;
+            if (_wantAssemblyPlaying) FollowTimelinePosition(global);
             PreviewTime.Text = $"{TimeSpan.FromSeconds(global):hh\\:mm\\:ss} / {TimeSpan.FromSeconds(AssemblyPosition.Maximum):hh\\:mm\\:ss}";
         }
         PlayAssembly.Content = _wantAssemblyPlaying ? "Ⅱ Пауза" : "▶ Смотреть ролик";
@@ -207,7 +211,7 @@ public partial class VideoAssemblyWindow
 
     private void AdvanceAssembly()
     {
-        if (_lifetime.IsCancellationRequested || !_wantAssemblyPlaying) return;
+        if (_lifetime.IsCancellationRequested || !_wantAssemblyPlaying || _assemblyScrubbing) return;
         if (_previewIndex + 1 < _segments.Count)
             Segments.SelectedIndex = _previewIndex + 1;
         else
@@ -220,18 +224,11 @@ public partial class VideoAssemblyWindow
 
     private void SeekAssembly(double time)
     {
-        double offset = 0;
-        for (int i = 0; i < _segments.Count; i++)
-        {
-            var part = _segments[i];
-            if (time < offset + part.Duration.TotalSeconds || i == _segments.Count - 1)
-            {
-                _changingAssembly = true; Segments.SelectedIndex = i; _changingAssembly = false;
-                _ = SelectAssemblyClipAsync(part.Start.TotalSeconds + Math.Clamp(time - offset, 0, part.Duration.TotalSeconds));
-                return;
-            }
-            offset += part.Duration.TotalSeconds;
-        }
+        var (index, source) = VideoTimeline.Locate(_segments, time);
+        if (index < 0) return;
+        Timeline.Position = Math.Clamp(time, 0, AssemblyPosition.Maximum);
+        _changingAssembly = true; AssemblyPosition.Value = Timeline.Position; Segments.SelectedIndex = index; _changingAssembly = false;
+        _ = SelectAssemblyClipAsync(source);
     }
 
     private void AssemblyPosition_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -257,7 +254,10 @@ public partial class VideoAssemblyWindow
         UndoAssembly.IsEnabled = true;
     }
     private void SplitAssembly_Click(object sender, RoutedEventArgs e)
-    { if (_assemblyPlayer is not null) SplitAssemblyAt(_assemblyPlayer.Time / 1000.0); }
+    {
+        var (index, source) = VideoTimeline.Locate(_segments, Timeline.Position);
+        if (index >= 0) { Segments.SelectedIndex = index; SplitAssemblyAt(source); }
+    }
     private void SplitAssemblyAt(double seconds)
     {
         if (_export is not null || Segments.SelectedItem is not VideoSegment part) return;
@@ -276,11 +276,17 @@ public partial class VideoAssemblyWindow
     private void UndoAssembly_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || !_assemblyHistory.TryPop(out var previous)) return;
+        ++_selectionRevision;
         _changingAssembly = true;
         _segments.Clear(); foreach (var part in previous) _segments.Add(part);
         _changingAssembly = false;
         UndoAssembly.IsEnabled = _assemblyHistory.Count > 0;
         Segments.SelectedIndex = _segments.Count > 0 ? 0 : -1;
+        if (_segments.Count == 0)
+        {
+            _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
+            TrimPanel.IsEnabled = false; Timeline.Position = 0; AssemblyPosition.Value = 0;
+        }
     }
     private void Trim_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
     {

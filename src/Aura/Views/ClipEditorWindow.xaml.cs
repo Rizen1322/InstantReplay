@@ -169,17 +169,7 @@ public partial class ClipEditorWindow : Window
     private bool _snapshotOnly;
 
     public static void ShowFor(ClipItem item)
-    {
-        var window = new ClipEditorWindow(item);
-        var owner = Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible);
-        if (owner is not null) window.Owner = owner;
-        else
-        {
-            window.WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            window.ShowInTaskbar = true;
-        }
-        window.ShowDialog();
-    }
+        => VideoAssemblyWindow.ShowFiles([item.FullPath]);
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {

@@ -23,6 +23,7 @@ public partial class VideoAssemblyWindow : Window
         _ffmpeg = Ffmpeg.Find(Services.Settings.Current.FfmpegPath, Services.Settings.Current.LosslessCutPath);
         VideoFileDrop.Attach(this, paths => _ = AddFilesAsync(paths));
         InitializeAssemblyPreview();
+        InitializeTimeline();
         Closed += (_, _) => { _lifetime.Cancel(); _export?.Cancel(); CloseAssemblyPreview(); };
         UpdateSummary();
     }
@@ -59,9 +60,10 @@ public partial class VideoAssemblyWindow : Window
                 _sourceInfo[Path.GetFullPath(path)] = info;
                 added.Add(new VideoSegment(Path.GetFullPath(path), TimeSpan.Zero, info.Duration));
             }
+            if (added.Count > 0) RememberAssembly();
             foreach (var segment in added) _segments.Add(segment);
             if (Segments.SelectedIndex < 0) Segments.SelectedIndex = 0;
-            Status.Text = "Клипы идут слева направо. Нажмите «Смотреть ролик», чтобы проверить переходы.";
+            Status.Text = "Тяните клипы и их края на шкале. Space — воспроизведение.";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Status.Text = ex.Message; Log.Error("Editor", ex); }
@@ -80,6 +82,7 @@ public partial class VideoAssemblyWindow : Window
             AssemblyPosition.Maximum = Math.Max(0.05, _segments.Sum(s => s.Duration.TotalSeconds));
             _changingAssembly = changing;
         }
+        RefreshTimeline();
     }
 
     private async void Add_Click(object sender, RoutedEventArgs e)
@@ -150,7 +153,8 @@ public partial class VideoAssemblyWindow : Window
         var picker = new SaveFileDialog
         {
             Title = "Сохранить собранный ролик", Filter = "Видео MP4|*.mp4", DefaultExt = ".mp4",
-            FileName = "Сборка.mp4", InitialDirectory = Path.GetDirectoryName(_segments[0].Path), OverwritePrompt = false
+            FileName = _segments.Count == 1 ? Path.GetFileNameWithoutExtension(_segments[0].Path) + " (монтаж).mp4" : "Сборка.mp4",
+            InitialDirectory = Path.GetDirectoryName(_segments[0].Path), OverwritePrompt = false
         };
         if (picker.ShowDialog(this) != true) return;
         if (File.Exists(picker.FileName)) { Status.Text = "Выберите новое имя: существующие файлы не перезаписываются."; return; }
@@ -159,6 +163,7 @@ public partial class VideoAssemblyWindow : Window
         _assemblyPlayer?.SetPause(true);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _export = cancellation;
+        Timeline.IsEnabled = ProjectMedia.IsEnabled = false;
         AddVideos.IsEnabled = false;
         EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = TrimPanel.IsEnabled = Save.IsEnabled = false;
         CancelExport.Visibility = Progress.Visibility = Visibility.Visible;
@@ -176,6 +181,7 @@ public partial class VideoAssemblyWindow : Window
         finally
         {
             _export = null;
+            Timeline.IsEnabled = ProjectMedia.IsEnabled = true;
             EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = true;
             TrimPanel.IsEnabled = Segments.SelectedItem is VideoSegment;
             CancelExport.Visibility = Progress.Visibility = Visibility.Collapsed;

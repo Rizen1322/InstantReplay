@@ -25,7 +25,7 @@ public sealed class ClipItem : INotifyPropertyChanged
         // CreationTime становится датой копирования, LastWriteTime остаётся исходным.
         Created = info.LastWriteTime;
         Title = Path.GetFileNameWithoutExtension(path);
-        IsScreenshot = !path.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
+        IsScreenshot = Path.GetExtension(path).ToLowerInvariant() is ".png" or ".jpg" or ".jpeg";
 
         // Игра = имя папки, в которой лежит файл (раскладка Videos\Aura\<Игра>\).
         // Файл прямо в корне — значит раскладка по играм была выключена.

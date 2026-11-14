@@ -17,13 +17,7 @@ public partial class ClipEditorWindow
     private double? _cutSeekTarget;
 
     public static void ShowExternal(string path)
-    {
-        var window = new ClipEditorWindow(new ClipItem(path, Path.GetDirectoryName(path)!)) { _externalVideo = true };
-        var owner = Application.Current.Windows.OfType<Window>().LastOrDefault(w => w.IsActive);
-        if (owner is not null) window.Owner = owner;
-        else window.WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        window.ShowDialog();
-    }
+        => VideoAssemblyWindow.ShowFiles([path]);
 
     internal static IReadOnlyList<VideoSegment>? PickSegments(VideoSegment segment, Window owner)
     {

@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\src\Aura\Core\Tools\VideoSegment.cs" Link="App\VideoSegment.cs" />
+    <Compile Include="..\..\src\Aura\Core\Tools\VideoTimeline.cs" Link="App\VideoTimeline.cs" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <!-- Приведение формата звука — чистая логика над ISampleProvider, её и проверяем -->
     <PackageReference Include="NAudio.Core" Version="2.3.0" />

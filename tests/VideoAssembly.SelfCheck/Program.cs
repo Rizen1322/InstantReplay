@@ -109,6 +109,7 @@ if (args.Length > 0)
     await Run("-nostdin", "-n", "-i", red, "-f", "lavfi", "-i", "sine=frequency=880:duration=3:sample_rate=48000,volume=2", "-map", "0:v:0", "-map", "0:a:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-shortest", foreign);
     await Run("-nostdin", "-n", "-i", blue, "-an", "-c:v", "copy", silent);
     Require((await VideoAssembly.ReadInfoAsync(foreign)).AudioTracks == 2, "Foreign track probe failed");
+    Require(!new Aura.Core.Library.ClipItem(foreign, root).IsScreenshot, "Project media classified an MKV as an image");
     Require((await VideoAssembly.ReadInfoAsync(silent)).AudioTracks == 0, "Silent track probe failed");
     string twoTrackMp4 = Path.Combine(root, "две дорожки.mp4");
     mixedPreviewSource = twoTrackMp4;
@@ -351,9 +352,59 @@ var uiThread = new Thread(() =>
                     assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
                     Require(list.Items.Count == beforeSplit, "Assembly undo did not restore split");
                 }
-                Snapshot(assembly, "assembly.png", 1180, 860);
-                Require(((System.Windows.Controls.Slider)assembly.FindName("AssemblyPosition")).ActualWidth > 900,
-                    "Common timeline collapsed to the default narrow slider width");
+                var timeline = (System.Windows.FrameworkElement)assembly.FindName("Timeline");
+                var timelineType = timeline.GetType();
+                assemblyType.GetField("_fitTimeline", flags)!.SetValue(assembly, false);
+                timelineType.GetProperty("PixelsPerSecond")!.SetValue(timeline, 100.0);
+                void DragTimeline(System.Windows.Point from, System.Windows.Point to)
+                {
+                    timelineType.GetMethod("BeginGesture", flags)!.Invoke(timeline, [from]);
+                    timelineType.GetMethod("UpdateGesture", flags)!.Invoke(timeline, [to]);
+                    timelineType.GetMethod("EndGesture", flags)!.Invoke(timeline, [to]);
+                }
+                var firstBeforeTrim = (VideoSegment)list.Items[0];
+                DragTimeline(new(2, 60), new(52, 60));
+                Require(((VideoSegment)list.Items[0]).Start > firstBeforeTrim.Start + TimeSpan.FromSeconds(0.45),
+                    "Dragging the actual clip edge did not trim its source");
+                assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                Require(((VideoSegment)list.Items[0]) == firstBeforeTrim, "Undo did not restore a timeline edge drag");
+                timelineType.GetMethod("BeginGesture", flags)!.Invoke(timeline, [new System.Windows.Point(2, 60)]);
+                timelineType.GetMethod("UpdateGesture", flags)!.Invoke(timeline, [new System.Windows.Point(72, 60)]);
+                timelineType.GetMethod("CancelGesture")!.Invoke(timeline, null);
+                Require(((VideoSegment)list.Items[0]) == firstBeforeTrim &&
+                    !(bool)assemblyType.GetField("_assemblyScrubbing", flags)!.GetValue(assembly)!,
+                    "Canceling an edge drag changed export bounds or left playback stuck in scrubbing mode");
+                double firstPixels = firstBeforeTrim.Duration.TotalSeconds * 100;
+                double totalPixels = list.Items.Cast<VideoSegment>().Sum(s => s.Duration.TotalSeconds) * 100;
+                DragTimeline(new(firstPixels / 2, 60), new(totalPixels + 10, 60));
+                Require(((VideoSegment)list.Items[list.Items.Count - 1]).Path == firstBeforeTrim.Path,
+                    "Dragging the actual clip body did not reorder the montage");
+                assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                double cursorSeconds = firstBeforeTrim.Duration.TotalSeconds + 0.25;
+                DragTimeline(new(cursorSeconds * 100, 10), new(cursorSeconds * 100, 10));
+                Require(list.SelectedIndex == 1 && Math.Abs((double)timelineType.GetProperty("Position")!.GetValue(timeline)! - cursorSeconds) < 0.01,
+                    "Ruler click did not position the playhead in the second source");
+                int beforeCursorSplit = list.Items.Count;
+                assemblyType.GetMethod("SplitAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                Require(list.Items.Count == beforeCursorSplit + 1 && ((VideoSegment)list.Items[1]).End == TimeSpan.FromSeconds(0.25),
+                    "Split ignored the logical playhead while native preview was still seeking");
+                assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                assemblyType.GetMethod("InsertProjectVideo", flags)!.Invoke(assembly, [red, 0]);
+                Require(((VideoSegment)list.Items[0]).Path == red, "Dropping a project file did not insert at the requested boundary");
+                assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                double beforeZoom = (double)timelineType.GetProperty("PixelsPerSecond")!.GetValue(timeline)!;
+                assemblyType.GetMethod("ZoomTimeline", flags)!.Invoke(assembly, [1.25, 100.0]);
+                Require((double)timelineType.GetProperty("PixelsPerSecond")!.GetValue(timeline)! > beforeZoom,
+                    "Timeline zoom did not increase time resolution");
+                assemblyType.GetMethod("FitTimeline", flags)!.Invoke(assembly, null);
+                Snapshot(assembly, "assembly.png", 1280, 900);
+                Require(((System.Windows.Controls.ScrollViewer)assembly.FindName("TimelineScroll")).ViewportWidth > 1000,
+                    "Montage timeline did not span the available editor width");
+                Snapshot(assembly, "assembly-compact.png", 960, 740);
+                var saveButton = (System.Windows.FrameworkElement)assembly.FindName("Save");
+                var rootContent = (System.Windows.FrameworkElement)assembly.Content;
+                Require(saveButton.TranslatePoint(new(0, saveButton.ActualHeight), rootContent).Y <= rootContent.ActualHeight + 1,
+                    "Export button was clipped at the minimum editor size");
                 assembly.Close();
                 var dropWindow = new System.Windows.Window();
                 var dropped = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -380,6 +431,7 @@ MediaFactory.MFShutdown();
 
 void Snapshot(System.Windows.Window window, string name, int width, int height)
 {
+    window.Width = width; window.Height = height; window.UpdateLayout();
     var content = (System.Windows.FrameworkElement)window.Content;
     content.Measure(new System.Windows.Size(width, height));
     content.Arrange(new System.Windows.Rect(0, 0, width, height));
