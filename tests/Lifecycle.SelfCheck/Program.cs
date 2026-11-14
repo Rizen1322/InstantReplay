@@ -306,19 +306,97 @@ using (var releasePacer = new ManualResetEventSlim())
 }
 Console.WriteLine("PASS: hung encoder pacer prevents destruction of the rest of its pipeline");
 
+using (var releaseOldEncoder = new ManualResetEventSlim())
+{
+    var recoveringEngine = (ReplayEngine)RuntimeHelpers.GetUninitializedObject(engineType);
+    var oldPipeline = Activator.CreateInstance(pipelineType, [9877L])!;
+    var oldEncoder = new VideoEncoder();
+    var oldEventThread = new Thread(releaseOldEncoder.Wait) { IsBackground = true };
+    oldEventThread.Start();
+    encoderType.GetField("_eventThread", Private)!.SetValue(oldEncoder, oldEventThread);
+    pipelineType.GetField("Encoder")!.SetValue(oldPipeline, oldEncoder);
+    void SetRecoveryField(string name, object value) => engineType.GetField(name, Private)!.SetValue(recoveringEngine, value);
+    SetRecoveryField("_pipeline", oldPipeline);
+    SetRecoveryField("_rescueSync", new object());
+    SetRecoveryField("_writerTasksSync", new object());
+    SetRecoveryField("_writerTasks", new HashSet<Task>());
+    SetRecoveryField("_captureTargetSync", new object());
+    SetRecoveryField("_stateSync", new object());
+    using var recoveryFrameGate = new ReaderWriterLockSlim();
+    SetRecoveryField("_frameGate", recoveryFrameGate);
+    SetRecoveryField("_videoBuffer", new Aura.Core.Buffering.ReplayVideoBuffer());
+    SetRecoveryField("_audioBuffer", new Aura.Core.Buffering.ReplayAudioBuffer());
+    SetRecoveryField("_continuousRecordingRequested", true);
+    string recorderRoot = System.IO.Path.Combine("artifacts", "tests", "lifecycle-recorder-" + Guid.NewGuid().ToString("N"));
+    System.IO.Directory.CreateDirectory(recorderRoot);
+    using var recorder = new Aura.Core.Saving.ManualRecorder(System.IO.Path.Combine(recorderRoot, "late-frame.mp4"),
+        _ => throw new Exception("Late frame reached a detached recorder"), [], 10);
+    typeof(Aura.Core.Saving.ManualRecorder).GetField("_baseTicks", Private)!.SetValue(recorder, 0L);
+    SetRecoveryField("_recorder", recorder);
+    Action<Aura.Core.Buffering.EncodedFrame> recorderHandler = recorder.OnFrame;
+    SetRecoveryField("_recorderFrameHandler", recorderHandler);
+    oldEncoder.FrameEncoded += recorderHandler;
+    try
+    {
+        var restartIntent = Enum.Parse(engineType.Assembly.GetType("Aura.Core.Engine.PipelineStopIntent")!, "CaptureRestart");
+        engineType.GetMethod("StopLocked", Private)!.Invoke(recoveringEngine, [restartIntent]);
+        Require((bool)encoderType.GetProperty("ResourcesAbandoned", Private)!.GetValue(oldEncoder)!,
+            "StopLocked did not exercise the abandoned encoder path");
+        Require(ReferenceEquals(pipelineType.GetField("Encoder")!.GetValue(oldPipeline), oldEncoder),
+            "StopLocked lost its abandoned encoder before detaching the recorder");
+        var lateHandlers = (Action<Aura.Core.Buffering.EncodedFrame>?)encoderType.GetField("FrameEncoded", Private)!.GetValue(oldEncoder);
+        Require(lateHandlers?.GetInvocationList().Any(h => ReferenceEquals(h.Target, recorder)) != true,
+            "Abandoned encoder still subscribes the continuing recorder");
+        long beforeLateFrame = recorder.LastVideoEndTicks;
+        lateHandlers?.Invoke(new Aura.Core.Buffering.EncodedFrame([1], 0, 1, 100, 10, false));
+        Require(recorder.LastVideoEndTicks == beforeLateFrame, "Old encoder appended a late frame after capture recovery");
+    }
+    finally
+    {
+        recorder.Discard();
+        releaseOldEncoder.Set();
+        oldEventThread.Join();
+        oldEncoder.Dispose();
+    }
+}
+Console.WriteLine("PASS: real StopLocked detaches a continuing recorder from an abandoned encoder before recovery");
+
 var runCommand = typeof(Aura.App).GetMethod("RunEngineCommandAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
 using (var commandEntered = new ManualResetEventSlim())
 using (var releaseCommand = new ManualResetEventSlim())
 {
     int duplicateCommands = 0;
-    var pendingCommand = (Task)runCommand.Invoke(null, [(Action)(() => { commandEntered.Set(); releaseCommand.Wait(); })])!;
+    var pendingCommand = (Task)runCommand.Invoke(null, [(Action)(() => { commandEntered.Set(); releaseCommand.Wait(); }), false])!;
     Require(commandEntered.Wait(3000) && !pendingCommand.IsCompleted, "Engine command blocked its caller");
-    await (Task)runCommand.Invoke(null, [(Action)(() => duplicateCommands++)])!;
+    await (Task)runCommand.Invoke(null, [(Action)(() => duplicateCommands++), false])!;
     releaseCommand.Set();
     await pendingCommand;
     Require(duplicateCommands == 0, "Repeated clicks started overlapping lifecycle commands");
 }
 Console.WriteLine("PASS: lifecycle commands return without blocking UI and reject overlapping clicks");
+
+using (var startEntered = new ManualResetEventSlim())
+using (var releaseStart = new ManualResetEventSlim())
+{
+    bool recording = false;
+    var start = (Task)runCommand.Invoke(null, [(Action)(() =>
+    {
+        startEntered.Set();
+        releaseStart.Wait();
+        recording = true;
+    }), false])!;
+    try
+    {
+        Require(startEntered.Wait(3000), "Start command did not run");
+        var stop = (Task)runCommand.Invoke(null, [(Action)(() => recording = false), true])!;
+        Require(!stop.IsCompleted, "Stop was discarded while start was pending");
+        releaseStart.Set();
+        await Task.WhenAll(start, stop).WaitAsync(TimeSpan.FromSeconds(3));
+        Require(!recording, "Stop requested during startup was lost");
+    }
+    finally { releaseStart.Set(); await start; }
+}
+Console.WriteLine("PASS: stop requested during startup waits its turn and stops the resulting recording");
 
 Vortice.Direct3D11.D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
     Vortice.Direct3D11.DeviceCreationFlags.BgraSupport | Vortice.Direct3D11.DeviceCreationFlags.VideoSupport,

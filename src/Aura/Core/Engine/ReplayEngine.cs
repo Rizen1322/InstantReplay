@@ -1251,7 +1251,7 @@ public sealed partial class ReplayEngine : IDisposable
         {
             encoder.Dispose();
             wedged = encoder.ResourcesAbandoned;
-            _pipeline.Encoder = null;
+            if (!wedged) _pipeline.Encoder = null;
         }
 
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход

@@ -1069,21 +1069,22 @@ public partial class App : Application
     }
 
     public static void SafeStopRecording() =>
-        _ = RunEngineCommandAsync(() => Services.Engine.StopRecordingToFile());
+        _ = RunEngineCommandAsync(() => Services.Engine.StopRecordingToFile(), waitForPending: true);
 
-    private static int _engineCommandPending;
-    internal static bool EngineCommandPending => Volatile.Read(ref _engineCommandPending) != 0;
+    private static readonly SemaphoreSlim _engineCommandGate = new(1, 1);
+    internal static bool EngineCommandPending => _engineCommandGate.CurrentCount == 0;
 
-    private static async Task RunEngineCommandAsync(Action command)
+    private static async Task RunEngineCommandAsync(Action command, bool waitForPending = false)
     {
-        if (Interlocked.CompareExchange(ref _engineCommandPending, 1, 0) != 0) return;
+        if (waitForPending) await _engineCommandGate.WaitAsync();
+        else if (!await _engineCommandGate.WaitAsync(0)) return;
         try { await Task.Run(command); }
         catch (Core.Storage.InsufficientDiskSpaceException ex)
         {
             Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске", ex.Message);
         }
         catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось выполнить команду записи", ex.Message); }
-        finally { Interlocked.Exchange(ref _engineCommandPending, 0); }
+        finally { _engineCommandGate.Release(); }
     }
 
     public static void ToggleEngine()
