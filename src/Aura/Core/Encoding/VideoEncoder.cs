@@ -2324,7 +2324,7 @@ public sealed class VideoEncoder : IDisposable
             {
                 if (!_running) break; // остановка: объекты освобождаются, выходим тихо
                 Log.Error("Encoder", ex);
-                Thread.Sleep(5); // не молотим бесконечный цикл ошибок
+                AcceptMftOutputResult(new SharpGen.Runtime.Result(ex.HResult));
             }
             finally { ev?.Dispose(); }
         }
@@ -2466,6 +2466,25 @@ public sealed class VideoEncoder : IDisposable
 
     private bool _outputTypeRefreshed;
     private bool _loggedBFrames;
+    private int _mftOutputFailed;
+
+    private bool AcceptMftOutputResult(SharpGen.Runtime.Result result)
+    {
+        if (result.Success) return true;
+        if (result == Vortice.MediaFoundation.ResultCode.TransformNeedMoreInput) return false;
+        if (Interlocked.Exchange(ref _mftOutputFailed, 1) == 0)
+        {
+            // У энкодера смена типа не должна попадать в уже начатый MP4: пересоздаём сеанс.
+            string reason = result == Vortice.MediaFoundation.ResultCode.TransformStreamChange
+                ? "MFT изменил выходной формат; требуется новый сеанс кодирования"
+                : $"MFT ProcessOutput: 0x{result.Code:X8}";
+            Log.Error("Encoder", reason);
+            _running = false;
+            var handler = Failed;
+            if (handler is not null) _ = Task.Run(() => handler(reason));
+        }
+        return false;
+    }
 
     /// <summary>
     /// После первого сжатого кадра забираем у MFT ФАКТИЧЕСКИЙ выходной тип.
@@ -2554,7 +2573,7 @@ public sealed class VideoEncoder : IDisposable
         // Неудача — это чаще всего MF_E_TRANSFORM_NEED_MORE_INPUT: отдавать нечего,
         // и кадры законно остаются ВНУТРИ энкодера. Счётчик здесь трогать нельзя,
         // он опускается ровно тогда, когда кадр действительно вышел наружу.
-        if (hr.Failure) { ourSample?.Dispose(); return; }
+        if (!AcceptMftOutputResult(hr)) { ourSample?.Dispose(); return; }
         Interlocked.Decrement(ref _inFlight);
         // С отслеживанием слот вернул сам MFT, отпустив образец
         if (_mftTracked is null) ReleaseSubmitted();

@@ -178,6 +178,25 @@ $built = (Get-Item $appExe).VersionInfo.FileVersion
 if ($built -ne $assembly) { Fail "В собранном exe версия $built, ожидалась $assembly" }
 Write-Host "   Проверено: в Aura.exe версия $built"
 
+# Проверяем ресурс из ГОТОВОГО single-file установщика, не только папку publish.
+$verificationDir = Join-Path $root "artifacts\release-verification\$tag"
+New-Item -ItemType Directory -Path $verificationDir -Force | Out-Null
+$payloadReport = Join-Path $verificationDir 'payload.json'
+$check = Start-Process -FilePath $setupExe -ArgumentList @('--verify-payload', $assembly, ('"' + $payloadReport + '"')) `
+    -WindowStyle Hidden -Wait -PassThru
+if ($check.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $payloadReport)) { Fail "Проверка встроенной поставки не прошла: $payloadReport" }
+$packed = [IO.File]::ReadAllText($payloadReport, $utf8) | ConvertFrom-Json
+$publishPrefix = [IO.Path]::GetFullPath($publishDir).TrimEnd('\') + '\'
+$sourceFiles = @(Get-ChildItem -LiteralPath $publishDir -Recurse -File)
+$packedNames = @($packed.Files.PSObject.Properties | ForEach-Object { $_.Name })
+if ($sourceFiles.Count -ne $packedNames.Count) { Fail 'Состав embedded payload не совпал с publish' }
+foreach ($file in $sourceFiles) {
+    $name = $file.FullName.Substring($publishPrefix.Length).Replace('\', '/')
+    $actual = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+    if ($packed.Files.PSObject.Properties[$name].Value -ne $actual) { Fail "В установщике не тот файл: $name" }
+}
+Write-Host "   Embedded payload: версия $($packed.Version), $($sourceFiles.Count) файлов, все SHA-256 совпали"
+
 # ---------- Коммит и тег ----------
 Step "4/6 Коммит и тег"
 Push-Location $root
@@ -225,9 +244,16 @@ $assets = @($setupExe, $shaFile)
 # GitHub. Слепок, выложенный злоумышленником, он же и подпишет — а вот подписать
 # НАШИМ ключом не сможет: ключ на GitHub никогда не попадает.
 if ($signRelease) {
+    $publicDer = Join-Path $verificationDir 'public.der'
+    $publicPem = Join-Path $verificationDir 'public.pem'
+    [IO.File]::WriteAllBytes($publicDer, [Convert]::FromBase64String($publicKey))
+    & $openssl pkey -pubin -inform DER -in $publicDer -out $publicPem
+    if ($LASTEXITCODE -ne 0) { Fail 'Не разобран открытый ключ, вшитый в Aura' }
     $sigDer = "$setupExe.signature.der"
     & $openssl dgst -sha256 -sign $signKey -out $sigDer $setupExe
     if ($LASTEXITCODE -ne 0) { Fail "openssl не смог подписать установщик" }
+    & $openssl dgst -sha256 -verify $publicPem -signature $sigDer $setupExe
+    if ($LASTEXITCODE -ne 0) { Fail 'Подпись установщика не проверяется вшитым открытым ключом' }
 
     # В релиз кладём base64: файл остаётся текстовым и его видно глазами.
     # Кодировка строго без BOM — иначе приложению не разобрать base64.
@@ -246,6 +272,8 @@ if ($signRelease) {
     $sig2Der = "$setupExe.signature2.der"
     & $openssl dgst -sha256 -sign $signKey -out $sig2Der $versionMessage
     if ($LASTEXITCODE -ne 0) { Fail "openssl не смог подписать версию" }
+    & $openssl dgst -sha256 -verify $publicPem -signature $sig2Der $versionMessage
+    if ($LASTEXITCODE -ne 0) { Fail 'Подпись версии не проверяется вшитым открытым ключом' }
     $sig2File = "$setupExe.sig2"
     [IO.File]::WriteAllText($sig2File, [Convert]::ToBase64String([IO.File]::ReadAllBytes($sig2Der)), $utf8)
     Remove-Item $sig2Der, $versionMessage -Force
@@ -255,6 +283,16 @@ if ($signRelease) {
 
 & $gh release create $tag @assets --title $tag --notes $Notes --draft
 if ($LASTEXITCODE -ne 0) { Fail "Не удалось создать черновик релиза (тег уже отправлен — можно повторить вручную)" }
+$downloadDir = Join-Path $verificationDir ('download-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $downloadDir | Out-Null
+foreach ($asset in $assets) {
+    $name = [IO.Path]::GetFileName($asset)
+    & $gh release download $tag --pattern $name --dir $downloadDir
+    if ($LASTEXITCODE -ne 0) { Fail "Не удалось проверить загруженный asset: $name; релиз оставлен черновиком" }
+    $localHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash
+    $remoteHash = (Get-FileHash -LiteralPath (Join-Path $downloadDir $name) -Algorithm SHA256).Hash
+    if ($localHash -ne $remoteHash) { Fail "Загруженный asset изменился: $name; релиз оставлен черновиком" }
+}
 & $gh release edit $tag --draft=false
 if ($LASTEXITCODE -ne 0) { Fail "Не удалось опубликовать подготовленный релиз" }
 

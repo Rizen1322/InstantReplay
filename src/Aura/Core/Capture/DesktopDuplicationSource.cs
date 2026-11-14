@@ -23,6 +23,7 @@ namespace Aura.Core.Capture;
 /// </summary>
 internal sealed class DesktopDuplicationSource : IScreenCapture
 {
+    private DdaFrameRotator? _rotator;
     public ID3D11Device D3DDevice => _device ?? throw new InvalidOperationException("Захват не запущен");
     public ID3D11DeviceContext D3DContext => _context ?? throw new InvalidOperationException("Захват не запущен");
     public int Width { get; private set; }
@@ -213,15 +214,24 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // Размер кадров — у самой дупликации, а не у выхода, прочитанного до
                 // неё: посреди смены режима экрана между двумя вызовами режим успевал
                 // смениться, и конвейер собирался под кадры другого размера.
-                var mode = newDuplication.Description.ModeDescription;
+                var duplicationDescription = newDuplication.Description;
+                var mode = duplicationDescription.ModeDescription;
+                var rotation = duplicationDescription.Rotation;
+                var (frameWidth, frameHeight) = DdaFrameRotator.OutputSize((int)mode.Width, (int)mode.Height, rotation);
                 if (mode.Width > 0 && mode.Height > 0 &&
-                    (mode.Width != Width || mode.Height != Height))
+                    (frameWidth != Width || frameHeight != Height))
                 {
                     Log.Info("Capture", $"Выход сообщил {Width}x{Height}, дупликация отдаёт " +
                                         $"{mode.Width}x{mode.Height} — беру размер дупликации");
-                    Width = (int)mode.Width;
-                    Height = (int)mode.Height;
+                    Width = frameWidth;
+                    Height = frameHeight;
                 }
+
+                var rotator = rotation is ModeRotation.Rotate90 or ModeRotation.Rotate180 or ModeRotation.Rotate270
+                    ? new DdaFrameRotator(_device!, _context!, (int)mode.Width, (int)mode.Height, rotation) : null;
+                _rotator?.Dispose();
+                _rotator = rotator;
+                if (rotator is not null) Log.Info("Capture", $"DDA: поворот {rotation}, поверхность {mode.Width}x{mode.Height} → {Width}x{Height}");
 
                 _output = newOutput;
                 newOutput = null; // владение перешло в поле
@@ -432,13 +442,20 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
                 using var texture = resource.QueryInterface<ID3D11Texture2D>();
                 FrameArrived?.Invoke(new CapturedSurface(
-                    texture,
+                    _rotator?.Rotate(texture) ?? texture,
                     ticks,
                     _generation,
                     _cursorTracker.Capture,
                     CaptureSurfaceScope.Monitor,
                     TargetRevision: 0));
                 _cursorTracker.Delivered();
+            }
+            catch (CaptureFrameSizeMismatchException ex)
+            {
+                token.Running = false;
+                Failed?.Invoke(new CaptureFailure(CaptureFailureKind.CaptureFormatChanged, ex,
+                    "DDA: изменился размер поверхности поворота", _generation));
+                break;
             }
             catch (Exception ex)
             {
@@ -766,6 +783,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             return;
         }
 
+        _rotator?.Dispose(); _rotator = null;
         _context?.Dispose(); _context = null;
         _device?.Dispose(); _device = null;
     }

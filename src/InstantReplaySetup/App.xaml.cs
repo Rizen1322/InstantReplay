@@ -24,6 +24,27 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        int verify = Array.IndexOf(e.Args, "--verify-payload");
+        if (verify >= 0)
+        {
+            if (verify + 2 >= e.Args.Length) { Shutdown(2); return; }
+            try
+            {
+                var assembly = typeof(App).Assembly;
+                string name = assembly.GetManifestResourceNames().Single(n => n.EndsWith("payload.zip", StringComparison.Ordinal));
+                using var payload = assembly.GetManifestResourceStream(name)!;
+                var report = InstallerPayloadVerification.Verify(payload, e.Args[verify + 1]);
+                System.IO.File.WriteAllText(e.Args[verify + 2], System.Text.Json.JsonSerializer.Serialize(report));
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                try { System.IO.File.WriteAllText(e.Args[verify + 2], System.Text.Json.JsonSerializer.Serialize(new { Error = ex.Message })); }
+                catch (Exception writeError) when (writeError is System.IO.IOException or UnauthorizedAccessException) { }
+                Shutdown(1);
+            }
+            return;
+        }
         // Снимок вёрстки ничего не ставит, права ему не нужны
         bool snapshot = e.Args.Any(a => a.Equals("--snapshot", StringComparison.OrdinalIgnoreCase));
         if (!snapshot && !EnsureElevated(e.Args))

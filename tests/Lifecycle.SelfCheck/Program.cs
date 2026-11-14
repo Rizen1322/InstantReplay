@@ -188,3 +188,70 @@ onClosed.Invoke(wgc, [null, null]);
 onClosed.Invoke(wgc, [null, null]);
 Require(closures == 1, "Monitor close did not report exactly one failure");
 Console.WriteLine("PASS: closed WGC monitor reports recovery once without starting desktop capture");
+
+// HRESULT ошибки выходного MFT не должны выглядеть как законное ожидание входа.
+var acceptOutput = encoderType.GetMethod("AcceptMftOutputResult", Private)!;
+foreach (var error in new[] { Vortice.MediaFoundation.ResultCode.TransformStreamChange,
+    new SharpGen.Runtime.Result(unchecked((int)0x80004005)) })
+{
+    using var checkedEncoder = new VideoEncoder();
+    encoderType.GetField("_running", Private)!.SetValue(checkedEncoder, true);
+    encoderType.GetField("_inFlight", Private)!.SetValue(checkedEncoder, 7);
+    int errors = 0;
+    var reported = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+    checkedEncoder.Failed += message => { Interlocked.Increment(ref errors); reported.TrySetResult(message); };
+    Require((bool)acceptOutput.Invoke(checkedEncoder, [SharpGen.Runtime.Result.Ok])!, "Successful MFT output was rejected");
+    Require(!(bool)acceptOutput.Invoke(checkedEncoder, [Vortice.MediaFoundation.ResultCode.TransformNeedMoreInput])!,
+        "Need-more-input was treated as output");
+    Require((bool)encoderType.GetField("_running", Private)!.GetValue(checkedEncoder)! && errors == 0,
+        "Need-more-input killed a healthy encoder");
+    acceptOutput.Invoke(checkedEncoder, [error]);
+    acceptOutput.Invoke(checkedEncoder, [error]);
+    string message = await reported.Task.WaitAsync(TimeSpan.FromSeconds(3));
+    Require(errors == 1 && !(bool)encoderType.GetField("_running", Private)!.GetValue(checkedEncoder)!,
+        "MFT failure was silent or restarted recovery twice");
+    Require((int)encoderType.GetField("_inFlight", Private)!.GetValue(checkedEncoder)! == 7,
+        "MFT failure released an input frame that has not been output");
+    Require(!string.IsNullOrWhiteSpace(message), "MFT failure omitted its reason");
+}
+Console.WriteLine("PASS: MFT need-more-input preserves the session; stream-change and real errors request recovery exactly once");
+
+Vortice.Direct3D11.D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
+    Vortice.Direct3D11.DeviceCreationFlags.BgraSupport,
+    [Vortice.Direct3D.FeatureLevel.Level_11_0],
+    out Vortice.Direct3D11.ID3D11Device rotationDevice, out _, out Vortice.Direct3D11.ID3D11DeviceContext rotationContext).CheckError();
+using (rotationDevice)
+using (rotationContext)
+{
+    using var inputTexture = rotationDevice.CreateTexture2D(new Vortice.Direct3D11.Texture2DDescription
+    {
+        Width = 4, Height = 2, MipLevels = 1, ArraySize = 1,
+        Format = Vortice.DXGI.Format.B8G8R8A8_UNorm, SampleDescription = new(1, 0),
+        Usage = Vortice.Direct3D11.ResourceUsage.Default
+    });
+    byte[] inputPixels = Enumerable.Range(1, 8).SelectMany(i => new byte[] { (byte)i, 0, 0, 255 }).ToArray();
+    IntPtr upload = System.Runtime.InteropServices.Marshal.AllocHGlobal(inputPixels.Length);
+    try
+    {
+        System.Runtime.InteropServices.Marshal.Copy(inputPixels, 0, upload, inputPixels.Length);
+        rotationContext.UpdateSubresource(inputTexture, 0, null, upload, 16, 0);
+    }
+    finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(upload); }
+    var rotatorType = engineType.Assembly.GetType("Aura.Core.Capture.DdaFrameRotator")!;
+    foreach (var (rotation, widthOut, expected) in new[]
+    {
+        (Vortice.DXGI.ModeRotation.Identity, 4, new byte[] {1,2,3,4,5,6,7,8}),
+        (Vortice.DXGI.ModeRotation.Rotate90, 2, new byte[] {5,1,6,2,7,3,8,4}),
+        (Vortice.DXGI.ModeRotation.Rotate180, 4, new byte[] {8,7,6,5,4,3,2,1}),
+        (Vortice.DXGI.ModeRotation.Rotate270, 2, new byte[] {4,8,3,7,2,6,1,5})
+    })
+    {
+        using var rotator = (IDisposable)Activator.CreateInstance(rotatorType, [rotationDevice, rotationContext, 4, 2, rotation])!;
+        var outputTexture = (Vortice.Direct3D11.ID3D11Texture2D)rotatorType.GetMethod("Rotate")!.Invoke(rotator, [inputTexture])!;
+        var (pixels, pixelWidth, pixelHeight) = Aura.Core.Capture.ScreenshotService.ReadPixels(rotationDevice, rotationContext, outputTexture);
+        Require(pixelWidth == widthOut && pixelWidth * pixelHeight == 8, "DDA rotation produced the wrong desktop dimensions");
+        Require(expected.SequenceEqual(Enumerable.Range(0, 8).Select(i => pixels[i * 4])),
+            "DDA GPU rotation mirrored or misplaced pixels: " + rotation);
+    }
+}
+Console.WriteLine("PASS: actual GPU pixels at identity,90,180,270 degrees; desktop capture never started");
