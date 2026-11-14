@@ -22,7 +22,8 @@ public partial class VideoAssemblyWindow : Window
         SizeLimit.Text = Services.Settings.Current.AttachmentSizeMb.ToString();
         _ffmpeg = Ffmpeg.Find(Services.Settings.Current.FfmpegPath, Services.Settings.Current.LosslessCutPath);
         VideoFileDrop.Attach(this, paths => _ = AddFilesAsync(paths));
-        Closed += (_, _) => { _lifetime.Cancel(); _export?.Cancel(); };
+        InitializeAssemblyPreview();
+        Closed += (_, _) => { _lifetime.Cancel(); _export?.Cancel(); CloseAssemblyPreview(); };
         UpdateSummary();
     }
 
@@ -32,6 +33,7 @@ public partial class VideoAssemblyWindow : Window
     {
         var window = new VideoAssemblyWindow();
         foreach (var segment in segments) window._segments.Add(segment);
+        if (window._segments.Count > 0) window.Segments.SelectedIndex = 0;
         var owner = Application.Current.Windows.OfType<Window>().LastOrDefault(w => w.IsActive);
         if (owner is not null) window.Owner = owner;
         else window.WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -54,10 +56,12 @@ public partial class VideoAssemblyWindow : Window
             {
                 Status.Text = "Открываю " + Path.GetFileName(path) + "…";
                 var info = await VideoAssembly.ReadInfoAsync(path, _lifetime.Token);
+                _sourceInfo[Path.GetFullPath(path)] = info;
                 added.Add(new VideoSegment(Path.GetFullPath(path), TimeSpan.Zero, info.Duration));
             }
             foreach (var segment in added) _segments.Add(segment);
-            Status.Text = "Видео добавлены. Порядок сверху вниз совпадает с порядком в готовом ролике.";
+            if (Segments.SelectedIndex < 0) Segments.SelectedIndex = 0;
+            Status.Text = "Клипы идут слева направо. Нажмите «Смотреть ролик», чтобы проверить переходы.";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Status.Text = ex.Message; Log.Error("Editor", ex); }
@@ -68,6 +72,14 @@ public partial class VideoAssemblyWindow : Window
     {
         Summary.Text = $"Фрагментов: {_segments.Count} · Длительность: {TimeSpan.FromTicks(_segments.Sum(s => s.Duration.Ticks)):hh\\:mm\\:ss\\.fff}";
         Save.IsEnabled = _segments.Count > 0 && !_adding && _export is null;
+        AddVideos.IsEnabled = !_adding && _export is null;
+        if (AssemblyPosition is not null)
+        {
+            bool changing = _changingAssembly;
+            _changingAssembly = true;
+            AssemblyPosition.Maximum = Math.Max(0.05, _segments.Sum(s => s.Duration.TotalSeconds));
+            _changingAssembly = changing;
+        }
     }
 
     private async void Add_Click(object sender, RoutedEventArgs e)
@@ -91,12 +103,19 @@ public partial class VideoAssemblyWindow : Window
     {
         int index = Segments.SelectedIndex, target = index + direction;
         if (_export is null && index >= 0 && target >= 0 && target < _segments.Count)
-        { _segments.Move(index, target); Segments.SelectedIndex = target; }
+        { RememberAssembly(); _segments.Move(index, target); Segments.SelectedIndex = target; }
     }
     private void Up_Click(object sender, RoutedEventArgs e) => Move(-1);
     private void Down_Click(object sender, RoutedEventArgs e) => Move(1);
     private void Remove_Click(object sender, RoutedEventArgs e)
-    { if (_export is null && Segments.SelectedIndex >= 0) _segments.RemoveAt(Segments.SelectedIndex); }
+    {
+        if (_export is not null || Segments.SelectedIndex < 0) return;
+        RememberAssembly();
+        int index = Segments.SelectedIndex;
+        _segments.RemoveAt(index);
+        Segments.SelectedIndex = Math.Min(index, _segments.Count - 1);
+        if (_segments.Count == 0) { _assemblyPlayer?.SetPause(true); TrimPanel.IsEnabled = false; }
+    }
 
     private void ChooseFfmpeg_Click(object sender, RoutedEventArgs e)
     {
@@ -136,16 +155,19 @@ public partial class VideoAssemblyWindow : Window
         if (picker.ShowDialog(this) != true) return;
         if (File.Exists(picker.FileName)) { Status.Text = "Выберите новое имя: существующие файлы не перезаписываются."; return; }
         var parts = _segments.ToArray();
+        _wantAssemblyPlaying = false;
+        _assemblyPlayer?.SetPause(true);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _export = cancellation;
-        EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = Save.IsEnabled = false;
+        AddVideos.IsEnabled = false;
+        EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = TrimPanel.IsEnabled = Save.IsEnabled = false;
         CancelExport.Visibility = Progress.Visibility = Visibility.Visible;
         Progress.Value = 0;
         Status.Text = "Собираю ролик…";
         try
         {
             string output = await VideoAssembly.RenderAsync(parts, picker.FileName, _ffmpeg, limit,
-                new Progress<double>(p => Progress.Value = p), cancellation.Token);
+                new Progress<double>(p => { Progress.Value = p; Status.Text = $"Сохраняю ролик… {p:P0}"; }), cancellation.Token);
             ClipCommands.RegisterSavedVideo(output);
             Status.Text = "Сохранено: " + output;
         }
@@ -155,6 +177,7 @@ public partial class VideoAssemblyWindow : Window
         {
             _export = null;
             EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = true;
+            TrimPanel.IsEnabled = Segments.SelectedItem is VideoSegment;
             CancelExport.Visibility = Progress.Visibility = Visibility.Collapsed;
             UpdateSummary();
         }

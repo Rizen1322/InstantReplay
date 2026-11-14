@@ -14,6 +14,7 @@ static void Require(bool ok, string message) { if (!ok) throw new Exception(mess
 string root = Path.GetFullPath(Path.Combine("artifacts", "tests", "assembly-" + Guid.NewGuid().ToString("N")));
 Directory.CreateDirectory(root);
 MediaFactory.MFStartup();
+string? mixedPreviewSource = null;
 async Task<string> Fixture(string name, Color color, int width, int height, double seconds, int frequency)
 {
     var composition = new MediaComposition();
@@ -32,6 +33,7 @@ async Task<string> Fixture(string name, Color color, int width, int height, doub
     var output = await folder.CreateFileAsync(name, CreationCollisionOption.FailIfExists);
     var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Vga);
     profile.Video.Width = (uint)width; profile.Video.Height = (uint)height;
+    profile.Audio.SampleRate = 48000;
     profile.Video.FrameRate.Numerator = 30; profile.Video.FrameRate.Denominator = 1;
     Require(await composition.RenderToFileAsync(output, MediaTrimmingPreference.Precise, profile) == TranscodeFailureReason.None, "Fixture render failed");
     return output.Path;
@@ -109,6 +111,7 @@ if (args.Length > 0)
     Require((await VideoAssembly.ReadInfoAsync(foreign)).AudioTracks == 2, "Foreign track probe failed");
     Require((await VideoAssembly.ReadInfoAsync(silent)).AudioTracks == 0, "Silent track probe failed");
     string twoTrackMp4 = Path.Combine(root, "две дорожки.mp4");
+    mixedPreviewSource = twoTrackMp4;
     await Run("-nostdin", "-n", "-i", foreign, "-map", "0", "-c", "copy", twoTrackMp4);
     // Сборка силами Windows (без ffmpeg): явный выбор дорожки должен давать именно её
     foreach (string nativeSource in new[] { foreign, twoTrackMp4 })
@@ -170,6 +173,41 @@ if (args.Length > 0)
     catch (OperationCanceledException) { }
     Require(!File.Exists(Path.Combine(root, "cancel-ffmpeg.mp4")) && !Directory.GetFiles(root, "*.part.mp4").Any(), "FFmpeg cancellation leaked partial output");
     Console.WriteLine("PASS: FFmpeg size limit, foreign MKV, multiple audio tracks, together, explicit track, silence, running cancellation");
+    string fallbackRoot = Path.Combine(root, "встроенные кодеки ' проверка");
+    Directory.CreateDirectory(fallbackRoot);
+    var fallbackMethod = typeof(VideoAssembly).GetMethod("RenderWithVlcAsync",
+        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
+    VideoSegment[] fallbackParts = [new(twoTrackMp4, TimeSpan.FromSeconds(0.5), TimeSpan.FromSeconds(1.5), 0),
+        new(twoTrackMp4, TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(2.5), 1),
+        new(twoTrackMp4, TimeSpan.Zero, TimeSpan.FromSeconds(0.5))];
+    for (int repeat = 0; repeat < 3; repeat++)
+    {
+        string fallbackOutput = Path.Combine(fallbackRoot, $"fallback-{repeat}.mp4");
+        await (Task)fallbackMethod.Invoke(null, [fallbackParts, fallbackOutput, null, null, CancellationToken.None])!;
+        Require(Math.Abs((await VideoAssembly.ReadInfoAsync(fallbackOutput)).Duration.TotalSeconds - 2.5) < 0.15,
+            "Built-in codec fallback changed montage duration");
+        Mp4Trim.AacClip? fallbackAudio = null;
+    Mp4Trim.MixAudio(fallbackOutput, Path.ChangeExtension(fallbackOutput, ".m4a"), tracks => fallbackAudio = tracks[0]);
+        var fallbackPcm = new List<float>();
+        using (var decoder = new AacDecoder(fallbackAudio!.SampleRate, fallbackAudio.Channels, fallbackAudio.Config))
+            for (int i = 0; i < fallbackAudio.Frames.Count; i++)
+                decoder.Decode(fallbackAudio.Frames[i], (long)i * 1024 * 10000000 / fallbackAudio.SampleRate, fallbackPcm);
+        audio = fallbackAudio; pcm = fallbackPcm;
+        Require(Amplitude(440, 0.2) > 0.04 && Amplitude(880, 0.2) < 0.01, "VLC fallback changed audio track zero");
+        Require(Amplitude(440, 1.2) < 0.01 && Amplitude(880, 1.2) > 0.04, "VLC fallback changed audio track one");
+        Require(Amplitude(440, 2.2) > 0.04 && Amplitude(880, 2.2) > 0.04, "VLC fallback omitted mixed audio");
+        Require(!Directory.GetDirectories(fallbackRoot, ".aura-normalize-*").Any(), "VLC fallback leaked intermediates");
+    }
+    using var cancelFallback = new CancellationTokenSource();
+    try
+    {
+        await (Task)fallbackMethod.Invoke(null, [fallbackParts, Path.Combine(fallbackRoot, "cancelled.mp4"), null,
+            new CancelOnProgress(cancelFallback), cancelFallback.Token])!;
+        throw new Exception("Running built-in codec cancellation ignored");
+    }
+    catch (OperationCanceledException) { }
+    Require(!Directory.GetDirectories(fallbackRoot, ".aura-normalize-*").Any(), "Cancelled VLC fallback leaked intermediates");
+    Console.WriteLine("PASS: bundled codec fallback preserves selected/mixed audio, cuts and Unicode/apostrophe paths; cancellation cleans intermediates");
 }
 Console.WriteLine("Fixtures: " + root);
 var uiFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -230,11 +268,31 @@ var uiThread = new Thread(() =>
                 var player = (LibVLCSharp.Shared.MediaPlayer)editorType.GetField("_player", flags)!.GetValue(editor)!;
                 player.SetPause(false);
                 for (int i = 0; i < 30 && !player.IsPlaying; i++) await Task.Delay(50);
-                player.Time = 1000;
+                Call("Seek", 1.0);
                 for (int i = 0; i < 30 && (player.Time < 900 || player.Time >= 1500); i++) await Task.Delay(10);
+                Set("_lastSeekApplied", Environment.TickCount64 + 1000);
                 Require((bool)Call("SkipRemovedSection")!, "Preview did not recognize a removed section");
+                long cutSeekTick = (long)editorType.GetField("_seekTick", flags)!.GetValue(editor)!;
+                await Task.Delay(25);
+                Require(player.Time < 1490, "Deferred-seek fixture did not keep the old playback timestamp");
+                Require((bool)Call("SkipRemovedSection")!, "Preview lost its pending jump across the cut");
+                Require((long)editorType.GetField("_seekTick", flags)!.GetValue(editor)! == cutSeekTick,
+                    "Preview keeps restarting the same seek before the decoder reaches the next part");
+                Set("_watchNext", 0L);
+                Call("Timer_Tick", null, EventArgs.Empty);
+                Require((long)editorType.GetField("_watchNext", flags)!.GetValue(editor)! > 0,
+                    "Pending cut jump bypassed the frozen-video watchdog");
                 for (int i = 0; i < 50 && player.Time < 1490; i++) await Task.Delay(20);
                 Require(player.Time >= 1490, "Preview did not seek across the removed section");
+                var previewMedia = (LibVLCSharp.Shared.Media)editorType.GetField("_media", flags)!.GetValue(editor)!;
+                long displayedAfterCut = previewMedia.Statistics.DisplayedPictures;
+                for (int i = 0; i < 70 && previewMedia.Statistics.DisplayedPictures < displayedAfterCut + 5; i++)
+                {
+                    Call("Timer_Tick", null, EventArgs.Empty);
+                    await Task.Delay(20);
+                }
+                Require(previewMedia.Statistics.DisplayedPictures >= displayedAfterCut + 5,
+                    "Video output froze after crossing the cut although player time advanced");
                 player.SetPause(true);
                 Snapshot(editor, "editor-cuts.png", 1180, 760);
                 Set("_selectForAssembly", true);
@@ -250,7 +308,52 @@ var uiThread = new Thread(() =>
                 list.SelectedIndex = 0;
                 assemblyType.GetMethod("Move", flags)!.Invoke(assembly, [1]);
                 Require(((VideoSegment)list.Items[0]).Path == blue, "Assembly reorder UI failed");
-                Snapshot(assembly, "assembly.png", 850, 560);
+                assembly.WindowStartupLocation = System.Windows.WindowStartupLocation.Manual;
+                assembly.Left = -30000; assembly.Top = -30000; assembly.ShowActivated = false; assembly.ShowInTaskbar = false;
+                ((System.Windows.Controls.CheckBox)assembly.FindName("MutePreview")).IsChecked = true;
+                assembly.Show();
+                for (int i = 0; i < 150 && assemblyType.GetField("_assemblyPlayer", flags)!.GetValue(assembly) is null; i++) await Task.Delay(100);
+                var assemblyPlayer = (LibVLCSharp.Shared.MediaPlayer?)assemblyType.GetField("_assemblyPlayer", flags)!.GetValue(assembly);
+                Require(assemblyPlayer is not null, "Shared assembly preview did not initialize");
+                list.SelectedIndex = 0;
+                await (Task)assemblyType.GetMethod("SelectAssemblyClipAsync", flags)!.Invoke(assembly, [null])!;
+                TimeSpan originalAssemblyEnd = ((VideoSegment)list.Items[0]).End;
+                ((System.Windows.Controls.Slider)assembly.FindName("TrimStart")).Value = 0.5;
+                ((System.Windows.Controls.Slider)assembly.FindName("TrimEnd")).Value = 1.5;
+                Require(((VideoSegment)list.Items[0]).Start == TimeSpan.FromSeconds(0.5) &&
+                    ((VideoSegment)list.Items[0]).End == TimeSpan.FromSeconds(1.5), "Inline assembly trimming did not update export ranges: " +
+                    string.Join("; ", list.Items.Cast<VideoSegment>().Select(s => s.Range)) + $"; selected={list.SelectedIndex}; changing={assemblyType.GetField("_changingAssembly", flags)!.GetValue(assembly)}; " +
+                    $"sliders={((System.Windows.Controls.Slider)assembly.FindName("TrimStart")).Value}..{((System.Windows.Controls.Slider)assembly.FindName("TrimEnd")).Value}");
+                assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                Require(((VideoSegment)list.Items[0]).End == originalAssemblyEnd, "Assembly undo did not restore trim");
+                assemblyType.GetMethod("SeekAssembly", flags)!.Invoke(assembly, [2.75]);
+                for (int i = 0; i < 100 && (int)assemblyType.GetField("_previewIndex", flags)!.GetValue(assembly)! != 1; i++) await Task.Delay(50);
+                Require((int)assemblyType.GetField("_previewIndex", flags)!.GetValue(assembly)! == 1, "Common timeline did not seek into the second clip");
+                assemblyType.GetMethod("SeekAssembly", flags)!.Invoke(assembly, [0.0]);
+                for (int i = 0; i < 100 && (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!; i++) await Task.Delay(50);
+                assemblyType.GetMethod("PlayAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                for (int i = 0; i < 120 && (int)assemblyType.GetField("_previewIndex", flags)!.GetValue(assembly)! != 1; i++) await Task.Delay(50);
+                Require((int)assemblyType.GetField("_previewIndex", flags)!.GetValue(assembly)! == 1, "Assembly preview did not automatically advance between clips");
+                if (mixedPreviewSource is not null)
+                {
+                    await (Task)assemblyType.GetMethod("AddFilesAsync", flags)!.Invoke(assembly, [new[] { mixedPreviewSource }])!;
+                    list.SelectedIndex = 2;
+                    await (Task)assemblyType.GetMethod("SelectAssemblyClipAsync", flags)!.Invoke(assembly, [null])!;
+                    for (int i = 0; i < 100 && (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!; i++) await Task.Delay(50);
+                    var previewTracks = assemblyPlayer!.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
+                    Require(previewTracks.Length == 3 && assemblyPlayer.AudioTrack == previewTracks[^1].Id,
+                        "Joint preview did not attach/select the mixed audio track: " +
+                        string.Join(";", previewTracks.Select(t => $"{t.Id}:{t.Name}")) + $" selected={assemblyPlayer.AudioTrack}, status={((System.Windows.Controls.TextBlock)assembly.FindName("Status")).Text}");
+                    int beforeSplit = list.Items.Count;
+                    assemblyType.GetMethod("SplitAssemblyAt", flags)!.Invoke(assembly, [1.0]);
+                    Require(list.Items.Count == beforeSplit + 1 && ((VideoSegment)list.Items[2]).End == TimeSpan.FromSeconds(1) &&
+                        ((VideoSegment)list.Items[3]).Start == TimeSpan.FromSeconds(1), "Inline split lost its boundary");
+                    assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                    Require(list.Items.Count == beforeSplit, "Assembly undo did not restore split");
+                }
+                Snapshot(assembly, "assembly.png", 1180, 860);
+                Require(((System.Windows.Controls.Slider)assembly.FindName("AssemblyPosition")).ActualWidth > 900,
+                    "Common timeline collapsed to the default narrow slider width");
                 assembly.Close();
                 var dropWindow = new System.Windows.Window();
                 var dropped = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);

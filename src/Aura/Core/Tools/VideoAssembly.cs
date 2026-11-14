@@ -12,7 +12,7 @@ namespace Aura.Core.Tools;
 
 public sealed record VideoFileInfo(TimeSpan Duration, int Width, int Height, double Fps, int AudioTracks);
 
-public static class VideoAssembly
+public static partial class VideoAssembly
 {
     public static Task<VideoFileInfo> ReadInfoAsync(string path, CancellationToken ct = default) => Task.Run(async () =>
     {
@@ -59,7 +59,9 @@ public static class VideoAssembly
                 catch (System.Runtime.InteropServices.COMException ex)
                 {
                     ct.ThrowIfCancellationRequested();
-                    throw new InvalidOperationException($"Windows не смогла собрать видео: {ex.Message} Для дополнительных форматов выберите ffmpeg.exe кнопкой «Дополнительные форматы…».", ex);
+                    Logging.Log.Warn("Editor", $"Windows не смогла выполнить монтаж (0x{ex.HResult:X8}); перевожу через встроенные кодеки");
+                    File.Delete(temp);
+                    await RenderWithVlcAsync(segments, temp, targetMegabytes, progress, ct);
                 }
             ct.ThrowIfCancellationRequested();
             long size = new FileInfo(temp).Length;
@@ -74,7 +76,8 @@ public static class VideoAssembly
     }
 
     private static async Task RenderWindowsAsync(IReadOnlyList<VideoSegment> segments, string temp,
-        int? targetMegabytes, IProgress<double>? progress, CancellationToken ct)
+        int? targetMegabytes, IProgress<double>? progress, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? originalAudio = null)
     {
         var composition = new MediaComposition();
         TimeSpan offset = TimeSpan.Zero;
@@ -88,17 +91,24 @@ public static class VideoAssembly
             TimeSpan end = segment.End < clip.OriginalDuration ? segment.End : clip.OriginalDuration;
             clip.TrimTimeFromStart = segment.Start;
             clip.TrimTimeFromEnd = clip.OriginalDuration - end;
-            int count = clip.EmbeddedAudioTracks.Count;
+            string? audioPath = null;
+            bool separateAudio = originalAudio?.TryGetValue(segment.Path, out audioPath) == true;
+            var audioClip = separateAudio
+                ? await MediaClip.CreateFromFileAsync(await StorageFile.GetFileFromPathAsync(audioPath!))
+                : clip;
+            int count = audioClip.EmbeddedAudioTracks.Count;
             if (segment.AudioTrack >= count && segment.AudioTrack >= 0)
                 throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-            if (count > 0)
+            if (count > 0 && !separateAudio)
                 clip.SelectedEmbeddedAudioTrackIndex = segment.AudioTrack < 0 ? 0 :
                     VideoEditor.WindowsAudioTrackIndex(segment.Path, count, segment.AudioTrack);
             composition.Clips.Add(clip);
-            for (int i = 0; segment.AudioTrack < 0 && i < count; i++)
+            int selected = segment.AudioTrack < 0 ? -1 :
+                (int)VideoEditor.WindowsAudioTrackIndex(separateAudio ? audioPath! : segment.Path, count, segment.AudioTrack);
+            for (int i = 0; (segment.AudioTrack < 0 || separateAudio) && i < count; i++)
             {
-                if (i == clip.SelectedEmbeddedAudioTrackIndex) continue;
-                var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(clip.EmbeddedAudioTracks[i]);
+                if (separateAudio ? selected >= 0 && i != selected : i == clip.SelectedEmbeddedAudioTrackIndex) continue;
+                var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(audioClip.EmbeddedAudioTracks[i]);
                 TimeSpan audioEnd = end < audio.OriginalDuration ? end : audio.OriginalDuration;
                 if (segment.Start >= audioEnd) continue;
                 audio.TrimTimeFromStart = segment.Start;

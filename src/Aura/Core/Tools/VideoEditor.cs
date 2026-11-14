@@ -1,7 +1,6 @@
 using Aura.Core.Logging;
 using Aura.Core.Storage;
 using Windows.Media.Editing;
-using Windows.Media.Transcoding;
 using Windows.Storage;
 
 namespace Aura.Core.Tools;
@@ -9,12 +8,25 @@ namespace Aura.Core.Tools;
 /// <summary>
 /// Экспорт фрагмента из встроенного редактора.
 ///
-/// Точный режим использует штатный Windows Media Editing и поэтому работает без
-/// сторонних программ. Временный файл публикуется только после успешного рендера:
+/// Точный режим использует общий монтажный конвейер и встроенные кодеки.
+/// Временный файл публикуется только после успешного рендера:
 /// оборванный экспорт никогда не появляется в библиотеке как готовый клип.
 /// </summary>
 public static class VideoEditor
 {
+    internal static Task PrepareMixedAudioAsync(string input, string output, int tracks, string? ffmpeg, CancellationToken ct) => Task.Run(async () =>
+    {
+        try
+        {
+            Saving.Mp4.Mp4Trim.MixAudio(input, output, audio => Audio.AudioMixdown.Mix(audio, ct), ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && ffmpeg is not null)
+        {
+            File.Delete(output);
+            await Ffmpeg.MixAudioAsync(ffmpeg, input, output, tracks, ct);
+        }
+    }, ct);
+
     internal static uint WindowsAudioTrackIndex(string input, int count, int requested)
     {
         if (count <= 1) return 0;
@@ -90,76 +102,14 @@ public static class VideoEditor
         CancellationToken ct = default)
     {
         ValidateRange(start, end);
-
-        string output = CreateOutputPath(input);
-        string tempPath = Path.Combine(
-            Path.GetDirectoryName(output)!,
-            ".aura-edit-" + Guid.NewGuid().ToString("N") + ".part.mp4");
-
-        try
-        {
-            var inputFile = await StorageFile.GetFileFromPathAsync(input);
-            var clip = await MediaClip.CreateFromFileAsync(inputFile);
-            if (end > clip.OriginalDuration) end = clip.OriginalDuration;
-            ValidateRange(start, end);
-
-            clip.TrimTimeFromStart = start;
-            clip.TrimTimeFromEnd = clip.OriginalDuration - end;
-
-            bool mixAll = audioTrackIndex < 0;
-            if (!mixAll && clip.EmbeddedAudioTracks.Count > 0)
-            {
-                clip.SelectedEmbeddedAudioTrackIndex = WindowsAudioTrackIndex(
-                    input, clip.EmbeddedAudioTracks.Count, audioTrackIndex);
-            }
-
-            var composition = new MediaComposition();
-            composition.Clips.Add(clip);
-
-            // MediaClip проигрывает только выбранную встроенную дорожку. У Aura
-            // режим «раздельно» создаёт две (игра + микрофон), поэтому остальные
-            // добавляем как фоновые и теми же IN/OUT. Точный экспорт сводит их в
-            // слышимый микс вместо тихой потери микрофона.
-            for (int i = 0; mixAll && i < clip.EmbeddedAudioTracks.Count; i++)
-            {
-                if (i == clip.SelectedEmbeddedAudioTrackIndex) continue;
-                var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(clip.EmbeddedAudioTracks[i]);
-                TimeSpan audioEnd = end > audio.OriginalDuration ? audio.OriginalDuration : end;
-                if (start >= audioEnd) continue;
-                audio.TrimTimeFromStart = start;
-                audio.TrimTimeFromEnd = audio.OriginalDuration - audioEnd;
-                composition.BackgroundAudioTracks.Add(audio);
-            }
-
-            var folder = await StorageFolder.GetFolderFromPathAsync(Path.GetDirectoryName(output)!);
-            var temp = await folder.CreateFileAsync(
-                Path.GetFileName(tempPath), CreationCollisionOption.ReplaceExisting);
-
-            var operation = composition.RenderToFileAsync(
-                temp,
-                MediaTrimmingPreference.Precise,
-                composition.CreateDefaultEncodingProfile());
-            operation.Progress = (_, value) => progress?.Report(value / 100.0);
-            using var cancel = ct.Register(operation.Cancel);
-
-            Log.Info("Editor", $"Точный экспорт {Path.GetFileName(input)}: {start} — {end}");
-            TranscodeFailureReason result = await operation;
-            ct.ThrowIfCancellationRequested();
-            if (result != TranscodeFailureReason.None)
-                throw new InvalidOperationException($"Windows Media вернул ошибку: {result}");
-
-            // Другое окно редактора могло закончить экспорт с тем же именем,
-            // пока шёл рендер. Проверяем коллизию прямо перед публикацией.
-            if (File.Exists(output)) output = CreateOutputPath(input);
-            File.Move(tempPath, output);
-            progress?.Report(1);
-            return output;
-        }
-        catch
-        {
-            try { File.Delete(tempPath); } catch { }
-            throw;
-        }
+        var info = await VideoAssembly.ReadInfoAsync(input, ct);
+        if (end > info.Duration) end = info.Duration;
+        ValidateRange(start, end);
+        int track = audioTrackIndex < 0 || info.AudioTracks == 0 ? -1 :
+            Math.Clamp(audioTrackIndex, 0, info.AudioTracks - 1);
+        Log.Info("Editor", $"Точный экспорт {Path.GetFileName(input)}: {start} — {end}");
+        return await VideoAssembly.RenderAsync([new VideoSegment(input, start, end, track)],
+            CreateOutputPath(input), progress: progress, ct: ct);
     }
 
     internal static void ValidateRange(TimeSpan start, TimeSpan end)

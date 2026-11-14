@@ -14,6 +14,7 @@ public partial class ClipEditorWindow
     private VideoSegment? _initialSegment;
     private IReadOnlyList<VideoSegment>? _pickedSegments;
     private bool _selectForAssembly, _externalVideo;
+    private double? _cutSeekTarget;
 
     public static void ShowExternal(string path)
     {
@@ -111,10 +112,20 @@ public partial class ClipEditorWindow
     private bool SkipRemovedSection()
     {
         if (_cutHistory.Count == 0 || _player?.IsPlaying != true || _scrubbing) return false;
-        double now = CurrentSeconds;
-        if (_keptSegments.Any(s => now >= s.Start.TotalSeconds && now < s.End.TotalSeconds)) return false;
+        double now = _cutSeekTarget is null ? LogicalSeconds : CurrentSeconds;
+        if (_keptSegments.Any(s => now >= s.Start.TotalSeconds && now < s.End.TotalSeconds))
+        { _cutSeekTarget = null; return false; }
         var next = _keptSegments.FirstOrDefault(s => s.Start.TotalSeconds > now);
-        if (next is not null) Seek(next.Start.TotalSeconds);
+        if (next is not null)
+        {
+            // Time обновляется асинхронно: повторные seek не дают декодеру закончить переход.
+            double target = next.Start.TotalSeconds;
+            if (_cutSeekTarget != target)
+            {
+                Seek(target);
+                _cutSeekTarget = target;
+            }
+        }
         else _player.SetPause(true);
         return true;
     }

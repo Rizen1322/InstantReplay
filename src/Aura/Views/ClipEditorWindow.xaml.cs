@@ -453,8 +453,9 @@ public partial class ClipEditorWindow : Window
     private void Timer_Tick(object? sender, EventArgs e)
     {
         if (_player is null || _durationSeconds <= 0) return;
-        if (SkipRemovedSection()) return;
+        bool skippingCut = SkipRemovedSection();
         WatchPreview();
+        if (skippingCut) return;
         double position = CurrentSeconds;
         // У конца файла встаём чуть раньше: доиграв, LibVLC закрывает видеовывод,
         // и вместо последнего кадра остаётся чёрный экран
@@ -516,7 +517,7 @@ public partial class ClipEditorWindow : Window
 
         _watchShown = -1;
         if (++_recoveries > 3) return;   // не помогает — не крутим по кругу
-        double at = CurrentSeconds;
+        double at = _cutSeekTarget ?? CurrentSeconds;
         Log.Warn("Editor", $"Предпросмотр застыл на {at:F1} с: плеер играет, а новых кадров 2 с нет " +
                            $"(декодировано {stats.DecodedVideo}, показано {shown}, потеряно {stats.LostPictures}, " +
                            $"аппаратное декодирование {(player.EnableHardwareDecoding ? "вкл" : "выкл")}). Переоткрываю");
@@ -566,6 +567,7 @@ public partial class ClipEditorWindow : Window
     private void Seek(double seconds)
     {
         if (_player is null || _durationSeconds <= 0) return;
+        _cutSeekTarget = null;
         seconds = Math.Clamp(seconds, 0, _durationSeconds);
         if (_ended)
         {
@@ -792,19 +794,8 @@ public partial class ClipEditorWindow : Window
         if (_mixGenerationTask is not null) return _mixGenerationTask;
         _mixedAudioPath = Path.Combine(Path.GetTempPath(), $"aura-editor-audio-{Guid.NewGuid():N}.m4a");
         string output = _mixedAudioPath;
-        _mixGenerationTask = Task.Run(async () =>
-        {
-            try
-            {
-                Core.Saving.Mp4.Mp4Trim.MixAudio(_item.FullPath, output,
-                    tracks => Core.Audio.AudioMixdown.Mix(tracks, _previewMixCancellation.Token), _previewMixCancellation.Token);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException && _ffmpeg is not null)
-            {
-                File.Delete(output);
-                await Ffmpeg.MixAudioAsync(_ffmpeg, _item.FullPath, output, _audioTrackIds.Length, _previewMixCancellation.Token);
-            }
-        }, _previewMixCancellation.Token);
+        _mixGenerationTask = VideoEditor.PrepareMixedAudioAsync(_item.FullPath, output, _audioTrackIds.Length,
+            _ffmpeg, _previewMixCancellation.Token);
         return _mixGenerationTask;
     }
 
