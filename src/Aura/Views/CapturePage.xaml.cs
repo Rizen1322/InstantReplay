@@ -251,12 +251,22 @@ public partial class CapturePage : PageBase
                 Monitor.Items.Add(new ComboBoxItem
                 {
                     Content = monitor.Label,
-                    Tag = monitor.Index
+                    Tag = monitor
                 });
         }
         catch { }
-        if (Monitor.Items.Count == 0) Monitor.Items.Add(new ComboBoxItem { Content = "Основной экран", Tag = 0 });
-        Monitor.SelectedIndex = Math.Min(s.MonitorIndex, Monitor.Items.Count - 1);
+        if (Monitor.Items.Count == 0) Monitor.Items.Add(new ComboBoxItem { Content = "Мониторы недоступны" });
+        Monitor.SelectedIndex = -1;
+        foreach (ComboBoxItem item in Monitor.Items)
+            if (item.Tag is MonitorDescription m &&
+                (!string.IsNullOrEmpty(s.MonitorDeviceId)
+                    ? string.Equals(m.DeviceId, s.MonitorDeviceId, StringComparison.OrdinalIgnoreCase)
+                    : m.Index == s.MonitorIndex)) Monitor.SelectedItem = item;
+        if (Monitor.SelectedIndex < 0)
+        {
+            Monitor.Items.Insert(0, new ComboBoxItem { Content = "Выбранный монитор отключён", Tag = null });
+            Monitor.SelectedIndex = 0;
+        }
     }
 
     private void Apply_Click(object sender, RoutedEventArgs e)
@@ -275,7 +285,11 @@ public partial class CapturePage : PageBase
             // Auto, а не Ten: там, где десять бит не поддержаны, запись обязана
             // молча остаться восьмибитной, а не падать в ошибку.
             s.BitDepth = TenBitSwitch.IsChecked == true ? VideoBitDepth.Auto : VideoBitDepth.Eight;
-            s.MonitorIndex = (int)((ComboBoxItem)Monitor.SelectedItem).Tag;
+            if (Monitor.SelectedItem is ComboBoxItem { Tag: MonitorDescription monitor } && !string.IsNullOrEmpty(monitor.DeviceId))
+            {
+                s.MonitorIndex = monitor.Index;
+                s.MonitorDeviceId = monitor.DeviceId;
+            }
         }, "video");
         CustomLength.Text = Services.Settings.Current.ReplayLengthSeconds.ToString();
         HighlightLength(Services.Settings.Current.ReplayLengthSeconds);

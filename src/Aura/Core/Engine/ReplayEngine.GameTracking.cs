@@ -38,9 +38,15 @@ public sealed partial class ReplayEngine
     {
         lock (_captureTargetSync)
         {
-            GameCaptureTarget? selected = ForegroundGameWindowProbe.TrySelect(
-                _settings.Current.MonitorIndex,
-                _lastVerifiedCaptureTarget);
+            GameCaptureTarget? selected = null;
+            try
+            {
+                var settings = _settings.Current;
+                selected = ForegroundGameWindowProbe.TrySelect(
+                    MonitorLayout.Resolve(settings.MonitorIndex, settings.MonitorDeviceId),
+                    _lastVerifiedCaptureTarget);
+            }
+            catch (InvalidOperationException) { } // Disconnected monitor must not select a different game's window.
             if (selected is GameCaptureTarget target)
                 _lastVerifiedCaptureTarget = target;
             _gameCaptureRecovery.ObserveTarget(selected);
@@ -112,6 +118,19 @@ public sealed partial class ReplayEngine
                         moveOffWgc);
                 if (targetSelection.RestartRequired)
                     RequestProactiveCaptureTransition(targetSelection);
+
+                if (!targetSelection.RestartRequired && _captureBackend != _preferredCaptureBackend &&
+                    DateTime.UtcNow - _pipeline.StartedUtc >= TimeSpan.FromMinutes(1) &&
+                    TryBeginCaptureRecovery())
+                {
+                    if (_gameCaptureRecovery.TryReturnToPreferred(_captureBackend, DateTimeOffset.UtcNow, out var preferred))
+                    {
+                        RequestCaptureRestart(preferred, "Карантин источника закончился: возвращаю обычный захват",
+                            CaptureFailureKind.BackendUnavailable, Interlocked.Read(ref _captureGeneration));
+                        return;
+                    }
+                    FinishCaptureRecovery();
+                }
 
                 if (_captureBackend == CaptureBackend.WgcWindow &&
                     ActiveCaptureTarget() is GameCaptureTarget activeTarget &&

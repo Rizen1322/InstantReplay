@@ -6,6 +6,7 @@ internal sealed class GameCaptureRecoveryCoordinator
     private readonly CaptureBackend _preferredMonitorBackend;
     private readonly bool _forcedBackend;
     private readonly bool _allowWgc;
+    private readonly CaptureHealthPolicy _health;
     private readonly object _sync = new();
     private GameCaptureTarget? _target;
     private CaptureEpisode _episode;
@@ -15,9 +16,11 @@ internal sealed class GameCaptureRecoveryCoordinator
     public GameCaptureRecoveryCoordinator(
         CaptureBackend preferredMonitorBackend,
         bool forcedBackend,
-        bool allowWgc = true)
+        bool allowWgc = true,
+        CaptureHealthPolicy? health = null)
     {
         _allowWgc = allowWgc;
+        _health = health ?? new CaptureHealthPolicy();
         if (preferredMonitorBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
             throw new ArgumentException("Предпочтительный backend должен захватывать монитор", nameof(preferredMonitorBackend));
         _preferredMonitorBackend = preferredMonitorBackend;
@@ -85,7 +88,8 @@ internal sealed class GameCaptureRecoveryCoordinator
     public bool TryDecide(
         CaptureBackend activeBackend,
         CaptureFailureKind failureKind,
-        out CaptureRecoveryDecision decision)
+        out CaptureRecoveryDecision decision,
+        DateTimeOffset? now = null)
     {
         lock (_sync)
         {
@@ -103,9 +107,37 @@ internal sealed class GameCaptureRecoveryCoordinator
                 _episode,
                 _preferredMonitorBackend,
                 _allowWgc && !_avoidWgc));
+            if (_target is null && _allowWgc && !_avoidWgc &&
+                activeBackend is CaptureBackend.Wgc or CaptureBackend.DesktopDuplication)
+            {
+                var backend = _health.SelectAfterFailure(activeBackend, failureKind,
+                    _forcedBackend, now ?? DateTimeOffset.UtcNow, activeBackend);
+                decision = decision with { Backend = backend };
+            }
+            // A successful start followed by an immediate failure is a new recovery,
+            // so its local attempt counter alone cannot limit repeated rebuilds.
+            if (decision.Action == CaptureRecoveryAction.Restart && decision.Backend == activeBackend &&
+                failureKind is not (CaptureFailureKind.DeviceLost or CaptureFailureKind.CaptureFormatChanged))
+                decision = decision with { RetryDelay = TimeSpan.FromSeconds(3) };
             _episode = decision.Episode;
             if (_episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
                 _lastHookFailure = _episode;
+            return true;
+        }
+    }
+
+    public bool TryReturnToPreferred(CaptureBackend active, DateTimeOffset now, out CaptureRecoveryDecision decision)
+    {
+        lock (_sync)
+        {
+            decision = default;
+            if (_stopped || _forcedBackend || _target is not null || _avoidWgc ||
+                active == _preferredMonitorBackend ||
+                active is not (CaptureBackend.Wgc or CaptureBackend.DesktopDuplication) ||
+                (!_allowWgc && _preferredMonitorBackend == CaptureBackend.Wgc) ||
+                !_health.CanUse(_preferredMonitorBackend, now) || !_health.TryRecordSwitch(now)) return false;
+            decision = new(CaptureRecoveryAction.Restart, _preferredMonitorBackend, 0,
+                TimeSpan.Zero, CaptureEpisode.Empty);
             return true;
         }
     }

@@ -88,6 +88,8 @@ public partial class OverviewPage : PageBase
         var s = Services.Settings.Current;
 
         Master.IsChecked = on;
+        bool busy = App.EngineCommandPending;
+        Master.IsEnabled = !busy;
         var buffered = engine.BufferedDuration;
         // Запись в файл без повтора: крупное время — сколько идёт запись, без
         // «из 3:00». Предел повтора к записи отношения не имеет и только путал.
@@ -116,14 +118,14 @@ public partial class OverviewPage : PageBase
         SaveKey.Text = s.HotkeySaveReplay;
         SaveKeyBox.Visibility = string.IsNullOrEmpty(s.HotkeySaveReplay) ? Visibility.Collapsed : Visibility.Visible;
         Save30Key.Text = s.HotkeySaveLast30;
-        SaveButton.IsEnabled = on;
-        Save30.IsEnabled = on;
+        SaveButton.IsEnabled = on && !busy;
+        Save30.IsEnabled = on && !busy;
 
         bool recording = engine.IsRecordingToFile;
-        RecordLabel.Text = recording ? "Стоп" : "Запись";
+        RecordLabel.Text = busy ? "Подождите…" : recording ? "Стоп" : "Запись";
         RecordDot.Fill = (Brush)FindResource(recording ? "TxBrush" : "RecBrush");
         // Запись в файл не требует включённого повтора: конвейер поднимется сам
-        RecordButton.IsEnabled = true;
+        RecordButton.IsEnabled = !busy;
 
         // Живой кадр нужен, пока работает захват, а не только повтор: запись в
         // файл без повтора тоже поднимает захват, и картинка должна быть видна.
@@ -304,7 +306,7 @@ public partial class OverviewPage : PageBase
 
     private void Record_Click(object sender, RoutedEventArgs e)
     {
-        if (Services.Engine.IsRecordingToFile) Services.Engine.StopRecordingToFile();
+        if (Services.Engine.IsRecordingToFile) App.SafeStopRecording();
         else App.SafeStartRecording();
         Refresh();
     }

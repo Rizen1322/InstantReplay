@@ -22,6 +22,11 @@ internal static class DuplicationRecovery
     public const int ModeChangeDelayMilliseconds = 200;
     public const int RetryDelayMilliseconds = 500;
 
+    public static bool IsDesktopTransitionHResult(int hresult) => hresult is
+        unchecked((int)0x80070005) or // Secure desktop.
+        unchecked((int)0x887A0025) or // Mode change in progress.
+        unchecked((int)0x887A0026);   // Access lost.
+
     public static bool IsTemporaryHResult(int hresult) => hresult is
         unchecked((int)0x80070005) or // E_ACCESSDENIED
         unchecked((int)0x887A0004) or // DXGI_ERROR_UNSUPPORTED (desktop mode)
@@ -38,14 +43,15 @@ internal static class DuplicationRecovery
         Func<Exception, bool> isTemporary,
         int maxTemporaryMilliseconds = int.MaxValue,
         Func<long>? elapsedMilliseconds = null,
-        Action<Exception>? temporaryFailure = null)
+        Action<Exception>? temporaryFailure = null,
+        Func<Exception, bool>? waitUntilAvailable = null)
     {
         long started = elapsedMilliseconds?.Invoke() ?? 0;
         Exception? lastTemporaryError = null;
 
         while (isRunning())
         {
-            if (lastTemporaryError is not null && elapsedMilliseconds is not null &&
+            if (lastTemporaryError is not null && waitUntilAvailable?.Invoke(lastTemporaryError) != true && elapsedMilliseconds is not null &&
                 elapsedMilliseconds() - started >= maxTemporaryMilliseconds)
                 return new(DuplicationRecoveryStatus.TimedOut, lastTemporaryError);
 
@@ -53,7 +59,7 @@ internal static class DuplicationRecovery
             delay(ModeChangeDelayMilliseconds);
             if (!isRunning())
                 return new(DuplicationRecoveryStatus.Stopped);
-            if (lastTemporaryError is not null && elapsedMilliseconds is not null &&
+            if (lastTemporaryError is not null && waitUntilAvailable?.Invoke(lastTemporaryError) != true && elapsedMilliseconds is not null &&
                 elapsedMilliseconds() - started >= maxTemporaryMilliseconds)
                 return new(DuplicationRecoveryStatus.TimedOut, lastTemporaryError);
 

@@ -207,8 +207,11 @@ public sealed class VideoProcessorNv12 : IDisposable
             float2 PsUV(float4 pos : SV_Position) : SV_Target
             {
                 int2 p = int2(pos.xy) * 2;
-                float3 rgb = (Src.Load(int3(p, 0)).rgb + Src.Load(int3(p + int2(1, 0), 0)).rgb +
-                              Src.Load(int3(p + int2(0, 1), 0)).rgb + Src.Load(int3(p + int2(1, 1), 0)).rgb) * 0.25;
+                // Left-sited 4:2:0: horizontal weights 1:2:1, vertically centered.
+                int left = max(0, p.x - 1);
+                float3 rgb = (Src.Load(int3(left, p.y, 0)).rgb + Src.Load(int3(left, p.y + 1, 0)).rgb +
+                              2 * Src.Load(int3(p, 0)).rgb + 2 * Src.Load(int3(p + int2(0, 1), 0)).rgb +
+                              Src.Load(int3(p + int2(1, 0), 0)).rgb + Src.Load(int3(p + int2(1, 1), 0)).rgb) * 0.125;
                 float cb = dot(rgb, float3(-0.114572, -0.385428, 0.5));
                 float cr = dot(rgb, float3(0.5, -0.454153, -0.045847));
                 return float2(cb, cr) * Range.z + Range.w;

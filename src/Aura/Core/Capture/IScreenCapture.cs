@@ -40,6 +40,7 @@ internal interface IScreenCapture : IDisposable
     void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation);
     void Start();
     void Stop();
+    bool StopCompleted { get; }
 }
 
 /// <summary>Использовать кадр: устройство, контекст и текстура (валидны только в колбэке).</summary>
@@ -111,7 +112,7 @@ public static class ScreenCaptureFactory
         if (request.Backend == CaptureBackend.Wgc)
         {
             Logging.Log.Info("Capture", "Захват через Windows Graphics Capture");
-            return new ScreenCaptureSource(request.MonitorIndex);
+            return new ScreenCaptureSource(request.MonitorIndex, request.MonitorIdentity);
         }
 
         if (request.Backend == CaptureBackend.WgcWindow)
@@ -131,13 +132,13 @@ public static class ScreenCaptureFactory
                 "Capture",
                 $"Гибридный захват Minecraft: {(WgcAllowed ? "WGC" : "DDA")}-monitor + OpenGL, PID {target.ProcessId}, " +
                 $"revision {target.Revision}");
-            return new MinecraftGameCaptureSource(target);
+            return new MinecraftGameCaptureSource(target, request.MonitorIdentity);
         }
 
         if (request.Backend == CaptureBackend.DesktopDuplication)
         {
             Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");
-            return new DesktopDuplicationSource();
+            return new DesktopDuplicationSource(request.MonitorIdentity);
         }
 
         throw new ArgumentOutOfRangeException(nameof(request), request.Backend, "Неизвестный backend");

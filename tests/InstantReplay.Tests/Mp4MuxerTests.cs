@@ -138,6 +138,22 @@ public class Mp4MuxerTests
         Assert.Equal(4 + 500, VideoSamples.Size(Mp4VideoCodec.Hevc, key));
     }
 
+    [Theory]
+    [InlineData(30)]
+    [InlineData(60)]
+    [InlineData(120)]
+    public void Half_second_chunks_do_not_accumulate_per_frame_tick_rounding(int fps)
+    {
+        var frames = H264Clip(fps * 2);
+        var format = Mp4VideoFormat.FromBitstream(Mp4VideoCodec.H264, 1920, 1080, [], frames[0].Item1)
+            with { FrameRate = fps };
+        using var stream = new MemoryStream();
+        Mp4ProgressiveWriter.Write(stream, format, new Frames(frames, 10_000_000 / fps), []);
+        byte[] file = stream.ToArray();
+        var stsc = Find(file, "moov/trak/mdia/minf/stbl/stsc");
+        Assert.Equal((uint)(fps / 2), BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(stsc.Offset + 20)));
+    }
+
     [Fact]
     public void Av1_config_is_built_from_sequence_header()
     {

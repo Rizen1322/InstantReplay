@@ -328,6 +328,9 @@ public sealed partial class ReplayEngine
     {
         var recorder = _recorder;
         if (recorder is null) return null;
+        long cutoff = (long)(System.Diagnostics.Stopwatch.GetTimestamp() *
+            (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
+        _pipeline.Encoder?.WaitForOutputThrough(cutoff);
         _recorder = null;
         Log.Info("Encoder", $"NVENC за запись: {NvencStats.Take().Since(_recorderNvencStats)}");
         // Одно чтение поля вместо двух: параллельный снос обнулял _pipeline.Encoder ровно

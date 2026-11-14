@@ -12,6 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\Aura\Core\Capture\MonitorSelection.cs" Link="App\MonitorSelection.cs" />
     <Compile Include="..\..\src\Aura\Core\Tools\VideoSegment.cs" Link="App\VideoSegment.cs" />
     <Compile Include="..\..\src\Aura\Core\Tools\VideoTimeline.cs" Link="App\VideoTimeline.cs" />
     <Compile Include="..\..\src\InstantReplaySetup\InstallerPayloadVerification.cs" Link="Setup\InstallerPayloadVerification.cs" />

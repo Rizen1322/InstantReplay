@@ -10,11 +10,12 @@ internal sealed class ScreenCaptureSource : IScreenCapture
 {
     private readonly WgcCaptureSession _inner;
 
-    internal ScreenCaptureSource(int monitorIndex)
+    internal ScreenCaptureSource(int monitorIndex, string? monitorIdentity = null)
     {
+        string identity = monitorIdentity ?? MonitorLayout.IdentityFor(monitorIndex);
         _inner = new WgcCaptureSession(
             monitorIndex,
-            () => CaptureInterop.CreateItemForMonitor(GetMonitorHandle(monitorIndex)),
+            () => CaptureInterop.CreateItemForMonitor(GetMonitorHandle(identity)),
             CaptureSurfaceScope.Monitor,
             targetRevision: 0,
             sourceName: "WGC monitor",
@@ -43,12 +44,12 @@ internal sealed class ScreenCaptureSource : IScreenCapture
         _inner.Prepare(monitorIndex, targetFps, captureCursor, generation);
     public void Start() => _inner.Start();
     public void Stop() => _inner.Stop();
+    public bool StopCompleted => _inner.StopCompleted;
     public void Dispose() => _inner.Dispose();
 
-    private static nint GetMonitorHandle(int index)
+    private static nint GetMonitorHandle(string identity)
     {
         using IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
-        var monitors = new List<nint>();
         for (uint adapterIndex = 0;
              factory.EnumAdapters1(adapterIndex, out IDXGIAdapter1 adapter).Success;
              adapterIndex++)
@@ -59,12 +60,16 @@ internal sealed class ScreenCaptureSource : IScreenCapture
                      adapter.EnumOutputs(outputIndex, out IDXGIOutput output).Success;
                      outputIndex++)
                 {
-                    using (output) monitors.Add(output.Description.Monitor);
+                    using (output)
+                    {
+                        var description = output.Description;
+                        if (string.Equals(MonitorLayout.DeviceId(description.DeviceName), identity,
+                            StringComparison.OrdinalIgnoreCase)) return description.Monitor;
+                    }
                 }
             }
         }
 
-        if (monitors.Count == 0) throw new InvalidOperationException("Мониторы не найдены");
-        return monitors[Math.Clamp(index, 0, monitors.Count - 1)];
+        throw new InvalidOperationException("Выбранный монитор отключён");
     }
 }

@@ -487,6 +487,7 @@ internal sealed class WgcCaptureSession : IScreenCapture
 
     /// <summary>Колбэк завис, и объекты захвата брошены: устройство под ним освобождать нельзя.</summary>
     private bool _abandoned;
+    public bool StopCompleted => !_abandoned;
 
     public void Dispose()
     {

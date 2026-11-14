@@ -47,6 +47,9 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     private Thread? _thread;
     private int _monitorIndex;
+    private string? _monitorIdentity;
+    public DesktopDuplicationSource() { }
+    internal DesktopDuplicationSource(string? monitorIdentity) => _monitorIdentity = monitorIdentity;
     private int _targetFps;
     private long _generation;
     private bool _captureCursor;
@@ -83,6 +86,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             StopInternal();
 
             _monitorIndex = monitorIndex;
+            _monitorIdentity ??= MonitorLayout.IdentityFor(monitorIndex);
             _targetFps = targetFps;
             _generation = generation;
             _captureCursor = captureCursor;
@@ -143,31 +147,21 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         IDXGIOutput? targetOutput = null;
         try
         {
-            int index = 0;
             for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
             {
                 bool used = false;
                 for (uint o = 0; adapter.EnumOutputs(o, out IDXGIOutput output).Success; o++)
                 {
-                    if (index++ == _monitorIndex) { targetAdapter = adapter; targetOutput = output; used = true; break; }
+                    if (string.Equals(MonitorLayout.DeviceId(output.Description.DeviceName), _monitorIdentity,
+                        StringComparison.OrdinalIgnoreCase)) { targetAdapter = adapter; targetOutput = output; used = true; break; }
                     output.Dispose();
                 }
                 if (used) break;
                 adapter.Dispose();
             }
 
-            // Индекс вне диапазона — берём первый доступный выход
-            if (targetOutput is null)
-            {
-                for (uint a = 0; factory.EnumAdapters1(a, out IDXGIAdapter1 adapter).Success; a++)
-                {
-                    if (adapter.EnumOutputs(0, out IDXGIOutput output).Success)
-                    { targetAdapter = adapter; targetOutput = output; break; }
-                    adapter.Dispose();
-                }
-            }
             if (targetAdapter is null || targetOutput is null)
-                throw new InvalidOperationException("Мониторы не найдены");
+                throw new InvalidOperationException("Выбранный монитор отключён");
 
             var desc = targetOutput.Description;
             Width = desc.DesktopCoordinates.Right - desc.DesktopCoordinates.Left;
@@ -382,11 +376,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                         ? "нарушен жизненный цикл кадра"
                         : "смена режима";
                     DdaLifecycleState lifecycle = _lifecycle.RecordInvalidation(LifecycleNow());
-                    if (lifecycle == DdaLifecycleState.Storm)
-                    {
-                        ReportTransitionStorm(token, cause);
-                        break;
-                    }
+                    if (lifecycle == DdaLifecycleState.Storm) HoldTransitionStorm(token, cause);
                     if (_lifecycle.InvalidationsInWindow == 1)
                         Log.Warn("Capture", $"Дупликация повреждена ({cause}, {DeviceHealth()}) — пересоздаю");
                     RecreateDuplication(token);
@@ -471,8 +461,11 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                         "DDA: потеряно GPU-устройство", _generation));
                     break;
                 }
+                token.Running = false;
                 Log.Error("Capture", ex);
-                Thread.Sleep(50);
+                Failed?.Invoke(new CaptureFailure(CaptureFailureKind.BackendUnavailable, ex,
+                    "DDA: ошибка получения кадра", _generation));
+                break;
             }
             finally
             {
@@ -499,8 +492,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             DdaLifecycleState lifecycle = _lifecycle.RecordInvalidation(LifecycleNow());
             if (lifecycle == DdaLifecycleState.Storm)
             {
-                ReportTransitionStorm(token, "ошибка ReleaseFrame");
-                return;
+                HoldTransitionStorm(token, "ошибка ReleaseFrame");
             }
             if (_lifecycle.InvalidationsInWindow == 1)
                 Log.Warn("Capture", $"DDA ReleaseFrame завершился ошибкой — пересоздаю дупликацию: {ex.Message}");
@@ -508,17 +500,11 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         }
     }
 
-    private void ReportTransitionStorm(RunToken token, string cause)
+    private void HoldTransitionStorm(RunToken token, string cause)
     {
-        token.Running = false;
-        var error = new InvalidOperationException(
-            $"DDA потеряла {_lifecycle.InvalidationsInWindow} frame-сессии за 2 секунды ({cause})");
-        Log.Warn("Capture", $"{error.Message} — прекращаю пересоздания и прошу сменить источник");
-        Failed?.Invoke(new CaptureFailure(
-            CaptureFailureKind.BackendTransitionStorm,
-            error,
-            "DDA: цикл потери дупликации при смене fullscreen-режима",
-            _generation));
+        Log.Warn("Capture", $"DDA: серия смен режима ({cause}) — жду стабилизации рабочего стола");
+        for (int i = 0; i < 30 && token.Running; i++) Thread.Sleep(100);
+        _lifecycle.Reset();
     }
 
     private CaptureCursorUpdate ReadCursorUpdate(
@@ -652,6 +638,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     private void RecreateDuplication(RunToken token)
     {
+        int temporaryFailures = 0;
         int previousWidth = Width;
         int previousHeight = Height;
         var result = DuplicationRecovery.Run(
@@ -663,11 +650,16 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             },
             create: CreateDeviceAndDuplication,
             delay: Thread.Sleep,
-            isTemporary: IsTemporaryDuplicationFailure,
+            isTemporary: ex => DuplicationRecovery.IsTemporaryHResult(DuplicationHResult(ex)),
             maxTemporaryMilliseconds: 5_000,
             elapsedMilliseconds: () => Environment.TickCount64,
             temporaryFailure: ex =>
-                Log.Warn("Capture", $"Не удалось восстановить дупликацию: {ex.Message}"));
+            {
+                if (++temporaryFailures == 1 || temporaryFailures % 20 == 0)
+                    Log.Warn("Capture", $"Жду доступ к дупликации: {ex.Message}");
+            },
+            // Secure desktop belongs to Windows; rebuilding the encoder cannot grant access.
+            waitUntilAvailable: ex => DuplicationHResult(ex) == unchecked((int)0x80070005));
 
         if (result.Status == DuplicationRecoveryStatus.Restored)
         {
@@ -717,7 +709,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             int code = current is SharpGen.Runtime.SharpGenException sharpGen
                 ? sharpGen.ResultCode.Code
                 : current.HResult;
-            if (DuplicationRecovery.IsTemporaryHResult(code))
+            if (DuplicationRecovery.IsDesktopTransitionHResult(code))
                 return true;
         }
 
@@ -767,6 +759,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     /// <summary>Поток захвата не вышел — им ещё пользуются устройство и контекст.</summary>
     private volatile bool _threadStuck;
+    public bool StopCompleted => !_threadStuck;
 
     public void Dispose()
     {

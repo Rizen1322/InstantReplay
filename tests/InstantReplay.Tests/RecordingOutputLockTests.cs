@@ -11,7 +11,7 @@ public sealed class RecordingOutputLockTests
     // Каждый шаг — пересборка конвейера: что в этот момент вернул реестр и что дал захват.
     private static (int, int) Rebuild(RecordingOutputLock l, (int, int)? desktop, (int, int) source,
                                       int monitor = 0, int vertical = 1440) =>
-        RecordingOutputLock.OutputFor(l.Resolve(monitor, vertical, desktop, source, out _), vertical);
+        RecordingOutputLock.OutputFor(l.Resolve(monitor.ToString(), vertical, desktop, source, out _), vertical);
 
     [Fact]
     public void Log_2026_11_11_monitor_wake_keeps_1440p()
@@ -80,6 +80,7 @@ public sealed class RecordingOutputLockTests
     }
 
     [Theory]
+    [InlineData(1080, 1920, 1080, 608, 1080)]
     [InlineData(2560, 1440, 1440, 2560, 1440)]
     [InlineData(2560, 1440, 1080, 1920, 1080)]
     [InlineData(1920, 1080, 1440, 1920, 1080)] // вверх не растягиваем
@@ -91,5 +92,16 @@ public sealed class RecordingOutputLockTests
         Assert.Equal((ew, eh), (w, h));
         Assert.Equal(0, w % 2);
         Assert.Equal(0, h % 2);
+    }
+
+    [Fact]
+    public void Output_is_pinned_to_device_identity_across_monitor_reordering()
+    {
+        var output = new RecordingOutputLock();
+        Assert.Equal(Qhd, output.Resolve("panel-id", 1440, Qhd, Qhd, out _));
+        Assert.Equal(Qhd, output.Resolve("PANEL-ID", 1440, Fhd, Fhd, out bool reused));
+        Assert.True(reused);
+        Assert.Equal(Fhd, output.Resolve("different-panel", 1440, Fhd, Fhd, out reused));
+        Assert.False(reused);
     }
 }

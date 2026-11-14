@@ -96,6 +96,16 @@ public sealed class VideoEncoder : IDisposable
     private Thread? _eventThread;
     private Thread? _feedThread;
     private volatile bool _running;
+    private volatile bool _mftDraining;
+    internal bool ResourcesAbandoned { get; private set; }
+    private long _lastDeliveredDts = long.MinValue;
+
+    internal void WaitForOutputThrough(long ticks)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (_running && Interlocked.Read(ref _lastDeliveredDts) < ticks && clock.ElapsedMilliseconds < 2000)
+            Thread.Sleep(5);
+    }
 
     // Запросы NeedInput от MFT. КРИТИЧНО: запрос нельзя терять — асинхронный MFT
     // повторно не просит. Потерянный запрос навсегда уменьшает глубину конвейера:
@@ -1239,6 +1249,7 @@ public sealed class VideoEncoder : IDisposable
         Interlocked.Increment(ref FramesEncoded);
         FrameEncoded?.Invoke(new EncodedFrame(data.Array!, data.Offset, data.Count,
                                               pts, _frameDurationTicks, keyframe, dts));
+        Interlocked.Exchange(ref _lastDeliveredDts, dts);
     }
 
     /// <summary>Брошенные сессии NVENC: их поток завис в драйвере, освобождать под ним нельзя.</summary>
@@ -1259,12 +1270,13 @@ public sealed class VideoEncoder : IDisposable
             stuckHost.Kill("поток NVENC не завершился при закрытии", expected: true);
             loopExited = _eventThread?.Join(3000) ?? true;
         }
-        if (!loopExited)
+        if (!loopExited || !pacerExited)
         {
+            ResourcesAbandoned = true;
             // Поток всё ещё внутри вызова NVENC. Уничтожить сессию, устройство или
             // текстуры под ним — обращение к освобождённой памяти. Бросаем всё разом
             // и держим ссылки, чтобы сборщик мусора не освободил их позже.
-            Log.Warn("Encoder", "Поток NVENC не завершился — сессия и её устройство оставлены. " +
+            Log.Warn("Encoder", "Поток NVENC или пейсер не завершился — сессия и её устройство оставлены. " +
                                 $"Состояние NVENC:\n{session?.Trace()}");
             lock (s_abandonedNvenc)
                 s_abandonedNvenc.AddRange(new object?[] { session, _nvencDevice, _nvencContext, _nvencInputs, _copyPool }
@@ -1277,13 +1289,13 @@ public sealed class VideoEncoder : IDisposable
         }
         if (session is not null)
         {
-            // Конец потока: NVENC отдаёт то, что держит у себя, и снимает отображение
-            // входов. Кадры уже никому не нужны — просто забираем их.
             try
             {
                 session.EndOfStream();
                 var clock = System.Diagnostics.Stopwatch.StartNew();
-                while (clock.ElapsedMilliseconds < 1000 && session.PendingCount > 0 && session.TryGet(50) is not null) { }
+                while (clock.ElapsedMilliseconds < 1000 && session.PendingCount > 0)
+                    if (session.TryGet(50) is { } frame)
+                        DeliverNvenc(frame.Data, frame.Pts, frame.PictureType, _nvencReorderTicks);
             }
             catch (Exception ex) { Log.Info("Encoder", $"NVENC: хвост не выдан при закрытии ({ex.Message})"); }
             session.Dispose();
@@ -1291,12 +1303,7 @@ public sealed class VideoEncoder : IDisposable
         lock (_queueLock) _inputQueue.Clear();
         foreach (var input in _nvencInputs) input.Dispose();
         _nvencInputs = [];
-        if (pacerExited) { _copyPool?.Dispose(); _copyPool = null; }
-        else
-        {
-            Log.Warn("Encoder", "Пейсер не завершился за 5 секунд — пул текстур оставлен сборщику");
-            _copyPool = null;
-        }
+        _copyPool?.Dispose(); _copyPool = null;
         _nvencContext?.Dispose();
         _nvencContext = null;
         _nvencDevice?.Dispose();
@@ -2303,14 +2310,16 @@ public sealed class VideoEncoder : IDisposable
     private void EventLoop()
     {
         using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "VideoEncoder.Events");
-        while (_running)
+        while (_running || _mftDraining)
         {
             IMFMediaEvent? ev = null;
             try
             {
                 ev = _eventGen!.GetEvent(0);
-                if (!_running) break;
+                if (!_running && !_mftDraining) break;
                 var type = ev.EventType;
+
+                if (type == MediaEventTypes.TransformDrainComplete) break;
 
                 if (type == MediaEventTypes.TransformNeedInput)
                 {
@@ -2614,6 +2623,7 @@ public sealed class VideoEncoder : IDisposable
         Diagnostics.PipelineProbe.DrainOutput.Add(drainStart, Diagnostics.PipelineProbe.Now());
         FrameEncoded?.Invoke(new EncodedFrame(_scratch, 0, currentLength,
                                               sample.SampleTime, sample.SampleDuration, keyframe, dts));
+        Interlocked.Exchange(ref _lastDeliveredDts, dts);
     }
 
     private static ulong PackLong(int hi, int lo) => ((ulong)(uint)hi << 32) | (uint)lo;
@@ -2621,15 +2631,8 @@ public sealed class VideoEncoder : IDisposable
     public void Dispose()
     {
         if (_nvenc is not null) { DisposeNvenc(); return; }
+        _mftDraining = true;
         _running = false;
-        // Drain будит поток, застрявший в блокирующем GetEvent: асинхронный MFT
-        // в ответ обязан прислать METransformDrainComplete.
-        try
-        {
-            _transform?.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
-            _transform?.ProcessMessage(TMessageType.MessageCommandDrain, UIntPtr.Zero);
-        }
-        catch { }
 
         _needInput.Release(4);      // будим питателя, если ждал запрос
         _inputAvailable.Release(4); // и если ждал кадр
@@ -2642,13 +2645,24 @@ public sealed class VideoEncoder : IDisposable
         // залипает (GPU завален работой игры и CopyResource стоит), поэтому ждём
         // дольше, а при неудаче оставляем пул сборщику — как это уже сделано с MFT.
         bool pacerExited = _pacerThread?.Join(5000) ?? true;
+        // Stop ProcessInput before asking MFT to return its remaining output.
+        try
+        {
+            if (feedExited && pacerExited)
+            {
+                _transform?.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero);
+                _transform?.ProcessMessage(TMessageType.MessageCommandDrain, UIntPtr.Zero);
+            }
+        }
+        catch { }
         bool exited = _eventThread?.Join(2000) ?? true;
+        _mftDraining = false;
         lock (_queueLock) _inputQueue.Clear();
 
         // Брошенное держим до конца процесса, а не отдаём сборщику: финализатор
         // COM-объекта на зависшем устройстве повесил бы поток финализаторов, а с
         // ним сборку мусора во всём приложении.
-        if (pacerExited && feedExited) { _copyPool?.Dispose(); _copyPool = null; }
+        if (pacerExited && feedExited && exited) { _copyPool?.Dispose(); _copyPool = null; }
         else
         {
             Log.Warn("Encoder", $"{(pacerExited ? "Питатель MFT" : "Пейсер")} не завершился — пул текстур брошен, не освобождён");
@@ -2656,13 +2670,14 @@ public sealed class VideoEncoder : IDisposable
             _copyPool = null;
         }
         bool mftAbandoned = !exited || !feedExited;
+        ResourcesAbandoned = mftAbandoned || !pacerExited;
         if (mftAbandoned)
         {
             // Поток так и висит в GetEvent или ProcessInput — освобождать COM-объекты
             // под ним нельзя (это и был краш при выключении). Утечка одного MFT безопаснее.
             Log.Warn("Encoder", $"{(exited ? "Питатель" : "Event-поток")} MFT не завершился за 2 сек — MFT брошен, не освобождён");
             lock (s_abandonedNvenc)
-                s_abandonedNvenc.AddRange(new object?[] { _eventGen, _transform, _deviceManager }
+                s_abandonedNvenc.AddRange(new object?[] { _eventGen, _transform, _deviceManager, _mftTracked, OutputMediaType }
                     .Where(o => o is not null).Cast<object>());
             _eventGen = null;
             _transform = null;
@@ -2681,10 +2696,10 @@ public sealed class VideoEncoder : IDisposable
         _codecApi = null;
         if (_mftTracked is { } tracked)
             Log.Info("Encoder", $"MFT вернул входных образцов: {tracked.ReleasedCount} (образцов на слоты: {tracked.SampleCount})");
-        _mftTracked?.Dispose();
+        if (!mftAbandoned) _mftTracked?.Dispose();
         _mftTracked = null;
         _deviceManager?.Dispose();
-        OutputMediaType?.Dispose();
+        if (!mftAbandoned) OutputMediaType?.Dispose();
     }
 }
 

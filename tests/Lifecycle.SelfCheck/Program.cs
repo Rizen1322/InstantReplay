@@ -255,3 +255,140 @@ using (rotationContext)
     }
 }
 Console.WriteLine("PASS: actual GPU pixels at identity,90,180,270 degrees; desktop capture never started");
+
+var monitorList = Aura.Core.Capture.MonitorEnumerator.Enumerate();
+foreach (var monitor in monitorList.Where(m => m.Width > 0))
+{
+    string identity = Aura.Core.Capture.MonitorLayout.IdentityFor(monitor.Index);
+    Require(!string.IsNullOrEmpty(identity) && monitor.DeviceId == identity, "Native monitor identity is inconsistent");
+    Require(Aura.Core.Capture.MonitorLayout.Resolve(999, identity) == monitor.Index, "Identity resolution used the stale index");
+}
+try
+{
+    Aura.Core.Capture.MonitorLayout.Resolve(0, "nonexistent-monitor-self-check");
+    throw new Exception("Missing monitor silently selected another screen");
+}
+catch (InvalidOperationException) { }
+Console.WriteLine("PASS: native monitor identities resolve independently of index; disconnected monitor refuses fallback");
+
+var ddaType = engineType.Assembly.GetType("Aura.Core.Capture.DesktopDuplicationSource")!;
+using (var stoppedDda = (IDisposable)Activator.CreateInstance(ddaType, nonPublic: true)!)
+{
+    var stopBounded = engineType.GetMethod("StopCaptureBounded", BindingFlags.Static | BindingFlags.NonPublic)!;
+    Require((bool)stopBounded.Invoke(null, [stoppedDda])!, "Idle DDA failed to stop");
+    ddaType.GetField("_threadStuck", Private)!.SetValue(stoppedDda, true);
+    Require(!(bool)stopBounded.Invoke(null, [stoppedDda])!, "Stuck DDA reported a safe pipeline teardown");
+}
+Console.WriteLine("PASS: stop distinguishes completed teardown from a timed-out capture thread");
+
+using (var releasePacer = new ManualResetEventSlim())
+{
+    var blockedEncoder = new VideoEncoder();
+    var blockedPacer = new Thread(releasePacer.Wait) { IsBackground = true };
+    blockedPacer.Start();
+    encoderType.GetField("_pacerThread", Private)!.SetValue(blockedEncoder, blockedPacer);
+    var heldPipeline = Activator.CreateInstance(pipelineType, [9876L])!;
+    pipelineType.GetField("Encoder")!.SetValue(heldPipeline, blockedEncoder);
+    try
+    {
+        pipelineType.GetMethod("DisposeOrdered")!.Invoke(heldPipeline, null);
+        Require((bool)encoderType.GetProperty("ResourcesAbandoned", Private)!.GetValue(blockedEncoder)!,
+            "Hung pacer did not prohibit device destruction");
+        Require(ReferenceEquals(pipelineType.GetField("Encoder")!.GetValue(heldPipeline), blockedEncoder),
+            "Pipeline disposed resources still used by a hung pacer");
+    }
+    finally
+    {
+        releasePacer.Set();
+        blockedPacer.Join();
+        blockedEncoder.Dispose();
+    }
+}
+Console.WriteLine("PASS: hung encoder pacer prevents destruction of the rest of its pipeline");
+
+var runCommand = typeof(Aura.App).GetMethod("RunEngineCommandAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
+using (var commandEntered = new ManualResetEventSlim())
+using (var releaseCommand = new ManualResetEventSlim())
+{
+    int duplicateCommands = 0;
+    var pendingCommand = (Task)runCommand.Invoke(null, [(Action)(() => { commandEntered.Set(); releaseCommand.Wait(); })])!;
+    Require(commandEntered.Wait(3000) && !pendingCommand.IsCompleted, "Engine command blocked its caller");
+    await (Task)runCommand.Invoke(null, [(Action)(() => duplicateCommands++)])!;
+    releaseCommand.Set();
+    await pendingCommand;
+    Require(duplicateCommands == 0, "Repeated clicks started overlapping lifecycle commands");
+}
+Console.WriteLine("PASS: lifecycle commands return without blocking UI and reject overlapping clicks");
+
+Vortice.Direct3D11.D3D11.D3D11CreateDevice(null, Vortice.Direct3D.DriverType.Hardware,
+    Vortice.Direct3D11.DeviceCreationFlags.BgraSupport | Vortice.Direct3D11.DeviceCreationFlags.VideoSupport,
+    [Vortice.Direct3D.FeatureLevel.Level_11_0], out var colorDevice, out _, out var colorContext).CheckError();
+using (colorDevice)
+using (colorContext)
+foreach (var format in new[] { Vortice.DXGI.Format.NV12, Vortice.DXGI.Format.P010 })
+{
+    const int size = 16;
+    using var rgbTexture = colorDevice.CreateTexture2D(new Vortice.Direct3D11.Texture2DDescription
+    {
+        Width = size, Height = size, MipLevels = 1, ArraySize = 1,
+        Format = Vortice.DXGI.Format.B8G8R8A8_UNorm, SampleDescription = new(1, 0),
+        BindFlags = Vortice.Direct3D11.BindFlags.ShaderResource
+    });
+    byte[] rgbPixels = new byte[size * size * 4];
+    for (int y = 0; y < size; y++)
+    for (int x = 0; x < size; x++)
+    {
+        int at = (y * size + x) * 4;
+        rgbPixels[at + 0] = (byte)(x % 4 == 1 ? 255 : 0);
+        rgbPixels[at + 1] = (byte)(x % 4 == 2 ? 255 : 0);
+        rgbPixels[at + 2] = (byte)(x % 4 == 0 ? 255 : 0);
+        rgbPixels[at + 3] = 255;
+    }
+    IntPtr colorUpload = System.Runtime.InteropServices.Marshal.AllocHGlobal(rgbPixels.Length);
+    try
+    {
+        System.Runtime.InteropServices.Marshal.Copy(rgbPixels, 0, colorUpload, rgbPixels.Length);
+        colorContext.UpdateSubresource(rgbTexture, 0, null, colorUpload, size * 4, 0);
+    }
+    finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(colorUpload); }
+    var planarDesc = new Vortice.Direct3D11.Texture2DDescription
+    {
+        Width = size, Height = size, MipLevels = 1, ArraySize = 1, Format = format,
+        SampleDescription = new(1, 0), BindFlags = Vortice.Direct3D11.BindFlags.RenderTarget
+    };
+    using var planarTexture = colorDevice.CreateTexture2D(planarDesc);
+    var shaderType = typeof(Aura.Core.Capture.VideoProcessorNv12).GetNestedType("ShaderConverter", BindingFlags.NonPublic)!;
+    using var shader = (IDisposable)Activator.CreateInstance(shaderType,
+        [colorDevice, colorContext, new Vortice.Direct3D11.ID3D11Texture2D?[] { planarTexture }, format, size, size])!;
+    shaderType.GetMethod("Convert")!.Invoke(shader, [rgbTexture, 0]);
+    planarDesc.BindFlags = Vortice.Direct3D11.BindFlags.None;
+    planarDesc.Usage = Vortice.Direct3D11.ResourceUsage.Staging;
+    planarDesc.CPUAccessFlags = Vortice.Direct3D11.CpuAccessFlags.Read;
+    using var staging = colorDevice.CreateTexture2D(planarDesc);
+    colorContext.CopyResource(staging, planarTexture);
+    var mappedColor = colorContext.Map(staging, 0, Vortice.Direct3D11.MapMode.Read);
+    try
+    {
+        bool ten = format == Vortice.DXGI.Format.P010;
+        int bytes = ten ? 2 : 1;
+        for (int x = 0; x < size / 2; x++)
+        {
+            double[] rgb = new double[3];
+            foreach (var (sx, weight) in new[] { (Math.Max(0, x * 2 - 1), .25), (x * 2, .5), (x * 2 + 1, .25) })
+                for (int c = 0; c < 3; c++) rgb[c] += rgbPixels[sx * 4 + 2 - c] / 255.0 * weight;
+            double cb = -.114572 * rgb[0] - .385428 * rgb[1] + .5 * rgb[2];
+            double cr = .5 * rgb[0] - .454153 * rgb[1] - .045847 * rgb[2];
+            int offset = checked((int)mappedColor.RowPitch * size + x * 2 * bytes);
+            foreach (var (channel, value) in new[] { (0, cb), (1, cr) })
+            {
+                int actual = ten
+                    ? (ushort)System.Runtime.InteropServices.Marshal.ReadInt16(mappedColor.DataPointer, offset + channel * bytes) >> 6
+                    : System.Runtime.InteropServices.Marshal.ReadByte(mappedColor.DataPointer, offset + channel);
+                double expectedColor = (128 + value * 224) * (ten ? 4 : 1);
+                Require(Math.Abs(actual - expectedColor) <= 1.1, $"{format}: chroma sample shifted at x={x}: {actual} vs {expectedColor}");
+            }
+        }
+    }
+    finally { colorContext.Unmap(staging, 0); }
+}
+Console.WriteLine("PASS: NV12 and P010 GPU chroma matches left-sited 4:2:0, including clamped screen edge");

@@ -38,7 +38,13 @@ internal sealed class PipelineSession(long id)
     /// </summary>
     public void DisposeOrdered()
     {
-        Encoder?.Dispose(); Encoder = null;
+        Encoder?.Dispose();
+        if (Encoder?.ResourcesAbandoned == true)
+        {
+            AbandonedPipelines.Add(this);
+            return;
+        }
+        Encoder = null;
         GpuTimer?.Dispose(); GpuTimer = null;
         Scaler?.Dispose(); Scaler = null;
         Processor?.Dispose(); Processor = null;

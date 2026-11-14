@@ -213,6 +213,16 @@ public sealed class CaptureRegressionTests
         Assert.False(DuplicationRecovery.IsTemporaryHResult(hresult));
     }
 
+    [Theory]
+    [InlineData(unchecked((int)0x80070005), true)]
+    [InlineData(unchecked((int)0x887A0025), true)]
+    [InlineData(unchecked((int)0x887A0026), true)]
+    [InlineData(unchecked((int)0x887A0028), false)]
+    [InlineData(unchecked((int)0x887A0004), false)]
+    [InlineData(unchecked((int)0x80070057), false)]
+    public void Startup_quarantine_exempts_desktop_transitions_but_not_rdp_or_bad_adapter(int code, bool transition) =>
+        Assert.Equal(transition, DuplicationRecovery.IsDesktopTransitionHResult(code));
+
     [Fact]
     public void TemporaryDdaFailureWithinGracePeriodRestoresWithoutEscalation()
     {
@@ -252,6 +262,34 @@ public sealed class CaptureRegressionTests
 
         Assert.Equal(DuplicationRecoveryStatus.TimedOut, result.Status);
         Assert.Same(denied, result.Error);
+    }
+
+    [Fact]
+    public void Secure_desktop_can_outlast_grace_period_without_rebuilding_encoder()
+    {
+        long elapsed = 0;
+        int attempts = 0;
+        var result = DuplicationRecovery.Run(
+            isRunning: () => true, resetCurrent: () => { },
+            create: () => { if (++attempts < 30) throw new UnauthorizedAccessException(); },
+            delay: ms => elapsed += ms,
+            isTemporary: ex => ex is UnauthorizedAccessException,
+            maxTemporaryMilliseconds: 5_000, elapsedMilliseconds: () => elapsed,
+            waitUntilAvailable: ex => ex is UnauthorizedAccessException);
+        Assert.Equal(DuplicationRecoveryStatus.Restored, result.Status);
+        Assert.True(elapsed > 5_000);
+    }
+
+    [Fact]
+    public void Stopping_during_secure_desktop_wait_ends_recovery()
+    {
+        long elapsed = 0;
+        var result = DuplicationRecovery.Run(
+            isRunning: () => elapsed < 10_000, resetCurrent: () => { },
+            create: () => throw new UnauthorizedAccessException(), delay: ms => elapsed += ms,
+            isTemporary: _ => true, maxTemporaryMilliseconds: 5_000,
+            elapsedMilliseconds: () => elapsed, waitUntilAvailable: _ => true);
+        Assert.Equal(DuplicationRecoveryStatus.Stopped, result.Status);
     }
 
     [Theory]

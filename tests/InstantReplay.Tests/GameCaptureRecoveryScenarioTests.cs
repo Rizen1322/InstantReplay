@@ -6,6 +6,56 @@ namespace InstantReplay.Tests;
 public sealed class GameCaptureRecoveryScenarioTests
 {
     [Fact]
+    public void Healthy_fallback_returns_after_quarantine_but_not_during_an_opengl_game()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var health = new CaptureHealthPolicy();
+        var coordinator = new GameCaptureRecoveryCoordinator(CaptureBackend.Wgc, false, health: health);
+        coordinator.TryDecide(CaptureBackend.Wgc, CaptureFailureKind.BackendUnavailable, out _, now);
+        Assert.False(coordinator.TryReturnToPreferred(CaptureBackend.DesktopDuplication, now.AddMinutes(1), out _));
+        coordinator.AvoidWgc = true;
+        Assert.False(coordinator.TryReturnToPreferred(CaptureBackend.DesktopDuplication, now.AddMinutes(11), out _));
+        coordinator.AvoidWgc = false;
+        Assert.True(coordinator.TryReturnToPreferred(CaptureBackend.DesktopDuplication, now.AddMinutes(11), out var decision));
+        Assert.Equal(CaptureBackend.Wgc, decision.Backend);
+        coordinator.Stop();
+        Assert.False(coordinator.TryReturnToPreferred(CaptureBackend.DesktopDuplication, now.AddMinutes(22), out _));
+    }
+    [Fact]
+    public void Repeated_monitor_failures_do_not_ping_pong_and_same_backend_retries_wait()
+    {
+        var health = new CaptureHealthPolicy();
+        var coordinator = new GameCaptureRecoveryCoordinator(CaptureBackend.Wgc, false, health: health);
+        var now = DateTimeOffset.UtcNow;
+        Assert.True(coordinator.TryDecide(CaptureBackend.Wgc, CaptureFailureKind.BackendUnavailable,
+            out var first, now));
+        Assert.Equal(CaptureBackend.DesktopDuplication, first.Backend);
+        for (int i = 0; i < 100; i++)
+        {
+            coordinator.TryDecide(first.Backend, CaptureFailureKind.BackendUnavailable, out var next, now);
+            Assert.Equal(first.Backend, next.Backend);
+            Assert.True(next.RetryDelay >= TimeSpan.FromSeconds(3));
+        }
+        coordinator.TryDecide(first.Backend, CaptureFailureKind.BackendUnavailable,
+            out var expired, now.AddMinutes(11));
+        Assert.Equal(CaptureBackend.Wgc, expired.Backend);
+    }
+
+    [Fact]
+    public void Recovery_obeys_shared_startup_switch_budget_even_for_stalled_backends()
+    {
+        var health = new CaptureHealthPolicy();
+        var now = DateTimeOffset.UtcNow;
+        health.TryRecordSwitch(now);
+        health.TryRecordSwitch(now);
+        var coordinator = new GameCaptureRecoveryCoordinator(CaptureBackend.Wgc, false, health: health);
+        coordinator.TryDecide(CaptureBackend.DesktopDuplication, CaptureFailureKind.BackendStalled,
+            out var decision, now);
+        Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
+        Assert.True(decision.RetryDelay > TimeSpan.Zero);
+    }
+
+    [Fact]
     public void Fullscreen_wgc_stall_selects_hybrid_and_epoch_gate_blocks_stale_frames()
     {
         var coordinator = CreateCoordinator();

@@ -815,7 +815,7 @@ public partial class App : Application
                 case HotkeyAction.SaveReplay: engine.SaveReplay(); break;
                 case HotkeyAction.SaveLast30: engine.SaveReplay(30); break;
                 case HotkeyAction.StartRecording: SafeStartRecording(); break;
-                case HotkeyAction.StopRecording: engine.StopRecordingToFile(); break;
+                case HotkeyAction.StopRecording: SafeStopRecording(); break;
                 case HotkeyAction.ToggleInstantReplay: ToggleEngine(); break;
                 case HotkeyAction.Screenshot: _ = TakeScreenshotAsync(); break;
                 case HotkeyAction.ScreenshotRegion: _ = TakeRegionScreenshotAsync(); break;
@@ -1065,20 +1065,36 @@ public partial class App : Application
 
     public static void SafeStartRecording()
     {
-        try { Services.Engine.StartRecordingToFile(); }
+        _ = RunEngineCommandAsync(() => Services.Engine.StartRecordingToFile());
+    }
+
+    public static void SafeStopRecording() =>
+        _ = RunEngineCommandAsync(() => Services.Engine.StopRecordingToFile());
+
+    private static int _engineCommandPending;
+    internal static bool EngineCommandPending => Volatile.Read(ref _engineCommandPending) != 0;
+
+    private static async Task RunEngineCommandAsync(Action command)
+    {
+        if (Interlocked.CompareExchange(ref _engineCommandPending, 1, 0) != 0) return;
+        try { await Task.Run(command); }
         catch (Core.Storage.InsufficientDiskSpaceException ex)
         {
-            Services.Notifications.Show(NotificationKind.Warning, "Запись не начата: нет места на диске", ex.Message);
+            Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске", ex.Message);
         }
-        catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось начать запись", ex.Message); }
+        catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось выполнить команду записи", ex.Message); }
+        finally { Interlocked.Exchange(ref _engineCommandPending, 0); }
     }
 
     public static void ToggleEngine()
     {
         // Переключатель трогает только повтор: идущая запись в файл продолжается
         // и при включении, и при выключении
-        if (!Services.Engine.ReplayActive) SafeStartEngine();
-        else Services.Engine.StopReplay();
+        _ = RunEngineCommandAsync(() =>
+        {
+            if (!Services.Engine.ReplayActive) SafeStartEngine();
+            else Services.Engine.StopReplay();
+        });
     }
 
     /// <summary>
@@ -1133,8 +1149,8 @@ public partial class App : Application
     {
         var s = Services.Settings.Current;
         int? underCursor = Core.Capture.MonitorLayout.IndexUnderCursor();
-        int monitor = underCursor ?? s.MonitorIndex;
-        bool live = monitor == s.MonitorIndex;
+        int monitor = underCursor ?? Core.Capture.MonitorLayout.Resolve(s.MonitorIndex, s.MonitorDeviceId);
+        bool live = Services.Engine.IsCapturingMonitor(monitor);
         if (!live)
             Log.Info("Screenshot", $"Снимок на мониторе {monitor}, запись идёт с {s.MonitorIndex} — " +
                                    "живой кадр не подходит, открываю свою сессию");

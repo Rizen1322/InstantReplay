@@ -96,6 +96,7 @@ public sealed class AppSettings
 
     /// <summary>Индекс монитора для захвата (0 = основной).</summary>
     public int MonitorIndex { get; set; } = 0;
+    public string? MonitorDeviceId { get; set; }
     /// <summary>Записывать курсор мыши.</summary>
     public bool RecordCursor { get; set; } = true;
 

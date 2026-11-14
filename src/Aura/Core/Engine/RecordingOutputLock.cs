@@ -16,7 +16,7 @@ namespace Aura.Core.Engine;
 /// </summary>
 internal sealed class RecordingOutputLock
 {
-    private (int Monitor, int Vertical, int Width, int Height)? _locked;
+    private (string Monitor, int Vertical, int Width, int Height)? _locked;
 
     /// <summary>
     /// База выхода для сеанса. Первый вызов (или после <see cref="Reset"/>, или с
@@ -24,10 +24,10 @@ internal sealed class RecordingOutputLock
     /// а если его прочитать не удалось — <paramref name="fallback"/>. Дальше
     /// возвращается закреплённое значение, что бы ни показывала система.
     /// </summary>
-    public (int Width, int Height) Resolve(int monitor, int vertical, (int Width, int Height)? desktopMode,
+    public (int Width, int Height) Resolve(string monitor, int vertical, (int Width, int Height)? desktopMode,
                                            (int Width, int Height) fallback, out bool reused)
     {
-        if (_locked is { } l && l.Monitor == monitor && l.Vertical == vertical)
+        if (_locked is { } l && string.Equals(l.Monitor, monitor, StringComparison.OrdinalIgnoreCase) && l.Vertical == vertical)
         {
             reused = true;
             return (l.Width, l.Height);

@@ -15,6 +15,7 @@ internal readonly record struct CaptureSourceRequest
 
     public CaptureBackend Backend { get; }
     public int MonitorIndex { get; }
+    public string? MonitorIdentity { get; init; }
     public GameCaptureTarget? Target { get; }
     public long TargetRevision => Target?.Revision ?? 0;
 

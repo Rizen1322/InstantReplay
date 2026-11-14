@@ -19,7 +19,7 @@ int SavedLength()
 
 var settings = new SettingsManager();
 settings.Load();
-settings.Update(s => { s.SaveRootPath = Path.Combine(root, "clips"); s.ReplayLengthSeconds = 77; });
+settings.Update(s => { s.SaveRootPath = Path.Combine(root, "clips"); s.ReplayLengthSeconds = 77; s.MonitorDeviceId = "test-display-interface"; });
 Require(File.Exists(file), "First launch did not save settings in a new directory.");
 Require(SavedLength() == 77, "First save lost preferences.");
 settings.Update(s => s.ReplayLengthSeconds = 88);
@@ -27,6 +27,7 @@ Require(File.Exists(backup), "Previous preferences were not backed up.");
 File.WriteAllText(file, "{broken");
 settings.Load();
 Require(settings.Current.ReplayLengthSeconds == 77, "Corrupt preferences did not recover from backup.");
+Require(settings.Current.MonitorDeviceId == "test-display-interface", "Monitor identity was lost during backup recovery.");
 Require(Directory.GetFiles(root, "settings.json.broken-*").Length > 0, "Corrupt input was not retained.");
 settings.Update(s => s.ReplayLengthSeconds = 79);
 

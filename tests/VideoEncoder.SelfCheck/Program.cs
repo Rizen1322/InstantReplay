@@ -79,6 +79,10 @@ try
                     encoder.SubmitFrame(texture, capture, context!);
                 }));
                 await Task.Delay(3000);
+                long stopTicks = Ticks();
+                typeof(VideoEncoder).GetMethod("WaitForOutputThrough", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(encoder, [stopTicks]);
+                Require(packets.Any(p => p.Dts >= stopTicks), "Recording stop detached before delayed output reached its cutoff");
             }
             finally
             {
@@ -87,16 +91,15 @@ try
                 texture?.Dispose();
             }
             var result = packets.ToArray();
+            Require((int)typeof(VideoEncoder).GetField("_inFlight", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(encoder)! == 0, "Encoder discarded output during drain");
             Require(failures.IsEmpty, "Encoder failed: " + string.Join("; ", failures));
             Require(result.Length >= 140, $"Too few frames: {result.Length}, {backend}");
             Require(prepared <= 190, $"More conversions than output slots: {prepared}");
             Require(result.All(p => p.Length > 0) && result.Any(p => p.Key), "Invalid or keyframe-free bitstream");
             Require(result.Zip(result.Skip(1), (a, b) => b.Dts > a.Dts).All(x => x), "Non-monotonic DTS");
             long[] presentation = result.Select(p => p.Pts).Order().ToArray();
-            // Replay disposal discards delayed B-picture output; validate the complete presentation prefix.
-            long[] complete = bFrames == 0 ? presentation : presentation.Where(p => p < presentation[^1] - bFrames * 166667L).ToArray();
-            Require(complete.Length >= result.Length - 2 * bFrames - 1, "Incomplete presentation prefix");
-            var gaps = complete.Zip(complete.Skip(1), (a, b) => (At: a, Gap: b - a))
+            var gaps = presentation.Zip(presentation.Skip(1), (a, b) => (At: a, Gap: b - a))
                 .Where(p => p.Gap is < 166666 or > 166667).ToArray();
             Require(gaps.Length == 0,
                 $"Output is not a contiguous 60fps grid: {backend}, encoded={result.Length}, prepared={prepared}; " +
@@ -104,7 +107,7 @@ try
                 $"droppedReal={encoder.FramesDroppedRealQueue}, droppedQueue={encoder.FramesDroppedQueue}, " +
                 $"discardedDuplicates={encoder.FramesDiscardedDuplicates}, skippedSlots={encoder.PullSkippedWindow}; " +
                 string.Join(", ", gaps.Take(8).Select(p => $"{(p.At - presentation[0]) / 10_000_000.0:F3}s: {p.Gap}")));
-            Console.WriteLine($"PASS: {codec} {(tenBit ? 10 : 8)}bit, request={(mft ? "MFT" : "native")}, B={bFrames}, backend={backend}, encoded={result.Length}, prepared={prepared}, monotonic DTS, contiguous 60fps PTS{(bFrames > 0 ? " before reorder tail" : "")}");
+            Console.WriteLine($"PASS: {codec} {(tenBit ? 10 : 8)}bit, request={(mft ? "MFT" : "native")}, B={bFrames}, backend={backend}, encoded={result.Length}, prepared={prepared}, monotonic DTS, contiguous 60fps PTS including drain");
         }
     }
 }

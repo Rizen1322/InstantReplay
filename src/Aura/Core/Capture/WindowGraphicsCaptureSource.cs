@@ -55,6 +55,7 @@ internal sealed class WindowGraphicsCaptureSource : IScreenCapture
 
     public void Start() => _inner.Start();
     public void Stop() => _inner.Stop();
+    public bool StopCompleted => _inner.StopCompleted;
     public void Dispose() => _inner.Dispose();
 
     private Windows.Graphics.Capture.GraphicsCaptureItem CreateCaptureItem()

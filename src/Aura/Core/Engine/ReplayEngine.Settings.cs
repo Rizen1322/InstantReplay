@@ -26,19 +26,20 @@ public sealed partial class ReplayEngine
 {
     /// <summary>Настройки, от которых зависит собранный конвейер.</summary>
     private sealed record PipelineConfig(
-        VideoCodec Codec, int Height, int Fps, VideoBitDepth BitDepth, int Monitor,
+        VideoCodec Codec, int Height, int Fps, VideoBitDepth BitDepth, int Monitor, string? MonitorId,
         int BitrateMbps, BitrateMode BitrateMode, bool Cursor,
         int ReplaySeconds, bool OnDisk,
         bool Game, bool Mic, string? RenderDevice, string? CaptureDevice, string? GameProcess)
     {
         public static PipelineConfig From(AppSettings s) => new(
-            s.Codec, s.VerticalResolution, s.Fps, s.BitDepth, s.MonitorIndex,
+            s.Codec, s.VerticalResolution, s.Fps, s.BitDepth, s.MonitorIndex, s.MonitorDeviceId,
             s.BitrateMbps, s.BitrateMode, s.RecordCursor,
             s.ReplayLengthSeconds, s.ReplayBufferOnDisk,
             s.CaptureGameAudio, s.CaptureMicrophone, s.RenderDeviceId, s.CaptureDeviceId, s.GameAudioProcess);
 
         public bool FormatDiffers(PipelineConfig o) =>
-            Codec != o.Codec || Height != o.Height || Fps != o.Fps || BitDepth != o.BitDepth || Monitor != o.Monitor;
+            Codec != o.Codec || Height != o.Height || Fps != o.Fps || BitDepth != o.BitDepth ||
+            MonitorId != o.MonitorId || (string.IsNullOrEmpty(MonitorId) && Monitor != o.Monitor);
 
         public bool EncoderDiffers(PipelineConfig o) =>
             BitrateMbps != o.BitrateMbps || BitrateMode != o.BitrateMode || Cursor != o.Cursor;

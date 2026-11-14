@@ -114,6 +114,7 @@ public static class Mp4ProgressiveWriter
         var order = new List<(int Track, int Chunk)>();
         var cursor = new int[tracks.Count];
         var mediaTime = new long[tracks.Count];   // в 100-нс тиках от начала видео
+        var mediaUnits = new long[tracks.Count];
         for (int t = 0; t < tracks.Count; t++) mediaTime[t] = tracks[t].StartTicks;
         long window = ChunkTicks;
         while (true)
@@ -126,7 +127,8 @@ public static class Mp4ProgressiveWriter
                 int i = first;
                 while (i < track.Sizes.Length && mediaTime[t] < window)
                 {
-                    mediaTime[t] += (long)track.Durations[i] * 10_000_000 / track.Timescale;
+                    mediaUnits[t] += track.Durations[i];
+                    mediaTime[t] = track.StartTicks + mediaUnits[t] * 10_000_000 / track.Timescale;
                     i++;
                 }
                 if (i > first)

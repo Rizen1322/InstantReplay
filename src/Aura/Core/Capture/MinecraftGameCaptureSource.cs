@@ -32,17 +32,17 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
     private bool _started;
     private bool _disposed;
 
-    public MinecraftGameCaptureSource(in GameCaptureTarget target)
+    public MinecraftGameCaptureSource(in GameCaptureTarget target, string? monitorIdentity = null)
     {
         _target = target;
         if (ScreenCaptureFactory.WgcAllowed)
         {
-            _monitor = new ScreenCaptureSource(target.MonitorIndex);
+            _monitor = new ScreenCaptureSource(target.MonitorIndex, monitorIdentity);
             _monitorName = "WGC-monitor";
         }
         else
         {
-            _monitor = new DesktopDuplicationSource();
+            _monitor = new DesktopDuplicationSource(monitorIdentity);
             _monitorName = "DDA-monitor";
         }
         _monitor.FrameArrived += OnMonitorFrame;
@@ -50,6 +50,7 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
     }
 
     public ID3D11Device D3DDevice => _monitor.D3DDevice;
+    public bool StopCompleted => _monitor.StopCompleted;
     public ID3D11DeviceContext D3DContext => _monitor.D3DContext;
     public int Width => _monitor.Width;
     public int Height => _monitor.Height;

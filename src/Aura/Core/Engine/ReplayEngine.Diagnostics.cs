@@ -435,7 +435,7 @@ public sealed partial class ReplayEngine
             long fpsDrop = PerSecond(dDrop, sampleSeconds);
             long fpsDup = PerSecond(dDup, sampleSeconds);
 
-            bool gameForeground = _gameCaptureRecovery.Target is not null;
+            bool gameForeground = _gameCaptureRecovery.Target is not null && IsDefaultInputDesktop();
             var health = _captureHealth.Observe(new CaptureHealthSample(
                     backend,
                     _settings.Current.Fps,
@@ -930,7 +930,7 @@ public sealed partial class ReplayEngine
                     // Несколько мониторов: курсор, гуляющий по другому экрану, и ввод в
                     // окно на другом экране записываемый монитор не меняют. Раньше это
                     // считалось доказательством поломки, и захват пересобирался зря.
-                    var screen = Aura.Core.Capture.MonitorLayout.For(_settings.Current.MonitorIndex);
+                    var screen = Aura.Core.Capture.MonitorLayout.For(_pipelineMonitorIndex);
                     bool cursorMoved = cursorNow != _wdCursor &&
                                        (OnScreen(screen, cursorNow) || OnScreen(screen, _wdCursor));
                     bool inputHappened = LastInputTick() != _wdInputTick && ForegroundOnScreen(screen);

@@ -47,6 +47,9 @@ public sealed partial class ReplayEngine : IDisposable
     /// где-то ещё».
     /// </summary>
     private int _pipelineMonitorIndex;
+    private string? _pipelineMonitorIdentity;
+    public bool IsCapturingMonitor(int monitorIndex) => _pipelineOpen &&
+        string.Equals(MonitorLayout.IdentityFor(monitorIndex), _pipelineMonitorIdentity, StringComparison.OrdinalIgnoreCase);
     private (int Width, int Height)? _pipelineCanvas;
     private readonly RecordingOutputLock _outputLock = new();
     private readonly AudioMixerEngine _audio = new();
@@ -262,7 +265,8 @@ public sealed partial class ReplayEngine : IDisposable
         _gameCaptureRecovery = new GameCaptureRecoveryCoordinator(
             _preferredCaptureBackend,
             _captureBackendForced,
-            ScreenCaptureFactory.WgcAllowed);
+            ScreenCaptureFactory.WgcAllowed,
+            _captureHealth);
         // Проблемы со звуком должны доходить до человека сразу: немой клип
         // обнаруживается уже после того, как момент упущен
         _audio.Warning += msg => Warning?.Invoke(msg);
@@ -415,13 +419,19 @@ public sealed partial class ReplayEngine : IDisposable
         var s = _settings.Current;
         try
         {
+            int monitorIndex = MonitorLayout.Resolve(s.MonitorIndex, s.MonitorDeviceId);
+            if (string.IsNullOrEmpty(s.MonitorDeviceId))
+            {
+                string identity = MonitorLayout.IdentityFor(monitorIndex);
+                _settings.Update(x => x.MonitorDeviceId = identity, "monitor-identity");
+            }
             GameCaptureTarget? sourceTarget = null;
             if (backend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
             {
                 GameCaptureTarget target = requestedTarget ?? _gameCaptureRecovery.Target ??
                     throw new InvalidOperationException("Для игрового capture нет проверенного окна");
                 GameCaptureTarget? verified = ForegroundGameWindowProbe.TrySelect(
-                    s.MonitorIndex,
+                    monitorIndex,
                     target);
                 if (verified is not GameCaptureTarget current ||
                     !current.HasSameIdentity(target) ||
@@ -469,16 +479,17 @@ public sealed partial class ReplayEngine : IDisposable
             _pipeline = session;
             _pipeline.Capture = ScreenCaptureFactory.Create(CaptureSourceRequest.Create(
                 _captureBackend,
-                s.MonitorIndex,
-                sourceTarget));
-            _pipeline.Capture.Prepare(s.MonitorIndex, s.Fps, s.RecordCursor, generation);
+                monitorIndex,
+                sourceTarget) with { MonitorIdentity = s.MonitorDeviceId });
+            _pipeline.Capture.Prepare(monitorIndex, s.Fps, s.RecordCursor, generation);
 
             lock (_captureTargetSync) _activeCaptureTarget = sourceTarget;
 
-            WarnIfMonitorIsHdr(s.MonitorIndex);
+            WarnIfMonitorIsHdr(monitorIndex);
 
-            var monitorCanvas = MonitorLayout.For(s.MonitorIndex);
-            _pipelineMonitorIndex = s.MonitorIndex;
+            var monitorCanvas = MonitorLayout.For(monitorIndex);
+            _pipelineMonitorIndex = monitorIndex;
+            _pipelineMonitorIdentity = s.MonitorDeviceId;
             _pipelineCanvas = monitorCanvas is { } mc ? (mc.Width, mc.Height) : null;
             // Кадры Desktop Duplication ровно того размера, что дупликация прочитала у
             // выхода. Границы монитора читаются отдельным вызовом и посреди смены режима
@@ -496,10 +507,10 @@ public sealed partial class ReplayEngine : IDisposable
             // из разрешения рабочего стола при первом старте и не перечитывается на
             // пересборках, когда система посреди смены режима может показывать чужой
             // размер. Кадр другого размера или пропорции растягивается на весь выход.
-            var desktopMode = MonitorLayout.DesktopModeFor(s.MonitorIndex);
+            var desktopMode = MonitorLayout.DesktopModeFor(monitorIndex);
             (int Width, int Height)? outputBase = _outputLock.Resolve(
-                s.MonitorIndex, s.VerticalResolution, desktopMode, (canvasWidth, canvasHeight), out bool outputReused);
-            Log.Info("Capture", $"Размеры: {_captureBackend}, монитор #{s.MonitorIndex}; источник {canvasWidth}x{canvasHeight}, " +
+                s.MonitorDeviceId!, s.VerticalResolution, desktopMode, (canvasWidth, canvasHeight), out bool outputReused);
+            Log.Info("Capture", $"Размеры: {_captureBackend}, монитор #{monitorIndex}; источник {canvasWidth}x{canvasHeight}, " +
                                 $"границы {(monitorCanvas is { } b ? $"{b.Width}x{b.Height}" : "?")}, " +
                                 $"рабочий стол {(desktopMode is { } d ? $"{d.Width}x{d.Height}" : "?")}; база записи " +
                                 $"{outputBase.Value.Width}x{outputBase.Value.Height} " +
@@ -1071,7 +1082,13 @@ public sealed partial class ReplayEngine : IDisposable
         // WGC ломается, только если монитор, который мы снимаем, пропал или сменил
         // размер. Любая другая перестройка дисплеев — второй монитор, масштаб на
         // соседнем экране — захвату не мешает, и трогать работающий конвейер незачем.
-        var now = MonitorLayout.For(_pipelineMonitorIndex);
+        (int X, int Y, int Width, int Height, double Scale)? now = null;
+        try
+        {
+            _pipelineMonitorIndex = MonitorLayout.Resolve(_pipelineMonitorIndex, _pipelineMonitorIdentity);
+            now = MonitorLayout.For(_pipelineMonitorIndex);
+        }
+        catch (InvalidOperationException) { }
         if (now is { } m && _pipelineCanvas is { } was && m.Width == was.Width && m.Height == was.Height)
             return;
 
@@ -1229,6 +1246,14 @@ public sealed partial class ReplayEngine : IDisposable
         bool framesDrained = DrainFramesInFlight();
         if (!workerStopped || !framesDrained) wedged = true;
 
+        // Keep the recorder subscribed until delayed encoder output has arrived.
+        if (!wedged && _pipeline.Encoder is { } encoder)
+        {
+            encoder.Dispose();
+            wedged = encoder.ResourcesAbandoned;
+            _pipeline.Encoder = null;
+        }
+
         // Файл записи закрываем ДО сноса конвейера и дожидаемся конца: иначе выход
         // из приложения обрывает финализацию и MP4 остаётся без moov — «сохранено,
         // а записи нет».
@@ -1305,8 +1330,16 @@ public sealed partial class ReplayEngine : IDisposable
     private static bool StopCaptureBounded(IScreenCapture capture)
     {
         var stop = Task.Run(capture.Stop);
-        if (stop.Wait(TimeSpan.FromSeconds(3))) return true;
-        Log.Error("Engine", "Захват не остановился за 3 секунды — видеокарта не отвечает на этом устройстве, " +
+        try
+        {
+            if (stop.Wait(TimeSpan.FromSeconds(6))) return capture.StopCompleted;
+        }
+        catch (AggregateException ex)
+        {
+            Log.Error("Engine", $"Ошибка остановки захвата: {ex.GetBaseException().Message}");
+            return false;
+        }
+        Log.Error("Engine", "Захват не остановился за 6 секунд — видеокарта не отвечает на этом устройстве, " +
                             "конвейер будет брошен и собран заново");
         return false;
     }

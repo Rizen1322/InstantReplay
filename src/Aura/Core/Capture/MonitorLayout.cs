@@ -21,6 +21,29 @@ namespace Aura.Core.Capture;
 /// </summary>
 public static class MonitorLayout
 {
+    internal static string DeviceId(string deviceName)
+    {
+        var display = new NativeMethods.DISPLAY_DEVICE
+        {
+            cb = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.DISPLAY_DEVICE>()
+        };
+        return NativeMethods.EnumDisplayDevicesW(deviceName, 0, ref display, 1) && !string.IsNullOrEmpty(display.DeviceID)
+            ? display.DeviceID : deviceName;
+    }
+
+    public static string IdentityFor(int monitorIndex)
+    {
+        var monitors = Monitors(refresh: true);
+        if ((uint)monitorIndex >= (uint)monitors.Count)
+            throw new InvalidOperationException("Выбранный монитор отключён. Выберите экран в настройках захвата.");
+        return DeviceId(monitors[monitorIndex].DeviceName);
+    }
+
+    public static int Resolve(int monitorIndex, string? deviceId)
+    {
+        var monitors = Monitors(refresh: true);
+        return MonitorSelection.Resolve(monitors.Select(m => DeviceId(m.DeviceName)).ToArray(), monitorIndex, deviceId);
+    }
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(2);
     private static readonly object Sync = new();
     private static List<(IntPtr Handle, NativeMethods.RECT Bounds, string DeviceName)>? _cache;
@@ -30,9 +53,9 @@ public static class MonitorLayout
     public static (int X, int Y, int Width, int Height, double Scale)? For(int monitorIndex)
     {
         var monitors = Monitors();
-        if (monitors.Count == 0) return null;
+        if ((uint)monitorIndex >= (uint)monitors.Count) return null;
 
-        var (handle, bounds, _) = monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)];
+        var (handle, bounds, _) = monitors[monitorIndex];
 
         double scale = 1.0;
         // MDT_EFFECTIVE_DPI: сбой не критичен — просто останемся на 100%
@@ -56,8 +79,8 @@ public static class MonitorLayout
     public static (int Width, int Height)? DesktopModeFor(int monitorIndex)
     {
         var monitors = Monitors();
-        if (monitors.Count == 0) return null;
-        string device = monitors[Math.Clamp(monitorIndex, 0, monitors.Count - 1)].DeviceName;
+        if ((uint)monitorIndex >= (uint)monitors.Count) return null;
+        string device = monitors[monitorIndex].DeviceName;
         if (string.IsNullOrEmpty(device)) return null;
 
         var mode = new NativeMethods.DEVMODEW
@@ -68,11 +91,8 @@ public static class MonitorLayout
             mode.dmPelsWidth == 0 || mode.dmPelsHeight == 0)
             return null;
 
-        // Портретный монитор хранит в реестре размеры как для горизонтали.
-        bool portrait = mode.dmDisplayOrientation is 1 or 3;
-        return portrait
-            ? ((int)mode.dmPelsHeight, (int)mode.dmPelsWidth)
-            : ((int)mode.dmPelsWidth, (int)mode.dmPelsHeight);
+        // DEVMODE dimensions already describe the oriented desktop, unlike the raw DDA surface.
+        return ((int)mode.dmPelsWidth, (int)mode.dmPelsHeight);
     }
 
     /// <summary>
@@ -102,11 +122,11 @@ public static class MonitorLayout
         return null;
     }
 
-    private static List<(IntPtr Handle, NativeMethods.RECT Bounds, string DeviceName)> Monitors()
+    private static List<(IntPtr Handle, NativeMethods.RECT Bounds, string DeviceName)> Monitors(bool refresh = false)
     {
         lock (Sync)
         {
-            if (_cache is not null && DateTime.UtcNow - _cachedAt < CacheLifetime) return _cache;
+            if (!refresh && _cache is not null && DateTime.UtcNow - _cachedAt < CacheLifetime) return _cache;
 
             var list = new List<(IntPtr, NativeMethods.RECT, string)>();
             try
@@ -133,6 +153,7 @@ public static class MonitorLayout
                 // сдвигаются, и «второй монитор» в настройках указывает не туда.
                 Logging.Log.Warn("Capture",
                     $"Перечисление мониторов оборвалось на {list.Count}-м: {ex.Message}");
+                throw new InvalidOperationException("Не удалось получить полный список мониторов", ex);
             }
 
             _cache = list;

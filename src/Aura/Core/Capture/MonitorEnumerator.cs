@@ -2,7 +2,10 @@ using Vortice.DXGI;
 
 namespace Aura.Core.Capture;
 
-public sealed record MonitorDescription(int Index, string Label, int Width, int Height, bool IsPrimary);
+public sealed record MonitorDescription(int Index, string Label, int Width, int Height, bool IsPrimary)
+{
+    public string DeviceId { get; init; } = "";
+}
 
 /// <summary>Список мониторов для комбобокса настроек — тот же порядок DXGI, что у захвата.</summary>
 public static class MonitorEnumerator
@@ -27,7 +30,7 @@ public static class MonitorEnumerator
                             result.Add(new MonitorDescription(
                                 idx,
                                 $"Монитор {idx + 1} ({w}×{h}){(primary ? ", основной" : "")}",
-                                w, h, primary));
+                                w, h, primary) { DeviceId = MonitorLayout.DeviceId(d.DeviceName) });
                         }
             }
         }
@@ -37,9 +40,10 @@ public static class MonitorEnumerator
             // пользователь выбирает «Монитор 2», а пишется совсем другой экран.
             Logging.Log.Warn("Capture",
                 $"Перечисление мониторов оборвалось на {result.Count}-м: {ex.Message}");
+            result.Clear();
         }
         if (result.Count == 0)
-            result.Add(new MonitorDescription(0, "Монитор 1, основной", 0, 0, true));
+            result.Add(new MonitorDescription(0, "Мониторы недоступны", 0, 0, false));
         return result;
     }
 }
