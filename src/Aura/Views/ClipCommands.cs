@@ -71,6 +71,14 @@ public static class ClipCommands
     /// <summary>Сообщить страницам про один новый файл.</summary>
     public static void NotifyClipAdded(string path) => ClipAdded?.Invoke(path);
 
+    internal static void RegisterSavedVideo(string path)
+    {
+        string relative = Path.GetRelativePath(Services.Settings.Current.SaveRootPath, Path.GetFullPath(path));
+        if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar)) return;
+        Services.Storage.RegisterSaved(path);
+        NotifyClipAdded(path);
+    }
+
     /// <summary>Оставлено для совместимости вызова из App: регистрация больше не нужна.</summary>
     public static void Register() { }
 

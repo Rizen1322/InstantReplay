@@ -88,8 +88,15 @@ public partial class ClipEditorWindow : Window
     {
         _item = item;
         InitializeComponent();
+        VideoFileDrop.Attach(this, paths =>
+        {
+            if (_exportCancellation is not null) return;
+            _player?.SetPause(true);
+            VideoAssemblyWindow.ShowSegments(SelectedSegments(), paths);
+        });
         _volume = Services.Settings.Current.EditorVolumePercent;
         VolumeSlider.Value = _volume;
+        ExportSizeLimit.Text = Services.Settings.Current.AttachmentSizeMb.ToString();
         ShowVolume();
         FileNameText.Text = item.FileName;
 
@@ -329,8 +336,7 @@ public partial class ClipEditorWindow : Window
         _durationSeconds = seconds;
         if (first)
         {
-            _startSeconds = 0;
-            _endSeconds = seconds;
+            InitializeCuts();
         }
         else
         {
@@ -447,6 +453,7 @@ public partial class ClipEditorWindow : Window
     private void Timer_Tick(object? sender, EventArgs e)
     {
         if (_player is null || _durationSeconds <= 0) return;
+        if (SkipRemovedSection()) return;
         WatchPreview();
         double position = CurrentSeconds;
         // У конца файла встаём чуть раньше: доиграв, LibVLC закрывает видеовывод,
@@ -697,7 +704,7 @@ public partial class ClipEditorWindow : Window
         AudioSegment.Items.Clear();
         for (int i = 0; i < _audioTrackIds.Length; i++)
         {
-            string label = i == 0 ? "Игра" : i == 1 ? "Микрофон" : $"Дорожка {i + 1}";
+            string label = _externalVideo ? $"Дорожка {i + 1}" : i == 0 ? "Игра" : i == 1 ? "Микрофон" : $"Дорожка {i + 1}";
             AudioSegment.Items.Add(new ListBoxItem { Content = label, Tag = i });
         }
         var together = new ListBoxItem { Content = "Вместе", Tag = -1 };
@@ -712,7 +719,9 @@ public partial class ClipEditorWindow : Window
 
         // По умолчанию — «Вместе»: так ведёт себя и LosslessCut (в файл попадает
         // весь звук), а раньше редактор молча сохранял одну игру без микрофона.
-        AudioSegment.SelectedItem = together;
+        AudioSegment.SelectedItem = _initialSegment?.AudioTrack is >= 0 and var selected
+            ? AudioSegment.Items.Cast<ListBoxItem>().FirstOrDefault(i => (int)i.Tag == selected) ?? together
+            : together;
     }
 
     private async void AudioTrack_Changed(object sender, SelectionChangedEventArgs e)
@@ -783,10 +792,19 @@ public partial class ClipEditorWindow : Window
         if (_mixGenerationTask is not null) return _mixGenerationTask;
         _mixedAudioPath = Path.Combine(Path.GetTempPath(), $"aura-editor-audio-{Guid.NewGuid():N}.m4a");
         string output = _mixedAudioPath;
-        _mixGenerationTask = Task.Run(() => Core.Saving.Mp4.Mp4Trim.MixAudio(
-            _item.FullPath, output, tracks => Core.Audio.AudioMixdown.Mix(tracks, _previewMixCancellation.Token),
-            _previewMixCancellation.Token),
-            _previewMixCancellation.Token);
+        _mixGenerationTask = Task.Run(async () =>
+        {
+            try
+            {
+                Core.Saving.Mp4.Mp4Trim.MixAudio(_item.FullPath, output,
+                    tracks => Core.Audio.AudioMixdown.Mix(tracks, _previewMixCancellation.Token), _previewMixCancellation.Token);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && _ffmpeg is not null)
+            {
+                File.Delete(output);
+                await Ffmpeg.MixAudioAsync(_ffmpeg, _item.FullPath, output, _audioTrackIds.Length, _previewMixCancellation.Token);
+            }
+        }, _previewMixCancellation.Token);
         return _mixGenerationTask;
     }
 
@@ -853,7 +871,9 @@ public partial class ClipEditorWindow : Window
         _mixTrackSearch.TrySetResult();
     }
 
-    private string DefaultHint() => !MixAudio
+    private string DefaultHint() => _externalVideo || _cutHistory.Count > 0 || LimitExportSize.IsChecked == true
+        ? "Результат — MP4 (H.264 и AAC). Монтаж перекодирует видео; исходник сохраняется."
+        : !MixAudio
         ? "Видео и звук копируются кадр в кадр без потери качества, это быстро."
         : "Видео копируется кадр в кадр без потери качества, игра и микрофон сводятся в одну дорожку.";
 
@@ -994,9 +1014,9 @@ public partial class ClipEditorWindow : Window
 
     private void Reset_Click(object sender, RoutedEventArgs e)
     {
-        _startSeconds = 0;
-        _endSeconds = _durationSeconds;
-        Seek(0);
+        _cutHistory.Clear();
+        InitializeCuts();
+        Seek(_startSeconds);
         UpdateTimelineVisuals();
     }
 
@@ -1007,6 +1027,7 @@ public partial class ClipEditorWindow : Window
 
         TimelineTrack.Width = width;
         FilmBox.Width = width;
+        DrawCuts(width);
         // Скругление как у шкалы: картинки кадров иначе торчали бы углами
         FilmBox.Clip = new RectangleGeometry(new Rect(0, 0, width, 40), 8, 8);
         double handleWidth = InHandle.Width;
@@ -1034,7 +1055,9 @@ public partial class ClipEditorWindow : Window
     /// </summary>
     private void UpdateSizeEstimate()
     {
+        if (LimitExportSize.IsChecked == true) { SizeEstimateText.Text = "Результат проверяется по выбранному лимиту."; return; }
         if (_fileBytes <= 0 || _durationSeconds <= 0) { SizeEstimateText.Text = ""; return; }
+        if (_externalVideo || _cutHistory.Count > 0) { SizeEstimateText.Text = "Размер зависит от перекодирования."; return; }
         double share = (_endSeconds - _startSeconds) / _durationSeconds;
         SizeEstimateText.Text = $"≈ {Aura.Core.Storage.ByteSize.Format((long)(_fileBytes * share))}";
     }
@@ -1047,6 +1070,15 @@ public partial class ClipEditorWindow : Window
 
     private async void Export_Click(object sender, RoutedEventArgs e)
     {
+        if (_selectForAssembly)
+        {
+            var selected = SelectedSegments();
+            if (selected.Count == 0) { Dialogs.Say("Нет фрагментов", "Выделите оставшуюся часть видео."); return; }
+            _pickedSegments = selected;
+            Close();
+            return;
+        }
+        if (_externalVideo || _cutHistory.Count > 0 || LimitExportSize.IsChecked == true) { await ExportAssemblyAsync(); return; }
         await ExportAsync(SmartExportAsync, fast: false);
     }
 
@@ -1117,8 +1149,7 @@ public partial class ClipEditorWindow : Window
         {
             string output = await export(TimeSpan.FromSeconds(_startSeconds), TimeSpan.FromSeconds(_endSeconds),
                 progress, _exportCancellation.Token);
-            Services.Storage.RegisterSaved(output);
-            ClipCommands.NotifyClipAdded(output);
+            ClipCommands.RegisterSavedVideo(output);
             ExportProgress.Value = 1;
             ExportStatus.Text = "Фрагмент сохранён";
             ExportHint.Text = output;
@@ -1150,6 +1181,9 @@ public partial class ClipEditorWindow : Window
     {
         ExportButton.IsEnabled = !value;
         AudioSegment.IsEnabled = !value;
+        RemoveRangeButton.IsEnabled = AssemblyButton.IsEnabled = !value;
+        EditorExportOptions.IsEnabled = EditorFormatsButton.IsEnabled = !value;
+        UndoCutButton.IsEnabled = !value && _cutHistory.Count > 0;
         CancelExportButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.IsIndeterminate = value && fast;
@@ -1223,7 +1257,14 @@ public partial class ClipEditorWindow : Window
         // поглощает сама: после клика Space повторно нажимал эту кнопку вместо
         // управления видео. Автоповтор Space тоже блокируем, иначе удержание
         // клавиши быстро переключает play/pause несколько раз.
-        if (e.Key == Key.Space)
+        // В поле лимита размера клавиши принадлежат полю: иначе Delete вырезал
+        // участок видео, а стрелки и Ctrl+Z управляли шкалой вместо текста.
+        if (e.OriginalSource is TextBox && e.Key != Key.Escape) return;
+        if (e.Key == Key.Delete)
+        { RemoveRange_Click(RemoveRangeButton, new RoutedEventArgs()); e.Handled = true; }
+        else if (e.Key == Key.Z && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        { UndoCut_Click(UndoCutButton, new RoutedEventArgs()); e.Handled = true; }
+        else if (e.Key == Key.Space)
         {
             e.Handled = true;
             if (!e.IsRepeat) TogglePlayback();

@@ -191,7 +191,10 @@
             </Border>
 
             <!-- Справа: фрагмент, звук, сохранение -->
-            <DockPanel Grid.Column="1" Margin="14,0,0,0">
+            <Grid Grid.Column="1" Margin="14,0,0,0">
+                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
                 <Border DockPanel.Dock="Top" Style="{StaticResource AsidePanel}">
                     <StackPanel>
                         <TextBlock Text="Фрагмент" Style="{StaticResource AsideTitle}"/>
@@ -217,9 +220,15 @@
                                        FontFamily="{DynamicResource DispFont}" FontSize="13" Foreground="{DynamicResource AccentTxBrush}"
                                        VerticalAlignment="Center"/>
                         </Grid>
-                        <Button Content="Весь клип" Style="{StaticResource BtnPlain}" HorizontalAlignment="Left" Height="30"
+                        <Button Content="Сбросить" Style="{StaticResource BtnPlain}" HorizontalAlignment="Left" Height="30"
                                 Margin="-8,8,0,0" Click="Reset_Click" ToolTip="Сбросить границы: весь клип"
                                 c:Deco.Icon="{DynamicResource Ico.Undo}"/>
+                        <WrapPanel Margin="0,6,0,0">
+                            <Button x:Name="RemoveRangeButton" Content="Удалить выделенное" Click="RemoveRange_Click" ToolTip="Убрать выделенный участок, соединив оставшиеся части (Delete)"/>
+                            <Button x:Name="UndoCutButton" Content="Отменить" Click="UndoCut_Click" Margin="0,6,0,0" IsEnabled="False" ToolTip="Отменить последнее удаление (Ctrl+Z)"/>
+                        </WrapPanel>
+                        <TextBlock x:Name="CutSummary" Style="{StaticResource AsideNote}" Margin="0,8,0,0"/>
+                        <Button x:Name="AssemblyButton" Content="Собрать с другими видео…" Click="Assembly_Click" Margin="0,8,0,0"/>
                     </StackPanel>
                 </Border>
 
@@ -234,7 +243,9 @@
                     </StackPanel>
                 </Border>
 
-                <Border DockPanel.Dock="Bottom" Style="{StaticResource AsidePanel}" Margin="0">
+                </StackPanel>
+                </ScrollViewer>
+                <Border Grid.Row="1" Style="{StaticResource AsidePanel}" Margin="0">
                     <StackPanel>
                         <TextBlock x:Name="ExportStatus" Text="Готово к сохранению" Style="{StaticResource AsideTitle}" Margin="0,0,0,6"
                                    Foreground="{DynamicResource TxBrush}" FontWeight="SemiBold" FontSize="13"/>
@@ -242,8 +253,16 @@
                                    TextTrimming="CharacterEllipsis" TextWrapping="Wrap" MaxHeight="54"/>
                         <TextBlock x:Name="SizeEstimateText" Style="{StaticResource AsideNote}" Margin="0,2,0,0"
                                    Foreground="{DynamicResource Tx2Brush}"/>
+                        <WrapPanel x:Name="EditorExportOptions" Margin="0,10,0,0">
+                            <CheckBox x:Name="LimitExportSize" Content="Уместить в" VerticalAlignment="Center"
+                                      Checked="ExportLimit_Changed" Unchecked="ExportLimit_Changed"/>
+                            <TextBox x:Name="ExportSizeLimit" Width="52" MaxLength="4" Margin="6,0" VerticalContentAlignment="Center"/>
+                            <TextBlock Text="МБ" VerticalAlignment="Center"/>
+                        </WrapPanel>
+                        <Button x:Name="EditorFormatsButton" Content="Дополнительные форматы…" Style="{StaticResource BtnPlain}"
+                                HorizontalAlignment="Left" Click="EditorFormats_Click" Height="28" Margin="-8,4,0,0"/>
                         <ProgressBar x:Name="ExportProgress" Height="4" Margin="0,10,0,0" Minimum="0" Maximum="1" Visibility="Collapsed"/>
-                        <Button x:Name="ExportButton" Content="Сохранить фрагмент" Height="40" Margin="0,12,0,0"
+                        <Button x:Name="ExportButton" Content="Сохранить фрагмент" Height="40" Margin="0,8,0,0"
                                 HorizontalAlignment="Stretch" Style="{StaticResource BtnPri}" c:Deco.Icon="{DynamicResource Ico.Scissors}"
                                 Click="Export_Click" ToolTip="Сохранить выбранный фрагмент (Ctrl+E)"/>
                         <Button x:Name="CancelExportButton" Content="Отменить" Click="CancelExport_Click" Visibility="Collapsed"
@@ -253,8 +272,7 @@
                                 Click="OpenFolder_Click" Visibility="Collapsed"/>
                     </StackPanel>
                 </Border>
-                <Grid/>
-            </DockPanel>
+            </Grid>
 
             <!-- ШКАЛА: затемнённое отрезается, выделенное сохраняется -->
             <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
@@ -274,6 +292,7 @@
                     <Border x:Name="SelectedRange" Height="40" Background="#1032D74B"
                             BorderBrush="{DynamicResource AccentBrush}" BorderThickness="0,2" Canvas.Top="8"/>
                     <Border x:Name="DimAfter" Height="40" Background="#A6000000" CornerRadius="0,8,8,0" Canvas.Top="8"/>
+                    <Canvas x:Name="RemovedRanges" Height="40" Canvas.Top="8" IsHitTestVisible="False"/>
                     <Rectangle x:Name="HoverLine" Width="1" Height="40" Canvas.Top="8" Fill="{DynamicResource Tx3Brush}"
                                Visibility="Collapsed" IsHitTestVisible="False"/>
                     <Grid x:Name="Playhead" Width="12" Height="56" IsHitTestVisible="False">
@@ -310,6 +329,7 @@
                 </WrapPanel.Resources>
                 <TextBlock Style="{StaticResource Cap}" Text="Space"/><TextBlock Text="пауза"/>
                 <TextBlock Style="{StaticResource Cap}" Text="I / O"/><TextBlock Text="начало и конец"/>
+                <TextBlock Style="{StaticResource Cap}" Text="Delete"/><TextBlock Text="убрать участок"/>
                 <TextBlock Style="{StaticResource Cap}" Text="← →"/><TextBlock Text="кадр"/>
                 <TextBlock Style="{StaticResource Cap}" Text="Shift ← →"/><TextBlock Text="секунда"/>
                 <TextBlock Style="{StaticResource Cap}" Text="Home / End"/><TextBlock Text="к границам"/>

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 380" width="960" height="380" font-family="Segoe UI, Inter, -apple-system, Helvetica, Arial, sans-serif">
+<rect x="0.5" y="0.5" width="959" height="379" rx="16" fill="#0e1014" stroke="#232832"/>
+<text x="32" y="44" font-size="20" fill="#e9ecef" font-weight="700" text-anchor="start" >Режим «Качество» в живой игре</text>
+<text x="32" y="68" font-size="13" fill="#8a919c" font-weight="400" text-anchor="start" >Left 4 Dead 2, клип 3 минуты, 1440p60 HEVC, задано 30 Мбит/с. Битрейт по 10 секунд из сохранённого файла.</text>
+<path d="M90 320.0 H900" stroke="#232832" stroke-width="1"/>
+<text x="78" y="324.0" font-size="12" fill="#8a919c" font-weight="400" text-anchor="end" >0</text>
+<path d="M90 260.0 H900" stroke="#232832" stroke-width="1"/>
+<text x="78" y="264.0" font-size="12" fill="#8a919c" font-weight="400" text-anchor="end" >20</text>
+<path d="M90 200.0 H900" stroke="#232832" stroke-width="1"/>
+<text x="78" y="204.0" font-size="12" fill="#8a919c" font-weight="400" text-anchor="end" >40</text>
+<path d="M90 140.0 H900" stroke="#232832" stroke-width="1"/>
+<text x="78" y="144.0" font-size="12" fill="#8a919c" font-weight="400" text-anchor="end" >60</text>
+<path d="M90 140.0 H900" stroke="#f2a33a" stroke-width="1.5" stroke-dasharray="6 6"/>
+<text x="900" y="132.0" font-size="12" fill="#f2a33a" font-weight="600" text-anchor="end" >потолок 60</text>
+<path d="M90 230.0 H900" stroke="#e9ecef" stroke-opacity=".5" stroke-width="1.5" stroke-dasharray="6 6"/>
+<text x="900" y="248.0" font-size="12" fill="#e9ecef" font-weight="600" text-anchor="end" >задано 30</text>
+<text x="90.0" y="344" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >0:00</text>
+<text x="232.94117647058823" y="344" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >0:30</text>
+<text x="375.88235294117646" y="344" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >1:00</text>
+<text x="518.8235294117646" y="344" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >1:30</text>
+<text x="661.7647058823529" y="344" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >2:00</text>
+<text x="804.7058823529412" y="344" font-size="12" fill="#8a919c" font-weight="400" text-anchor="middle" >2:30</text>
+<defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34d27b" stop-opacity=".35"/><stop offset="1" stop-color="#34d27b" stop-opacity="0"/></linearGradient><clipPath id="reveal"><rect x="90" y="0" height="380" width="0"><animate attributeName="width" values="0;810;810;0" keyTimes="0;0.35;0.92;1" dur="10s" repeatCount="indefinite"/></rect></clipPath></defs>
+<path d="M90.0,320 L90.0,260.0 L137.6,251.0 L185.3,245.0 L232.9,164.0 L280.6,173.0 L328.2,176.0 L375.9,182.0 L423.5,221.0 L471.2,221.0 L518.8,197.0 L566.5,191.0 L614.1,212.0 L661.8,188.0 L709.4,188.0 L757.1,191.0 L804.7,188.0 L852.4,167.0 L900.0,251.0 L900.0,320 Z" fill="url(#fill)" clip-path="url(#reveal)"/>
+<polyline points="90.0,260.0 137.6,251.0 185.3,245.0 232.9,164.0 280.6,173.0 328.2,176.0 375.9,182.0 423.5,221.0 471.2,221.0 518.8,197.0 566.5,191.0 614.1,212.0 661.8,188.0 709.4,188.0 757.1,191.0 804.7,188.0 852.4,167.0 900.0,251.0" fill="none" stroke="#34d27b" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="952" stroke-dashoffset="952"><animate attributeName="stroke-dashoffset" values="952;0;0;952" keyTimes="0;0.35;0.92;1" dur="10s" repeatCount="indefinite"/></polyline>
+<g opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.36;0.42;0.9;0.92" dur="10s" repeatCount="indefinite"/><rect x="640" y="84" width="260" height="30" rx="8" fill="#161a21" stroke="#232832"/><text x="770" y="104" font-size="13" fill="#e9ecef" font-weight="600" text-anchor="middle" >в среднем 39,3 Мбит/с, 851 МБ</text></g>
+</svg>

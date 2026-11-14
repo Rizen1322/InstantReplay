@@ -15,6 +15,16 @@ namespace Aura.Core.Tools;
 /// </summary>
 public static class VideoEditor
 {
+    internal static uint WindowsAudioTrackIndex(string input, int count, int requested)
+    {
+        if (count <= 1) return 0;
+        requested = Math.Clamp(requested, 0, count - 1);
+        using var file = File.OpenRead(input);
+        // Проверено звуком: Windows разворачивает дорожки MP4, но сохраняет порядок MKV.
+        bool mp4 = Saving.Mp4.Mp4Keyframes.ReadTopLevel(file, "ftyp") is not null;
+        return (uint)(mp4 ? count - 1 - requested : requested);
+    }
+
     public static string CreateOutputPath(string input)
     {
         string desired = Path.Combine(
@@ -99,11 +109,8 @@ public static class VideoEditor
             bool mixAll = audioTrackIndex < 0;
             if (!mixAll && clip.EmbeddedAudioTracks.Count > 0)
             {
-                int requested = Math.Clamp(audioTrackIndex, 0, clip.EmbeddedAudioTracks.Count - 1);
-                // MediaClip перечисляет embedded-аудио в обратном порядке относительно
-                // MP4 stream index (проверено на двухтональном файле). UI и ffmpeg идут
-                // в естественном порядке контейнера, поэтому здесь разворачиваем индекс.
-                clip.SelectedEmbeddedAudioTrackIndex = (uint)(clip.EmbeddedAudioTracks.Count - 1 - requested);
+                clip.SelectedEmbeddedAudioTrackIndex = WindowsAudioTrackIndex(
+                    input, clip.EmbeddedAudioTracks.Count, audioTrackIndex);
             }
 
             var composition = new MediaComposition();

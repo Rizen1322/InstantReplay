@@ -1,0 +1,52 @@
+<Window x:Class="Aura.Views.VideoAssemblyWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Сборка ролика — Aura" Width="860" Height="600" MinWidth="700" MinHeight="480"
+        WindowStartupLocation="CenterOwner" Background="{DynamicResource CanvasBrush}">
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="Сборка ролика" Style="{StaticResource PageTitle}"/>
+            <TextBlock Text="Добавьте видео, расставьте фрагменты и подрежьте каждый. Можно перетащить файлы сюда."
+                       TextWrapping="Wrap" Style="{StaticResource Lede}" Margin="0,5,0,14"/>
+        </StackPanel>
+        <WrapPanel Grid.Row="1" x:Name="EditingButtons" Margin="0,0,0,12">
+            <Button Content="Добавить видео…" Click="Add_Click" Margin="0,0,8,0"/>
+            <Button Content="Подрезать / посмотреть" Click="Edit_Click" Margin="0,0,8,0"/>
+            <Button Content="↑" ToolTip="Раньше" Click="Up_Click" Margin="0,0,6,0"/>
+            <Button Content="↓" ToolTip="Позже" Click="Down_Click" Margin="0,0,8,0"/>
+            <Button Content="Убрать" Click="Remove_Click"/>
+        </WrapPanel>
+        <ListBox Grid.Row="2" x:Name="Segments" Background="{DynamicResource CardBrush}"
+                 BorderBrush="{DynamicResource SepBrush}" MouseDoubleClick="Edit_Click"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Margin="10,8" ToolTip="{Binding Path}">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="{Binding Range}" Foreground="{DynamicResource Tx3Brush}" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+            <TextBlock x:Name="Summary"/>
+            <WrapPanel x:Name="ExportOptions" Margin="0,10,0,10">
+                <CheckBox x:Name="LimitSize" Content="Уместить в" VerticalAlignment="Center"/>
+                <TextBox x:Name="SizeLimit" Width="65" MaxLength="4" Margin="8,0" VerticalContentAlignment="Center"/>
+                <TextBlock Text="МБ" VerticalAlignment="Center" Margin="0,0,18,0"/>
+                <Button Content="Дополнительные форматы…" Click="ChooseFfmpeg_Click" ToolTip="Выбрать ffmpeg для форматов, которые Windows не поддерживает"/>
+            </WrapPanel>
+            <TextBlock x:Name="Status" Text="Результат — MP4 (H.264 и AAC). Видео перекодируется; исходные файлы сохраняются."
+                       TextWrapping="Wrap" Foreground="{DynamicResource Tx3Brush}"/>
+            <ProgressBar x:Name="Progress" Height="5" Minimum="0" Maximum="1" Margin="0,10,0,0" Visibility="Collapsed"/>
+        </StackPanel>
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,0,8,0"/>
+            <Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

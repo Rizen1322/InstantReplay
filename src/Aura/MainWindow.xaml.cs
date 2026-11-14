@@ -45,6 +45,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        VideoFileDrop.Attach(this, VideoFileDrop.Open);
 
         SizeChanged += (_, _) => UpdateCompact();
         SourceInitialized += (_, _) => RoundCorners();

@@ -76,4 +76,5 @@ src/Aura/core_part2.txt
 src/Aura/core_part3.txt
 
 # Локальная документация и отчёты.
-/docs/
+/docs/*
+!/docs/images/

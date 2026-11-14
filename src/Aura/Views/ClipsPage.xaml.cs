@@ -419,6 +419,21 @@ public partial class ClipsPage : PageBase
 
     private List<ClipItem> SelectedItems() => _shown.Where(i => i.IsSelected).ToList();
 
+    private void OpenVideo_Click(object sender, RoutedEventArgs e)
+    {
+        var picker = new Microsoft.Win32.OpenFileDialog
+        { Title = "Открыть видео", Filter = Core.Tools.VideoFiles.Filter, Multiselect = true };
+        if (picker.ShowDialog() == true) VideoFileDrop.Open(picker.FileNames);
+    }
+
+    private void AssembleSelected_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = SelectedItems();
+        if (selected.Any(i => i.IsScreenshot))
+        { Dialogs.Say("Выберите видео", "Для сборки ролика выделите только видео, без скриншотов."); return; }
+        if (selected.Count > 0) VideoAssemblyWindow.ShowFiles(selected.Select(i => i.FullPath));
+    }
+
     private void ClearSelection()
     {
         foreach (var item in _shown) item.IsSelected = false;

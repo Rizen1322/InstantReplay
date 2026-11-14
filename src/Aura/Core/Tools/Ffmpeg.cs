@@ -256,6 +256,43 @@ public static class Ffmpeg
         }
     }
 
+    /// <summary>Свести все дорожки стороннего видео в один m4a для предпросмотра в редакторе.</summary>
+    public static async Task MixAudioAsync(string ffmpeg, string input, string output, int tracks, CancellationToken ct)
+    {
+        if (tracks < 2) throw new ArgumentOutOfRangeException(nameof(tracks));
+        if (File.Exists(output)) throw new IOException("Звуковой файл уже существует.");
+        string part = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output))!, $".aura-audio-{Guid.NewGuid():N}.m4a");
+        ffmpeg = ExecutableTrust.RequireProtected(ffmpeg);
+        var psi = new ProcessStartInfo(ffmpeg)
+        {
+            WorkingDirectory = Path.GetDirectoryName(ffmpeg), UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardError = true,
+            Environment = { ["PATH"] = Path.GetDirectoryName(ffmpeg) + Path.PathSeparator + System.Environment.SystemDirectory }
+        };
+        string labels = string.Concat(Enumerable.Range(0, tracks).Select(i => $"[0:a:{i}]"));
+        foreach (string arg in new[] { "-nostdin", "-hide_banner", "-n", "-i", input, "-filter_complex", MixFilter(labels, tracks),
+                     "-map", "[aout]", "-vn", "-ac", "2", "-ar", "48000", "-c:a", "aac", "-b:a", "192k", "-f", "ipod", part })
+            psi.ArgumentList.Add(arg);
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Не удалось запустить ffmpeg.");
+        Task<string> errors = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(ct);
+            string error = await errors;
+            if (process.ExitCode != 0) throw new InvalidOperationException(string.Join(" ", error.Split('\n').TakeLast(4)));
+            ct.ThrowIfCancellationRequested();
+            File.Move(part, output);
+        }
+        catch
+        {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            await process.WaitForExitAsync(CancellationToken.None);
+            try { await errors; } catch (IOException) { }
+            throw;
+        }
+        finally { try { File.Delete(part); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    }
+
     /// <summary>
     /// Сведение дорожек в одну без потери громкости, но и без перегруза.
     ///
