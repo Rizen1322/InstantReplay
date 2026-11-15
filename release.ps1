@@ -179,6 +179,12 @@ $built = (Get-Item $appExe).VersionInfo.FileVersion
 if ($built -ne $assembly) { Fail "В собранном exe версия $built, ожидалась $assembly" }
 Write-Host "   Проверено: в Aura.exe версия $built"
 
+# На этой машине файлы, созданные в рабочей папке, получают низкую метку
+# целостности. Установщик с такой меткой не может распаковать себя во временную
+# папку и --verify-payload завершается ошибкой 0x800080A0. Метка Medium —
+# обычная для установщика и не влияет на UAC.
+& icacls $setupExe /setintegritylevel Medium *> $null
+
 # Проверяем ресурс из ГОТОВОГО single-file установщика, не только папку publish.
 $verificationDir = Join-Path $root "artifacts\release-verification\$tag"
 New-Item -ItemType Directory -Path $verificationDir -Force | Out-Null
