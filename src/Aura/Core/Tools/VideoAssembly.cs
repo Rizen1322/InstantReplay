@@ -314,6 +314,7 @@ public static partial class VideoAssembly
         {
             if (segment.Start >= infos[segment.Path].Duration || segment.End > infos[segment.Path].Duration + TimeSpan.FromMilliseconds(100))
                 throw new InvalidDataException("Границы фрагмента выходят за конец видео.");
+            if (encoder is "h264_nvenc" or "hevc_nvenc") Args("-hwaccel", "cuda");
             Args("-ss", Number(segment.Start.TotalSeconds), "-t", Number(segment.Duration.TotalSeconds), "-i", System.IO.Path.GetFullPath(segment.Path));
         }
         var graph = new StringBuilder();
