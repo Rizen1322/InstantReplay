@@ -67,16 +67,12 @@ public static class Ffmpeg
             "scoop", "shims", "ffmpeg.exe");
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> EncoderChoice = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string[]> EncoderCache = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Выбрать аппаратный H.264-энкодер, который реально есть в этом ffmpeg.
-    /// NVENC быстрее программного x264 в разы; при отсутствии — libx264.
-    /// </summary>
-    public static string SelectVideoEncoder(string ffmpeg)
+    private static string[] EncodersOf(string ffmpeg)
     {
         ffmpeg = Path.GetFullPath(ffmpeg);
-        return EncoderChoice.GetOrAdd(ffmpeg, path =>
+        return EncoderCache.GetOrAdd(ffmpeg, path =>
         {
             try
             {
@@ -90,16 +86,32 @@ public static class Ffmpeg
                 using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
                 string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
                 process.WaitForExit(5000);
-                foreach (string encoder in new[] { "h264_nvenc", "h264_qsv", "h264_amf" })
-                    if (output.Contains(encoder, StringComparison.OrdinalIgnoreCase)) return encoder;
+                return output.Split('\n');
             }
             catch (Exception ex)
             {
-                Log.Info("Ffmpeg", "Не удалось определить аппаратный энкодер: " + ex.Message);
+                Log.Info("Ffmpeg", "Не удалось прочитать список энкодеров: " + ex.Message);
+                return [];
             }
-            return "libx264";
         });
     }
+
+    private static bool Has(string ffmpeg, string encoder) =>
+        EncodersOf(ffmpeg).Any(line => line.Contains(encoder, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Выбрать аппаратный H.264-энкодер, который реально есть в этом ffmpeg.
+    /// NVENC быстрее программного x264 в разы; при отсутствии — libx264/mpeg4.
+    /// </summary>
+    public static string SelectVideoEncoder(string ffmpeg)
+    {
+        foreach (string encoder in new[] { "h264_nvenc", "h264_qsv", "h264_amf" })
+            if (Has(ffmpeg, encoder)) return encoder;
+        return Has(ffmpeg, "libx264") ? "libx264" : "mpeg4";
+    }
+
+    /// <summary>Запасной программный энкодер для повторной попытки без GPU.</summary>
+    public static string SelectSoftwareEncoder(string ffmpeg) => Has(ffmpeg, "libx264") ? "libx264" : "mpeg4";
 
     /// <summary>
     /// Пережать клип так, чтобы файл влез в лимит.

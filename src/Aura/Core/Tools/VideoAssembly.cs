@@ -54,9 +54,12 @@ public static partial class VideoAssembly
         string temp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(output)!, $".aura-assembly-{Guid.NewGuid():N}.part.mp4");
         try
         {
-            bool copied = targetMegabytes is null && (segments.Count == 1
-                ? await TryRemuxAsync(segments[0], temp, progress, ct)
-                : await TryConcatAsync(segments, temp, progress, ct));
+            bool copied = targetMegabytes is null && segments.Count == 1 && await TryRemuxAsync(segments[0], temp, progress, ct);
+            // Склейка с несколькими elst быстрая, но браузеры читают только первую правку.
+            // Поэтому при наличии ffmpeg многоклиповый монтаж идёт через аппаратный транскод,
+            // а без ffmpeg остаётся быстрый запасной путь.
+            if (!copied && targetMegabytes is null && segments.Count > 1 && ffmpeg is null)
+                copied = await TryConcatAsync(segments, temp, progress, ct);
             if (!copied && ffmpeg is not null)
                 await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct);
             else if (!copied)
@@ -297,7 +300,7 @@ public static partial class VideoAssembly
         var (width, height) = OutputSize(first.Width, first.Height, bitrate);
         string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
         ffmpeg = ExecutableTrust.RequireProtected(ffmpeg);
-        string encoder = softwareEncoder ? "libx264" : Ffmpeg.SelectVideoEncoder(ffmpeg);
+        string encoder = softwareEncoder ? Ffmpeg.SelectSoftwareEncoder(ffmpeg) : Ffmpeg.SelectVideoEncoder(ffmpeg);
         Logging.Log.Info("Editor", $"FFmpeg: {segments.Count} фрагментов, видео {encoder}, {width}×{height}");
         var psi = new ProcessStartInfo(ffmpeg)
         {
@@ -323,10 +326,15 @@ public static partial class VideoAssembly
         for (int i = 0; i < segments.Count; i++)
         {
             var segment = segments[i];
-            int tracks = infos[segment.Path].AudioTracks;
+            var source = infos[segment.Path];
+            int tracks = source.AudioTracks;
             if (segment.AudioEvents.Any(e => e.Track >= infos[e.SourcePath ?? segment.Path].AudioTracks)) throw new InvalidDataException("Звуковой фрагмент ссылается на отсутствующую дорожку.");
             if (segment.AudioTrack >= tracks && segment.AudioTrack >= 0) throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-            graph.Append($"[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS[v{i}];");
+            bool samePicture = source.Width == width && source.Height == height && Math.Abs(source.Fps - first.Fps) < .01;
+            string prepare = samePicture
+                ? "format=yuv420p,setpts=PTS-STARTPTS"
+                : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS";
+            graph.Append($"[{i}:v:0]{prepare}[v{i}];");
         }
         int pieces = 0;
         var videoParts = new StringBuilder();
@@ -361,7 +369,7 @@ public static partial class VideoAssembly
             Args(legacyScript ? "-filter_complex_script" : "-/filter_complex", script, "-map", "[v]", "-map", "[a]", "-c:v", encoder);
             if (encoder == "h264_nvenc")
             {
-                Args("-preset", "p5", "-tune", "hq", "-rc", "vbr");
+                Args("-preset", "p4", "-tune", "hq", "-rc", "vbr");
                 if (bitrate is uint nvencBitrate) Args("-b:v", nvencBitrate.ToString(CultureInfo.InvariantCulture));
                 else Args("-cq", "19", "-b:v", "0");
             }
@@ -374,6 +382,11 @@ public static partial class VideoAssembly
             {
                 Args("-quality", "balanced", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22");
                 if (bitrate is uint amfBitrate) Args("-b:v", amfBitrate.ToString(CultureInfo.InvariantCulture));
+            }
+            else if (encoder == "mpeg4")
+            {
+                if (bitrate is uint mpeg4Bitrate) Args("-b:v", mpeg4Bitrate.ToString(CultureInfo.InvariantCulture));
+                else Args("-q:v", "3");
             }
             else
             {

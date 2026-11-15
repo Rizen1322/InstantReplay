@@ -49,6 +49,13 @@
     <Content Include="Assets\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <!-- Минимальный FFmpeg (LGPL): HEVC-декодер и NVENC/QSV/AMF-энкодеры без 100 МБ лишнего. -->
+    <Content Include="..\..\tools\ffmpeg\ffmpeg.exe" Link="ffmpeg.exe"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\ffmpeg\COPYING.LGPLv2.1" Link="ffmpeg-COPYING.LGPLv2.1"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\tools\ffmpeg\README.md" Link="ffmpeg-README.md"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- Шрифты вшиты в сборку: интерфейс выглядит одинаково на любой машине -->
     <Resource Include="Fonts\*.ttf" />
     <Content Include="$(GameCaptureHookOutput)\Aura.GameCaptureHook64.dll"
