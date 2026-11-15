@@ -47,7 +47,58 @@ public static class Ffmpeg
             catch { }
         }
 
+        foreach (string candidate in TypicalLocations())
+            if (ExecutableTrust.IsProtected(candidate)) return Path.GetFullPath(candidate);
+
         return null;
+    }
+
+    private static IEnumerable<string> TypicalLocations()
+    {
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Microsoft", "WinGet", "Links", "ffmpeg.exe");
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "ffmpeg", "bin", "ffmpeg.exe");
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "ffmpeg", "ffmpeg.exe");
+        yield return Path.Combine(Environment.GetEnvironmentVariable("ChocolateyInstall") ?? @"C:\ProgramData\chocolatey",
+            "bin", "ffmpeg.exe");
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "scoop", "shims", "ffmpeg.exe");
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> EncoderChoice = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Выбрать аппаратный H.264-энкодер, который реально есть в этом ffmpeg.
+    /// NVENC быстрее программного x264 в разы; при отсутствии — libx264.
+    /// </summary>
+    public static string SelectVideoEncoder(string ffmpeg)
+    {
+        ffmpeg = Path.GetFullPath(ffmpeg);
+        return EncoderChoice.GetOrAdd(ffmpeg, path =>
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(ExecutableTrust.RequireProtected(path))
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true
+                };
+                psi.ArgumentList.Add("-hide_banner");
+                psi.ArgumentList.Add("-encoders");
+                using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
+                string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+                process.WaitForExit(5000);
+                foreach (string encoder in new[] { "h264_nvenc", "h264_qsv", "h264_amf" })
+                    if (output.Contains(encoder, StringComparison.OrdinalIgnoreCase)) return encoder;
+            }
+            catch (Exception ex)
+            {
+                Log.Info("Ffmpeg", "Не удалось определить аппаратный энкодер: " + ex.Message);
+            }
+            return "libx264";
+        });
     }
 
     /// <summary>

@@ -282,7 +282,7 @@ public static partial class VideoAssembly
     }
 
     private static async Task RenderFfmpegAsync(IReadOnlyList<VideoSegment> segments, string temp, string ffmpeg,
-        int? targetMegabytes, IProgress<double>? progress, CancellationToken ct, bool legacyScript = false)
+        int? targetMegabytes, IProgress<double>? progress, CancellationToken ct, bool legacyScript = false, bool softwareEncoder = false)
     {
         var infos = new Dictionary<string, VideoFileInfo>(StringComparer.OrdinalIgnoreCase);
         foreach (string path in segments.Select(s => s.Path).Concat(segments.SelectMany(s => s.AudioEvents).Select(e => e.SourcePath).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -297,6 +297,8 @@ public static partial class VideoAssembly
         var (width, height) = OutputSize(first.Width, first.Height, bitrate);
         string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
         ffmpeg = ExecutableTrust.RequireProtected(ffmpeg);
+        string encoder = softwareEncoder ? "libx264" : Ffmpeg.SelectVideoEncoder(ffmpeg);
+        Logging.Log.Info("Editor", $"FFmpeg: {segments.Count} фрагментов, видео {encoder}, {width}×{height}");
         var psi = new ProcessStartInfo(ffmpeg)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true,
@@ -356,10 +358,30 @@ public static partial class VideoAssembly
         try
         {
             scriptLock.Write(new UTF8Encoding(false).GetBytes(graph.ToString())); scriptLock.Flush();
-            Args(legacyScript ? "-filter_complex_script" : "-/filter_complex", script, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p");
-            if (bitrate is uint videoBitrate) Args("-b:v", videoBitrate.ToString(CultureInfo.InvariantCulture));
-            else Args("-crf", "18");
-            Args("-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4", temp);
+            Args(legacyScript ? "-filter_complex_script" : "-/filter_complex", script, "-map", "[v]", "-map", "[a]", "-c:v", encoder);
+            if (encoder == "h264_nvenc")
+            {
+                Args("-preset", "p5", "-tune", "hq", "-rc", "vbr");
+                if (bitrate is uint nvencBitrate) Args("-b:v", nvencBitrate.ToString(CultureInfo.InvariantCulture));
+                else Args("-cq", "19", "-b:v", "0");
+            }
+            else if (encoder == "h264_qsv")
+            {
+                Args("-preset", "veryfast", "-global_quality", "20");
+                if (bitrate is uint qsvBitrate) Args("-b:v", qsvBitrate.ToString(CultureInfo.InvariantCulture));
+            }
+            else if (encoder == "h264_amf")
+            {
+                Args("-quality", "balanced", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22");
+                if (bitrate is uint amfBitrate) Args("-b:v", amfBitrate.ToString(CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                Args("-preset", "veryfast");
+                if (bitrate is uint videoBitrate) Args("-b:v", videoBitrate.ToString(CultureInfo.InvariantCulture));
+                else Args("-crf", "18");
+            }
+            Args("-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4", temp);
             using var process = Process.Start(psi) ?? throw new InvalidOperationException("Не удалось запустить ffmpeg.");
             var errors = new Queue<string>();
             var errorReader = Task.Run(async () =>
@@ -383,11 +405,19 @@ public static partial class VideoAssembly
             finally { await Task.WhenAll(errorReader, progressReader); }
             if (process.ExitCode != 0)
             {
+                if (!softwareEncoder && encoder != "libx264")
+                {
+                    Logging.Log.Info("Editor", $"Аппаратный энкодер {encoder} не подошёл, повторяю на libx264: {string.Join(" ", errors.TakeLast(2))}");
+                    File.Delete(temp);
+                    scriptLock.Dispose(); File.Delete(script);
+                    await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript, softwareEncoder: true);
+                    return;
+                }
                 if (!legacyScript && errors.Any(e => e.Contains("Unrecognized option", StringComparison.OrdinalIgnoreCase)))
                 {
                     File.Delete(temp);
                     scriptLock.Dispose(); File.Delete(script);
-                    await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript: true);
+                    await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript: true, softwareEncoder);
                     return;
                 }
                 throw new InvalidOperationException("ffmpeg: " + string.Join(" ", errors.TakeLast(4)));
