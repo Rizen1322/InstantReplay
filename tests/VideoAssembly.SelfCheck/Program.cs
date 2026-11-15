@@ -477,7 +477,8 @@ var uiThread = new Thread(() =>
                     await Task.Delay(450);
                     Require(assemblyPlayer.Time > playingTime + 100 && playingMedia.Statistics.DisplayedPictures > pictures,
                         $"Video froze while adjusting audio: time={playingTime}->{assemblyPlayer.Time}, pictures={pictures}->{playingMedia.Statistics.DisplayedPictures}, state={assemblyPlayer.State}; " +
-                        $"want={assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)}, wait={assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)}, opening={assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)}, scrub={assemblyType.GetField("_assemblyScrubbing", flags)!.GetValue(assembly)}");
+                        $"want={assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)}, wait={assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)}, opening={assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)}, scrub={assemblyType.GetField("_assemblyScrubbing", flags)!.GetValue(assembly)}, " +
+                        $"gap={assemblyType.GetField("_gapPosition", flags)!.GetValue(assembly)}, tail={assemblyType.GetField("_tailPosition", flags)!.GetValue(assembly)}");
                     AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
                     Require(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 1, "A wheel gesture required multiple undo steps");
                     AudioCall("SeekAssembly", list.Items.Cast<VideoSegment>().Take(2).Sum(p => p.Duration.TotalSeconds) + 1.5);
@@ -577,8 +578,9 @@ var uiThread = new Thread(() =>
                      (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!); i++) await Task.Delay(25);
                 Require(!(bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)! &&
                     !(bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!, "Rapid seeking left preview stuck opening");
-                Require(System.Diagnostics.Process.GetCurrentProcess().HandleCount - handlesBeforeSeeks < 60,
-                    "Rapid seeking leaked media player resources");
+                int handleGrowth = System.Diagnostics.Process.GetCurrentProcess().HandleCount - handlesBeforeSeeks;
+                Require(handleGrowth < 60,
+                    $"Rapid seeking leaked media player resources: handle growth {handleGrowth}, elapsed={seekClock.ElapsedMilliseconds}ms");
                 Console.WriteLine($"PASS: 40 rapid cross-clip seeks settled in {seekClock.ElapsedMilliseconds}ms; native handle growth bounded");
                 assembly.Close();
                 var dropWindow = new System.Windows.Window();

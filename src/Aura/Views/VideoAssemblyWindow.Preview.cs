@@ -165,12 +165,23 @@ public partial class VideoAssemblyWindow
             // Смена файла останавливает видеовывод: ему может понадобиться свободный UI-поток.
             bool played = await Task.Run(() => player.Play(media));
             old?.Dispose();
-            if (!played) throw new InvalidOperationException("Не удалось открыть видео для предпросмотра.");
-            if (revision != _assemblyLoadRevision) return;
+            if (!played)
+            {
+                if (!ReferenceEquals(_assemblyMedia, media)) media.Dispose();
+                throw new InvalidOperationException("Не удалось открыть видео для предпросмотра.");
+            }
+            if (revision != _assemblyLoadRevision)
+            {
+                // Быстрые перемотки могли уже заменить media; не оставляем
+                // осиротевший нативный объект до сборки мусора.
+                if (!ReferenceEquals(_assemblyMedia, media)) media.Dispose();
+                return;
+            }
             _previewIndex = index;
             _previewStart = start;
             _assemblyLoadStarted = Environment.TickCount64;
             _assemblyPlayer.SetRate((float)_forwardPreviewRate);
+            bool keepPaused = !_wantAssemblyPlaying || _assemblyScrubbing || _tailPosition is not null || _gapPosition is not null;
             if (_tailPosition is not null)
             { _assemblyPlayer.SetPause(true); _waitingAssemblyFrame = false; _tailTicks = Environment.TickCount64; }
             if (_gapPosition is not null)
@@ -178,6 +189,13 @@ public partial class VideoAssemblyWindow
                 _assemblyPlayer.SetPause(true); _waitingAssemblyFrame = false;
                 _gapTicks = Environment.TickCount64;
                 AssemblyPreview.Visibility = Visibility.Hidden;
+            }
+            if (keepPaused)
+            {
+                // Play() стартует декодер; без немедленной паузы клик по шкале
+                // проигрывал первые полсекунды, а покадровая перемотка не работала.
+                _assemblyPlayer.SetPause(true);
+                _waitingAssemblyFrame = false;
             }
         }
         catch (Exception ex) { if (!_lifetime.IsCancellationRequested) { Status.Text = ex.Message; Log.Error("Editor", ex); } }
@@ -298,6 +316,17 @@ public partial class VideoAssemblyWindow
         _changingAssembly = true; AssemblyPosition.Value = Timeline.Position;
         if (!keepAudioSelection) Segments.SelectedIndex = index;
         _changingAssembly = false;
+        if (_tailPosition is null && _gapPosition is null && index == _previewIndex &&
+            _assemblyPlayer is not null && !_assemblyOpening && (_assemblyPlayer.State is VLCState.Playing or VLCState.Paused))
+        {
+            bool paused = !_wantAssemblyPlaying || _assemblyScrubbing;
+            if (paused) _assemblyPlayer.SetPause(true);
+            _assemblyPlayer.Time = (long)(Math.Clamp(source, _segments[index].Start.TotalSeconds,
+                Math.Max(_segments[index].Start.TotalSeconds, _segments[index].End.TotalSeconds)) * 1000);
+            UpdateAssemblyPlayhead(time);
+            SyncPreviewAudio(source, seek: true);
+            return;
+        }
         if (keepAudioSelection) { ++_selectionRevision; LoadAssemblyClip(index, source); }
         else _ = SelectAssemblyClipAsync(source);
     }

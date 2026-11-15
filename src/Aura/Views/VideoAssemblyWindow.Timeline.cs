@@ -222,6 +222,9 @@ public partial class VideoAssemblyWindow
         {
             double fps = Segments.SelectedItem is VideoSegment part && _sourceInfo.TryGetValue(part.Path, out var info) ? info.Fps : 30;
             double step = modifiers == ModifierKeys.Shift ? 1 : 1 / Math.Max(1, fps);
+            _wantAssemblyPlaying = false;
+            _assemblyPlayer?.SetPause(true);
+            PlayAssembly.Content = "▶ Смотреть ролик";
             SeekAssembly(Math.Clamp(Timeline.Position + (key == Key.Left ? -step : step), 0, AssemblyPosition.Maximum));
         }
         else return;

@@ -34,7 +34,7 @@ internal static class IndependentAudioCheck
         control.GetProperty("SelectedAudioTrack")!.SetValue(timeline, -1);
         control.GetProperty("SelectedAudioEvent")!.SetValue(timeline, -1);
         Call("SplitAssemblyAt", .8);
-        Call("SeekAssembly", offset + .3); await Ready();
+        Call("SeekAssembly", offset + .8 + .3); await Ready();
         var placedPlayers = (System.Collections.IDictionary)type.GetField("_placedAudioPlayers", flags)!.GetValue(window)!;
         var playing = placedPlayers.Keys.Cast<LibVLCSharp.Shared.MediaPlayer>().First();
         int paused = 0;
@@ -63,7 +63,9 @@ internal static class IndependentAudioCheck
         bool kept = placedPlayers.Contains(playing);
         int previewIndex = (int)type.GetField("_previewIndex", flags)!.GetValue(window)!;
         Require(kept && paused == 0 && previewIndex == 3,
-            $"Detached audio was stopped/reopened across a video cut: kept={kept}, pauses={paused}, index={previewIndex}, opening={type.GetField("_assemblyOpening", flags)!.GetValue(window)}");
+            $"Detached audio was stopped/reopened across a video cut: kept={kept}, pauses={paused}, index={previewIndex}, opening={type.GetField("_assemblyOpening", flags)!.GetValue(window)}, " +
+            $"items={list.Items.Count}, selected={list.SelectedIndex}, original={original.Start}-{original.End}, timeline={timeline.GetType().GetProperty("Position")!.GetValue(timeline)}, " +
+            $"starts={string.Join(",", list.Items.Cast<VideoSegment>().Select(p => p.Start.TotalSeconds + "-" + p.End.TotalSeconds))}");
         Call("UndoAssembly_Click", null, new RoutedEventArgs()); await Ready();
         double left = (offset + .5) * 100;
         control.GetMethod("BeginGesture", flags)!.Invoke(timeline, [new Point(left, 220)]);
@@ -163,6 +165,26 @@ internal static class IndependentAudioCheck
             "Video did not reappear after the leading gap");
         Call("UndoAssembly_Click", null, new RoutedEventArgs()); await Ready();
         Require(((VideoSegment)list.Items[0]).Gap == TimeSpan.Zero, "Undo did not remove the video gap");
+
+        var preview = (LibVLCSharp.Shared.MediaPlayer)type.GetField("_assemblyPlayer", flags)!.GetValue(window)!;
+        var playhead = (Slider)window.FindName("AssemblyPosition");
+        Call("ShuttleAssembly", Key.K);
+        type.GetField("_wantAssemblyPlaying", flags)!.SetValue(window, false);
+        Call("SeekAssembly", 1.0); await Ready();
+        Call("SeekAssembly", 1.2); await Ready();
+        Require(!preview.IsPlaying, "Paused preview started playing after a same-clip seek");
+        double beforeStep = playhead.Value;
+        var stepKey = new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(window)!, 0, Key.Left)
+        { RoutedEvent = Keyboard.PreviewKeyDownEvent, Source = timeline };
+        Call("Montage_KeyDown", window, stepKey);
+        await Task.Delay(150);
+        Require(stepKey.Handled && !preview.IsPlaying && playhead.Value < beforeStep && beforeStep - playhead.Value < .1,
+            $"Frame step did not move the paused preview: handled={stepKey.Handled}, playing={preview.IsPlaying}, before={beforeStep}, after={playhead.Value}");
+        Call("SeekAssembly", 1.0); await Ready();
+        list.SelectedIndex = 1;
+        for (int i = 0; i < 100 && (int)type.GetField("_previewIndex", flags)!.GetValue(window)! != 1; i++) await Task.Delay(20);
+        await Task.Delay(250);
+        Require(!preview.IsPlaying, "Clicking another clip started playback while preview was paused");
 
         var singleWindow = (Window)Activator.CreateInstance(type, nonPublic: true)!;
         try

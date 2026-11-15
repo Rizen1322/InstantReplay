@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -844,6 +844,9 @@ public partial class RegionCaptureWindow : Window
 
     private void SetTool(InkTool tool)
     {
+        // Инструменты имеют смысл только после выделения области: до него
+        // пипетка/фигуры хватали случайный пиксель и мешали протянуть рамку.
+        if (tool != InkTool.None && !_hasSelection) return;
         CommitCaption();
         _tool = _tool == tool ? InkTool.None : tool;
 
