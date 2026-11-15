@@ -134,6 +134,18 @@ public class Mp4TrimTests : IDisposable
     }
 
     [Fact]
+    public void Cut_without_audio_leaves_only_the_video_track()
+    {
+        string source = Source();
+        string output = Path.Combine(_dir, "silent-cut.mp4");
+        Mp4Trim.Cut(source, output, 1.5, 2.5, audioTrack: -2);
+        var (_, _, tracks) = Open(output);
+        Assert.Single(tracks);
+        Assert.False(tracks[0].Audio);
+        Assert.Equal(90, tracks[0].Sizes.Length);
+    }
+
+    [Fact]
     public void Old_fragmented_recording_cuts_the_same_as_its_converted_copy()
     {
         var frames = Enumerable.Range(0, 240).Select(i => i % 60 == 0

@@ -113,6 +113,17 @@ internal static class AssemblyExportCheck
         Require(await DecodedFrames(fast) == await DecodedFrames(reference), "Fast export hid the final B-frames");
         Console.WriteLine($"PASS: 110-second HEVC10 muted export in {clock.ElapsedMilliseconds}ms; original compressed video hash preserved, no audio");
 
+        string trimmedOutput = Path.Combine(folder, "hevc10-trimmed-fast.mp4");
+        var trimmed = new VideoSegment(source, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5), AudioTrack: 0);
+        clock.Restart();
+        await VideoAssembly.RenderAsync([trimmed], trimmedOutput);
+        clock.Stop();
+        Require(clock.Elapsed < TimeSpan.FromSeconds(3), "Trimmed HEVC10 clip was transcoded instead of stream-copied");
+        var trimmedInfo = await VideoAssembly.ReadInfoAsync(trimmedOutput);
+        Require(Math.Abs(trimmedInfo.Duration.TotalSeconds - 3) < .2 && trimmedInfo.AudioTracks == 1,
+            $"Trimmed fast export lost duration or the selected track: {trimmedInfo.Duration}, {trimmedInfo.AudioTracks} audio");
+        Console.WriteLine($"PASS: trimmed HEVC10 clip with one selected audio track exported in {clock.ElapsedMilliseconds}ms without re-encoding");
+
         async Task<string> Command(params string[] args)
         {
             var start = new ProcessStartInfo(ffmpeg) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };

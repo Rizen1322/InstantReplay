@@ -101,8 +101,8 @@ public static class Mp4Trim
 
     /// <summary>
     /// Вырезать [<paramref name="start"/>, <paramref name="end"/>) секунд в <paramref name="output"/>.
-    /// <paramref name="audioTrack"/> — номер звуковой дорожки по порядку в файле, -1 — все:
-    /// при <paramref name="mix"/> они сводятся в одну, без него остаются отдельными.
+    /// <paramref name="audioTrack"/> — номер звуковой дорожки по порядку в файле, -1 — все,
+    /// -2 — без звука: при <paramref name="mix"/> они сводятся в одну, без него остаются отдельными.
     /// Файлы без видео не поддерживаются (NotSupportedException).
     /// </summary>
     public static void Cut(string input, string output, double start, double end, int audioTrack,
@@ -124,6 +124,7 @@ public static class Mp4Trim
                     ?? throw new NotSupportedException("в файле нет видеодорожки");
         var audios = tracks.Where(t => t.Audio && t.Sizes.Length > 0).ToList();
         if (audioTrack >= 0) audios = audioTrack < audios.Count ? [audios[audioTrack]] : audios.Take(1).ToList();
+        else if (audioTrack < -1) audios.Clear();
 
         // Ключевой кадр, с которого начнётся копия: последний не позже старта.
         int key = -1;

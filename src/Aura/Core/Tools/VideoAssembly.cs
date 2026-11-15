@@ -78,31 +78,43 @@ public static partial class VideoAssembly
         finally { try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     }
 
+    /// <summary>
+    /// Быстрый путь для одного MP4: видео копируется байт в байт, звук — выбранная
+    /// дорожка или все дорожки. Границы режет список правок MP4, поэтому обычная
+    /// обрезка и удаление дорожки не запускают перекодирование.
+    /// </summary>
     private static async Task<bool> TryRemuxAsync(VideoSegment part, string output, IProgress<double>? progress, CancellationToken ct)
     {
-        // shortcut: stream-copy only a complete MP4 here; arbitrary cut boundaries need smart rendering.
-        if (part.Start != TimeSpan.Zero || part.Gap != TimeSpan.Zero || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase)) return false;
+        if (part.Gap != TimeSpan.Zero || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase)) return false;
         var info = await ReadInfoAsync(part.Path, ct);
-        if (info.Transformed || Math.Abs((part.End - info.Duration).TotalSeconds) > .02) return false;
-        if (part.AudioTrack >= info.AudioTracks && part.AudioTrack >= 0 || part.AudioEvents.Any(e => (e.SourcePath is null || e.SourcePath == part.Path) && e.Track >= info.AudioTracks))
+        if (info.Transformed || part.End > info.Duration + TimeSpan.FromMilliseconds(20)) return false;
+        if (part.AudioTrack >= info.AudioTracks && part.AudioTrack >= 0 ||
+            part.AudioEvents.Any(e => (e.SourcePath is null || e.SourcePath == part.Path) && e.Track >= info.AudioTracks))
             throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-        var allSounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks);
-        if (allSounds.Any(s => !s.Removed && s.Finish > part.Duration + TimeSpan.FromMilliseconds(1))) return false;
-        var sounds = allSounds.Where(s => s.Gain > 0).ToArray();
-        if (sounds.Any(s => s.Path != part.Path || s.Gain != 1 || s.Start != TimeSpan.Zero || s.Position != TimeSpan.Zero ||
-            Math.Abs((s.End - part.End).TotalSeconds) > .001) || sounds.Select(s => s.Track).Distinct().Count() != sounds.Length) return false;
+
+        var sounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks).Where(s => !s.Removed).ToArray();
+        var audible = sounds.Where(s => s.Gain > 0).ToArray();
+        // Потоковое копирование умеет только целые дорожки без сдвига и усиления.
+        if (audible.Any(s => s.Path != part.Path || s.Gain != 1 || s.Position != TimeSpan.Zero ||
+            s.Start != part.Start || s.End != part.End)) return false;
+        var tracks = audible.Select(s => s.Track).Distinct().OrderBy(t => t).ToArray();
+        // Выбрать произвольное подмножество дорожек нельзя: только одну или все.
+        if (tracks.Length > 1 && tracks.Length != info.AudioTracks) return false;
+        int audioTrack = tracks.Length switch { 0 => -2, 1 => tracks[0], _ => -1 };
+
         var clock = Stopwatch.StartNew();
         try
         {
-            await Task.Run(() => Mp4Trim.Remux(part.Path, output, sounds.Select(s => s.Track).ToArray(),
-                tracks => AudioMixdown.Mix(tracks, ct), value => progress?.Report(value), ct), ct);
-            Logging.Log.Info("Editor", $"Экспорт без перекодирования видео: {clock.ElapsedMilliseconds} мс, {sounds.Length} исходных дорожек звука");
+            await Task.Run(() => Mp4Trim.Cut(part.Path, output, part.Start.TotalSeconds, part.End.TotalSeconds,
+                audioTrack, value => progress?.Report(value), ct), ct);
+            Logging.Log.Info("Editor", $"Экспорт фрагмента без перекодирования видео: {clock.ElapsedMilliseconds} мс, " +
+                $"звук {(audioTrack < 0 ? "все/без звука" : "дорожка " + (audioTrack + 1))}");
             return true;
         }
-        catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or System.Runtime.InteropServices.COMException)
+        catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or System.Runtime.InteropServices.COMException or ArgumentException)
         {
             File.Delete(output);
-            Logging.Log.Info("Editor", "Прямой экспорт недоступен: " + ex.Message);
+            Logging.Log.Info("Editor", "Быстрый экспорт фрагмента недоступен: " + ex.Message);
             return false;
         }
     }
