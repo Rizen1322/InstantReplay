@@ -3,11 +3,38 @@
  xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF" xmlns:c="clr-namespace:Aura.Controls"
  Title="Монтаж — Aura" Width="1360" Height="940" MinWidth="960" MinHeight="740"
  WindowStartupLocation="CenterOwner" Background="{DynamicResource CanvasBrush}" UseLayoutRounding="True" PreviewKeyDown="Montage_KeyDown">
+ <Window.Resources>
+  <Style x:Key="MontageCheck" TargetType="CheckBox">
+   <Setter Property="Foreground" Value="{DynamicResource Tx2Brush}"/>
+   <Setter Property="FontFamily" Value="{DynamicResource UiFont}"/>
+   <Setter Property="FontSize" Value="13"/>
+   <Setter Property="Cursor" Value="Hand"/>
+   <Setter Property="MinHeight" Value="32"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
+    <Border x:Name="Body" Background="Transparent" CornerRadius="6" Padding="8,4">
+     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+      <Border x:Name="Box" Width="17" Height="17" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource Tx3Brush}" Background="{DynamicResource WellBrush}" Margin="0,0,8,0">
+       <c:Icon x:Name="Tick" Data="{DynamicResource Ico.Check}" Size="13" Foreground="{DynamicResource AccentInkBrush}" Visibility="Collapsed"/>
+      </Border>
+      <ContentPresenter VerticalAlignment="Center"><ContentPresenter.Resources>
+       <Style TargetType="TextBlock" BasedOn="{StaticResource TextBase}"><Setter Property="FontSize" Value="13"/><Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=CheckBox}}"/></Style>
+      </ContentPresenter.Resources></ContentPresenter>
+     </StackPanel>
+    </Border>
+    <ControlTemplate.Triggers>
+     <Trigger Property="IsChecked" Value="True"><Setter TargetName="Box" Property="Background" Value="{DynamicResource AccentBrush}"/><Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/><Setter TargetName="Tick" Property="Visibility" Value="Visible"/></Trigger>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Body" Property="Background" Value="{DynamicResource HoverBrush}"/></Trigger>
+     <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Box" Property="BorderBrush" Value="{DynamicResource AccentBrush}"/></Trigger>
+     <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+ </Window.Resources>
  <Grid Margin="12" Background="{DynamicResource CanvasBrush}">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="210"/><RowDefinition Height="8"/><RowDefinition Height="1.1*" MinHeight="290"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
   <DockPanel Margin="0,0,0,10">
    <Button x:Name="AddVideos" DockPanel.Dock="Left" Content="＋ Добавить видео" Click="Add_Click" Margin="0,0,16,0" ToolTip="Добавить файлы в проект · Ctrl+O"/>
-   <Button DockPanel.Dock="Right" Content="Клавиши ?" Click="Shortcuts_Click" Margin="16,0,0,0"/>
+   <Button DockPanel.Dock="Right" Content="Клавиши" Click="Shortcuts_Click" Margin="16,0,0,0" ToolTip="Горячие клавиши монтажа"/>
    <TextBlock Text="Монтаж" FontWeight="SemiBold" FontSize="20" VerticalAlignment="Center"/>
    <TextBlock x:Name="Summary" HorizontalAlignment="Right" VerticalAlignment="Center"/>
   </DockPanel>
@@ -47,7 +74,7 @@
      <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
       <Button Content="|◀" Click="ToStart_Click" ToolTip="В начало · Home" Margin="0,0,6,0"/>
       <Button x:Name="PlayAssembly" Content="▶ Смотреть" Click="PlayAssembly_Click" ToolTip="Space / Enter — воспроизведение · K — пауза" Margin="0,0,10,0"/>
-      <CheckBox x:Name="MutePreview" Content="Без звука" VerticalAlignment="Center" Checked="Mute_Changed" Unchecked="Mute_Changed"/>
+      <CheckBox x:Name="MutePreview" Style="{StaticResource MontageCheck}" Content="Без звука" VerticalAlignment="Center" Checked="Mute_Changed" Unchecked="Mute_Changed"/>
      </StackPanel>
      <TextBlock x:Name="PreviewTime" Text="00:00 / 00:00" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="Consolas" FontSize="17"/>
     </DockPanel>
@@ -66,7 +93,7 @@
      <Button x:Name="RedoAssembly" Content="↷" Click="RedoAssembly_Click" ToolTip="Повторить · Ctrl+Y / Ctrl+Shift+Z" IsEnabled="False" Margin="0,0,10,0"/>
      <Button Content="✂" Click="SplitAssembly_Click" ToolTip="Разрезать выбранное в позиции курсора · S" Margin="0,0,6,0"/>
      <Button x:Name="LinkAudio" Content="Связаны" Click="LinkAudio_Click" ToolTip="U — отделить разрезы звука от видео · G — связать" Margin="0,0,10,0"/>
-     <CheckBox x:Name="SnapEdits" Content="Привязка" IsChecked="True" VerticalAlignment="Center" ToolTip="Привязка к кадрам · F8"/>
+     <CheckBox x:Name="SnapEdits" Style="{StaticResource MontageCheck}" Content="По кадрам" IsChecked="True" VerticalAlignment="Center" ToolTip="Привязка к кадрам · F8"/>
     </StackPanel>
    </DockPanel>
    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="False">
@@ -98,10 +125,10 @@
    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
    <StackPanel>
     <WrapPanel x:Name="ExportOptions">
-     <CheckBox x:Name="LimitSize" Content="Уместить в" VerticalAlignment="Center"/><TextBox x:Name="SizeLimit" Width="58" MaxLength="4" Margin="8,0" VerticalContentAlignment="Center"/><TextBlock Text="МБ" VerticalAlignment="Center" Margin="0,0,16,0"/>
-     <Button Content="Дополнительные форматы…" Click="ChooseFfmpeg_Click"/>
+     <CheckBox x:Name="LimitSize" Style="{StaticResource MontageCheck}" Content="Уместить в" VerticalAlignment="Center"/><TextBox x:Name="SizeLimit" Width="58" Height="32" MaxLength="4" Margin="4,0,8,0" VerticalContentAlignment="Center" IsEnabled="{Binding IsChecked, ElementName=LimitSize}"/><TextBlock Text="МБ" VerticalAlignment="Center" Margin="0,0,16,0"/>
+     <Button Content="Форматы…" Click="ChooseFfmpeg_Click" ToolTip="Подключить FFmpeg для дополнительных форматов видео"/>
     </WrapPanel>
-    <TextBlock x:Name="Status" Text="Исходные файлы сохраняются." TextWrapping="Wrap" Foreground="{DynamicResource Tx3Brush}" Margin="0,6,12,0"/>
+    <TextBlock x:Name="Status" Text="Исходные файлы сохраняются." TextWrapping="Wrap" FontSize="12" MinHeight="22" Foreground="{DynamicResource Tx3Brush}" Margin="0,6,12,0"/>
     <ProgressBar x:Name="Progress" Height="5" Minimum="0" Maximum="1" Margin="0,6,12,0" Visibility="Collapsed"/>
    </StackPanel>
    <StackPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click"/><Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,6,0,0"/></StackPanel>

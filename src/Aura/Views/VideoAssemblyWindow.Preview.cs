@@ -59,11 +59,13 @@ public partial class VideoAssemblyWindow
                 var engine = await Task.Run(() =>
                 {
                     LibVLCSharp.Shared.Core.Initialize();
-                    return new LibVLC("--quiet", "--no-video-title-show", "--audio-resampler=speex_resampler", "--no-avcodec-hurry-up");
+                    return new LibVLC("--quiet", "--no-video-title-show", "--aout=directsound", "--audio-resampler=speex_resampler", "--no-avcodec-hurry-up");
                 });
                 if (_lifetime.IsCancellationRequested) { engine.Dispose(); return; }
                 _assemblyVlc = engine;
                 _assemblyPlayer = new LibVLCSharp.Shared.MediaPlayer(engine);
+                // Mute before Play is not reliable: discard this player's audio output entirely.
+                if (!_assemblyPlayer.SetAudioOutput("adummy")) throw new InvalidOperationException("Не удалось отключить звук видеоплеера.");
                 _assemblyPlayer.EndReached += (_, _) => Dispatcher.BeginInvoke(() =>
                 { if (_assemblyPlayer?.State == VLCState.Ended) AdvanceAssembly(); });
                 _assemblyPlayer.EncounteredError += (_, _) => Dispatcher.BeginInvoke(() =>
@@ -123,25 +125,28 @@ public partial class VideoAssemblyWindow
         double start = Math.Clamp(sourceTime, part.Start.TotalSeconds, Math.Max(part.Start.TotalSeconds, part.End.TotalSeconds - 0.05));
         _waitingAssemblyFrame = true;
         _assemblyOpening = true;
+        foreach (var audio in _audioPlayers) audio.Player.Mute = true;
         await _assemblyPlayback.WaitAsync();
         try
         {
             if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
+            await StopPreviewAudioAsync();
+            if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
+            var player = _assemblyPlayer;
+            player.SetPause(true);
+            await OpenPreviewAudioAsync(part, start, revision);
+            if (revision != _assemblyLoadRevision || _lifetime.IsCancellationRequested) return;
             var old = _assemblyMedia;
             _assemblyMedia = new Media(_assemblyVlc!, new Uri(part.Path));
             _assemblyMedia.AddOption(":start-time=" + start.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
             _assemblyPlayer.Mute = true;
-            // Keep VLC's audio clock; independent track players provide the audible mix.
-            var player = _assemblyPlayer;
+            // Keep VLC's audio clock through its dummy output, without a second audible copy.
             var media = _assemblyMedia;
             // Смена файла останавливает видеовывод: ему может понадобиться свободный UI-поток.
             bool played = await Task.Run(() => player.Play(media));
             old?.Dispose();
             if (!played) throw new InvalidOperationException("Не удалось открыть видео для предпросмотра.");
             if (revision != _assemblyLoadRevision) return;
-            await OpenPreviewAudioAsync(part, start, revision);
-            if (revision != _assemblyLoadRevision || _lifetime.IsCancellationRequested) return;
-
             _previewIndex = index;
             _previewStart = start;
             _assemblyLoadStarted = Environment.TickCount64;

@@ -339,6 +339,29 @@ var uiThread = new Thread(() =>
                 Set("_selectForAssembly", true);
                 Call("Export_Click", null, new System.Windows.RoutedEventArgs());
                 Console.WriteLine("UI: assembly handlers");
+                var clipsPage = new Aura.Views.ClipsPage();
+                var selectedClips = new List<Aura.Core.Library.ClipItem>
+                {
+                    new(red, root) { IsSelected = true }, new(blue, root) { IsSelected = true }
+                };
+                typeof(Aura.Views.ClipsPage).GetField("_shown", flags)!.SetValue(clipsPage, selectedClips);
+                var editMenuItem = new System.Windows.Controls.MenuItem { Name = "EditItem" };
+                var card = new System.Windows.Controls.Button { DataContext = selectedClips[0], ContextMenu = new() };
+                card.ContextMenu.Items.Add(editMenuItem);
+                void OpenCardMenu()
+                {
+                    var menuArgs = (System.Windows.Controls.ContextMenuEventArgs)Activator.CreateInstance(typeof(System.Windows.Controls.ContextMenuEventArgs), flags, null, [card, true], null)!;
+                    typeof(Aura.Views.ClipsPage).GetMethod("Card_ContextMenuOpening", flags)!.Invoke(clipsPage, [card, menuArgs]);
+                }
+                OpenCardMenu();
+                Require(ReferenceEquals(editMenuItem.Command, Aura.Views.ClipCommands.EditMany) &&
+                    ((IReadOnlyList<Aura.Core.Library.ClipItem>)editMenuItem.CommandParameter).SequenceEqual(selectedClips), "Context Edit lost multiple selected clips");
+                var unselectedClip = new Aura.Core.Library.ClipItem(red, root);
+                card.DataContext = unselectedClip;
+                OpenCardMenu();
+                Require(ReferenceEquals(editMenuItem.Command, Aura.Views.ClipCommands.Edit) && ReferenceEquals(editMenuItem.CommandParameter, unselectedClip),
+                    "Context Edit reused an old multiple selection for an unselected card");
+                Console.WriteLine("PASS: context Edit routes multiple selected videos to montage and unselected cards to single editor");
                 Require(((IReadOnlyList<VideoSegment>)editorType.GetField("_pickedSegments", flags)!.GetValue(editor)!).Count == 2,
                     "Editor did not return remaining ranges to the assembly");
                 var assemblyType = typeof(Aura.Views.VideoAssemblyWindow);
@@ -377,12 +400,14 @@ var uiThread = new Thread(() =>
                 Require((int)assemblyType.GetField("_previewIndex", flags)!.GetValue(assembly)! == 1, "Assembly preview did not automatically advance between clips");
                 if (mixedPreviewSource is not null)
                 {
+                    mixedPreviewSource = await PreviewAudioCheck.ExtendFixture(mixedPreviewSource, root, uiOnly ? null : args.FirstOrDefault());
                     await (Task)assemblyType.GetMethod("AddFilesAsync", flags)!.Invoke(assembly, [new[] { mixedPreviewSource }])!;
                     list.SelectedIndex = 2;
                     await (Task)assemblyType.GetMethod("SelectAssemblyClipAsync", flags)!.Invoke(assembly, [null])!;
                     for (int i = 0; i < 100 && (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!; i++) await Task.Delay(50);
                     var audioPlayers = (System.Collections.IList)assemblyType.GetField("_audioPlayers", flags)!.GetValue(assembly)!;
                     Require(audioPlayers.Count == 2, "Both source audio tracks did not get independent preview players");
+                    await PreviewAudioCheck.Run(assembly, 2, root);
                     ((System.Windows.Controls.CheckBox)assembly.FindName("SnapEdits")).IsChecked = false;
                     int beforeSplit = list.Items.Count;
                     assemblyType.GetMethod("SplitAssemblyAt", flags)!.Invoke(assembly, [1.0]);
@@ -572,7 +597,7 @@ var uiThread = new Thread(() =>
 });
 uiThread.SetApartmentState(ApartmentState.STA);
 uiThread.Start();
-await uiFinished.Task.WaitAsync(TimeSpan.FromSeconds(30));
+await uiFinished.Task.WaitAsync(TimeSpan.FromSeconds(60));
 Require(uiThread.Join(5000), "UI selfcheck did not stop");
 }
 

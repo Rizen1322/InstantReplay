@@ -191,9 +191,11 @@ public partial class ClipEditorWindow : Window
                 // С speex тот же тест даёт −59 дБ, как без пересчёта.
                 // --no-avcodec-hurry-up: при отставании декодер иначе пропускает
                 // работу над кадрами, и после частых перемоток картинка идёт кашей
-                var engine = new LibVLC("--no-video-title-show", "--quiet",
+                var engine = new LibVLC("--no-video-title-show", "--quiet", "--aout=directsound",
                     "--audio-resampler=speex_resampler", "--no-avcodec-hurry-up");
                 var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = !_preferSoftwareDecoding };
+                // Keep this window's mute/volume independent of the montage's audio players.
+                if (!player.SetAudioOutput("directsound")) { player.Dispose(); engine.Dispose(); throw new InvalidOperationException("Не удалось открыть независимый вывод звука."); }
                 var media = new VlcMedia(engine, new Uri(_item.FullPath));
                 return (engine, player, media);
             });

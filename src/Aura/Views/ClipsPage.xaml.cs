@@ -429,9 +429,7 @@ public partial class ClipsPage : PageBase
     private void AssembleSelected_Click(object sender, RoutedEventArgs e)
     {
         var selected = SelectedItems();
-        if (selected.Any(i => i.IsScreenshot))
-        { Dialogs.Say("Выберите видео", "Для сборки ролика выделите только видео, без скриншотов."); return; }
-        if (selected.Count > 0) VideoAssemblyWindow.ShowFiles(selected.Select(i => i.FullPath));
+        if (selected.Count > 0) ClipCommands.EditMany.Execute(selected);
     }
 
     private void ClearSelection()
@@ -559,6 +557,12 @@ public partial class ClipsPage : PageBase
             if (element is not FrameworkElement named) continue;
             switch (named.Name)
             {
+                case "EditItem" when named is MenuItem edit:
+                    bool editSelection = selected.Count > 1 && clip?.IsSelected == true;
+                    edit.Header = editSelection ? "Редактировать выделенное в Aura" : "Редактировать в Aura";
+                    edit.Command = editSelection ? ClipCommands.EditMany : ClipCommands.Edit;
+                    edit.CommandParameter = editSelection ? selected : clip;
+                    break;
                 case "ManySeparator":
                 case "DeleteManyItem":
                     named.Visibility = many ? Visibility.Visible : Visibility.Collapsed;

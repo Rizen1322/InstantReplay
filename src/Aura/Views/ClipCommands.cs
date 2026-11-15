@@ -27,6 +27,12 @@ public static class ClipCommands
 
     /// <summary>Открыть встроенный редактор Aura. Для скриншотов пункт неактивен.</summary>
     public static ICommand Edit { get; } = new ClipAction(ClipEditorWindow.ShowFor, item => !item.IsScreenshot);
+    public static ICommand EditMany { get; } = new ClipsAction(items =>
+    {
+        if (items.Any(i => i.IsScreenshot))
+        { Dialogs.Say("Выберите видео", "Для монтажа выделите только видео, без скриншотов."); return; }
+        VideoAssemblyWindow.ShowFiles(items.Select(i => i.FullPath));
+    });
 
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
     public static ICommand Compress { get; } = new ClipAction(CompressAsync, item => !item.IsScreenshot);

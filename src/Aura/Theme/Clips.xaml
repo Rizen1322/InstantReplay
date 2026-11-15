@@ -63,7 +63,7 @@
                                     Foreground="{DynamicResource Tx2Brush}"/>
                         </MenuItem.Icon>
                     </MenuItem>
-                    <MenuItem Header="Редактировать в Aura" Style="{DynamicResource TrayMenuItem}"
+                    <MenuItem x:Name="EditItem" Header="Редактировать в Aura" Style="{DynamicResource TrayMenuItem}"
                               Command="{x:Static v:ClipCommands.Edit}" CommandParameter="{Binding}">
                         <MenuItem.Icon>
                             <c:Icon Data="{DynamicResource Ico.Scissors}" Size="14"

@@ -63,7 +63,7 @@ public partial class VideoAssemblyWindow : Window
             if (added.Count > 0) RememberAssembly();
             foreach (var segment in added) _segments.Add(segment);
             if (Segments.SelectedIndex < 0) Segments.SelectedIndex = 0;
-            Status.Text = "Тяните клипы и их края на шкале. Space — воспроизведение.";
+            Status.Text = "Исходные файлы сохраняются.";
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Status.Text = ex.Message; Log.Error("Editor", ex); }

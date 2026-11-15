@@ -19,7 +19,6 @@ public partial class VideoAssemblyWindow
     private readonly List<(LibVLCSharp.Shared.MediaPlayer Player, Media Media, int Track)> _audioPlayers = [];
     private readonly HashSet<LibVLCSharp.Shared.MediaPlayer> _restartingAudio = [];
     private readonly Dictionary<LibVLCSharp.Shared.MediaPlayer, double> _audioRestartPositions = [];
-    private readonly Dictionary<LibVLCSharp.Shared.MediaPlayer, long> _audioCorrectionTimes = [];
     private bool _changingAudioHeaders;
     private int _activeAudioTrack;
     private long _lastAudioEdit;
@@ -163,7 +162,6 @@ public partial class VideoAssemblyWindow
     {
         var players = _audioPlayers.ToArray(); _audioPlayers.Clear();
         _audioRestartPositions.Clear();
-        _audioCorrectionTimes.Clear();
         await Task.Run(() =>
         {
             foreach (var audio in players) { audio.Player.Stop(); audio.Player.Dispose(); audio.Media.Dispose(); }
@@ -171,19 +169,31 @@ public partial class VideoAssemblyWindow
     }
     private async Task OpenPreviewAudioAsync(VideoSegment part, double start, int revision)
     {
-        await StopPreviewAudioAsync();
         for (int track = 0; track < SourceAudioTracks(part.Path); track++)
         {
             if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
             var media = new Media(_assemblyVlc!, new Uri(part.Path));
             media.AddOption(":no-video"); media.AddOption(":audio-track=" + track);
+            media.AddOption(":start-paused");
             media.AddOption(":start-time=" + start.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
-            var player = new LibVLCSharp.Shared.MediaPlayer(_assemblyVlc!) { Mute = true };
+            var player = new LibVLCSharp.Shared.MediaPlayer(_assemblyVlc!);
+            // MMDevice volume/mute controls the shared process session, not an individual track.
+            if (!player.SetAudioOutput("directsound")) { player.Dispose(); media.Dispose(); throw new InvalidOperationException("Не удалось открыть независимый вывод звука."); }
+            player.Mute = true;
             bool keep = false;
             try
             {
                 if (!await Task.Run(() => player.Play(media))) throw new InvalidOperationException("Не удалось открыть звуковую дорожку.");
+                for (int attempt = 0; attempt < 100 && player.State is not (VLCState.Paused or VLCState.Error or VLCState.Ended); attempt++)
+                {
+                    await Task.Delay(20, _lifetime.Token);
+                    if (revision != _assemblyLoadRevision) return;
+                }
                 player.SetPause(true);
+                // Resolve the actual stream ID once after VLC has discovered the tracks.
+                var tracks = player.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
+                if (track >= tracks.Length) throw new InvalidOperationException("Звуковая дорожка недоступна для предпросмотра.");
+                if (player.AudioTrack != tracks[track].Id) player.SetAudioTrack(tracks[track].Id);
                 if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
                 _audioPlayers.Add((player, media, track)); keep = true;
                 player.SetRate((float)_forwardPreviewRate);
@@ -193,13 +203,12 @@ public partial class VideoAssemblyWindow
     }
     private void SyncPreviewAudio(double source, bool seek = false)
     {
-        if (_previewIndex < 0 || _previewIndex >= _segments.Count) return;
+        if (_assemblyOpening || _previewIndex < 0 || _previewIndex >= _segments.Count) return;
         var part = _segments[_previewIndex];
         bool pause = !_wantAssemblyPlaying || _assemblyScrubbing || _waitingAssemblyFrame || _reversePreviewRate > 0;
         foreach (var audio in _audioPlayers)
         {
             double gain = AssemblyAudio.GainAt(part, audio.Track, source) * AudioTrackState(audio.Track).Gain(AnyAudioSolo);
-            if (gain <= 0) { _audioRestartPositions.Remove(audio.Player); _audioCorrectionTimes.Remove(audio.Player); }
             if (gain > 0 && source + .1 < part.End.TotalSeconds && (seek || _wantAssemblyPlaying) && audio.Player.State == VLCState.Ended &&
                 (!_audioRestartPositions.TryGetValue(audio.Player, out double previousRestart) || source < previousRestart - .1))
             {
@@ -207,20 +216,12 @@ public partial class VideoAssemblyWindow
                 _ = RestartPreviewAudioAsync(audio, source);
                 continue;
             }
-            var tracks = audio.Player.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
-            int requested = gain > 0 && audio.Track < tracks.Length ? tracks[audio.Track].Id : -1;
-            if (audio.Player.AudioTrack != requested) audio.Player.SetAudioTrack(requested);
-            audio.Player.Volume = (int)Math.Round(gain * 100);
+            // VLC's volume control is cubic; editor/export gains are linear amplitudes.
+            audio.Player.Volume = (int)Math.Round(Math.Cbrt(gain) * 100);
             audio.Player.Mute = MutePreview.IsChecked == true || gain <= 0 || _reversePreviewRate > 0;
-            long now = Environment.TickCount64;
-            // VLC's Time is updated in coarse intervals; do not seek on every timer tick.
-            if (gain > 0 && (seek || !pause && Math.Abs(audio.Player.Time / 1000.0 - source) > .4 &&
-                (!_audioCorrectionTimes.TryGetValue(audio.Player, out long last) || now - last >= 1000)))
-            {
-                audio.Player.Time = (long)(source * 1000);
-                _audioCorrectionTimes[audio.Player] = now;
-            }
-            audio.Player.SetPause(pause || gain <= 0);
+            // Muted events must keep their clock running; disabling tracks/repeated seeks rebuild audio output.
+            if (seek) audio.Player.Time = (long)(source * 1000);
+            audio.Player.SetPause(pause);
         }
     }
 
