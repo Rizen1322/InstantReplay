@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using TextEncoding = System.Text.Encoding;
 
 namespace Aura.Core.Saving.Mp4;
@@ -43,10 +43,13 @@ public static class Mp4Defragment
     /// Всё о дорожке, что нужно для её trak. <paramref name="EditMovie"/> ≥ 0 задаёт
     /// список правок явно (вырезка фрагмента): пустой отрезок <paramref name="EmptyMovie"/>,
     /// затем EditMovie единиц фильма с <paramref name="MediaStart"/> — остальное скрыто.
+    /// <paramref name="Edits"/> задаёт несколько таких отрезков подряд (склейка фрагментов).
     /// </summary>
+    internal sealed record Edit(long EmptyMovie, long MediaStart, ulong Duration);
+
     internal sealed record Track(int Id, bool Audio, int Timescale, int Width, int Height, string Name,
                                  byte[] Stsd, long MediaStart, TrackIndex Index,
-                                 long EmptyMovie = 0, long EditMovie = -1);
+                                 long EmptyMovie = 0, long EditMovie = -1, IReadOnlyList<Edit>? Edits = null);
 
     /// <summary>Обычный moov по готовым индексам дорожек.</summary>
     internal static byte[] BuildMoov(IReadOnlyList<Track> tracks, bool co64)
@@ -55,13 +58,19 @@ public static class Mp4Defragment
         w.Begin("moov");
         long movie = 0;
         foreach (var t in tracks)
-            movie = Math.Max(movie, t.EditMovie >= 0
-                ? t.EmptyMovie + t.EditMovie
-                : DelayMovie(t) + (long)Mp4Boxes.ToMovie(t.Index.MediaDuration - t.MediaStart, t.Timescale));
+            movie = Math.Max(movie, MovieDuration(t));
         Mp4Boxes.Mvhd(w, (ulong)movie, tracks.Count == 0 ? 1 : tracks.Max(t => t.Id) + 1);
         foreach (var t in tracks) WriteTrak(w, t, co64);
         w.End();
         return w.ToArray();
+    }
+
+    private static long MovieDuration(Track t)
+    {
+        if (t.Edits is { Count: > 0 }) return t.Edits.Sum(e => e.EmptyMovie + (long)e.Duration);
+        return t.EditMovie >= 0
+            ? t.EmptyMovie + t.EditMovie
+            : DelayMovie(t) + (long)Mp4Boxes.ToMovie(t.Index.MediaDuration - t.MediaStart, t.Timescale);
     }
 
     /// <summary>Дорожка начинается позже фильма (звук поднялся позже видео): пустой отрезок, мс.</summary>
@@ -75,10 +84,13 @@ public static class Mp4Defragment
         bool explicitEdit = t.EditMovie >= 0;
         ulong mediaMovie = explicitEdit ? (ulong)t.EditMovie : Mp4Boxes.ToMovie(index.MediaDuration - mediaStart, t.Timescale);
         long delay = explicitEdit ? t.EmptyMovie : DelayMovie(t);
+        bool manyEdits = t.Edits is { Count: > 0 };
+        long totalMovie = manyEdits ? t.Edits!.Sum(e => e.EmptyMovie + (long)e.Duration) : (long)(mediaMovie + (ulong)delay);
 
         w.Begin("trak");
-        Mp4Boxes.Tkhd(w, t.Id, mediaMovie + (ulong)delay, t.Audio, t.Width, t.Height);
-        Mp4Boxes.Edts(w, delay, mediaMovie, mediaStart, always: explicitEdit);
+        Mp4Boxes.Tkhd(w, t.Id, (ulong)Math.Max(0, totalMovie), t.Audio, t.Width, t.Height);
+        if (manyEdits) Mp4Boxes.Edts(w, t.Edits!, always: true);
+        else Mp4Boxes.Edts(w, delay, mediaMovie, mediaStart, always: explicitEdit);
         w.Begin("mdia");
         Mp4Boxes.Mdhd(w, t.Timescale, (ulong)index.MediaDuration);
         Mp4Boxes.Hdlr(w, t.Audio, t.Name);

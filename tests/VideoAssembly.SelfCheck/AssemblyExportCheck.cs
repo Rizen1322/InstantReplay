@@ -124,6 +124,21 @@ internal static class AssemblyExportCheck
             $"Trimmed fast export lost duration or the selected track: {trimmedInfo.Duration}, {trimmedInfo.AudioTracks} audio");
         Console.WriteLine($"PASS: trimmed HEVC10 clip with one selected audio track exported in {clock.ElapsedMilliseconds}ms without re-encoding");
 
+        string joinedOutput = Path.Combine(folder, "hevc10-joined-fast.mp4");
+        var joined = new[]
+        {
+            new VideoSegment(source, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4), AudioTrack: 0),
+            new VideoSegment(source, TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(8), AudioTrack: 0)
+        };
+        clock.Restart();
+        await VideoAssembly.RenderAsync(joined, joinedOutput);
+        clock.Stop();
+        Require(clock.Elapsed < TimeSpan.FromSeconds(4), "Two trimmed HEVC10 fragments were transcoded instead of concatenated");
+        var joinedInfo = await VideoAssembly.ReadInfoAsync(joinedOutput);
+        Require(Math.Abs(joinedInfo.Duration.TotalSeconds - 4) < .25 && joinedInfo.AudioTracks == 1,
+            $"Joined fast export lost duration or audio: {joinedInfo.Duration}, {joinedInfo.AudioTracks} audio");
+        Console.WriteLine($"PASS: two HEVC10 fragments joined losslessly in {clock.ElapsedMilliseconds}ms");
+
         async Task<string> Command(params string[] args)
         {
             var start = new ProcessStartInfo(ffmpeg) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };

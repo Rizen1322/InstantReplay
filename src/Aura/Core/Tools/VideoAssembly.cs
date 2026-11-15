@@ -54,7 +54,9 @@ public static partial class VideoAssembly
         string temp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(output)!, $".aura-assembly-{Guid.NewGuid():N}.part.mp4");
         try
         {
-            bool copied = targetMegabytes is null && segments.Count == 1 && await TryRemuxAsync(segments[0], temp, progress, ct);
+            bool copied = targetMegabytes is null && (segments.Count == 1
+                ? await TryRemuxAsync(segments[0], temp, progress, ct)
+                : await TryConcatAsync(segments, temp, progress, ct));
             if (!copied && ffmpeg is not null)
                 await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct);
             else if (!copied)
@@ -116,6 +118,71 @@ public static partial class VideoAssembly
             File.Delete(output);
             Logging.Log.Info("Editor", "Быстрый экспорт фрагмента недоступен: " + ex.Message);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Склейка нескольких простых фрагментов без перекодирования: каждый кусок сначала
+    /// режется своим MP4-списком правок, затем дорожки копируются в общий файл.
+    /// </summary>
+    private static async Task<bool> TryConcatAsync(IReadOnlyList<VideoSegment> segments, string output,
+        IProgress<double>? progress, CancellationToken ct)
+    {
+        if (segments.Count < 2) return false;
+        var infos = new Dictionary<string, VideoFileInfo>(StringComparer.OrdinalIgnoreCase);
+        var tracks = new List<int>();
+        foreach (var part in segments)
+        {
+            if (part.Gap != TimeSpan.Zero || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (!infos.TryGetValue(part.Path, out var info)) infos[part.Path] = info = await ReadInfoAsync(part.Path, ct);
+            if (info.Transformed || part.Start < TimeSpan.Zero || part.End > info.Duration + TimeSpan.FromMilliseconds(20))
+                return false;
+            if (part.AudioTrack >= info.AudioTracks && part.AudioTrack >= 0 ||
+                part.AudioEvents.Any(e => (e.SourcePath is null || e.SourcePath == part.Path) && e.Track >= info.AudioTracks))
+                throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
+            var sounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks).Where(s => !s.Removed).ToArray();
+            if (sounds.Any(s => s.Finish > part.Duration + TimeSpan.FromMilliseconds(1))) return false;
+            var audible = sounds.Where(s => s.Gain > 0).ToArray();
+            if (audible.Any(s => s.Path != part.Path || s.Gain != 1 || s.Position != TimeSpan.Zero ||
+                s.Start != part.Start || s.End != part.End)) return false;
+            var audibleTracks = audible.Select(s => s.Track).Distinct().ToArray();
+            if (audibleTracks.Length > 1) return false;
+            tracks.Add(audibleTracks.Length == 0 ? -2 : audibleTracks[0]);
+        }
+
+        var tempParts = new List<string>();
+        try
+        {
+            for (int i = 0; i < segments.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                string cut = output + $".cut{i}.mp4";
+                tempParts.Add(cut);
+                var part = segments[i];
+                int index = i;
+                await Task.Run(() => Mp4Trim.Cut(part.Path, cut, part.Start.TotalSeconds, part.End.TotalSeconds,
+                    tracks[index], value => progress?.Report((index + value) / segments.Count * 0.7), ct), ct);
+            }
+            var durations = segments.Select(s => s.Duration.TotalSeconds).ToArray();
+            var clock = Stopwatch.StartNew();
+            await Task.Run(() => Mp4Trim.Concat(tempParts, durations, output,
+                value => progress?.Report(0.7 + value * 0.3), ct), ct);
+            Logging.Log.Info("Editor", $"Экспорт монтажа без перекодирования видео: {segments.Count} фрагментов, {clock.ElapsedMilliseconds} мс");
+            return true;
+        }
+        catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or ArgumentException or InvalidOperationException)
+        {
+            File.Delete(output);
+            Logging.Log.Info("Editor", "Быстрая склейка фрагментов недоступна: " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            foreach (string cut in tempParts)
+            {
+                try { File.Delete(cut); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
         }
     }
 

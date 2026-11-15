@@ -146,6 +146,24 @@ public class Mp4TrimTests : IDisposable
     }
 
     [Fact]
+    public void Concat_keeps_every_cut_and_uses_multiple_edits()
+    {
+        string source = Source();
+        string first = Path.Combine(_dir, "first.mp4"), second = Path.Combine(_dir, "second.mp4");
+        Mp4Trim.Cut(source, first, 0.5, 1.5, 0);
+        Mp4Trim.Cut(source, second, 2.5, 3.5, 0);
+        string output = Path.Combine(_dir, "joined.mp4");
+        Mp4Trim.Concat([first, second], [1.0, 1.0], output);
+
+        var (_, moov, tracks) = Open(output);
+        var video = tracks.Single(t => !t.Audio);
+        Assert.Equal(180, video.Sizes.Length);
+        Assert.Single(tracks, t => t.Audio);
+        Assert.True(video.Sizes.Length > 0);
+        Assert.Contains("elst", System.Text.Encoding.ASCII.GetString(moov));
+    }
+
+    [Fact]
     public void Old_fragmented_recording_cuts_the_same_as_its_converted_copy()
     {
         var frames = Enumerable.Range(0, 240).Select(i => i % 60 == 0

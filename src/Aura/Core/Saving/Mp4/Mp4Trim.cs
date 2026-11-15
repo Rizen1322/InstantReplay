@@ -162,6 +162,177 @@ public static class Mp4Trim
         WriteSelection(source, output, picked, start, end, anchor, ftyp, moov, progress, ct);
     }
 
+    /// <summary>
+    /// Склеить уже вырезанные фрагменты без перекодирования. Каждый файл должен быть
+    /// обычным MP4 с одинаковыми дорожками; границы фрагментов задаёт список правок
+    /// (elst), поэтому ключевые кадры перед началом не видны.
+    /// </summary>
+    public static void Concat(IReadOnlyList<string> parts, IReadOnlyList<double> durations,
+        string output, Action<double>? progress = null, CancellationToken ct = default)
+    {
+        if (parts.Count == 0 || parts.Count != durations.Count) throw new ArgumentException("нет фрагментов для склейки");
+        var opened = new List<(FileStream Stream, List<SourceTrack> Tracks)>();
+        try
+        {
+            foreach (string path in parts)
+            {
+                var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+                                            1, FileOptions.RandomAccess);
+                byte[] partMoov = Mp4Keyframes.ReadTopLevel(stream, "moov") ?? throw new NotSupportedException("в фрагменте нет moov");
+                opened.Add((stream, ReadTracks(partMoov)));
+            }
+            var videoTemplate = opened[0].Tracks.FirstOrDefault(t => !t.Audio)
+                ?? throw new NotSupportedException("в фрагменте нет видеодорожки");
+            var audioTemplate = opened.SelectMany(o => o.Tracks).FirstOrDefault(t => t.Audio);
+            foreach (var (_, tracks) in opened)
+            {
+                var video = tracks.FirstOrDefault(t => !t.Audio) ?? throw new NotSupportedException("в фрагменте нет видео");
+                if (!video.Stsd.SequenceEqual(videoTemplate.Stsd) || video.Timescale != videoTemplate.Timescale ||
+                    video.Width != videoTemplate.Width || video.Height != videoTemplate.Height)
+                    throw new NotSupportedException("фрагменты закодированы по-разному");
+                if (audioTemplate is null) continue;
+                var audio = tracks.FirstOrDefault(t => t.Audio);
+                if (audio is not null && (!audio.Stsd.SequenceEqual(audioTemplate.Stsd) || audio.Timescale != audioTemplate.Timescale))
+                    throw new NotSupportedException("звук фрагментов закодирован по-разному");
+            }
+
+            var videoIndex = new Mp4Defragment.TrackIndex();
+            var audioIndex = new Mp4Defragment.TrackIndex();
+            var videoEdits = new List<Mp4Defragment.Edit>();
+            var audioEdits = new List<Mp4Defragment.Edit>();
+            long dataLength = 0;
+            for (int i = 0; i < opened.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                long durationMovie = checked((long)Math.Round(durations[i] * 1000));
+                if (durationMovie <= 0) throw new ArgumentOutOfRangeException(nameof(durations));
+                var (stream, tracks) = opened[i];
+                var video = tracks.First(t => !t.Audio);
+                long videoStart = Math.Clamp(video.MediaStart, 0, Math.Max(0, TrackDuration(video) - 1));
+                long videoAvailable = (long)Mp4Boxes.ToMovie(TrackDuration(video) - videoStart, video.Timescale);
+                long videoEdit = Math.Min(durationMovie, videoAvailable);
+                videoEdits.Add(new(0, videoIndex.MediaDuration + videoStart, (ulong)Math.Max(0, videoEdit)));
+                if (videoEdit < durationMovie) videoEdits.Add(new(durationMovie - videoEdit, 0, 0));
+                videoIndex.Chunks.Add((dataLength, video.Sizes.Length));
+                for (int sample = 0; sample < video.Sizes.Length; sample++)
+                    videoIndex.Add(video.Sizes[sample], video.Duration(sample), video.Cts[sample], video.Key[sample]);
+                dataLength += video.Sizes.Sum(s => (long)s);
+
+                var audio = tracks.FirstOrDefault(t => t.Audio);
+                long audioEdit = 0, audioEmpty = 0;
+                if (audio is not null && audioTemplate is not null && audio.Sizes.Length > 0)
+                {
+                    long audioStart = Math.Clamp(audio.MediaStart, 0, Math.Max(0, TrackDuration(audio) - 1));
+                    long audioAvailable = (long)Mp4Boxes.ToMovie(TrackDuration(audio) - audioStart, audio.Timescale);
+                    audioEmpty = Math.Clamp((long)Math.Round(audio.EmptySeconds * 1000), 0, durationMovie);
+                    audioEdit = Math.Min(Math.Max(0, durationMovie - audioEmpty), audioAvailable);
+                    if (audioEmpty > 0) audioEdits.Add(new(audioEmpty, 0, 0));
+                    audioEdits.Add(new(0, audioIndex.MediaDuration + audioStart, (ulong)Math.Max(0, audioEdit)));
+                    if (audioEmpty + audioEdit < durationMovie)
+                        audioEdits.Add(new(durationMovie - audioEmpty - audioEdit, 0, 0));
+                    audioIndex.Chunks.Add((dataLength, audio.Sizes.Length));
+                    for (int sample = 0; sample < audio.Sizes.Length; sample++)
+                        audioIndex.Add(audio.Sizes[sample], audio.Duration(sample), audio.Cts[sample], true);
+                    dataLength += audio.Sizes.Sum(s => (long)s);
+                }
+                else if (audioTemplate is not null)
+                    audioEdits.Add(new(durationMovie, 0, 0));
+            }
+
+            var outTracks = new List<Mp4Defragment.Track>
+            {
+                new(1, false, videoTemplate.Timescale, videoTemplate.Width, videoTemplate.Height, videoTemplate.Name,
+                    videoTemplate.Stsd, 0, videoIndex, Edits: videoEdits)
+            };
+            if (audioTemplate is not null)
+                outTracks.Add(new(2, true, audioTemplate.Timescale, 0, 0, audioTemplate.Name,
+                    audioTemplate.Stsd, 0, audioIndex, Edits: audioEdits));
+
+            bool largeMdat = dataLength + 8 > uint.MaxValue;
+            int mdatHeader = largeMdat ? 16 : 8;
+            byte[] ftyp = DefaultFtyp();
+            bool co64 = ftyp.Length + dataLength + mdatHeader + Mp4Defragment.BuildMoov(outTracks, false).Length * 2L > uint.MaxValue;
+            long dataStart = ftyp.Length + Mp4Defragment.BuildMoov(outTracks, co64).Length + mdatHeader;
+            foreach (var index in new[] { videoIndex, audioIndex })
+                for (int c = 0; c < index.Chunks.Count; c++)
+                    index.Chunks[c] = (index.Chunks[c].Offset + dataStart, index.Chunks[c].Count);
+            byte[] moov = Mp4Defragment.BuildMoov(outTracks, co64);
+
+            using var target = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                                              1 << 20, FileOptions.SequentialScan);
+            target.Write(ftyp);
+            target.Write(moov);
+            var header = new byte[mdatHeader];
+            if (largeMdat)
+            {
+                BinaryPrimitives.WriteUInt32BigEndian(header, 1);
+                BinaryPrimitives.WriteUInt64BigEndian(header.AsSpan(8), (ulong)(dataLength + 16));
+            }
+            else BinaryPrimitives.WriteUInt32BigEndian(header, (uint)(dataLength + 8));
+            "mdat"u8.CopyTo(header.AsSpan(4));
+            target.Write(header);
+            if (target.Position != dataStart) throw new InvalidOperationException("раскладка склейки разошлась с оглавлением");
+
+            long copied = 0;
+            var buffer = new byte[1 << 20];
+            for (int i = 0; i < opened.Count; i++)
+            {
+                var (stream, tracks) = opened[i];
+                var video = tracks.First(t => !t.Audio);
+                CopySamples(stream, video, target, buffer, ref copied, dataLength, progress, ct);
+                var audio = tracks.FirstOrDefault(t => t.Audio);
+                if (audio is not null && audioTemplate is not null && audio.Sizes.Length > 0)
+                    CopySamples(stream, audio, target, buffer, ref copied, dataLength, progress, ct);
+            }
+            target.Flush(flushToDisk: true);
+        }
+        finally
+        {
+            foreach (var (stream, _) in opened) stream.Dispose();
+        }
+    }
+
+    private static long TrackDuration(SourceTrack track)
+    {
+        long total = 0;
+        for (int i = 0; i < track.Sizes.Length; i++) total += track.Duration(i);
+        return total;
+    }
+
+    private static void CopySamples(Stream source, SourceTrack track, Stream target, byte[] buffer,
+        ref long copied, long total, Action<double>? progress, CancellationToken ct)
+    {
+        int i = 0;
+        while (i < track.Sizes.Length)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (track.Memory is { } frames)
+            {
+                for (; i < track.Sizes.Length; i++)
+                {
+                    target.Write(frames[i]);
+                    copied += frames[i].Length;
+                    progress?.Invoke(total == 0 ? 1 : (double)copied / total);
+                }
+                return;
+            }
+            long offset = track.Offsets[i];
+            long length = track.Sizes[i++];
+            while (i < track.Sizes.Length && track.Offsets[i] == offset + length) length += track.Sizes[i++];
+            for (long done = 0; done < length;)
+            {
+                int part = (int)Math.Min(buffer.Length, length - done);
+                source.Position = offset + done;
+                source.ReadExactly(buffer, 0, part);
+                target.Write(buffer, 0, part);
+                done += part;
+            }
+            copied += length;
+            progress?.Invoke(total == 0 ? 1 : (double)copied / total);
+        }
+    }
+
+
     /// <summary>Свести звук в отдельный M4A для предпросмотра тем же микшером, что и при экспорте.</summary>
     public static void MixAudio(string input, string output, AudioMixer mix, CancellationToken ct = default)
     {
