@@ -14,6 +14,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\Aura\Core\Capture\MonitorSelection.cs" Link="App\MonitorSelection.cs" />
     <Compile Include="..\..\src\Aura\Core\Tools\VideoSegment.cs" Link="App\VideoSegment.cs" />
+    <Compile Include="..\..\src\Aura\Core\Tools\AssemblyAudio.cs" Link="App\AssemblyAudio.cs" />
     <Compile Include="..\..\src\Aura\Core\Tools\VideoTimeline.cs" Link="App\VideoTimeline.cs" />
     <Compile Include="..\..\src\InstantReplaySetup\InstallerPayloadVerification.cs" Link="Setup\InstallerPayloadVerification.cs" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />

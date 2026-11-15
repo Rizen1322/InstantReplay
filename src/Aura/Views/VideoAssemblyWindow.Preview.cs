@@ -14,9 +14,11 @@ public partial class VideoAssemblyWindow
     private readonly Dictionary<string, VideoFileInfo> _sourceInfo = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ClipItem> _thumbs = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _capturedThumbs = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, Task<string>> _assemblyMixes = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<string> _assemblyMixFiles = [];
-    private readonly Stack<VideoSegment[]> _assemblyHistory = new();
+
+
+    private sealed record AssemblySnapshot(VideoSegment[] Parts, AssemblyAudioTrack[] Tracks, int Selected, int AudioTrack, double AudioSource, double Position);
+    private readonly Stack<AssemblySnapshot> _assemblyHistory = new();
+    private readonly Stack<AssemblySnapshot> _assemblyRedo = new();
     private readonly DispatcherTimer _assemblyTimer = new() { Interval = TimeSpan.FromMilliseconds(80) };
     private readonly SemaphoreSlim _assemblyPlayback = new(1, 1);
     private LibVLC? _assemblyVlc;
@@ -29,6 +31,9 @@ public partial class VideoAssemblyWindow
     private int _assemblyLoadRevision;
     private bool _assemblyOpening;
     private long _assemblyLoadStarted;
+
+    private double _reversePreviewRate;
+    private double _forwardPreviewRate = 1;
 
     private void InitializeAssemblyPreview()
     {
@@ -97,29 +102,11 @@ public partial class VideoAssemblyWindow
             for (int i = 0; i < info.AudioTracks; i++) ClipAudio.Items.Add("Дорожка " + (i + 1));
             ClipAudio.SelectedIndex = info.AudioTracks == 0 ? 0 : part.AudioTrack + 1;
             ClipAudio.IsEnabled = info.AudioTracks > 1;
+            ClipAudio.Visibility = part.AudioTrack >= 0 ? Visibility.Visible : Visibility.Collapsed;
             TrimPanel.IsEnabled = _export is null;
             UpdateTrimLabels();
             _changingAssembly = false;
-            if (part.AudioTrack < 0 && info.AudioTracks > 1)
-            {
-                try
-                {
-                    if (!_assemblyMixes.TryGetValue(part.Path, out var mix))
-                    {
-                        string output = Path.Combine(Path.GetTempPath(), "aura-assembly-mix-" + Guid.NewGuid().ToString("N") + ".m4a");
-                        _assemblyMixFiles.Add(output);
-                        async Task<string> Prepare()
-                        {
-                            await VideoEditor.PrepareMixedAudioAsync(part.Path, output, info.AudioTracks, _ffmpeg, _lifetime.Token);
-                            return output;
-                        }
-                        _assemblyMixes[part.Path] = mix = Prepare();
-                    }
-                    await mix;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                { Status.Text = "Не удалось подготовить общий звук предпросмотра: " + ex.Message; }
-            }
+            RefreshTimeline();
             if (revision != _selectionRevision || _lifetime.IsCancellationRequested) return;
             LoadAssemblyClip(Segments.SelectedIndex, sourceTime ?? part.Start.TotalSeconds);
         }
@@ -142,10 +129,9 @@ public partial class VideoAssemblyWindow
             if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
             var old = _assemblyMedia;
             _assemblyMedia = new Media(_assemblyVlc!, new Uri(part.Path));
-            if (part.AudioTrack < 0 && _assemblyMixes.TryGetValue(part.Path, out var mix) && mix.IsCompletedSuccessfully)
-                _assemblyMedia.AddSlave(MediaSlaveType.Audio, 4, new Uri(mix.Result).AbsoluteUri);
             _assemblyMedia.AddOption(":start-time=" + start.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
-            _assemblyPlayer.Mute = MutePreview.IsChecked == true;
+            _assemblyPlayer.Mute = true;
+            // Keep VLC's audio clock; independent track players provide the audible mix.
             var player = _assemblyPlayer;
             var media = _assemblyMedia;
             // Смена файла останавливает видеовывод: ему может понадобиться свободный UI-поток.
@@ -153,9 +139,13 @@ public partial class VideoAssemblyWindow
             old?.Dispose();
             if (!played) throw new InvalidOperationException("Не удалось открыть видео для предпросмотра.");
             if (revision != _assemblyLoadRevision) return;
+            await OpenPreviewAudioAsync(part, start, revision);
+            if (revision != _assemblyLoadRevision || _lifetime.IsCancellationRequested) return;
+
             _previewIndex = index;
             _previewStart = start;
             _assemblyLoadStarted = Environment.TickCount64;
+            _assemblyPlayer.SetRate((float)_forwardPreviewRate);
         }
         catch (Exception ex) { if (!_lifetime.IsCancellationRequested) { Status.Text = ex.Message; Log.Error("Editor", ex); } }
         finally { if (revision == _assemblyLoadRevision) _assemblyOpening = false; _assemblyPlayback.Release(); }
@@ -165,6 +155,19 @@ public partial class VideoAssemblyWindow
     {
         if (_assemblyOpening || _assemblyPlayer is null || _previewIndex < 0 || _previewIndex >= _segments.Count) return;
         double time = Math.Max(0, _assemblyPlayer.Time / 1000.0);
+        bool alignAudio = false;
+        if (_reversePreviewRate > 0 && !_assemblyScrubbing && !_waitingAssemblyFrame)
+        {
+            time = Math.Max(_segments[_previewIndex].Start.TotalSeconds, time - .08 * _reversePreviewRate);
+            _assemblyPlayer.Time = (long)(time * 1000);
+            _assemblyPlayer.NextFrame();
+            if (time <= _segments[_previewIndex].Start.TotalSeconds)
+            {
+                double boundary = VideoTimeline.Offset(_segments, _previewIndex);
+                if (_previewIndex > 0) { SeekAssembly(Math.Max(0, boundary - .08)); return; }
+                _reversePreviewRate = 0;
+            }
+        }
         if (_waitingAssemblyFrame)
         {
             if (_assemblyPlayer.VoutCount == 0 || time < _previewStart - 0.08)
@@ -173,27 +176,12 @@ public partial class VideoAssemblyWindow
                 { _waitingAssemblyFrame = _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true); Status.Text = "Предпросмотр не отдал кадр. Попробуйте выбрать клип ещё раз."; }
                 return;
             }
-            var part = _segments[_previewIndex];
-            var tracks = _assemblyPlayer.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
-            bool mixed = part.AudioTrack < 0 && _assemblyMixes.TryGetValue(part.Path, out var prepared) && prepared.IsCompletedSuccessfully;
-            int expected = _sourceInfo.TryGetValue(part.Path, out var info) ? info.AudioTracks + (mixed ? 1 : 0) : 0;
-            if (tracks.Length < expected)
-            {
-                if (Environment.TickCount64 - _assemblyLoadStarted > 3000)
-                { _waitingAssemblyFrame = _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true); Status.Text = "Не удалось подключить звук предпросмотра. Выберите дорожку ещё раз."; }
-                return;
-            }
             _waitingAssemblyFrame = false;
+            alignAudio = true;
             _ = CaptureAssemblyThumbnailAsync(_segments[_previewIndex].Path);
-            int requested = part.AudioTrack;
-            int audio = requested >= 0 && requested < tracks.Length ? tracks[requested].Id : mixed && tracks.Length > 0 ? tracks[^1].Id : -1;
-            if (audio >= 0 && _assemblyPlayer.AudioTrack != audio)
-            {
-                _assemblyPlayer.SetAudioTrack(audio);
-                if (_assemblyPlayer.IsPlaying) _assemblyPlayer.Time = _assemblyPlayer.Time;
-            }
             if (!_wantAssemblyPlaying || _assemblyScrubbing) _assemblyPlayer.SetPause(true);
         }
+        SyncPreviewAudio(time, seek: alignAudio);
         if (!_assemblyScrubbing && _wantAssemblyPlaying && time >= _segments[_previewIndex].End.TotalSeconds - 0.08) { AdvanceAssembly(); return; }
         double global = _segments.Take(_previewIndex).Sum(s => s.Duration.TotalSeconds) +
             Math.Clamp(time - _segments[_previewIndex].Start.TotalSeconds, 0, _segments[_previewIndex].Duration.TotalSeconds);
@@ -236,6 +224,10 @@ public partial class VideoAssemblyWindow
     private void PlayAssembly_Click(object sender, RoutedEventArgs e)
     {
         if (_segments.Count == 0 || _assemblyPlayer is null) return;
+        _reversePreviewRate = 0; _forwardPreviewRate = 1;
+        _audioRestartPositions.Clear();
+        _assemblyPlayer.SetRate(1);
+        foreach (var audio in _audioPlayers) audio.Player.SetRate(1);
         _wantAssemblyPlaying = !_wantAssemblyPlaying;
         if (_wantAssemblyPlaying)
         {
@@ -244,15 +236,20 @@ public partial class VideoAssemblyWindow
         }
         else _assemblyPlayer.SetPause(true);
         PlayAssembly.Content = _wantAssemblyPlaying ? "Ⅱ Пауза" : "▶ Смотреть ролик";
+        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0);
     }
     private void ToStart_Click(object sender, RoutedEventArgs e) => SeekAssembly(0);
-    private void Mute_Changed(object sender, RoutedEventArgs e) { if (_assemblyPlayer is not null) _assemblyPlayer.Mute = MutePreview.IsChecked == true; }
+    private void Mute_Changed(object sender, RoutedEventArgs e) => SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
 
     private void RememberAssembly()
     {
-        _assemblyHistory.Push(_segments.ToArray());
+        _lastAudioEdit = 0;
+        _assemblyHistory.Push(CaptureAssembly()); _assemblyRedo.Clear();
         UndoAssembly.IsEnabled = true;
+        RedoAssembly.IsEnabled = false;
     }
+    private AssemblySnapshot CaptureAssembly() => new(_segments.ToArray(), _audioTracks.ToArray(), Segments.SelectedIndex,
+        Timeline.SelectedAudioTrack, Timeline.SelectedAudioSeconds, Timeline.Position);
     private void SplitAssembly_Click(object sender, RoutedEventArgs e)
     {
         var (index, source) = VideoTimeline.Locate(_segments, Timeline.Position);
@@ -261,6 +258,19 @@ public partial class VideoAssemblyWindow
     private void SplitAssemblyAt(double seconds)
     {
         if (_export is not null || Segments.SelectedItem is not VideoSegment part) return;
+        if (SnapEdits.IsChecked == true && _sourceInfo.TryGetValue(part.Path, out var sourceInfo))
+            seconds = Math.Round(seconds * sourceInfo.Fps) / sourceInfo.Fps;
+        if (Timeline.SelectedAudioTrack >= 0 && !part.AudioLinked)
+        {
+            if (Timeline.SelectedAudioTrack >= SourceAudioTracks(part.Path)) return;
+            var split = AssemblyAudio.Split(part, Timeline.SelectedAudioTrack, TimeSpan.FromSeconds(seconds));
+            if (split == part) { Status.Text = "Поставьте курсор внутри звукового фрагмента."; return; }
+            RememberAssembly();
+            int selected = Segments.SelectedIndex;
+            _changingAssembly = true; _segments[selected] = split; Segments.SelectedIndex = selected; _changingAssembly = false;
+            Timeline.SelectedAudioSeconds = seconds;
+            RefreshTimeline(); return;
+        }
         var at = TimeSpan.FromSeconds(seconds);
         if (at - part.Start < TimeSpan.FromMilliseconds(50) || part.End - at < TimeSpan.FromMilliseconds(50))
         { Status.Text = "Поставьте позицию просмотра внутри клипа, чтобы разрезать его."; return; }
@@ -276,12 +286,30 @@ public partial class VideoAssemblyWindow
     private void UndoAssembly_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || !_assemblyHistory.TryPop(out var previous)) return;
+        _assemblyRedo.Push(CaptureAssembly());
+        RestoreAssembly(previous);
+    }
+    private void RedoAssembly_Click(object sender, RoutedEventArgs e)
+    {
+        if (_export is not null || !_assemblyRedo.TryPop(out var next)) return;
+        _assemblyHistory.Push(CaptureAssembly());
+        RestoreAssembly(next);
+    }
+    private void RestoreAssembly(AssemblySnapshot snapshot)
+    {
+        _lastAudioEdit = 0;
         ++_selectionRevision;
+        _wantAssemblyPlaying = false; _reversePreviewRate = 0; _assemblyPlayer?.SetPause(true);
         _changingAssembly = true;
-        _segments.Clear(); foreach (var part in previous) _segments.Add(part);
+        _audioTracks.Clear(); _audioTracks.AddRange(snapshot.Tracks);
+        _segments.Clear(); foreach (var part in snapshot.Parts) _segments.Add(part);
+        Timeline.SelectedAudioTrack = snapshot.AudioTrack; Timeline.SelectedAudioSeconds = snapshot.AudioSource;
+        if (snapshot.AudioTrack >= 0) _activeAudioTrack = snapshot.AudioTrack;
+        Segments.SelectedIndex = Math.Clamp(snapshot.Selected, -1, _segments.Count - 1);
         _changingAssembly = false;
         UndoAssembly.IsEnabled = _assemblyHistory.Count > 0;
-        Segments.SelectedIndex = _segments.Count > 0 ? 0 : -1;
+        RedoAssembly.IsEnabled = _assemblyRedo.Count > 0;
+        if (_segments.Count > 0) { RefreshTimeline(); SeekAssembly(Math.Clamp(snapshot.Position, 0, AssemblyPosition.Maximum)); }
         if (_segments.Count == 0)
         {
             _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
@@ -367,15 +395,15 @@ public partial class VideoAssemblyWindow
         AssemblyPreview.MediaPlayer = null;
         var player = _assemblyPlayer; var media = _assemblyMedia; var engine = _assemblyVlc;
         _assemblyPlayer = null;
-        var tasks = _assemblyMixes.Values.ToArray();
-        var files = _assemblyMixFiles.ToArray();
+
+
         _ = Task.Run(async () =>
         {
             await _assemblyPlayback.WaitAsync();
-            try { player?.Stop(); player?.Dispose(); media?.Dispose(); engine?.Dispose(); }
+            try { await StopPreviewAudioAsync(); player?.Stop(); player?.Dispose(); media?.Dispose(); engine?.Dispose(); }
             finally { _assemblyPlayback.Release(); }
-            try { await Task.WhenAll(tasks); } catch { }
-            foreach (string path in files) try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+
+
         });
     }
 }

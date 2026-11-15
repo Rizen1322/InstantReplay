@@ -55,13 +55,13 @@ public static partial class VideoAssembly
             if (ffmpeg is not null)
                 await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct);
             else
-                try { await RenderWindowsAsync(segments, temp, targetMegabytes, progress, ct); }
+                try { await Task.Run(() => RenderWindowsAsync(segments, temp, targetMegabytes, progress, ct), ct); }
                 catch (System.Runtime.InteropServices.COMException ex)
                 {
                     ct.ThrowIfCancellationRequested();
                     Logging.Log.Warn("Editor", $"Windows не смогла выполнить монтаж (0x{ex.HResult:X8}); перевожу через встроенные кодеки");
                     File.Delete(temp);
-                    await RenderWithVlcAsync(segments, temp, targetMegabytes, progress, ct);
+                    await Task.Run(() => RenderWithVlcAsync(segments, temp, targetMegabytes, progress, ct), ct);
                 }
             ct.ThrowIfCancellationRequested();
             long size = new FileInfo(temp).Length;
@@ -97,24 +97,27 @@ public static partial class VideoAssembly
                 ? await MediaClip.CreateFromFileAsync(await StorageFile.GetFileFromPathAsync(audioPath!))
                 : clip;
             int count = audioClip.EmbeddedAudioTracks.Count;
+            if (segment.AudioEvents.Any(e => e.Track >= count)) throw new InvalidDataException("Звуковой фрагмент ссылается на отсутствующую дорожку.");
             if (segment.AudioTrack >= count && segment.AudioTrack >= 0)
                 throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-            if (count > 0 && !separateAudio)
-                clip.SelectedEmbeddedAudioTrackIndex = segment.AudioTrack < 0 ? 0 :
-                    VideoEditor.WindowsAudioTrackIndex(segment.Path, count, segment.AudioTrack);
+            clip.Volume = 0;
             composition.Clips.Add(clip);
-            int selected = segment.AudioTrack < 0 ? -1 :
-                (int)VideoEditor.WindowsAudioTrackIndex(separateAudio ? audioPath! : segment.Path, count, segment.AudioTrack);
-            for (int i = 0; (segment.AudioTrack < 0 || separateAudio) && i < count; i++)
+            for (int track = 0; track < count; track++)
             {
-                if (separateAudio ? selected >= 0 && i != selected : i == clip.SelectedEmbeddedAudioTrackIndex) continue;
-                var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(audioClip.EmbeddedAudioTracks[i]);
-                TimeSpan audioEnd = end < audio.OriginalDuration ? end : audio.OriginalDuration;
-                if (segment.Start >= audioEnd) continue;
-                audio.TrimTimeFromStart = segment.Start;
-                audio.TrimTimeFromEnd = audio.OriginalDuration - audioEnd;
-                audio.Delay = offset;
-                composition.BackgroundAudioTracks.Add(audio);
+                if (segment.AudioTrack >= 0 && segment.AudioTrack != track) continue;
+                int nativeTrack = (int)VideoEditor.WindowsAudioTrackIndex(separateAudio ? audioPath! : segment.Path, count, track);
+                foreach (var edit in AssemblyAudio.Events(segment, track))
+                {
+                    if (edit.Gain <= 0) continue;
+                    var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(audioClip.EmbeddedAudioTracks[nativeTrack]);
+                    TimeSpan audioEnd = edit.End < audio.OriginalDuration ? edit.End : audio.OriginalDuration;
+                    if (edit.Start >= audioEnd) continue;
+                    audio.TrimTimeFromStart = edit.Start;
+                    audio.TrimTimeFromEnd = audio.OriginalDuration - audioEnd;
+                    audio.Delay = offset + edit.Start - segment.Start;
+                    audio.Volume = edit.Gain;
+                    composition.BackgroundAudioTracks.Add(audio);
+                }
             }
             offset += end - segment.Start;
         }
@@ -187,15 +190,25 @@ public static partial class VideoAssembly
         {
             var segment = segments[i];
             int tracks = infos[segment.Path].AudioTracks;
+            if (segment.AudioEvents.Any(e => e.Track >= tracks)) throw new InvalidDataException("Звуковой фрагмент ссылается на отсутствующую дорожку.");
             if (segment.AudioTrack >= tracks && segment.AudioTrack >= 0) throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
             graph.Append($"[{i}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS[v{i}];");
             if (tracks == 0) graph.Append("anullsrc=r=48000:cl=stereo,");
-            else if (segment.AudioTrack < 0 && tracks > 1)
+            else
             {
-                for (int t = 0; t < tracks; t++) graph.Append($"[{i}:a:{t}]");
-                graph.Append($"amix=inputs={tracks}:duration=longest:normalize=0,alimiter=limit=0.97:level=disabled,");
+                int[] selected = segment.AudioTrack >= 0 ? [segment.AudioTrack] : Enumerable.Range(0, tracks).ToArray();
+                foreach (int t in selected)
+                {
+                    string envelope = string.Join("+", AssemblyAudio.Events(segment, t).Where(e => e.Gain > 0).Select(e =>
+                        $"gte(t,{Number((e.Start - segment.Start).TotalSeconds)})*lt(t,{Number((e.End - segment.Start).TotalSeconds)})*{Number(e.Gain)}"));
+                    if (envelope.Length == 0) envelope = "0";
+                    graph.Append($"[{i}:a:{t}]asetpts=PTS-STARTPTS,volume='{envelope}':eval=frame[a{i}t{t}];");
+                }
+                foreach (int t in selected) graph.Append($"[a{i}t{t}]");
+                graph.Append(selected.Length > 1
+                    ? $"amix=inputs={selected.Length}:duration=longest:normalize=0,alimiter=limit=0.97:level=disabled,"
+                    : "anull,");
             }
-            else graph.Append($"[{i}:a:{Math.Max(0, segment.AudioTrack)}]");
             graph.Append($"aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={Number(segment.Duration.TotalSeconds)},asetpts=PTS-STARTPTS[a{i}];");
         }
         for (int i = 0; i < segments.Count; i++) graph.Append($"[v{i}][a{i}]");

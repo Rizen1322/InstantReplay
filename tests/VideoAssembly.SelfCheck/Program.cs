@@ -11,7 +11,8 @@ using Aura.Core.Saving.Mp4;
 using Vortice.MediaFoundation;
 
 static void Require(bool ok, string message) { if (!ok) throw new Exception(message); }
-string root = Path.GetFullPath(Path.Combine("artifacts", "tests", "assembly-" + Guid.NewGuid().ToString("N")));
+bool uiOnly = args.Length == 2 && args[0] == "--ui-only";
+string root = uiOnly ? Path.GetFullPath(args[1]) : Path.GetFullPath(Path.Combine("artifacts", "tests", "assembly-" + Guid.NewGuid().ToString("N")));
 Directory.CreateDirectory(root);
 MediaFactory.MFStartup();
 string? mixedPreviewSource = null;
@@ -38,8 +39,9 @@ async Task<string> Fixture(string name, Color color, int width, int height, doub
     Require(await composition.RenderToFileAsync(output, MediaTrimmingPreference.Precise, profile) == TranscodeFailureReason.None, "Fixture render failed");
     return output.Path;
 }
-string red = await Fixture("красный ' [1].mp4", Color.FromArgb(255, 255, 0, 0), 320, 180, 3, 440);
-string blue = await Fixture("синий ; [2].mp4", Color.FromArgb(255, 0, 0, 255), 180, 320, 2, 880);
+string red = uiOnly ? Path.Combine(root, "красный ' [1].mp4") : await Fixture("красный ' [1].mp4", Color.FromArgb(255, 255, 0, 0), 320, 180, 3, 440);
+string blue = uiOnly ? Path.Combine(root, "синий ; [2].mp4") : await Fixture("синий ; [2].mp4", Color.FromArgb(255, 0, 0, 255), 180, 320, 2, 880);
+if (uiOnly) { mixedPreviewSource = Path.Combine(root, "две дорожки.mp4"); await CheckUi(); MediaFactory.MFShutdown(); return; }
 string redHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(red)));
 string blueHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(blue)));
 var redInfo = await VideoAssembly.ReadInfoAsync(red);
@@ -145,6 +147,39 @@ if (args.Length > 0)
         Require(Amplitude(440, 0.3) > 0.04 && Amplitude(880, 0.3) > 0.04, "Windows render «together» lost an audio track");
     }
     Console.WriteLine("PASS: Windows render explicit audio track and together");
+    var independent = new VideoSegment(twoTrackMp4, TimeSpan.FromSeconds(.5), TimeSpan.FromSeconds(2.5)) { AudioLinked = false };
+    independent = AssemblyAudio.Split(independent, 0, TimeSpan.FromSeconds(1.5));
+    independent = AssemblyAudio.Split(independent, 1, TimeSpan.FromSeconds(1.5));
+    independent = AssemblyAudio.Change(independent, 0, TimeSpan.FromSeconds(1), a => a with { Removed = true });
+    independent = AssemblyAudio.Change(independent, 1, TimeSpan.FromSeconds(1), a => a with { Volume = .25 });
+    independent = AssemblyAudio.Change(independent, 1, TimeSpan.FromSeconds(2), a => a with { Muted = true });
+    foreach (string renderer in new[] { "windows", "ffmpeg", "fallback" })
+    {
+        string editedAudio = Path.Combine(root, "independent-audio-" + renderer + ".mp4");
+        if (renderer == "fallback")
+            await (Task)typeof(VideoAssembly).GetMethod("RenderWithVlcAsync", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(null, [new[] { independent }, editedAudio, null, null, CancellationToken.None])!;
+        else await VideoAssembly.RenderAsync([independent], editedAudio, renderer == "ffmpeg" ? ffmpeg : null);
+        Mp4Trim.AacClip? edited = null;
+        Mp4Trim.MixAudio(editedAudio, Path.ChangeExtension(editedAudio, ".m4a"), tracks => edited = tracks[0]);
+        var samples = new List<float>();
+        using (var decoder = new AacDecoder(edited!.SampleRate, edited.Channels, edited.Config))
+            for (int i = 0; i < edited.Frames.Count; i++) decoder.Decode(edited.Frames[i], (long)i * 1024 * 10000000 / edited.SampleRate, samples);
+        audio = edited; pcm = samples;
+        Require(Amplitude(440, .3) < .01 && Amplitude(880, .3) is > .015 and < .1,
+            $"{renderer}: deleted/attenuated audio events ignored: {Amplitude(440, .3):F3}, {Amplitude(880, .3):F3}");
+        Require(Amplitude(440, 1.3) > .04 && Amplitude(880, 1.3) < .01,
+            $"{renderer}: audio-only split/mute damaged the other track: {Amplitude(440, 1.3):F3}, {Amplitude(880, 1.3):F3}");
+        Require(Math.Abs((await VideoAssembly.ReadInfoAsync(editedAudio)).Duration.TotalSeconds - 2) < .15,
+            "Deleting audio changed video duration");
+    }
+    var waves = AudioWaveform.Read(twoTrackMp4, CancellationToken.None);
+    Require(waves.Count == 2 && waves.All(w => w.Peak(.3, .6) > .05), "Waveforms did not decode both actual audio tracks");
+    var peakCheck = new AudioWaveform(Enumerable.Range(0, 50000).Select(i => (float)(i % 101) / 100).ToArray(), 0);
+    var peakClock = System.Diagnostics.Stopwatch.StartNew();
+    for (int i = 0; i < 10000; i++) Require(peakCheck.Peak(0, 1000) == 1, "Waveform peak hierarchy lost the maximum");
+    Require(peakClock.ElapsedMilliseconds < 1000, "Zoomed-out waveform lookup scales with the whole source");
+    Console.WriteLine("PASS: independent audio split, deletion, gain and mute in Windows, FFmpeg and bundled fallback; real waveform peaks");
     string previewAudio = Path.Combine(root, "preview-mix.m4a");
     await Ffmpeg.MixAudioAsync(ffmpeg, foreign, previewAudio, 2, CancellationToken.None);
     Require(File.Exists(previewAudio) && new FileInfo(previewAudio).Length > 1000, "Foreign preview mix missing");
@@ -211,6 +246,11 @@ if (args.Length > 0)
     Console.WriteLine("PASS: bundled codec fallback preserves selected/mixed audio, cuts and Unicode/apostrophe paths; cancellation cleans intermediates");
 }
 Console.WriteLine("Fixtures: " + root);
+await CheckUi();
+MediaFactory.MFShutdown();
+
+async Task CheckUi()
+{
 var uiFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 var uiThread = new Thread(() =>
 {
@@ -341,16 +381,99 @@ var uiThread = new Thread(() =>
                     list.SelectedIndex = 2;
                     await (Task)assemblyType.GetMethod("SelectAssemblyClipAsync", flags)!.Invoke(assembly, [null])!;
                     for (int i = 0; i < 100 && (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!; i++) await Task.Delay(50);
-                    var previewTracks = assemblyPlayer!.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
-                    Require(previewTracks.Length == 3 && assemblyPlayer.AudioTrack == previewTracks[^1].Id,
-                        "Joint preview did not attach/select the mixed audio track: " +
-                        string.Join(";", previewTracks.Select(t => $"{t.Id}:{t.Name}")) + $" selected={assemblyPlayer.AudioTrack}, status={((System.Windows.Controls.TextBlock)assembly.FindName("Status")).Text}");
+                    var audioPlayers = (System.Collections.IList)assemblyType.GetField("_audioPlayers", flags)!.GetValue(assembly)!;
+                    Require(audioPlayers.Count == 2, "Both source audio tracks did not get independent preview players");
+                    ((System.Windows.Controls.CheckBox)assembly.FindName("SnapEdits")).IsChecked = false;
                     int beforeSplit = list.Items.Count;
                     assemblyType.GetMethod("SplitAssemblyAt", flags)!.Invoke(assembly, [1.0]);
                     Require(list.Items.Count == beforeSplit + 1 && ((VideoSegment)list.Items[2]).End == TimeSpan.FromSeconds(1) &&
                         ((VideoSegment)list.Items[3]).Start == TimeSpan.FromSeconds(1), "Inline split lost its boundary");
                     assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
                     Require(list.Items.Count == beforeSplit, "Assembly undo did not restore split");
+                    var audioTimeline = (System.Windows.FrameworkElement)assembly.FindName("Timeline");
+                    var audioTimelineType = audioTimeline.GetType();
+                    Require((int)audioTimelineType.GetProperty("AudioTracks")!.GetValue(audioTimeline)! == 2 &&
+                        ((System.Windows.Controls.StackPanel)assembly.FindName("AudioTrackHeaders")).Children.Count == 2,
+                        "Two source audio tracks were not displayed as separate rows");
+                    object? AudioCall(string method, params object?[] values) => assemblyType.GetMethod(method, flags)!.Invoke(assembly, values);
+                    audioTimelineType.GetProperty("SelectedAudioTrack")!.SetValue(audioTimeline, 1);
+                    audioTimelineType.GetProperty("SelectedAudioSeconds")!.SetValue(audioTimeline, .5);
+                    AudioCall("SetAudioLink", false);
+                    AudioCall("SplitAssemblyAt", 1.0);
+                    Require(list.Items.Count == beforeSplit && AssemblyAudio.Events((VideoSegment)list.Items[2], 1).Count == 2 &&
+                        AssemblyAudio.Events((VideoSegment)list.Items[2], 0).Count == 1, "Audio-only split changed video or the other track");
+                    audioTimelineType.GetProperty("SelectedAudioSeconds")!.SetValue(audioTimeline, .5);
+                    AudioCall("Remove_Click", null, new System.Windows.RoutedEventArgs());
+                    Require(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 0 &&
+                        AssemblyAudio.GainAt((VideoSegment)list.Items[2], 0, .5) == 1, "Audio Delete removed video or the wrong track");
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    Require(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 1, "Undo did not restore deleted audio");
+                    AudioCall("RedoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    Require(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 0, "Redo did not restore the audio deletion");
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    Require(((VideoSegment)list.Items[2]).AudioLinked && ((VideoSegment)list.Items[2]).AudioEvents.Count == 0,
+                        "Undo did not restore grouping and audio boundaries");
+                    for (int i = 0; i < 100 && (bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)!; i++) await Task.Delay(25);
+                    assemblyType.GetField("_wantAssemblyPlaying", flags)!.SetValue(assembly, true);
+                    assemblyPlayer!.SetPause(false);
+                    await Task.Delay(300);
+                    AudioCall("ToggleAudioTrackMute", 0);
+                    var currentAudio = (System.Collections.IList)assemblyType.GetField("_audioPlayers", flags)!.GetValue(assembly)!;
+                    LibVLCSharp.Shared.MediaPlayer AudioPlayer(int track) => (LibVLCSharp.Shared.MediaPlayer)currentAudio[track]!.GetType().GetField("Item1")!.GetValue(currentAudio[track])!;
+                    var trackStates = (List<AssemblyAudioTrack>)assemblyType.GetField("_audioTracks", flags)!.GetValue(assembly)!;
+                    Require(trackStates[0].Muted && !trackStates[1].Muted && (AudioPlayer(0).Mute || AudioPlayer(0).AudioTrack == -1),
+                        "Mute control did not update/isolate the selected track");
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    AudioCall("ToggleAudioTrackSolo", 1);
+                    Require(trackStates[1].Solo && !trackStates[0].Solo && trackStates[0].Gain(true) == 0 && trackStates[1].Gain(true) == 1,
+                        "Solo control did not isolate the selected track");
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    for (int i = 0; i < 120 && ((bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)! ||
+                        (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!); i++) await Task.Delay(25);
+                    assemblyType.GetField("_fitTimeline", flags)!.SetValue(assembly, false);
+                    audioTimelineType.GetProperty("PixelsPerSecond")!.SetValue(audioTimeline, 100.0);
+                    assemblyType.GetField("_wantAssemblyPlaying", flags)!.SetValue(assembly, true);
+                    assemblyPlayer!.SetPause(false);
+                    int loadBeforeVolume = (int)assemblyType.GetField("_assemblyLoadRevision", flags)!.GetValue(assembly)!;
+                    double wheelTime = list.Items.Cast<VideoSegment>().Take(2).Sum(p => p.Duration.TotalSeconds) + .5;
+                    for (int step = 0; step < 10; step++)
+                        audioTimelineType.GetMethod("AdjustAudioAt")!.Invoke(audioTimeline, [new System.Windows.Point(wheelTime * 100, 220), -120]);
+                    Require((int)assemblyType.GetField("_assemblyLoadRevision", flags)!.GetValue(assembly)! == loadBeforeVolume &&
+                        (bool)assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)!, "Volume scrolling restarted or paused playback");
+                    Require(Math.Abs(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) - .5) < .001,
+                        "Wheel over one audio event changed the wrong gain");
+                    long playingTime = assemblyPlayer.Time;
+                    using var playingMedia = assemblyPlayer.Media!;
+                    int pictures = playingMedia.Statistics.DisplayedPictures;
+                    await Task.Delay(450);
+                    Require(assemblyPlayer.Time > playingTime + 100 && playingMedia.Statistics.DisplayedPictures > pictures,
+                        $"Video froze while adjusting audio: time={playingTime}->{assemblyPlayer.Time}, pictures={pictures}->{playingMedia.Statistics.DisplayedPictures}, state={assemblyPlayer.State}; " +
+                        $"want={assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)}, wait={assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)}, opening={assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)}, scrub={assemblyType.GetField("_assemblyScrubbing", flags)!.GetValue(assembly)}");
+                    AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
+                    Require(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 1, "A wheel gesture required multiple undo steps");
+                    AudioCall("SeekAssembly", list.Items.Cast<VideoSegment>().Take(2).Sum(p => p.Duration.TotalSeconds) + 1.5);
+                    for (int i = 0; i < 120 && ((bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)! ||
+                        (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!); i++) await Task.Delay(25);
+                    long beforeReverse = assemblyPlayer.Time;
+                    AudioCall("ShuttleAssembly", System.Windows.Input.Key.J);
+                    await Task.Delay(300);
+                    Require(assemblyPlayer.Time < beforeReverse - 50, "J did not scrub the selected source backwards");
+                    AudioCall("ShuttleAssembly", System.Windows.Input.Key.K);
+                    Require(!(bool)assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)!, "K did not pause preview");
+                    AudioCall("ShuttleAssembly", System.Windows.Input.Key.L);
+                    AudioCall("ShuttleAssembly", System.Windows.Input.Key.L);
+                    Require((double)assemblyType.GetField("_forwardPreviewRate", flags)!.GetValue(assembly)! == 2, "Repeated L did not increase playback speed");
+                    AudioCall("ShuttleAssembly", System.Windows.Input.Key.K);
+                    foreach (var key in new[] { System.Windows.Input.Key.Delete, System.Windows.Input.Key.S, System.Windows.Input.Key.Z, System.Windows.Input.Key.X, System.Windows.Input.Key.Space })
+                    {
+                        var input = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, keySource, 0, key)
+                        { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent, Source = assembly.FindName("SizeLimit") };
+                        AudioCall("Montage_KeyDown", assembly, input);
+                        Require(!input.Handled, "Montage shortcut intercepted text input: " + key);
+                    }
+                    Console.WriteLine("PASS: separate audio rows, independent split/delete, undo/redo, preview mute/solo and volume wheel without reloading playback");
                 }
                 var timeline = (System.Windows.FrameworkElement)assembly.FindName("Timeline");
                 var timelineType = timeline.GetType();
@@ -401,10 +524,34 @@ var uiThread = new Thread(() =>
                 Require(((System.Windows.Controls.ScrollViewer)assembly.FindName("TimelineScroll")).ViewportWidth > 1000,
                     "Montage timeline did not span the available editor width");
                 Snapshot(assembly, "assembly-compact.png", 960, 740);
+                Require(((System.Windows.Controls.TextBlock)assembly.FindName("TimelineHint")).ActualHeight >= 12,
+                    "Keyboard hint was clipped at the minimum editor size");
                 var saveButton = (System.Windows.FrameworkElement)assembly.FindName("Save");
                 var rootContent = (System.Windows.FrameworkElement)assembly.Content;
                 Require(saveButton.TranslatePoint(new(0, saveButton.ActualHeight), rootContent).Y <= rootContent.ActualHeight + 1,
                     "Export button was clipped at the minimum editor size");
+                var originalTimelineParts = list.Items.Cast<VideoSegment>().ToArray();
+                double oldScale = (double)timelineType.GetProperty("PixelsPerSecond")!.GetValue(timeline)!;
+                var longTimeline = Enumerable.Range(0, 5000).Select(_ => originalTimelineParts[^1]).ToArray();
+                timelineType.GetMethod("SetSegments")!.Invoke(timeline, [longTimeline]);
+                timelineType.GetProperty("PixelsPerSecond")!.SetValue(timeline, .03);
+                var renderClock = System.Diagnostics.Stopwatch.StartNew();
+                Snapshot(assembly, "assembly-stress.png", 1280, 900);
+                Require(renderClock.ElapsedMilliseconds < 250, "Dense 5000-clip timeline blocked layout/render");
+                Console.WriteLine($"PASS: 5000-clip timeline layout/render {renderClock.ElapsedMilliseconds}ms");
+                timelineType.GetMethod("SetSegments")!.Invoke(timeline, [originalTimelineParts]);
+                timelineType.GetProperty("PixelsPerSecond")!.SetValue(timeline, oldScale);
+                int handlesBeforeSeeks = System.Diagnostics.Process.GetCurrentProcess().HandleCount;
+                var seekClock = System.Diagnostics.Stopwatch.StartNew();
+                for (int seek = 0; seek < 40; seek++)
+                    assemblyType.GetMethod("SeekAssembly", flags)!.Invoke(assembly, [seek % 2 == 0 ? .5 : originalTimelineParts.Take(2).Sum(p => p.Duration.TotalSeconds) + .5]);
+                for (int i = 0; i < 120 && ((bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)! ||
+                     (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!); i++) await Task.Delay(25);
+                Require(!(bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)! &&
+                    !(bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!, "Rapid seeking left preview stuck opening");
+                Require(System.Diagnostics.Process.GetCurrentProcess().HandleCount - handlesBeforeSeeks < 60,
+                    "Rapid seeking leaked media player resources");
+                Console.WriteLine($"PASS: 40 rapid cross-clip seeks settled in {seekClock.ElapsedMilliseconds}ms; native handle growth bounded");
                 assembly.Close();
                 var dropWindow = new System.Windows.Window();
                 var dropped = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -427,7 +574,7 @@ uiThread.SetApartmentState(ApartmentState.STA);
 uiThread.Start();
 await uiFinished.Task.WaitAsync(TimeSpan.FromSeconds(30));
 Require(uiThread.Join(5000), "UI selfcheck did not stop");
-MediaFactory.MFShutdown();
+}
 
 void Snapshot(System.Windows.Window window, string name, int width, int height)
 {

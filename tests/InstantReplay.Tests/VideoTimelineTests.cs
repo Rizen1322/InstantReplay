@@ -19,4 +19,5 @@ public sealed class VideoTimelineTests
     [Fact] public void Dragging_right_edge_stops_at_end_of_source() => Assert.Equal(TimeSpan.FromSeconds(20), VideoTimeline.Trim(Parts[0], false, 99, 20, 60).End);
     [Fact] public void Edges_cannot_cross_or_create_empty_clip() => Assert.True(VideoTimeline.Trim(Parts[0], true, 99, 20, 60).Duration >= TimeSpan.FromMilliseconds(50));
     [Fact] public void Trimming_snaps_to_source_frame() => Assert.Equal(TimeSpan.FromSeconds(5.5), VideoTimeline.Trim(Parts[0], true, .501, 20, 30).Start);
+    [Fact] public void Disabling_frame_snap_preserves_the_requested_trim() => Assert.Equal(TimeSpan.FromSeconds(5.501), VideoTimeline.Trim(Parts[0], true, .501, 20, 30, snap: false).Start);
 }

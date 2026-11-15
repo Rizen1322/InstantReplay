@@ -34,6 +34,22 @@ public static class Mp4Trim
     public sealed record AacClip(int SampleRate, int Channels, byte[] Config, int Bitrate,
                                  IReadOnlyList<byte[]> Frames, double StartSeconds);
 
+    public static IReadOnlyList<AacClip> ReadAudio(string input, CancellationToken ct = default)
+    {
+        using var source = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        byte[] moov = Mp4Keyframes.ReadTopLevel(source, "moov") ?? throw new NotSupportedException("В файле нет MP4-звука.");
+        var tracks = Mp4Keyframes.Find(moov, 8, moov.Length, "mvex") is not null
+            ? FromFragments(Mp4Defragment.ReadFragmented(source) ?? throw new NotSupportedException("Не удалось прочитать фрагменты."))
+            : ReadTracks(moov);
+        var result = new List<AacClip>();
+        foreach (var track in tracks.Where(t => t.Audio && t.Sizes.Length > 0))
+        {
+            ct.ThrowIfCancellationRequested();
+            result.Add(Clip(source, track, 0, track.Sizes.Length - 1));
+        }
+        return result;
+    }
+
     /// <summary>Свести несколько дорожек в одну (декодирование, сумма, кодирование).</summary>
     public delegate AacClip AudioMixer(IReadOnlyList<AacClip> tracks);
 

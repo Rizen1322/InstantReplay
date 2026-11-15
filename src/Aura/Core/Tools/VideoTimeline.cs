@@ -30,11 +30,11 @@ public static class VideoTimeline
         return parts.Count;
     }
 
-    public static VideoSegment Trim(VideoSegment part, bool left, double delta, double sourceDuration, double fps)
+    public static VideoSegment Trim(VideoSegment part, bool left, double delta, double sourceDuration, double fps, bool snap = true)
     {
         fps = double.IsFinite(fps) && fps > 0 ? fps : 30;
         double minimum = Math.Max(0.05, 1 / fps);
-        double Snap(double value) => Math.Round(value * fps) / fps;
+        double Snap(double value) => snap ? Math.Round(value * fps) / fps : value;
         return left
             ? part with { Start = TimeSpan.FromSeconds(Math.Clamp(Snap(part.Start.TotalSeconds + delta), 0, Math.Max(0, part.End.TotalSeconds - minimum))) }
             : part with { End = TimeSpan.FromSeconds(Math.Clamp(Snap(part.End.TotalSeconds + delta), part.Start.TotalSeconds + minimum, Math.Max(sourceDuration, part.End.TotalSeconds))) };

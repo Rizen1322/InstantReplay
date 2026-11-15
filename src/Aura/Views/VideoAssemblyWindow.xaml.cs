@@ -75,6 +75,7 @@ public partial class VideoAssemblyWindow : Window
         Summary.Text = $"Фрагментов: {_segments.Count} · Длительность: {TimeSpan.FromTicks(_segments.Sum(s => s.Duration.Ticks)):hh\\:mm\\:ss\\.fff}";
         Save.IsEnabled = _segments.Count > 0 && !_adding && _export is null;
         AddVideos.IsEnabled = !_adding && _export is null;
+        EmptyPreview.Visibility = _segments.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         if (AssemblyPosition is not null)
         {
             bool changing = _changingAssembly;
@@ -113,6 +114,11 @@ public partial class VideoAssemblyWindow : Window
     private void Remove_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || Segments.SelectedIndex < 0) return;
+        if (Timeline.SelectedAudioTrack >= 0 && Segments.SelectedItem is VideoSegment { AudioLinked: false })
+        {
+            ChangeAudioEvent(Segments.SelectedIndex, Timeline.SelectedAudioTrack, Timeline.SelectedAudioSeconds, a => a with { Removed = true });
+            return;
+        }
         RememberAssembly();
         int index = Segments.SelectedIndex;
         _segments.RemoveAt(index);
@@ -158,12 +164,14 @@ public partial class VideoAssemblyWindow : Window
         };
         if (picker.ShowDialog(this) != true) return;
         if (File.Exists(picker.FileName)) { Status.Text = "Выберите новое имя: существующие файлы не перезаписываются."; return; }
-        var parts = _segments.ToArray();
+        var parts = _segments.Select(p => AssemblyAudio.ApplyTracks(p, SourceAudioTracks(p.Path), _audioTracks.Take(Timeline.AudioTracks).ToArray())).ToArray();
         _wantAssemblyPlaying = false;
         _assemblyPlayer?.SetPause(true);
+        SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _export = cancellation;
         Timeline.IsEnabled = ProjectMedia.IsEnabled = false;
+        AudioTrackHeaders.IsEnabled = false;
         AddVideos.IsEnabled = false;
         EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = TrimPanel.IsEnabled = Save.IsEnabled = false;
         CancelExport.Visibility = Progress.Visibility = Visibility.Visible;
@@ -182,6 +190,7 @@ public partial class VideoAssemblyWindow : Window
         {
             _export = null;
             Timeline.IsEnabled = ProjectMedia.IsEnabled = true;
+            AudioTrackHeaders.IsEnabled = true;
             EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = true;
             TrimPanel.IsEnabled = Segments.SelectedItem is VideoSegment;
             CancelExport.Visibility = Progress.Visibility = Visibility.Collapsed;

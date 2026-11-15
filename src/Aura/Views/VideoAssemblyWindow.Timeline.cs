@@ -21,10 +21,23 @@ public partial class VideoAssemblyWindow
         ProjectMedia.ItemsSource = _projectMedia;
         Timeline.Thumbnail = path => _thumbs.TryGetValue(path, out var item) ? item.Thumbnail : null;
         Timeline.SourceInfo = path => _sourceInfo.TryGetValue(path, out var info) ? (info.Duration.TotalSeconds, info.Fps) : (0, 30);
+        Timeline.AudioTrackCount = SourceAudioTracks;
+        Timeline.TrackState = AudioTrackState;
+        Timeline.Waveform = (path, track) => _waveforms.TryGetValue(path, out var waves) && track < waves.Count ? waves[track] : null;
+        Timeline.SelectAudio += (index, track, source) =>
+        {
+            if (track >= 0) _activeAudioTrack = track;
+            _changingAssembly = true; Segments.SelectedIndex = index; _changingAssembly = false;
+            RefreshAudioHeaders();
+        };
+        Timeline.AdjustAudio += AdjustAudioEvent;
+        SnapEdits.Checked += (_, _) => Timeline.SnapToFrames = true;
+        SnapEdits.Unchecked += (_, _) => Timeline.SnapToFrames = false;
         Timeline.SelectClip += index =>
         {
             if (_export is not null) return;
             _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
+            SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
             Segments.SelectedIndex = index;
         };
         Timeline.Seek += seconds =>
@@ -37,12 +50,13 @@ public partial class VideoAssemblyWindow
         {
             if (!_assemblyScrubbing) _assemblyPlayer?.SetPause(true);
             _assemblyScrubbing = true;
+            SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
             PreviewTime.Text = $"{TimeSpan.FromSeconds(seconds):hh\\:mm\\:ss} / {TimeSpan.FromSeconds(AssemblyPosition.Maximum):hh\\:mm\\:ss}";
             FollowTimelinePosition(seconds);
             var (index, source) = VideoTimeline.Locate(_segments, seconds);
             long now = Environment.TickCount64;
             if (index == _previewIndex && !_assemblyOpening && now - _lastTimelineScrub >= 100 && _assemblyPlayer is not null)
-            { _lastTimelineScrub = now; _assemblyPlayer.Time = (long)(source * 1000); }
+            { _lastTimelineScrub = now; _assemblyPlayer.Time = (long)(source * 1000); _assemblyPlayer.NextFrame(); }
         };
         Timeline.InteractionEnded += committed =>
         {
@@ -65,6 +79,7 @@ public partial class VideoAssemblyWindow
         _projectMedia.Add(item);
         item.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ClipItem.Thumbnail)) Timeline.InvalidateVisual(); };
         _ = ClipThumbnails.LoadAsync(item);
+        if (SourceAudioTracks(path) > 0) RequestWaveform(path);
         return item;
     }
 
@@ -74,6 +89,7 @@ public partial class VideoAssemblyWindow
         Timeline.SetSegments(_segments);
         Timeline.SelectedIndex = Segments.SelectedIndex;
         Timeline.EditingEnabled = _export is null;
+        RefreshAudioHeaders();
         if (_fitTimeline && IsLoaded) FitTimeline();
     }
     private void FitTimeline()
@@ -109,6 +125,7 @@ public partial class VideoAssemblyWindow
     private void TimelineScroll_Wheel(object sender, MouseWheelEventArgs e)
     {
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) ZoomTimeline(e.Delta > 0 ? 1.25 : .8, e.GetPosition(Timeline).X);
+        else if (Keyboard.Modifiers == ModifierKeys.None && Timeline.AdjustAudioAt(e.GetPosition(Timeline), e.Delta)) { }
         else TimelineScroll.ScrollToHorizontalOffset(TimelineScroll.HorizontalOffset - e.Delta);
         e.Handled = true;
     }
@@ -144,22 +161,77 @@ public partial class VideoAssemblyWindow
     }
     private void Montage_KeyDown(object sender, KeyEventArgs e)
     {
-        if (_export is not null || e.OriginalSource is System.Windows.Controls.Primitives.TextBoxBase or ComboBox or ComboBoxItem || Keyboard.FocusedElement is ComboBox) return;
-        if (e.Key == Key.Space) { if (!e.IsRepeat) PlayAssembly_Click(this, new RoutedEventArgs()); }
-        else if (e.Key == Key.Escape) Timeline.CancelGesture();
-        else if (e.Key == Key.S && Keyboard.Modifiers == ModifierKeys.None) SplitAssembly_Click(this, new RoutedEventArgs());
-        else if (e.Key == Key.S && Keyboard.Modifiers == ModifierKeys.Control) Save_Click(this, new RoutedEventArgs());
-        else if (e.Key == Key.Delete) Remove_Click(this, new RoutedEventArgs());
-        else if (e.Key == Key.Z && Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) UndoAssembly_Click(this, new RoutedEventArgs());
-        else if (e.Key == Key.Home) SeekAssembly(0);
-        else if (e.Key == Key.End) SeekAssembly(AssemblyPosition.Maximum);
-        else if (e.Key is Key.Left or Key.Right)
+        if (_export is not null || IsAssemblyTextInput(e.OriginalSource as DependencyObject) ||
+            IsAssemblyTextInput(Keyboard.FocusedElement as DependencyObject)) return;
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        var modifiers = Keyboard.Modifiers;
+        if (key is Key.Space or Key.Enter && modifiers is ModifierKeys.None or ModifierKeys.Control)
+        { if (!e.IsRepeat) PlayAssembly_Click(this, new RoutedEventArgs()); }
+        else if (key == Key.Escape)
         {
-            double step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1 : 1.0 / 30;
-            SeekAssembly(Math.Clamp(Timeline.Position + (e.Key == Key.Left ? -step : step), 0, AssemblyPosition.Maximum));
+            Timeline.CancelGesture(); _reversePreviewRate = 0; _wantAssemblyPlaying = false;
+            _assemblyPlayer?.SetPause(true); SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
+        }
+        else if (key == Key.S && modifiers == ModifierKeys.None) SplitAssembly_Click(this, new RoutedEventArgs());
+        else if (key == Key.S && modifiers == ModifierKeys.Control) Save_Click(this, new RoutedEventArgs());
+        else if (key == Key.O && modifiers == ModifierKeys.Control) Add_Click(this, new RoutedEventArgs());
+        else if (key == Key.Delete && modifiers == ModifierKeys.None) Remove_Click(this, new RoutedEventArgs());
+        else if (key == Key.Z && modifiers == (ModifierKeys.Control | ModifierKeys.Shift) || key == Key.Y && modifiers == ModifierKeys.Control)
+            RedoAssembly_Click(this, new RoutedEventArgs());
+        else if (key == Key.Z && modifiers == ModifierKeys.Control || key == Key.Back && modifiers == ModifierKeys.Alt)
+            UndoAssembly_Click(this, new RoutedEventArgs());
+        else if (key == Key.Z && modifiers == ModifierKeys.None) { if (!e.IsRepeat) ToggleAudioTrackMute(_activeAudioTrack); }
+        else if (key == Key.X && modifiers == ModifierKeys.None) { if (!e.IsRepeat) ToggleAudioTrackSolo(_activeAudioTrack); }
+        else if (key == Key.U && modifiers == ModifierKeys.None) SetAudioLink(false);
+        else if (key == Key.G && modifiers == ModifierKeys.None) SetAudioLink(true);
+        else if (key == Key.F8 && modifiers == ModifierKeys.None) SnapEdits.IsChecked = SnapEdits.IsChecked != true;
+        else if (key == Key.Home && modifiers is ModifierKeys.None or ModifierKeys.Control) SeekAssembly(0);
+        else if (key == Key.End && modifiers is ModifierKeys.None or ModifierKeys.Control) SeekAssembly(AssemblyPosition.Maximum);
+        else if (key is Key.OemPlus or Key.Add && modifiers is ModifierKeys.None or ModifierKeys.Shift) ZoomIn_Click(this, new RoutedEventArgs());
+        else if (key is Key.OemMinus or Key.Subtract && modifiers == ModifierKeys.None) ZoomOut_Click(this, new RoutedEventArgs());
+        else if (key is Key.J or Key.K or Key.L && modifiers == ModifierKeys.None)
+        { if (!e.IsRepeat) ShuttleAssembly(key); }
+        else if (key is Key.Left or Key.Right && modifiers is ModifierKeys.None or ModifierKeys.Alt or ModifierKeys.Shift)
+        {
+            double fps = Segments.SelectedItem is VideoSegment part && _sourceInfo.TryGetValue(part.Path, out var info) ? info.Fps : 30;
+            double step = modifiers == ModifierKeys.Shift ? 1 : 1 / Math.Max(1, fps);
+            SeekAssembly(Math.Clamp(Timeline.Position + (key == Key.Left ? -step : step), 0, AssemblyPosition.Maximum));
         }
         else return;
         e.Handled = true;
+    }
+
+    private static bool IsAssemblyTextInput(DependencyObject? source)
+    {
+        for (var current = source; current is not null; current = current is System.Windows.Media.Visual
+                 ? System.Windows.Media.VisualTreeHelper.GetParent(current) : LogicalTreeHelper.GetParent(current))
+            if (current is System.Windows.Controls.Primitives.TextBoxBase or ComboBox or ComboBoxItem or PasswordBox) return true;
+        return false;
+    }
+
+    private void ShuttleAssembly(Key key)
+    {
+        if (_assemblyPlayer is null || _segments.Count == 0) return;
+        if (key == Key.J)
+        {
+            _reversePreviewRate = _reversePreviewRate > 0 ? Math.Min(8, _reversePreviewRate * 2) : 1;
+            _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true);
+        }
+        else if (key == Key.K)
+        {
+            _reversePreviewRate = 0; _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true);
+        }
+        else
+        {
+            if (_reversePreviewRate > 0) _audioRestartPositions.Clear();
+            _forwardPreviewRate = _wantAssemblyPlaying && _reversePreviewRate == 0 ? Math.Min(8, _forwardPreviewRate * 2) : 1;
+            _reversePreviewRate = 0; _wantAssemblyPlaying = true;
+            _assemblyPlayer.SetRate((float)_forwardPreviewRate);
+            foreach (var audio in _audioPlayers) audio.Player.SetRate((float)_forwardPreviewRate);
+            if (_assemblyPlayer.State == LibVLCSharp.Shared.VLCState.Ended) SeekAssembly(0);
+            else _assemblyPlayer.SetPause(false);
+        }
+        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0);
     }
 
     private void ProjectMedia_MouseDown(object sender, MouseButtonEventArgs e)
