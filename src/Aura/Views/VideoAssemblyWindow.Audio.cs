@@ -17,6 +17,10 @@ public partial class VideoAssemblyWindow
     private readonly HashSet<string> _waveformRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _waveformGate = new(1, 1);
     private readonly List<(LibVLCSharp.Shared.MediaPlayer Player, Media Media, int Track)> _audioPlayers = [];
+    private readonly Dictionary<LibVLCSharp.Shared.MediaPlayer, AssemblySound> _placedAudioPlayers = [];
+    private readonly HashSet<LibVLCSharp.Shared.MediaPlayer> _activePlacedAudio = [];
+    private readonly HashSet<LibVLCSharp.Shared.MediaPlayer> _continuousPlacedAudio = [];
+    private bool _openingPlacedAudio;
     private readonly HashSet<LibVLCSharp.Shared.MediaPlayer> _restartingAudio = [];
     private readonly Dictionary<LibVLCSharp.Shared.MediaPlayer, double> _audioRestartPositions = [];
     private bool _changingAudioHeaders;
@@ -25,6 +29,13 @@ public partial class VideoAssemblyWindow
     private (int Clip, int Track, double Event) _lastAudioEditTarget = (-1, -1, -1);
 
     private bool AnyAudioSolo => _audioTracks.Take(Timeline.AudioTracks).Any(t => t.Solo);
+    private IReadOnlyList<AssemblySound> AssemblySounds => AssemblyAudio.Sounds(_segments, SourceAudioTracks);
+    private double VideoDuration => _segments.Sum(p => p.Gap.TotalSeconds + p.Duration.TotalSeconds);
+    private double LeadingGapEnd => _segments.Count > 0 ? _segments[0].Gap.TotalSeconds : 0;
+    private double ProjectDuration => Math.Max(VideoDuration, AssemblySounds.Where(s => !s.Removed).Select(s => s.Finish.TotalSeconds).DefaultIfEmpty(0).Max());
+    private bool IndependentAudioSelected => Segments.SelectedItem is VideoSegment part && Timeline.SelectedAudioTrack >= 0 &&
+        (!part.AudioLinked || Timeline.SelectedAudioEvent >= 0 && Timeline.SelectedAudioEvent < part.AudioEvents.Count &&
+            part.AudioEvents[Timeline.SelectedAudioEvent].SourcePath is string path && path != part.Path);
     private AssemblyAudioTrack AudioTrackState(int track) => track < _audioTracks.Count ? _audioTracks[track] : new();
     private int SourceAudioTracks(string path) => _sourceInfo.TryGetValue(path, out var info) ? info.AudioTracks : 0;
     private static string Decibels(double volume) => volume <= .001 ? "−∞ dB" : $"{20 * Math.Log10(volume):0.#} dB";
@@ -93,8 +104,8 @@ public partial class VideoAssemblyWindow
         Timeline.AnySolo = AnyAudioSolo; Timeline.InvalidateVisual();
         LinkAudio.Content = Segments.SelectedItem is VideoSegment { AudioLinked: false } ? "Раздельно · G" : "Связаны · U";
         SelectionInfo.Text = Timeline.SelectedAudioTrack >= 0
-            ? $"Звук {Timeline.SelectedAudioTrack + 1} · S — разрезать\n" + (Segments.SelectedItem is VideoSegment { AudioLinked: false } ? "Delete — убрать звук, сохранив видео" : "U — отделить разрезы звука от видео")
-            : "Края клипа — подрезать. U / G — связь разрезов видео и звука.";
+            ? $"Звук {Timeline.SelectedAudioTrack + 1} · S — разрезать\n" + (Segments.SelectedItem is VideoSegment { AudioLinked: false } ? "Delete — убрать звук, сохранив видео" : "U — отделить звук от видео")
+            : "Края клипа — подрезать. U — отделить звук и двигать его независимо.";
     }
 
     private void RememberAudioEdit(int clip, int track, double eventStart, bool coalesce)
@@ -117,6 +128,16 @@ public partial class VideoAssemblyWindow
 
     private void ChangeAudioEvent(int index, int track, double source, Func<AudioEvent, AudioEvent> change, bool coalesce = false)
     {
+        if (Timeline.SelectedAudioEvent >= 0 && index >= 0 && index < _segments.Count && Timeline.SelectedAudioEvent < _segments[index].AudioEvents.Count &&
+            _segments[index].AudioEvents[Timeline.SelectedAudioEvent].Track == track)
+        {
+            int selected = Timeline.SelectedAudioEvent;
+            var detached = _segments[index].AudioEvents[selected];
+            if (_export is not null || change(detached) == detached) return;
+            RememberAudioEdit(index, track, selected, coalesce);
+            ReplaceDetachedAudio(index, selected, change(detached));
+            SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0); return;
+        }
         if (_export is not null || index < 0 || index >= _segments.Count || track < 0 || track >= SourceAudioTracks(_segments[index].Path)) return;
         var part = _segments[index];
         var audio = AssemblyAudio.Events(part, track).FirstOrDefault(e => source >= e.Start.TotalSeconds && source < e.End.TotalSeconds);
@@ -137,8 +158,30 @@ public partial class VideoAssemblyWindow
         if (_export is not null || Segments.SelectedItem is not VideoSegment part || part.AudioLinked == linked) return;
         RememberAssembly();
         int index = Segments.SelectedIndex;
-        _changingAssembly = true; _segments[index] = part with { AudioLinked = linked }; Segments.SelectedIndex = index; _changingAssembly = false;
+        _changingAssembly = true;
+        _segments[index] = linked ? part with { AudioLinked = true } : AssemblyAudio.Unlink(part, VideoTimeline.Offset(_segments, index), SourceAudioTracks(part.Path));
+        Segments.SelectedIndex = index; _changingAssembly = false;
+        if (!linked)
+        {
+            Timeline.SelectedAudioTrack = Math.Max(0, Timeline.SelectedAudioTrack);
+            Timeline.SelectedAudioEvent = _segments[index].AudioEvents.ToList().FindIndex(e => e.Position is not null && e.Track == Timeline.SelectedAudioTrack);
+        }
         RefreshTimeline();
+        SeekAssembly(Timeline.Position);
+    }
+    private void ReplaceDetachedAudio(int owner, int index, AudioEvent audio)
+    {
+        var events = _segments[owner].AudioEvents.ToArray(); events[index] = audio;
+        var part = _segments[owner] with { AudioEvents = events }; part.Validate();
+        _changingAssembly = true; _segments[owner] = part; Segments.SelectedIndex = owner; _changingAssembly = false;
+        Timeline.SelectedAudioEvent = index;
+        RefreshTimeline();
+    }
+    private void EditDetachedAudio(int owner, int index, AudioEvent audio)
+    {
+        if (_export is not null) return;
+        RememberAssembly(); ReplaceDetachedAudio(owner, index, audio);
+        SeekAssembly(Timeline.Position);
     }
     private void LinkAudio_Click(object sender, RoutedEventArgs e) => SetAudioLink(Segments.SelectedItem is VideoSegment { AudioLinked: false });
     private void UnlinkAudio_Click(object sender, RoutedEventArgs e) => SetAudioLink(false);
@@ -158,22 +201,39 @@ public partial class VideoAssemblyWindow
         catch (Exception ex) { Log.Info("Editor", $"Волна {Path.GetFileName(path)} недоступна: {ex.Message}"); }
     }
 
-    private async Task StopPreviewAudioAsync()
+    private async Task StopPreviewAudioAsync(bool keepPlaced = false)
     {
-        var players = _audioPlayers.ToArray(); _audioPlayers.Clear();
-        _audioRestartPositions.Clear();
+        var players = _audioPlayers.Where(a => !keepPlaced || !_placedAudioPlayers.ContainsKey(a.Player)).ToArray();
+        foreach (var audio in players)
+        {
+            _audioPlayers.Remove(audio); _placedAudioPlayers.Remove(audio.Player); _activePlacedAudio.Remove(audio.Player);
+            _continuousPlacedAudio.Remove(audio.Player); _audioRestartPositions.Remove(audio.Player);
+        }
+        if (keepPlaced) foreach (var player in _placedAudioPlayers.Keys) _continuousPlacedAudio.Add(player);
         await Task.Run(() =>
         {
             foreach (var audio in players) { audio.Player.Stop(); audio.Player.Dispose(); audio.Media.Dispose(); }
         });
     }
-    private async Task OpenPreviewAudioAsync(VideoSegment part, double start, int revision)
+    private async Task OpenPreviewAudioAsync(VideoSegment part, double start, int revision, int index)
     {
-        for (int track = 0; track < SourceAudioTracks(part.Path); track++)
+        for (int track = 0; !part.AudioDetached && track < SourceAudioTracks(part.Path); track++)
         {
+            await OpenAudioPlayerAsync(part.Path, track, start, revision, null);
+        }
+        double global = _tailPosition ?? VideoTimeline.Offset(_segments, index) + start - part.Start.TotalSeconds;
+        foreach (var sound in PlacedSoundsNear(global))
+            if (!_placedAudioPlayers.Values.Any(p => p.Owner == sound.Owner && p.Event == sound.Event))
+                await OpenAudioPlayerAsync(sound.Path, sound.Track, sound.Start.TotalSeconds + Math.Max(0, global - sound.Position.TotalSeconds), revision, sound);
+    }
+    private IEnumerable<AssemblySound> PlacedSoundsNear(double global) => AssemblySounds.Where(s => s.Detached && !s.Removed &&
+        s.Position.TotalSeconds <= global + 1 && s.Finish.TotalSeconds > global);
+
+    private async Task OpenAudioPlayerAsync(string path, int track, double start, int revision, AssemblySound? sound)
+    {
             if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
-            var media = new Media(_assemblyVlc!, new Uri(part.Path));
-            media.AddOption(":no-video"); media.AddOption(":audio-track=" + track);
+            var media = new Media(_assemblyVlc!, new Uri(path));
+            media.AddOption(":no-video");
             media.AddOption(":start-paused");
             media.AddOption(":start-time=" + start.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
             var player = new LibVLCSharp.Shared.MediaPlayer(_assemblyVlc!);
@@ -196,32 +256,82 @@ public partial class VideoAssemblyWindow
                 if (player.AudioTrack != tracks[track].Id) player.SetAudioTrack(tracks[track].Id);
                 if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
                 _audioPlayers.Add((player, media, track)); keep = true;
+                if (sound is not null) _placedAudioPlayers[player] = sound;
                 player.SetRate((float)_forwardPreviewRate);
             }
             finally { if (!keep) await Task.Run(() => { player.Stop(); player.Dispose(); media.Dispose(); }); }
+    }
+    private async Task EnsurePlacedAudioAsync(double global)
+    {
+        if (_openingPlacedAudio || _lifetime.IsCancellationRequested) return;
+        var required = PlacedSoundsNear(global).ToArray();
+        if (required.Length == _placedAudioPlayers.Count && required.All(s => _placedAudioPlayers.Values.Any(p => p.Owner == s.Owner && p.Event == s.Event))) return;
+        _openingPlacedAudio = true;
+        int revision = _assemblyLoadRevision;
+        try
+        {
+            await _assemblyPlayback.WaitAsync(_lifetime.Token);
+            try
+            {
+                if (revision != _assemblyLoadRevision || _lifetime.IsCancellationRequested) return;
+                var removed = _audioPlayers.Where(p => _placedAudioPlayers.TryGetValue(p.Player, out var sound) && !required.Any(s => s.Owner == sound.Owner && s.Event == sound.Event)).ToArray();
+                foreach (var audio in removed)
+                {
+                    _audioPlayers.Remove(audio); _placedAudioPlayers.Remove(audio.Player); _activePlacedAudio.Remove(audio.Player);
+                    _audioRestartPositions.Remove(audio.Player);
+                    await Task.Run(() => { audio.Player.Stop(); audio.Player.Dispose(); audio.Media.Dispose(); });
+                }
+                foreach (var sound in required)
+                    if (!_placedAudioPlayers.Values.Any(p => p.Owner == sound.Owner && p.Event == sound.Event))
+                        await OpenAudioPlayerAsync(sound.Path, sound.Track, sound.Start.TotalSeconds + Math.Max(0, global - sound.Position.TotalSeconds), revision, sound);
+            }
+            finally { _assemblyPlayback.Release(); }
         }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (!_lifetime.IsCancellationRequested) Log.Warn("Editor", "Отдельный звук: " + ex.Message); }
+        finally { _openingPlacedAudio = false; }
     }
     private void SyncPreviewAudio(double source, bool seek = false)
     {
         if (_assemblyOpening || _previewIndex < 0 || _previewIndex >= _segments.Count) return;
         var part = _segments[_previewIndex];
+        double global = _gapPosition is not null ? Math.Clamp(GapTime, 0, LeadingGapEnd) :
+            _tailPosition is not null ? TailTime : VideoTimeline.Offset(_segments, _previewIndex) + source - part.Start.TotalSeconds;
+        if (_wantAssemblyPlaying) _ = EnsurePlacedAudioAsync(global);
         bool pause = !_wantAssemblyPlaying || _assemblyScrubbing || _waitingAssemblyFrame || _reversePreviewRate > 0;
-        foreach (var audio in _audioPlayers)
+        foreach (var audio in _audioPlayers.ToArray())
         {
-            double gain = AssemblyAudio.GainAt(part, audio.Track, source) * AudioTrackState(audio.Track).Gain(AnyAudioSolo);
-            if (gain > 0 && source + .1 < part.End.TotalSeconds && (seek || _wantAssemblyPlaying) && audio.Player.State == VLCState.Ended &&
-                (!_audioRestartPositions.TryGetValue(audio.Player, out double previousRestart) || source < previousRestart - .1))
+            double audioSource = source;
+            bool audioPause = pause, audioSeek = seek;
+            double gain;
+            double end = part.End.TotalSeconds;
+            if (_placedAudioPlayers.TryGetValue(audio.Player, out var placed))
             {
-                _audioRestartPositions[audio.Player] = source;
-                _ = RestartPreviewAudioAsync(audio, source);
+                if (placed.Owner >= _segments.Count || placed.Event >= _segments[placed.Owner].AudioEvents.Count) { audio.Player.Mute = true; continue; }
+                var edit = _segments[placed.Owner].AudioEvents[placed.Event];
+                double at = edit.Position!.Value.TotalSeconds;
+                audioSource = edit.Start.TotalSeconds + global - at; end = edit.End.TotalSeconds;
+                bool active = global >= at && audioSource < end;
+                gain = active ? edit.Gain : 0;
+                audioPause |= !active;
+                if (active && _activePlacedAudio.Add(audio.Player)) audioSeek = true;
+                else if (!active) _activePlacedAudio.Remove(audio.Player);
+            }
+            else gain = part.AudioDetached ? 0 : AssemblyAudio.GainAt(part, audio.Track, source);
+            gain *= AudioTrackState(audio.Track).Gain(AnyAudioSolo);
+            if (gain > 0 && audioSource + .1 < end && (audioSeek || _wantAssemblyPlaying) && audio.Player.State == VLCState.Ended &&
+                (!_audioRestartPositions.TryGetValue(audio.Player, out double previousRestart) || audioSource < previousRestart - .1))
+            {
+                _audioRestartPositions[audio.Player] = audioSource;
+                _ = RestartPreviewAudioAsync(audio, audioSource);
                 continue;
             }
             // VLC's volume control is cubic; editor/export gains are linear amplitudes.
             audio.Player.Volume = (int)Math.Round(Math.Cbrt(gain) * 100);
             audio.Player.Mute = MutePreview.IsChecked == true || gain <= 0 || _reversePreviewRate > 0;
             // Muted events must keep their clock running; disabling tracks/repeated seeks rebuild audio output.
-            if (seek) audio.Player.Time = (long)(source * 1000);
-            audio.Player.SetPause(pause);
+            if (audioSeek && !_continuousPlacedAudio.Remove(audio.Player)) audio.Player.Time = (long)(Math.Max(0, audioSource) * 1000);
+            audio.Player.SetPause(audioPause);
         }
     }
 
@@ -247,5 +357,5 @@ public partial class VideoAssemblyWindow
     }
 
     private void Shortcuts_Click(object sender, RoutedEventArgs e) => Dialogs.Say("Клавиши монтажа",
-        "Space / Enter — воспроизведение и пауза\nS — разрезать в позиции курсора\nU / G — отделить / связать разрезы видео и звука\nZ — mute дорожки, X — solo дорожки\nDelete — удалить выбранное; U отделяет звук для удаления без видео\nCtrl+Z — отменить; Ctrl+Y / Ctrl+Shift+Z — повторить\nJ / K / L — назад / пауза / вперёд\nAlt+← / → — на один кадр; Home / End — в начало / конец\n+ / −, Ctrl+колесо — масштаб; Shift+колесо — прокрутка\nКолесо над звуковым фрагментом — его громкость\nCtrl+O — добавить видео; Ctrl+S — сохранить ролик");
+        "Space / Enter — воспроизведение и пауза\nS — разрезать в позиции курсора\nU / G — отделить / связать видео и звук\nПосле U тяните видео по шкале — звук останется на месте, пустой участок станет чёрным\nZ — mute дорожки, X — solo дорожки\nDelete — удалить выбранное; U отделяет звук для удаления без видео\nCtrl+Z — отменить; Ctrl+Y / Ctrl+Shift+Z — повторить\nJ / K / L — назад / пауза / вперёд\nAlt+← / → — на один кадр; Home / End — в начало / конец\n+ / −, Ctrl+колесо — масштаб; Shift+колесо — прокрутка\nКолесо над звуковым фрагментом — его громкость\nCtrl+O — добавить видео; Ctrl+S — сохранить ролик");
 }

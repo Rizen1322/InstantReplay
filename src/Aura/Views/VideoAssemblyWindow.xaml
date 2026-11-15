@@ -4,6 +4,13 @@
  Title="Монтаж — Aura" Width="1360" Height="940" MinWidth="960" MinHeight="740"
  WindowStartupLocation="CenterOwner" Background="{DynamicResource CanvasBrush}" UseLayoutRounding="True" PreviewKeyDown="Montage_KeyDown">
  <Window.Resources>
+  <Style x:Key="MontageMediaItem" TargetType="ListBoxItem">
+   <Setter Property="Foreground" Value="{DynamicResource TxBrush}"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+    <Border x:Name="Item" Background="Transparent" CornerRadius="4" Padding="2"><ContentPresenter HorizontalAlignment="Stretch"/></Border>
+    <ControlTemplate.Triggers><Trigger Property="IsSelected" Value="True"><Setter TargetName="Item" Property="Background" Value="{DynamicResource Card2Brush}"/></Trigger><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Item" Property="Background" Value="{DynamicResource HoverBrush}"/></Trigger></ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
   <Style x:Key="MontageCheck" TargetType="CheckBox">
    <Setter Property="Foreground" Value="{DynamicResource Tx2Brush}"/>
    <Setter Property="FontFamily" Value="{DynamicResource UiFont}"/>
@@ -54,7 +61,8 @@
        <ComboBox x:Name="ClipAudio" Visibility="Collapsed" SelectionChanged="ClipAudio_Changed"/>
       </StackPanel>
      </Border>
-     <ListBox x:Name="ProjectMedia" Background="Transparent" BorderThickness="0" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="ProjectMedia_DoubleClick" PreviewMouseLeftButtonDown="ProjectMedia_MouseDown" PreviewMouseMove="ProjectMedia_MouseMove">
+     <ListBox x:Name="ProjectMedia" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource MontageMediaItem}" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled" MouseDoubleClick="ProjectMedia_DoubleClick" PreviewMouseLeftButtonDown="ProjectMedia_MouseDown" PreviewMouseMove="ProjectMedia_MouseMove">
+      <ListBox.Template><ControlTemplate TargetType="ListBox"><Border Background="{DynamicResource CardBrush}"><ScrollViewer Focusable="False" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><ItemsPresenter/></ScrollViewer></Border></ControlTemplate></ListBox.Template>
       <ListBox.ItemTemplate><DataTemplate>
        <Grid Margin="2,5"><Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
         <Border Background="#202632" CornerRadius="3" Height="46"><Image Source="{Binding Thumbnail}" Stretch="Uniform"/></Border>
@@ -92,7 +100,7 @@
      <Button x:Name="UndoAssembly" Content="↶" Click="UndoAssembly_Click" ToolTip="Отменить · Ctrl+Z" IsEnabled="False" Margin="0,0,6,0"/>
      <Button x:Name="RedoAssembly" Content="↷" Click="RedoAssembly_Click" ToolTip="Повторить · Ctrl+Y / Ctrl+Shift+Z" IsEnabled="False" Margin="0,0,10,0"/>
      <Button Content="✂" Click="SplitAssembly_Click" ToolTip="Разрезать выбранное в позиции курсора · S" Margin="0,0,6,0"/>
-     <Button x:Name="LinkAudio" Content="Связаны" Click="LinkAudio_Click" ToolTip="U — отделить разрезы звука от видео · G — связать" Margin="0,0,10,0"/>
+     <Button x:Name="LinkAudio" Content="Связаны" Click="LinkAudio_Click" ToolTip="U — отделить звук от видео · G — связать" Margin="0,0,10,0"/>
      <CheckBox x:Name="SnapEdits" Style="{StaticResource MontageCheck}" Content="По кадрам" IsChecked="True" VerticalAlignment="Center" ToolTip="Привязка к кадрам · F8"/>
     </StackPanel>
    </DockPanel>
@@ -111,7 +119,7 @@
        <MenuItem Header="Удалить выбранное" InputGestureText="Delete" Click="Remove_Click"/>
        <Separator/>
        <MenuItem Header="Заглушить / включить звуковой фрагмент" Click="MuteAudioEvent_Click"/>
-       <MenuItem Header="Отделить разрезы звука от видео" InputGestureText="U" Click="UnlinkAudio_Click"/>
+       <MenuItem Header="Отделить звук от видео" InputGestureText="U" Click="UnlinkAudio_Click"/>
        <MenuItem Header="Связать видео и звук" InputGestureText="G" Click="RelinkAudio_Click"/>
        <Separator/><MenuItem Header="Отменить" InputGestureText="Ctrl+Z" Click="UndoAssembly_Click"/>
       </ContextMenu></c:AssemblyTimeline.ContextMenu>
@@ -119,7 +127,7 @@
     </ScrollViewer>
    </Grid>
    </ScrollViewer>
-   <TextBlock x:Name="TimelineHint" Grid.Row="2" Text="Колесо над звуком — громкость · Z / X — mute / solo · U / G — связь разрезов" Foreground="{DynamicResource Tx3Brush}" FontSize="12" Height="22" VerticalAlignment="Center" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+   <TextBlock x:Name="TimelineHint" Grid.Row="2" Text="Колесо над звуком — громкость · Z / X — mute / solo · U — отделить звук · после U тяните видео — сдвинуть, звук останется" Foreground="{DynamicResource Tx3Brush}" FontSize="12" Height="22" VerticalAlignment="Center" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
   </Grid>
   <Grid Grid.Row="4" Margin="0,10,0,0">
    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -131,7 +139,7 @@
     <TextBlock x:Name="Status" Text="Исходные файлы сохраняются." TextWrapping="Wrap" FontSize="12" MinHeight="22" Foreground="{DynamicResource Tx3Brush}" Margin="0,6,12,0"/>
     <ProgressBar x:Name="Progress" Height="5" Minimum="0" Maximum="1" Margin="0,6,12,0" Visibility="Collapsed"/>
    </StackPanel>
-   <StackPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click"/><Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,6,0,0"/></StackPanel>
+   <StackPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click" ToolTip="Без лимита размера целый MP4 по возможности сохраняется в исходном формате без потери качества."/><Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,6,0,0"/></StackPanel>
   </Grid>
   <ListBox x:Name="Segments" Visibility="Collapsed" SelectionChanged="Segments_SelectionChanged"/>
   <Slider x:Name="AssemblyPosition" Visibility="Collapsed" Minimum="0" Maximum="1" ValueChanged="AssemblyPosition_Changed"/>

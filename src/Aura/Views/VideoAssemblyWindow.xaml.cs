@@ -72,7 +72,7 @@ public partial class VideoAssemblyWindow : Window
 
     private void UpdateSummary()
     {
-        Summary.Text = $"Фрагментов: {_segments.Count} · Длительность: {TimeSpan.FromTicks(_segments.Sum(s => s.Duration.Ticks)):hh\\:mm\\:ss\\.fff}";
+        Summary.Text = $"Фрагментов: {_segments.Count} · Длительность: {TimeSpan.FromSeconds(ProjectDuration):hh\\:mm\\:ss\\.fff}";
         Save.IsEnabled = _segments.Count > 0 && !_adding && _export is null;
         AddVideos.IsEnabled = !_adding && _export is null;
         EmptyPreview.Visibility = _segments.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -80,7 +80,7 @@ public partial class VideoAssemblyWindow : Window
         {
             bool changing = _changingAssembly;
             _changingAssembly = true;
-            AssemblyPosition.Maximum = Math.Max(0.05, _segments.Sum(s => s.Duration.TotalSeconds));
+            AssemblyPosition.Maximum = Math.Max(0.05, ProjectDuration);
             _changingAssembly = changing;
         }
         RefreshTimeline();
@@ -107,21 +107,30 @@ public partial class VideoAssemblyWindow : Window
     {
         int index = Segments.SelectedIndex, target = index + direction;
         if (_export is null && index >= 0 && target >= 0 && target < _segments.Count)
-        { RememberAssembly(); _segments.Move(index, target); Segments.SelectedIndex = target; }
+        { MoveTimelineClip(index, target); }
     }
     private void Up_Click(object sender, RoutedEventArgs e) => Move(-1);
     private void Down_Click(object sender, RoutedEventArgs e) => Move(1);
     private void Remove_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || Segments.SelectedIndex < 0) return;
-        if (Timeline.SelectedAudioTrack >= 0 && Segments.SelectedItem is VideoSegment { AudioLinked: false })
+        if (IndependentAudioSelected)
         {
             ChangeAudioEvent(Segments.SelectedIndex, Timeline.SelectedAudioTrack, Timeline.SelectedAudioSeconds, a => a with { Removed = true });
             return;
         }
+        var removed = _segments[Segments.SelectedIndex];
+        var keepAudio = removed.AudioEvents.Where(a => !a.Removed && a.Position is not null && (!removed.AudioLinked || a.SourcePath is not null && a.SourcePath != removed.Path)).ToArray();
+        if (_segments.Count == 1 && keepAudio.Length > 0)
+        { Status.Text = "Оставьте хотя бы один видеофрагмент. Отдельный звук можно удалить на его дорожке."; return; }
         RememberAssembly();
         int index = Segments.SelectedIndex;
         _segments.RemoveAt(index);
+        if (keepAudio.Length > 0)
+        {
+            int owner = Math.Min(index, _segments.Count - 1);
+            _segments[owner] = _segments[owner] with { AudioEvents = _segments[owner].AudioEvents.Concat(keepAudio).ToArray() };
+        }
         Segments.SelectedIndex = Math.Min(index, _segments.Count - 1);
         if (_segments.Count == 0) { _assemblyPlayer?.SetPause(true); TrimPanel.IsEnabled = false; }
     }

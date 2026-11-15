@@ -180,6 +180,7 @@ if (args.Length > 0)
     for (int i = 0; i < 10000; i++) Require(peakCheck.Peak(0, 1000) == 1, "Waveform peak hierarchy lost the maximum");
     Require(peakClock.ElapsedMilliseconds < 1000, "Zoomed-out waveform lookup scales with the whole source");
     Console.WriteLine("PASS: independent audio split, deletion, gain and mute in Windows, FFmpeg and bundled fallback; real waveform peaks");
+    await AssemblyExportCheck.Run(ffmpeg, red, blue, twoTrackMp4, root);
     string previewAudio = Path.Combine(root, "preview-mix.m4a");
     await Ffmpeg.MixAudioAsync(ffmpeg, foreign, previewAudio, 2, CancellationToken.None);
     Require(File.Exists(previewAudio) && new FileInfo(previewAudio).Length > 1000, "Foreign preview mix missing");
@@ -207,7 +208,8 @@ if (args.Length > 0)
         throw new Exception("Running FFmpeg cancellation ignored");
     }
     catch (OperationCanceledException) { }
-    Require(!File.Exists(Path.Combine(root, "cancel-ffmpeg.mp4")) && !Directory.GetFiles(root, "*.part.mp4").Any(), "FFmpeg cancellation leaked partial output");
+    Require(!File.Exists(Path.Combine(root, "cancel-ffmpeg.mp4")) && !Directory.GetFiles(root, "*.part.mp4").Any() &&
+        !Directory.GetFiles(root, "*.filters.txt").Any(), "FFmpeg cancellation leaked partial output or filter scripts");
     Console.WriteLine("PASS: FFmpeg size limit, foreign MKV, multiple audio tracks, together, explicit track, silence, running cancellation");
     string fallbackRoot = Path.Combine(root, "встроенные кодеки ' проверка");
     Directory.CreateDirectory(fallbackRoot);
@@ -499,6 +501,7 @@ var uiThread = new Thread(() =>
                         Require(!input.Handled, "Montage shortcut intercepted text input: " + key);
                     }
                     Console.WriteLine("PASS: separate audio rows, independent split/delete, undo/redo, preview mute/solo and volume wheel without reloading playback");
+                    await IndependentAudioCheck.Run(assembly);
                 }
                 var timeline = (System.Windows.FrameworkElement)assembly.FindName("Timeline");
                 var timelineType = timeline.GetType();

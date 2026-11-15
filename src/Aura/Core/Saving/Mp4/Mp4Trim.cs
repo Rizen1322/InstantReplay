@@ -53,6 +53,27 @@ public static class Mp4Trim
     /// <summary>Свести несколько дорожек в одну (декодирование, сумма, кодирование).</summary>
     public delegate AacClip AudioMixer(IReadOnlyList<AacClip> tracks);
 
+    public static void Remux(string input, string output, IReadOnlyList<int> audioTracks,
+        AudioMixer mix, Action<double>? progress, CancellationToken ct)
+    {
+        using var source = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        byte[] moov = Mp4Keyframes.ReadTopLevel(source, "moov") ?? throw new NotSupportedException("В файле нет MP4-видео.");
+        bool fragmented = Mp4Keyframes.Find(moov, 8, moov.Length, "mvex") is not null;
+        var tracks = fragmented ? FromFragments(Mp4Defragment.ReadFragmented(source) ?? throw new NotSupportedException("Не удалось прочитать фрагменты.")) : ReadTracks(moov);
+        var video = tracks.FirstOrDefault(t => !t.Audio && t.Sizes.Length > 0) ?? throw new NotSupportedException("В файле нет видео.");
+        var audios = tracks.Where(t => t.Audio && t.Sizes.Length > 0).ToArray();
+        if (audioTracks.Any(t => t < 0 || t >= audios.Length)) throw new InvalidDataException("Звуковая дорожка отсутствует.");
+        var selected = new List<(SourceTrack, int, int)> { (video, 0, video.Sizes.Length - 1) };
+        if (audioTracks.Count == 1) selected.Add((audios[audioTracks[0]], 0, audios[audioTracks[0]].Sizes.Length - 1));
+        else if (audioTracks.Count > 1)
+        {
+            var audio = InMemory(mix(audioTracks.Select(t => Clip(source, audios[t], 0, audios[t].Sizes.Length - 1)).ToArray()));
+            selected.Add((audio, 0, audio.Sizes.Length - 1));
+        }
+        double end = Enumerable.Range(0, video.Sizes.Length).Max(i => video.Pts(i) + (double)video.Duration(i) / video.Timescale);
+        WriteSelection(source, output, selected, 0, end, 0, fragmented ? null : Mp4Keyframes.ReadTopLevel(source, "ftyp"), moov, progress, ct);
+    }
+
     internal sealed class SourceTrack
     {
         public int Id;
@@ -200,7 +221,14 @@ public static class Mp4Trim
                 empty = (long)Math.Round(-media * (double)Mp4Boxes.MovieTimescale / t.Timescale);
                 media = 0;
             }
-            long available = (long)Mp4Boxes.ToMovie(index.MediaDuration - media, t.Timescale);
+            // B-frames can finish presenting after the last decode timestamp.
+            long presentationEnd = 0, decodeTime = 0;
+            for (int sample = 0; sample < index.Durations.Count; sample++)
+            {
+                presentationEnd = Math.Max(presentationEnd, decodeTime + index.Cts[sample] + index.Durations[sample]);
+                decodeTime += index.Durations[sample];
+            }
+            long available = (long)Mp4Boxes.ToMovie(presentationEnd - media, t.Timescale);
             long edit = Math.Min(fragmentMovie - empty, available);
             if (edit <= 0) continue;
             outTracks.Add(new Mp4Defragment.Track(outTracks.Count + 1, t.Audio, t.Timescale, t.Width, t.Height, t.Name,

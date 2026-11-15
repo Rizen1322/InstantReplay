@@ -31,6 +31,7 @@ public partial class VideoAssemblyWindow
             RefreshAudioHeaders();
         };
         Timeline.AdjustAudio += AdjustAudioEvent;
+        Timeline.EditAudio += EditDetachedAudio;
         SnapEdits.Checked += (_, _) => Timeline.SnapToFrames = true;
         SnapEdits.Unchecked += (_, _) => Timeline.SnapToFrames = false;
         Timeline.SelectClip += index =>
@@ -53,6 +54,8 @@ public partial class VideoAssemblyWindow
             SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
             PreviewTime.Text = $"{TimeSpan.FromSeconds(seconds):hh\\:mm\\:ss} / {TimeSpan.FromSeconds(AssemblyPosition.Maximum):hh\\:mm\\:ss}";
             FollowTimelinePosition(seconds);
+            if (seconds < LeadingGapEnd) { AssemblyPreview.Visibility = Visibility.Hidden; return; }
+            AssemblyPreview.Visibility = Visibility.Visible;
             var (index, source) = VideoTimeline.Locate(_segments, seconds);
             long now = Environment.TickCount64;
             if (index == _previewIndex && !_assemblyOpening && now - _lastTimelineScrub >= 100 && _assemblyPlayer is not null)
@@ -62,9 +65,10 @@ public partial class VideoAssemblyWindow
         {
             _assemblyScrubbing = false; Timeline.Position = AssemblyPosition.Value;
             if (!committed) SeekAssembly(AssemblyPosition.Value);
-            else _assemblyPlayer?.SetPause(!_wantAssemblyPlaying);
+            else if (_gapPosition is null) _assemblyPlayer?.SetPause(!_wantAssemblyPlaying);
         };
         Timeline.Reorder += MoveTimelineClip;
+        Timeline.PlaceClip += PlaceVideoClip;
         Timeline.TrimClip += ApplyTimelineTrim;
         Timeline.Zoom += ZoomTimeline;
         Loaded += (_, _) => FitTimeline();
@@ -95,7 +99,7 @@ public partial class VideoAssemblyWindow
     private void FitTimeline()
     {
         _fitTimeline = true;
-        double length = _segments.Sum(s => s.Duration.TotalSeconds);
+        double length = ProjectDuration;
         double width = Math.Max(100, TimelineScroll.ViewportWidth);
         Timeline.VisibleWidth = width;
         Timeline.PixelsPerSecond = length > 0 ? (width - 40) / length : 40;
@@ -112,7 +116,7 @@ public partial class VideoAssemblyWindow
         double relative = anchorPixel - TimelineScroll.HorizontalOffset;
         Timeline.PixelsPerSecond *= factor;
         TimelineScroll.ScrollToHorizontalOffset(Math.Max(0, time * Timeline.PixelsPerSecond - relative));
-        double fit = (Math.Max(100, TimelineScroll.ViewportWidth) - 40) / Math.Max(.05, _segments.Sum(s => s.Duration.TotalSeconds));
+        double fit = (Math.Max(100, TimelineScroll.ViewportWidth) - 40) / Math.Max(.05, _segments.Sum(s => s.Gap.TotalSeconds + s.Duration.TotalSeconds));
         ZoomText.Text = $"{Timeline.PixelsPerSecond / fit * 100:0}%";
     }
     private void TimelineScroll_Changed(object sender, ScrollChangedEventArgs e)
@@ -155,9 +159,32 @@ public partial class VideoAssemblyWindow
         if (_export is not null || index == target || index < 0 || target < 0 || index >= _segments.Count || target >= _segments.Count) return;
         _fitTimeline = false;
         RememberAssembly();
+        double before = VideoTimeline.Offset(_segments, index);
+        var moving = _segments[index];
         _changingAssembly = true; _segments.Move(index, target); Segments.SelectedIndex = target; _changingAssembly = false;
+        if (moving.AudioLinked && moving.AudioDetached)
+        {
+            double delta = VideoTimeline.Offset(_segments, target) - before;
+            _changingAssembly = true;
+            _segments[target] = moving with { AudioEvents = moving.AudioEvents.Select(a => a.Position is TimeSpan at && (a.SourcePath is null || a.SourcePath == moving.Path) ? a with { Position = TimeSpan.FromSeconds(Math.Max(0, at.TotalSeconds + delta)) } : a).ToArray() };
+            Segments.SelectedIndex = target; _changingAssembly = false;
+        }
         _ = SelectAssemblyClipAsync();
         RefreshTimeline();
+    }
+    private void PlaceVideoClip(int index, TimeSpan gap)
+    {
+        if (_export is not null || index < 0 || index >= _segments.Count) return;
+        var part = _segments[index];
+        if (part.Gap == gap) return;
+        var placed = part with { Gap = gap };
+        placed.Validate();
+        RememberAssembly();
+        _fitTimeline = false;
+        _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
+        _changingAssembly = true; _segments[index] = placed; Segments.SelectedIndex = index; _changingAssembly = false;
+        RefreshTimeline();
+        SeekAssembly(Timeline.Position);
     }
     private void Montage_KeyDown(object sender, KeyEventArgs e)
     {
@@ -212,6 +239,8 @@ public partial class VideoAssemblyWindow
     private void ShuttleAssembly(Key key)
     {
         if (_assemblyPlayer is null || _segments.Count == 0) return;
+        FreezeTail();
+        FreezeGap();
         if (key == Key.J)
         {
             _reversePreviewRate = _reversePreviewRate > 0 ? Math.Min(8, _reversePreviewRate * 2) : 1;
@@ -226,10 +255,12 @@ public partial class VideoAssemblyWindow
             if (_reversePreviewRate > 0) _audioRestartPositions.Clear();
             _forwardPreviewRate = _wantAssemblyPlaying && _reversePreviewRate == 0 ? Math.Min(8, _forwardPreviewRate * 2) : 1;
             _reversePreviewRate = 0; _wantAssemblyPlaying = true;
+            if (_gapPosition is null && AssemblyPosition.Value < LeadingGapEnd - .001) SeekAssembly(AssemblyPosition.Value);
             _assemblyPlayer.SetRate((float)_forwardPreviewRate);
             foreach (var audio in _audioPlayers) audio.Player.SetRate((float)_forwardPreviewRate);
-            if (_assemblyPlayer.State == LibVLCSharp.Shared.VLCState.Ended) SeekAssembly(0);
-            else _assemblyPlayer.SetPause(false);
+            if (_gapPosition is not null) _gapTicks = Environment.TickCount64;
+            else if (_tailPosition is null && _assemblyPlayer.State == LibVLCSharp.Shared.VLCState.Ended) SeekAssembly(0);
+            else if (_tailPosition is null) _assemblyPlayer.SetPause(false);
         }
         SyncPreviewAudio(_assemblyPlayer.Time / 1000.0);
     }

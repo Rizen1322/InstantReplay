@@ -4,6 +4,9 @@ public sealed record VideoSegment(string Path, TimeSpan Start, TimeSpan End, int
 {
     public IReadOnlyList<AudioEvent> AudioEvents { get; init; } = [];
     public bool AudioLinked { get; init; } = true;
+    public bool AudioDetached { get; init; }
+    /// <summary>Пустой чёрный участок перед клипом: видео можно сдвинуть, оставив звук на месте.</summary>
+    public TimeSpan Gap { get; init; }
     public TimeSpan Duration => End - Start;
     public string Name => System.IO.Path.GetFileName(Path);
     public string Range => $"{Start:hh\\:mm\\:ss\\.fff} — {End:hh\\:mm\\:ss\\.fff}";
@@ -13,12 +16,14 @@ public sealed record VideoSegment(string Path, TimeSpan Start, TimeSpan End, int
         if (string.IsNullOrWhiteSpace(Path)) throw new ArgumentException("Не указан видеофайл.");
         if (Start < TimeSpan.Zero || Duration < TimeSpan.FromMilliseconds(50))
             throw new ArgumentException("Фрагмент должен быть не короче 0,05 секунды.");
+        if (Gap < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(Gap));
         if (AudioTrack < -1) throw new ArgumentOutOfRangeException(nameof(AudioTrack));
         foreach (var audio in AudioEvents)
             if (audio.Track < 0 || audio.Start < TimeSpan.Zero || audio.End <= audio.Start ||
+                audio.Position < TimeSpan.Zero || audio.SourcePath is not null && string.IsNullOrWhiteSpace(audio.SourcePath) ||
                 !double.IsFinite(audio.Volume) || audio.Volume is < 0 or > 1)
                 throw new ArgumentException("Недопустимый звуковой фрагмент.");
-        foreach (var track in AudioEvents.GroupBy(a => a.Track))
+        foreach (var track in AudioEvents.Where(a => a.Position is null).GroupBy(a => a.Track))
         {
             TimeSpan end = TimeSpan.Zero;
             foreach (var audio in track.OrderBy(a => a.Start))

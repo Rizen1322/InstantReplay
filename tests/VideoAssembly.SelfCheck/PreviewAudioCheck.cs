@@ -10,11 +10,15 @@ internal static class PreviewAudioCheck
 {
     public static async Task<string> ExtendFixture(string source, string folder, string? ffmpeg)
     {
-        string output = Path.Combine(folder, "preview-long.mp4");
+        string output = Path.Combine(folder, "preview-long-continuous.mp4");
         if (File.Exists(output)) return output;
         if (ffmpeg is null) throw new InvalidOperationException("Create fixtures with a full self-check and a path to FFmpeg before --ui-only.");
         var start = new System.Diagnostics.ProcessStartInfo(ffmpeg) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
-        foreach (string arg in new[] { "-nostdin", "-n", "-stream_loop", "-1", "-i", source, "-t", "12", "-map", "0", "-c", "copy", output }) start.ArgumentList.Add(arg);
+        foreach (string arg in new[] { "-nostdin", "-n", "-stream_loop", "-1", "-i", source,
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=12:sample_rate=48000",
+            "-f", "lavfi", "-i", "sine=frequency=880:duration=12:sample_rate=48000",
+            "-t", "12", "-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0", "-c:v", "copy", "-c:a", "aac",
+            "-filter:a", "volume=2", "-ac:a:0", "2", "-ac:a:1", "1", output }) start.ArgumentList.Add(arg);
         using var process = System.Diagnostics.Process.Start(start)!;
         var error = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
@@ -45,7 +49,7 @@ internal static class PreviewAudioCheck
         reference.Mute = false;
         using var sessionVolume = new TestSessionVolume();
         await Task.Delay(300);
-        var baseline = await Capture("reference");
+        var baseline = await ReadLoopback(folder, "reference");
         reference.Stop();
         if (baseline.Game < .005) throw new Exception("Loopback did not receive the reference tone; cannot verify audible preview");
 
@@ -53,18 +57,18 @@ internal static class PreviewAudioCheck
         Call("SetAudioTrack", 1, new AssemblyAudioTrack(.7), false);
         mute.IsChecked = false;
         await Start();
-        var solo = await Capture("solo-game");
+        var solo = await ReadLoopback(folder, "solo-game");
         if (solo.Game < baseline.Game * .75 || solo.Game > baseline.Game * 1.25 || solo.Mic > baseline.Game * .1)
             throw new Exception($"Game preview duplicated/wrong track: baseline={baseline}, solo={solo}");
         Call("SetAudioTrack", 0, new AssemblyAudioTrack(.35, Solo: true), false);
         await Task.Delay(200);
-        var half = await Capture("half-gain");
+        var half = await ReadLoopback(folder, "half-gain");
         if (half.Game < solo.Game * .35 || half.Game > solo.Game * .65)
             throw new Exception($"Preview gain is not linear: full={solo}, half={half}");
         Call("SetAudioTrack", 0, new AssemblyAudioTrack(.7), false);
         Call("SetAudioTrack", 1, new AssemblyAudioTrack(.7, Solo: true), false);
         await Start();
-        var mic = await Capture("solo-mic");
+        var mic = await ReadLoopback(folder, "solo-mic");
         if (mic.Mic < baseline.Game * .5 || mic.Game > baseline.Game * .1)
             throw new Exception($"Microphone solo outputs the wrong track: baseline={baseline}, mic={mic}");
         Call("SetAudioTrack", 1, new AssemblyAudioTrack(.7), false);
@@ -76,13 +80,13 @@ internal static class PreviewAudioCheck
         int pauses = 0;
         void Paused(object? sender, EventArgs e) => Interlocked.Increment(ref pauses);
         video.Paused += Paused; mutedTrack.Paused += Paused;
-        try { await Capture("continuous", 4000, solo.Game * .5); }
+        try { await ReadLoopback(folder, "continuous", 4000, solo.Game * .5); }
         finally { video.Paused -= Paused; mutedTrack.Paused -= Paused; }
         if (pauses != 0 || mutedTrack.Time < mutedTime + 3000)
             throw new Exception($"Muted track stopped its clock or playback paused: {mutedTime}->{mutedTrack.Time}, pauses={pauses}, state={mutedTrack.State}, track={mutedTrack.AudioTrack}, video={video.Time}/{video.State}, want={type.GetField("_wantAssemblyPlaying", flags)!.GetValue(window)}, wait={type.GetField("_waitingAssemblyFrame", flags)!.GetValue(window)}, opening={type.GetField("_assemblyOpening", flags)!.GetValue(window)}");
         mute.IsChecked = true;
         await Start();
-        var silent = await Capture("muted");
+        var silent = await ReadLoopback(folder, "muted");
         if (silent.Game > baseline.Game * .05 || silent.Mic > baseline.Game * .05)
             throw new Exception($"Muted preview still outputs source audio: baseline={baseline}, muted={silent}");
         sessionVolume.AssertUnchanged();
@@ -101,46 +105,46 @@ internal static class PreviewAudioCheck
             await Task.Delay(300);
         }
 
-        async Task<(double Game, double Mic)> Capture(string name, int milliseconds = 700, double minimumBlockAmplitude = 0)
-        {
-            string path = Path.Combine(folder, "preview-loopback-" + name + ".wav");
-            using var capture = new WasapiLoopbackCapture();
-            using (var writer = new WaveFileWriter(path, capture.WaveFormat))
-            {
-                var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                capture.DataAvailable += (_, e) => writer.Write(e.Buffer, 0, e.BytesRecorded);
-                capture.RecordingStopped += (_, e) => { if (e.Exception is not null) stopped.TrySetException(e.Exception); else stopped.TrySetResult(); };
-                capture.StartRecording(); await Task.Delay(milliseconds); capture.StopRecording();
-                await stopped.Task.WaitAsync(TimeSpan.FromSeconds(3));
-            }
-            using var reader = new WaveFileReader(path);
-            var samples = reader.ToSampleProvider();
-            var block = new float[reader.WaveFormat.Channels * 1024];
-            double gameSin = 0, gameCos = 0, micSin = 0, micCos = 0; int frame = 0, have;
-            double blockSin = 0, blockCos = 0;
-            int blockFrames = reader.WaveFormat.SampleRate / 10;
-            while ((have = samples.Read(block, 0, block.Length)) > 0)
-            for (int i = 0; i < have; i += reader.WaveFormat.Channels, frame++)
-            {
-                double phase = 2 * Math.PI * frame / reader.WaveFormat.SampleRate;
-                gameSin += block[i] * Math.Sin(440 * phase); gameCos += block[i] * Math.Cos(440 * phase);
-                micSin += block[i] * Math.Sin(880 * phase); micCos += block[i] * Math.Cos(880 * phase);
-                blockSin += block[i] * Math.Sin(440 * phase); blockCos += block[i] * Math.Cos(440 * phase);
-                if ((frame + 1) % blockFrames == 0)
-                {
-                    double level = 2 * Math.Sqrt(blockSin * blockSin + blockCos * blockCos) / blockFrames;
-                    if (minimumBlockAmplitude > 0 && frame >= blockFrames && level < minimumBlockAmplitude)
-                        throw new Exception($"Preview audio gap/stutter at {frame / (double)reader.WaveFormat.SampleRate:F2}s: amplitude={level:F4}");
-                    blockSin = blockCos = 0;
-                }
-            }
-            return (2 * Math.Sqrt(gameSin * gameSin + gameCos * gameCos) / Math.Max(1, frame),
-                2 * Math.Sqrt(micSin * micSin + micCos * micCos) / Math.Max(1, frame));
-        }
     }
 
+    public static async Task<(double Game, double Mic)> ReadLoopback(string folder, string name, int milliseconds = 700, double minimumBlockAmplitude = 0)
+    {
+        string path = Path.Combine(folder, "preview-loopback-" + name + ".wav");
+        using var capture = new WasapiLoopbackCapture();
+        using (var writer = new WaveFileWriter(path, capture.WaveFormat))
+        {
+            var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            capture.DataAvailable += (_, e) => writer.Write(e.Buffer, 0, e.BytesRecorded);
+            capture.RecordingStopped += (_, e) => { if (e.Exception is not null) stopped.TrySetException(e.Exception); else stopped.TrySetResult(); };
+            capture.StartRecording(); await Task.Delay(milliseconds); capture.StopRecording();
+            await stopped.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        using var reader = new WaveFileReader(path);
+        var samples = reader.ToSampleProvider();
+        var block = new float[reader.WaveFormat.Channels * 1024];
+        double gameSin = 0, gameCos = 0, micSin = 0, micCos = 0; int frame = 0, have;
+        double blockSin = 0, blockCos = 0;
+        int blockFrames = reader.WaveFormat.SampleRate / 10;
+        while ((have = samples.Read(block, 0, block.Length)) > 0)
+        for (int i = 0; i < have; i += reader.WaveFormat.Channels, frame++)
+        {
+            double phase = 2 * Math.PI * frame / reader.WaveFormat.SampleRate;
+            gameSin += block[i] * Math.Sin(440 * phase); gameCos += block[i] * Math.Cos(440 * phase);
+            micSin += block[i] * Math.Sin(880 * phase); micCos += block[i] * Math.Cos(880 * phase);
+            blockSin += block[i] * Math.Sin(440 * phase); blockCos += block[i] * Math.Cos(440 * phase);
+            if ((frame + 1) % blockFrames == 0)
+            {
+                double level = 2 * Math.Sqrt(blockSin * blockSin + blockCos * blockCos) / blockFrames;
+                if (minimumBlockAmplitude > 0 && frame >= blockFrames && level < minimumBlockAmplitude)
+                    throw new Exception($"Preview audio gap/stutter at {frame / (double)reader.WaveFormat.SampleRate:F2}s: amplitude={level:F4}");
+                blockSin = blockCos = 0;
+            }
+        }
+        return (2 * Math.Sqrt(gameSin * gameSin + gameCos * gameCos) / Math.Max(1, frame),
+            2 * Math.Sqrt(micSin * micSin + micCos * micCos) / Math.Max(1, frame));
+    }
     // Normalize only this self-check's persisted Windows mixer state, and restore it afterwards.
-    private sealed class TestSessionVolume : IDisposable
+    public sealed class TestSessionVolume : IDisposable
     {
         private readonly List<(NAudio.CoreAudioApi.AudioSessionControl Session, float Volume, bool Mute)> _sessions = [];
         public TestSessionVolume()

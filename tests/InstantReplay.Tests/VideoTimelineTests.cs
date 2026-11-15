@@ -20,4 +20,17 @@ public sealed class VideoTimelineTests
     [Fact] public void Edges_cannot_cross_or_create_empty_clip() => Assert.True(VideoTimeline.Trim(Parts[0], true, 99, 20, 60).Duration >= TimeSpan.FromMilliseconds(50));
     [Fact] public void Trimming_snaps_to_source_frame() => Assert.Equal(TimeSpan.FromSeconds(5.5), VideoTimeline.Trim(Parts[0], true, .501, 20, 30).Start);
     [Fact] public void Disabling_frame_snap_preserves_the_requested_trim() => Assert.Equal(TimeSpan.FromSeconds(5.501), VideoTimeline.Trim(Parts[0], true, .501, 20, 30, snap: false).Start);
+    [Fact]
+    public void Leading_gap_moves_video_but_keeps_audio_positions()
+    {
+        var shifted = new[] { Parts[0] with { Gap = TimeSpan.FromSeconds(2) }, Parts[1] };
+        Assert.Equal(2, VideoTimeline.Offset(shifted, 0));
+        Assert.Equal(5, VideoTimeline.Offset(shifted, 1));
+        Assert.Equal(9, VideoTimeline.Offset(shifted, 2));
+        Assert.Equal(-1, VideoTimeline.ClipAt(shifted, 1.5));
+        Assert.Equal(0, VideoTimeline.ClipAt(shifted, 2.5));
+        Assert.Equal((0, 5.5), VideoTimeline.Locate(shifted, 2.5));
+        Assert.Equal((1, 10.5), VideoTimeline.Locate(shifted, 5.5));
+    }
+    [Fact] public void Empty_gap_does_not_change_offsets() => Assert.Equal(VideoTimeline.Offset(Parts, 1), VideoTimeline.Offset([Parts[0] with { Gap = TimeSpan.Zero }, Parts[1]], 1));
 }
