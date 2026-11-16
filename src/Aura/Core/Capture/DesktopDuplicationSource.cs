@@ -1,4 +1,4 @@
-﻿using Aura.Core.Interop;
+using Aura.Core.Interop;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -21,7 +21,7 @@ namespace Aura.Core.Capture;
 /// • Аппаратный курсор в кадр не входит (DDA отдаёт его отдельно). Курсор,
 ///   нарисованный самой игрой, в кадре есть — для записи геймплея это то, что нужно.
 /// </summary>
-internal sealed class DesktopDuplicationSource : IScreenCapture
+internal sealed class DesktopDuplicationSource : IScreenCapture, ICaptureDiagnostics
 {
     private DdaFrameRotator? _rotator;
     public ID3D11Device D3DDevice => _device ?? throw new InvalidOperationException("Захват не запущен");
@@ -42,6 +42,8 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     private ID3D11Device? _device;
     private ID3D11DeviceContext? _context;
+    /// <summary>LUID адаптера, на котором создано <see cref="_device"/>.</summary>
+    private long? _deviceAdapterLuid;
     private IDXGIOutput1? _output;
     private IDXGIOutputDuplication? _duplication;
 
@@ -72,6 +74,56 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         TimeSpan.FromSeconds(2),
         stormThreshold: 3);
 
+    // ---------------- Диагностический снимок ----------------
+    //
+    // Публикуется целиком через seqlock: читатель (сторож) не берёт ни одного
+    // замка захвата и не вызывает D3D/DXGI, поэтому не может повиснуть на том
+    // же замке, что и поток, который он инспектирует. Все поля снимка относятся
+    // к одному моменту, а не собираются читателем по одному из разных.
+    private readonly object _diagnosticsSync = new();
+    private long _diagnosticsSequence;
+    private DdaCapturePhase _diagPhase = DdaCapturePhase.None;
+    private long _diagPhaseSinceQpc;
+    private long _diagLoopSequence;
+    private long _diagLastLoopProgressQpc;
+    private int _diagLastHResult;
+    private int _diagManagedThreadId;
+    private uint _diagNativeThreadId;
+
+    private int _publishedPhase;
+    private long _publishedPhaseSinceQpc;
+    private long _publishedLoopSequence;
+    private long _publishedLastLoopProgressQpc;
+    private long _publishedFramesReceived;
+    private long _publishedFramesAccepted;
+    private int _publishedLastHResult;
+    private int _publishedManagedThreadId;
+    private uint _publishedNativeThreadId;
+    private long _publishedGeneration;
+    private string? _publishedMonitorDeviceId;
+    private long _publishedAtQpc;
+
+    private static long QpcNow() => System.Diagnostics.Stopwatch.GetTimestamp();
+
+    /// <summary>
+    /// Диагностический стенд (только для проверок): имя фазы, в которой поток
+    /// захвата должен замереть навсегда. Задаётся self-check'ом через reflection
+    /// или переменной окружения <c>AURA_DDA_HANG_PHASE</c> у dev-копии.
+    /// Позволяет воспроизвести «нативный вызов не вернулся» без драйверного
+    /// зависания и проверить определение фазы, пометку выхода и остановку.
+    /// </summary>
+    private static string? s_testHangPhase = Environment.GetEnvironmentVariable("AURA_DDA_HANG_PHASE");
+
+    private static void HoldPhaseForTest(DdaCapturePhase phase)
+    {
+        string? wanted = Volatile.Read(ref s_testHangPhase);
+        if (wanted is null ||
+            !string.Equals(wanted, phase.ToString(), StringComparison.OrdinalIgnoreCase)) return;
+        Log.Warn("Capture", $"Диагностический стенд: поток DDA остановлен в фазе {phase} " +
+                            "(AURA_DDA_HANG_PHASE) — имитация невозврата нативного вызова");
+        Thread.Sleep(Timeout.Infinite);
+    }
+
     private static long QpcToTicks(long qpc) =>
         (long)(qpc * (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
 
@@ -79,16 +131,159 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         (double)System.Diagnostics.Stopwatch.GetTimestamp() /
         System.Diagnostics.Stopwatch.Frequency);
 
+    /// <summary>
+    /// Согласованный снимок потока захвата для сторожа. Никаких замков захвата и
+    /// никаких вызовов D3D/DXGI: только атомарное чтение уже опубликованных полей.
+    /// </summary>
+    public bool TryGetDiagnostics(out CaptureDiagnosticsSnapshot snapshot)
+    {
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            long sequence = Volatile.Read(ref _diagnosticsSequence);
+            if ((sequence & 1) != 0)
+            {
+                Thread.SpinWait(2);
+                continue;
+            }
+
+            var read = new CaptureDiagnosticsSnapshot(
+                "DesktopDuplication",
+                (DdaCapturePhase)Volatile.Read(ref _publishedPhase),
+                Volatile.Read(ref _publishedPhaseSinceQpc),
+                Volatile.Read(ref _publishedLastLoopProgressQpc),
+                Volatile.Read(ref _publishedLoopSequence),
+                Volatile.Read(ref _publishedFramesReceived),
+                Volatile.Read(ref _publishedFramesAccepted),
+                Volatile.Read(ref _publishedLastHResult),
+                Volatile.Read(ref _publishedManagedThreadId),
+                Volatile.Read(ref _publishedNativeThreadId),
+                Volatile.Read(ref _publishedGeneration),
+                Volatile.Read(ref _publishedMonitorDeviceId) ?? "",
+                Volatile.Read(ref _publishedAtQpc));
+
+            Interlocked.MemoryBarrier();
+            if (Volatile.Read(ref _diagnosticsSequence) != sequence) continue;
+            snapshot = read;
+            return read.HasData;
+        }
+
+        snapshot = CaptureDiagnosticsSnapshot.Empty;
+        return false;
+    }
+
+    /// <summary>Строка для лога; пустая, если поток ещё ничего не публиковал.</summary>
+    internal string DescribeDiagnostics()
+    {
+        if (!TryGetDiagnostics(out CaptureDiagnosticsSnapshot snapshot)) return "снимок DDA недоступен";
+        return snapshot.Describe(QpcNow(), System.Diagnostics.Stopwatch.Frequency);
+    }
+
+    /// <summary>
+    /// Пометить выход занятым, потому что его дупликацию удерживает незавершившаяся
+    /// сессия этого объекта. Пометка нужна всем будущим попыткам DDA в процессе.
+    /// </summary>
+    internal void MarkOutputHeld(string reason)
+    {
+        TryGetDiagnostics(out CaptureDiagnosticsSnapshot snapshot);
+        string identity = !string.IsNullOrEmpty(snapshot.MonitorDeviceId)
+            ? snapshot.MonitorDeviceId
+            : _monitorIdentity ?? "";
+        long generation = snapshot.HasData ? snapshot.Generation : Interlocked.Read(ref _generation);
+        HeldCaptureOutputs.TryHold(identity, generation, reason,
+            snapshot.HasData ? snapshot.Describe(QpcNow(), System.Diagnostics.Stopwatch.Frequency) : null);
+    }
+
+    private void SetPhase(DdaCapturePhase phase, int lastHResult = 0)
+    {
+        lock (_diagnosticsSync)
+        {
+            long now = QpcNow();
+            if (phase != _diagPhase)
+            {
+                _diagPhase = phase;
+                _diagPhaseSinceQpc = now;
+            }
+            if (lastHResult != 0) _diagLastHResult = lastHResult;
+            PublishDiagnosticsLocked(now);
+        }
+        // Стенд замораживает поток уже ПОСЛЕ публикации фазы: сторож должен
+        // увидеть именно ту фазу, в которой поток завис.
+        HoldPhaseForTest(phase);
+    }
+
+    /// <summary>
+    /// Цикл захвата вернулся из вызова. Считается прогрессом даже без кадра:
+    /// на статичном экране AcquireNextFrame штатно отвечает WAIT_TIMEOUT, и это
+    /// не зависание. Счётчика кадров для этого мало — он на статичном экране ноль.
+    /// </summary>
+    private void MarkLoopProgress(int lastHResult = 0)
+    {
+        lock (_diagnosticsSync)
+        {
+            long now = QpcNow();
+            _diagLoopSequence++;
+            _diagLastLoopProgressQpc = now;
+            if (lastHResult != 0) _diagLastHResult = lastHResult;
+            PublishDiagnosticsLocked(now);
+        }
+    }
+
+    private void PublishDiagnosticsLocked(long now)
+    {
+        Interlocked.Increment(ref _diagnosticsSequence);   // нечётное — идёт запись
+        Volatile.Write(ref _publishedPhase, (int)_diagPhase);
+        Volatile.Write(ref _publishedPhaseSinceQpc, _diagPhaseSinceQpc);
+        Volatile.Write(ref _publishedLoopSequence, _diagLoopSequence);
+        Volatile.Write(ref _publishedLastLoopProgressQpc, _diagLastLoopProgressQpc);
+        Volatile.Write(ref _publishedFramesReceived, Interlocked.Read(ref _framesReceived));
+        Volatile.Write(ref _publishedFramesAccepted, Interlocked.Read(ref _framesAccepted));
+        Volatile.Write(ref _publishedLastHResult, _diagLastHResult);
+        Volatile.Write(ref _publishedManagedThreadId, _diagManagedThreadId);
+        Volatile.Write(ref _publishedNativeThreadId, _diagNativeThreadId);
+        Volatile.Write(ref _publishedGeneration, Interlocked.Read(ref _generation));
+        Volatile.Write(ref _publishedMonitorDeviceId, _monitorIdentity);
+        Volatile.Write(ref _publishedAtQpc, now);
+        Interlocked.Increment(ref _diagnosticsSequence);   // чётное — снимок согласован
+    }
+
+    /// <summary>Начать публикацию с чистого листа (Prepare перед стартом потока).</summary>
+    private void ResetDiagnostics(long generation)
+    {
+        lock (_diagnosticsSync)
+        {
+            long now = QpcNow();
+            _diagPhase = DdaCapturePhase.None;
+            _diagPhaseSinceQpc = now;
+            _diagLoopSequence = 0;
+            _diagLastLoopProgressQpc = 0;
+            _diagLastHResult = 0;
+            _diagManagedThreadId = 0;
+            _diagNativeThreadId = 0;
+            Interlocked.Exchange(ref _generation, generation);
+            PublishDiagnosticsLocked(now);
+        }
+    }
+
     public void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation)
     {
         lock (_sync)
         {
             StopInternal();
+            if (_threadStuck)
+                throw new InvalidOperationException("Предыдущий поток DDA не остановился");
 
             _monitorIndex = monitorIndex;
             _monitorIdentity ??= MonitorLayout.IdentityFor(monitorIndex);
+            // Вторую дупликацию того же выхода в этом процессе открыть нельзя.
+            // Если выход удерживает незавершившаяся сессия — это отдельный,
+            // понятный отказ ДО нативного DuplicateOutput, а не E_INVALIDARG,
+            // который цикл восстановления принимал за обычный сбой и повторял.
+            if (HeldCaptureOutputs.IsHeld(_monitorIdentity, out HeldCaptureOutput held))
+                throw new CaptureOutputHeldException(held);
+
             _targetFps = targetFps;
             _generation = generation;
+            ResetDiagnostics(generation);
             _captureCursor = captureCursor;
             _prepared = false;
             _minFrameIntervalTicks = targetFps > 0 ? 10_000_000L / targetFps : 0;
@@ -140,6 +335,16 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     /// <summary>Создаёт устройство на адаптере нужного монитора и открывает дупликацию.</summary>
     private void CreateDeviceAndDuplication()
     {
+        // Каждая попытка пересоздания — это продвижение потока: он активно
+        // работает, даже если дупликация ещё не открылась. Сторож не должен
+        // принимать штатное ожидание доступности (до 5 с) за зависание.
+        MarkLoopProgress();
+
+        // Проверка до любых нативных вызовов DXGI: выход, удерживаемый зависшей
+        // сессией, нельзя даже пытаться открыть заново в этом процессе.
+        if (HeldCaptureOutputs.IsHeld(_monitorIdentity, out HeldCaptureOutput heldOutput))
+            throw new CaptureOutputHeldException(heldOutput);
+
         using IDXGIFactory1 factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
 
         // Ищем адаптер+выход по сквозному индексу монитора (тот же порядок, что у WGC-пути)
@@ -167,14 +372,35 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             Width = desc.DesktopCoordinates.Right - desc.DesktopCoordinates.Left;
             Height = desc.DesktopCoordinates.Bottom - desc.DesktopCoordinates.Top;
 
+            long adapterLuid = targetAdapter.Description.Luid;
+            if (_device is not null && _deviceAdapterLuid != adapterLuid)
+            {
+                // Устройство живёт на другом адаптере: DuplicateOutput на таком
+                // устройстве — частая причина E_INVALIDARG. Пока поток захвата
+                // стоит, устройство можно пересоздать; под живым потоком — нельзя,
+                // им пользуется и обработчик кадров движка.
+                if (_thread is { IsAlive: true })
+                    throw new InvalidOperationException(
+                        $"Устройство захвата создано на другом адаптере (LUID 0x{_deviceAdapterLuid:X16}, " +
+                        $"нужен 0x{adapterLuid:X16}) — выход {_monitorIdentity} недоступен на этом устройстве");
+                Log.Warn("Capture", $"Устройство захвата пересоздаю под адаптер выхода: " +
+                                    $"LUID 0x{_deviceAdapterLuid:X16} → 0x{adapterLuid:X16}");
+                _rotator?.Dispose(); _rotator = null;
+                _context?.Dispose(); _context = null;
+                _device?.Dispose(); _device = null;
+                _deviceAdapterLuid = null;
+            }
+
             if (_device is null)
             {
+                SetPhase(DdaCapturePhase.CreateDevice);
                 var flags = DeviceCreationFlags.BgraSupport | DeviceCreationFlags.VideoSupport;
                 FeatureLevel[] levels = [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0];
                 D3D11.D3D11CreateDevice(targetAdapter, DriverType.Unknown, flags, levels,
                     out ID3D11Device device, out _, out ID3D11DeviceContext context).CheckError();
                 _device = Aura.Core.Diagnostics.GpuResourceLedger.Track(device, "захват DDA");
                 _context = context;
+                _deviceAdapterLuid = adapterLuid;
 
                 // Кодировщик и захват работают в разных потоках
                 using var mt = _device.QueryInterface<ID3D11Multithread>();
@@ -190,6 +416,9 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             try
             {
                 newOutput = targetOutput.QueryInterface<IDXGIOutput1>();
+                int duplicate1Code = 0;
+                Exception? duplicate1Error = null;
+                SetPhase(DdaCapturePhase.DuplicateOutput1);
                 try
                 {
                     using IDXGIOutput5 output5 = targetOutput.QueryInterface<IDXGIOutput5>();
@@ -201,8 +430,29 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 catch (Exception ex) when (DdaDuplicationPolicy.ShouldFallBackToLegacy(
                                                DuplicationHResult(ex)))
                 {
-                    Log.Info("Capture", "DuplicateOutput1 недоступен — использую DuplicateOutput");
-                    newDuplication = newOutput.DuplicateOutput(_device!);
+                    duplicate1Code = DuplicationHResult(ex);
+                    duplicate1Error = ex;
+                    Log.Info("Capture", $"DuplicateOutput1 недоступен " +
+                                        $"(0x{unchecked((uint)duplicate1Code):X8}) — использую DuplicateOutput");
+                }
+
+                if (newDuplication is null)
+                {
+                    SetPhase(DdaCapturePhase.DuplicateOutput);
+                    try
+                    {
+                        newDuplication = newOutput.DuplicateOutput(_device!);
+                    }
+                    catch (Exception legacyError)
+                    {
+                        // E_INVALIDARG — не доказательство занятого выхода: им же
+                        // отвечает неверное устройство/адаптер/фабрика. Логируем
+                        // оба HRESULT и данные, по которым это можно различить.
+                        LogDuplicateOutputFailure(duplicate1Code, duplicate1Error,
+                            DuplicationHResult(legacyError), legacyError,
+                            targetAdapter, targetOutput);
+                        throw;
+                    }
                 }
 
                 // Размер кадров — у самой дупликации, а не у выхода, прочитанного до
@@ -246,7 +496,42 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     }
 
     /// <summary>
-    /// Сколько ждать «затравочный» кадр сразу после создания дупликации.
+    /// У обоих DuplicateOutput отказали. Пишем всё, что позволяет отличить
+    /// «выход удерживают» от «не то устройство/адаптер/фабрика»: без этого
+    /// E_INVALIDARG в логе — приговор без причины.
+    /// </summary>
+    private void LogDuplicateOutputFailure(
+        int duplicate1Code,
+        Exception? duplicate1Error,
+        int legacyCode,
+        Exception legacyError,
+        IDXGIAdapter1 targetAdapter,
+        IDXGIOutput targetOutput)
+    {
+        string outputName = targetOutput.Description.DeviceName ?? "?";
+        long adapterLuid = targetAdapter.Description.Luid;
+        string hint = "";
+        if (HeldCaptureOutputs.IsHeld(_monitorIdentity, out HeldCaptureOutput held))
+        {
+            hint = $"; выход помечен как удерживаемый: {held.Describe()}";
+        }
+        else if (legacyCode == unchecked((int)0x80070057))
+        {
+            hint = "; E_INVALIDARG без известного владельца: проверяю LUID устройства/адаптера и " +
+                   "свежесть фабрики — это может быть неверное устройство, а не занятый выход";
+        }
+
+        Log.Error("Capture",
+            $"DuplicateOutput не создан: DuplicateOutput1 0x{unchecked((uint)duplicate1Code):X8}" +
+            (duplicate1Error is null ? "" : $" ({duplicate1Error.Message})") +
+            $", DuplicateOutput 0x{unchecked((uint)legacyCode):X8} ({legacyError.Message}); " +
+            $"устройство LUID 0x{_deviceAdapterLuid ?? 0:X16}, адаптер выхода 0x{adapterLuid:X16} " +
+            $"(совпадает: {_deviceAdapterLuid == adapterLuid}), выход {outputName}, " +
+            $"identity {_monitorIdentity}, фабрика создана заново в этом вызове; " +
+            $"фильтр fallback: {DdaDuplicationPolicy.ShouldFallBackToLegacy(legacyCode)}{hint}");
+    }
+
+    /// <summary>Сколько ждать «затравочный» кадр сразу после создания дупликации.
     ///
     /// Короткий намеренно: если системе нечего отдать, ждать нечего — настоящий
     /// первый кадр заберёт обычный цикл.
@@ -276,8 +561,9 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     /// непрочитанным нельзя. Для записи потеря одного кадра ничего не стоит —
     /// пейсер закрывает дыру дубликатом, — а ждём мы не дольше PrimeTimeoutMs.
     /// </summary>
-    private static void DiscardStaleFirstFrame(IDXGIOutputDuplication duplication)
+    private void DiscardStaleFirstFrame(IDXGIOutputDuplication duplication)
     {
+        SetPhase(DdaCapturePhase.Prime);
         IDXGIResource? resource = null;
         bool acquired = false;
         try
@@ -314,6 +600,20 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         // должно быть точнее системных 15.6 мс, а глобального timeBeginPeriod больше нет.
         using var timer = new Interop.PreciseTimer();
         using var mmcss = Interop.Mmcss.Join(Interop.Mmcss.Capture, "DDA");
+        lock (_diagnosticsSync)
+        {
+            // Идентичность потока и стартовый отсчёт прогресса: сторожу нужно
+            // отличать «цикл ещё не начался» от «цикл встал».
+            long now = QpcNow();
+            _diagManagedThreadId = Environment.CurrentManagedThreadId;
+            _diagNativeThreadId = NativeMethods.GetCurrentThreadId();
+            _diagPhase = DdaCapturePhase.Idle;
+            _diagPhaseSinceQpc = now;
+            _diagLoopSequence = 0;
+            _diagLastLoopProgressQpc = now;
+            _diagLastHResult = 0;
+            PublishDiagnosticsLocked(now);
+        }
         while (token.Running)
         {
             IDXGIResource? resource = null;
@@ -349,7 +649,13 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                     long waitTicks = _lastAcceptedTicks +
                                      Encoding.EncoderCfrPolicy.CaptureMinIntervalTicks(_targetFps) - 10_000 -
                                      QpcToTicks(System.Diagnostics.Stopwatch.GetTimestamp());
-                    if (waitTicks > 5_000) timer.Wait(waitTicks);
+                    if (waitTicks > 5_000)
+                    {
+                        // Idle-сон ограничения FPS — не зависание: сторож смотрит
+                        // на продвижение цикла, а не на наличие кадров.
+                        SetPhase(DdaCapturePhase.Idle);
+                        timer.Wait(waitTicks);
+                    }
                 }
 
                 // БЕЗ ожидания внутри системы. AcquireNextFrame с таймаутом ждёт новый
@@ -359,16 +665,19 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // и кодировалось 0-2 кадра в секунду вместо 60 (снято стеками: поток
                 // подачи NVENC ждёт замок, поток захвата сидит в AcquireKeyedMutex).
                 // Поэтому спрашиваем без ожидания, а ждём сами — уже без замка.
+                SetPhase(DdaCapturePhase.Acquire);
                 SharpGen.Runtime.Result result = dup.AcquireNextFrame(0, out var frameInfo, out resource);
 
                 if (result == Vortice.DXGI.ResultCode.WaitTimeout)
                 {
                     // Статичный экран — норма, ровный CFR добивает пейсер дубликатами
+                    SetPhase(DdaCapturePhase.Idle, result.Code);
                     timer.Wait(20_000); // 2 мс
                     continue;
                 }
                 if (DdaDuplicationPolicy.ShouldRecreateFrameSession(result.Code))
                 {
+                    SetPhase(DdaCapturePhase.Acquire, result.Code);
                     // ACCESS_LOST — штатная смена fullscreen/desktop mode.
                     // INVALID_CALL означает, что предыдущий ReleaseFrame сорвался;
                     // повтор на той же duplication-сессии будет вечным циклом ошибок.
@@ -400,9 +709,9 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 // Позицию и форму курсора забираем ДО отбора кадров: система присылает
                 // их и в кадрах, где картинка не менялась, а второй раз их не повторит.
                 // Всё, что не уедет с этим кадром, трекер оставит до следующего.
+                SetPhase(DdaCapturePhase.Cursor);
                 CaptureCursorUpdate cursorUpdate = ReadCursorUpdate(dup, frameInfo);
                 bool cursorChanged = _cursorTracker.Track(cursorUpdate);
-
                 if (!DesktopFramePolicy.ShouldCapture(
                         frameInfo.AccumulatedFrames, _firstFrameSinceStart, cursorChanged))
                     continue;
@@ -431,8 +740,22 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 Interlocked.Increment(ref _framesAccepted);
 
                 using var texture = resource.QueryInterface<ID3D11Texture2D>();
+                ID3D11Texture2D surface;
+                if (_rotator is { } rotator)
+                {
+                    // Поворот на GPU — отдельная стадия: зависание внутри неё
+                    // должно быть видно сторожу отдельно от Acquire и обработчика.
+                    SetPhase(DdaCapturePhase.Rotate);
+                    surface = rotator.Rotate(texture);
+                }
+                else
+                {
+                    surface = texture;
+                }
+
+                SetPhase(DdaCapturePhase.FrameArrived);
                 FrameArrived?.Invoke(new CapturedSurface(
-                    _rotator?.Rotate(texture) ?? texture,
+                    surface,
                     ticks,
                     _generation,
                     _cursorTracker.Capture,
@@ -472,6 +795,10 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
                 resource?.Dispose();
                 if (frameHeld && dupHeld is not null)
                     ReleaseFrameOrRecover(token, dupHeld);
+                // Итерация цикла завершилась — в том числе с WAIT_TIMEOUT или
+                // через continue. Именно это и есть «поток жив»: кадров на
+                // статичном экране нет, а возвраты из API есть.
+                MarkLoopProgress();
             }
         }
     }
@@ -480,10 +807,13 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     {
         try
         {
+            SetPhase(DdaCapturePhase.ReleaseFrame);
             duplication.ReleaseFrame();
+            SetPhase(DdaCapturePhase.Idle);
         }
         catch (Exception ex)
         {
+            SetPhase(DdaCapturePhase.ReleaseFrame, DuplicationHResult(ex));
             if (!token.Running) return;
 
             // После неуспешного ReleaseFrame следующий AcquireNextFrame возвращает
@@ -503,7 +833,15 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
     private void HoldTransitionStorm(RunToken token, string cause)
     {
         Log.Warn("Capture", $"DDA: серия смен режима ({cause}) — жду стабилизации рабочего стола");
-        for (int i = 0; i < 30 && token.Running; i++) Thread.Sleep(100);
+        for (int i = 0; i < 30 && token.Running; i++)
+        {
+            // Ожидание стабилизации — штатная пауза того же потока, а не
+            // зависание: помечаем как Idle и продвигаем прогресс, иначе сторож
+            // принял бы трёхсекундную паузу за мёртвый поток.
+            SetPhase(DdaCapturePhase.Idle);
+            Thread.Sleep(100);
+            MarkLoopProgress();
+        }
         _lifecycle.Reset();
     }
 
@@ -728,6 +1066,8 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
 
     private void StopInternal()
     {
+        if (_threadStuck) return;
+        SetPhase(DdaCapturePhase.Stopping);
         _prepared = false;
         if (_run is not null) _run.Running = false;
         _run = null;
@@ -743,13 +1083,18 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
             // Поток не вышел. Освобождать дупликацию и выход НЕЛЬЗЯ: он прямо сейчас
             // ими пользуется, а обращение к освобождённому COM-объекту роняет процесс
             // мгновенно и без единой строки в логе — ровно так приложение и падало
-            // после «Дупликация потеряна». Отпускаем ссылки и оставляем сборщику:
-            // утечка нескольких объектов безопаснее краха.
-            Log.Warn("Capture", "Поток захвата не завершился за 5 секунд — " +
-                                "объекты дупликации оставлены сборщику, чтобы не уронить процесс");
-            _duplication = null;
-            _output = null;
+            // после «Дупликация потеряна». Держим ссылки в брошенном конвейере:
+            // финализатор этих объектов тоже может зависнуть внутри драйвера.
             _threadStuck = true;   // Dispose не должен трогать устройство и контекст
+            string reason = "поток захвата DDA не завершился за 5 секунд при остановке";
+            MarkOutputHeld(reason);
+
+            // Снимок и пометку выхода делаем ДО того, как движок уйдёт дальше и
+            // бросит объекты. Дамп запросит движок на границе остановки (там у него
+            // есть ещё ОС, сборка, адаптер и путь кодирования); самому источнику
+            // второй дамп не нужен — ограничение частоты одно на процесс.
+            string diagnostics = DescribeDiagnostics();
+            Log.Warn("Capture", $"{reason} — объекты дупликации сохранены до выхода из процесса; {diagnostics}");
             return;
         }
 
@@ -770,14 +1115,14 @@ internal sealed class DesktopDuplicationSource : IScreenCapture
         // иначе получается ровно тот краш, от которого защищались строчкой выше.
         if (_threadStuck)
         {
-            Log.Warn("Capture", "Устройство DDA оставлено сборщику: поток захвата всё ещё жив");
-            _context = null;
-            _device = null;
+            Log.Warn("Capture", "Устройство DDA сохранено до выхода: поток захвата всё ещё жив; " +
+                                DescribeDiagnostics());
             return;
         }
 
         _rotator?.Dispose(); _rotator = null;
         _context?.Dispose(); _context = null;
         _device?.Dispose(); _device = null;
+        _deviceAdapterLuid = null;
     }
 }

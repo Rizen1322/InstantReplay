@@ -312,8 +312,11 @@ public partial class SystemPage : PageBase
 
     private void ShowLoad()
     {
-        bool running = Services.Engine.State != Core.Engine.EngineState.Stopped;
-        LoadHint.Text = running ? "" : "повтор выключен";
+        bool running = Services.Engine.State is not (Core.Engine.EngineState.Stopped
+                                                    or Core.Engine.EngineState.CaptureBlocked);
+        LoadHint.Text = Services.Engine.State == Core.Engine.EngineState.CaptureBlocked
+            ? "захват не восстановился"
+            : running ? "" : "повтор выключен";
 
         if (!running)
         {

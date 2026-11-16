@@ -1,4 +1,4 @@
-﻿using Aura.Core.Buffering;
+using Aura.Core.Buffering;
 using Aura.Core.Logging;
 using Aura.Core.Saving;
 using Aura.Core.Saving.Mp4;
@@ -19,6 +19,38 @@ public sealed partial class ReplayEngine
     /// </summary>
     private int _pendingSave;
     private volatile int _pendingSaveSeconds; // 0 — длина из настроек
+
+    /// <summary>
+    /// Описание звуковых дорожек, снятое ДО остановки микшера. В терминальной
+    /// блокировке захвата микшер останавливается (экономия устройств), но AAC-кодеры
+    /// вместе с ним освобождаются, и FormatOf начал бы возвращать null — клип из
+    /// сохранённого RAM-буфера записался бы без звука. Снимок форматов переживает
+    /// остановку и используется при сохранении.
+    /// </summary>
+    private Dictionary<AudioTrackKind, Mp4AudioFormat>? _audioFormatsAfterStop;
+
+    private void SnapshotAudioFormatsBeforeStop()
+    {
+        try
+        {
+            var s = _settings.Current;
+            var snapshot = new Dictionary<AudioTrackKind, Mp4AudioFormat>();
+            foreach (var kind in ReplaySaver.TracksFor(s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone))
+                if (_audio.FormatOf(kind) is { } format) snapshot[kind] = format;
+            _audioFormatsAfterStop = snapshot.Count > 0 ? snapshot : null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Audio", $"Описание звука перед остановкой не снято: {ex.Message}");
+            _audioFormatsAfterStop = null;
+        }
+    }
+
+    private Mp4AudioFormat? AudioFormatFor(AudioTrackKind kind) =>
+        _audio.FormatOf(kind) ??
+        (_audioFormatsAfterStop is { } snapshot && snapshot.TryGetValue(kind, out Mp4AudioFormat? format)
+            ? format
+            : null);
 
     public void SaveReplay(int? secondsOverride = null)
     {
@@ -99,9 +131,12 @@ public sealed partial class ReplayEngine
                 });
                 return;
             }
-            SaveFailed?.Invoke(_state == EngineState.Recovering
-                ? "Запись восстанавливается — в буфере пока нет кадров"
-                : "Буфер ещё пуст");
+            SaveFailed?.Invoke(_state switch
+            {
+                EngineState.Recovering => "Запись восстанавливается — в буфере пока нет кадров",
+                EngineState.CaptureBlocked => "Захват не восстановился, и в буфере ещё нет кадров",
+                _ => "Буфер ещё пуст"
+            });
             return;
         }
 
@@ -153,7 +188,7 @@ public sealed partial class ReplayEngine
 
         var audioTracks = new List<(AudioTrackKind, Mp4AudioFormat)>();
         foreach (var kind in ReplaySaver.TracksFor(s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone))
-            if (_audio.FormatOf(kind) is { } format) audioTracks.Add((kind, format));
+            if (AudioFormatFor(kind) is { } format) audioTracks.Add((kind, format));
 
         // Игра — по тому, что было на экране, пока копился буфер (см. GameForClip).
         // Имя файла подбирает уже фоновая задача: подбор упирается в диск, а этот
@@ -175,9 +210,10 @@ public sealed partial class ReplayEngine
         SaveProgress = 0;
         ReplayCaptured?.Invoke(Math.Max(seconds, 1));
 
-        // Во время восстановления состояние не трогаем: его ведёт восстановление,
-        // и «Сохранение» поверх него после записи файла превратилось бы в «Выключен».
-        if (_state != EngineState.Recovering) SetState(EngineState.Saving);
+        // Терминальную блокировку сохранение не переводит в Saving: CompleteSavingState
+        // тогда мог бы вернуть Running/Stopped и сбить честный статус блокировки.
+        // В Recovering состояние и так ведёт восстановление.
+        if (_state == EngineState.Running) SetState(EngineState.Saving);
         bool inGame = !string.Equals(game, "Desktop", StringComparison.OrdinalIgnoreCase);
         _saveTask = Task.Run(() =>
         {

@@ -6,8 +6,46 @@ using Aura.Core.Engine;
 static void Require(bool ok, string message) { if (!ok) throw new Exception(message); }
 const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 var engineType = typeof(ReplayEngine);
+if (args.Contains("--dda-lifetime"))
+{
+    DdaLifetimeCheck.CheckLifetime();
+    return;
+}
+if (args.Contains("--dda-held"))
+{
+    DdaHeldOutputCheck.Check();
+    return;
+}
+if (args.Contains("--dda-phase-hang"))
+{
+    DdaPhaseHangCheck.Check();
+    return;
+}
 var encoderType = typeof(VideoEncoder);
 var engine = (ReplayEngine)RuntimeHelpers.GetUninitializedObject(engineType);
+
+// Терминальная блокировка: захват не идёт, RAM-повтор сохранён и доступен.
+var stateField = engineType.GetField("_state", Private)!;
+stateField.SetValue(engine, EngineState.CaptureBlocked);
+Require(engine.CaptureBlocked && !engine.ReplayActive && engine.ReplayBufferAvailable,
+    "CaptureBlocked must keep the replay buffer available but report no active capture");
+stateField.SetValue(engine, EngineState.Running);
+Require(!engine.CaptureBlocked && engine.ReplayActive && engine.ReplayBufferAvailable,
+    "Running must be active and saveable");
+stateField.SetValue(engine, EngineState.Stopped);
+Require(!engine.ReplayActive && !engine.ReplayBufferAvailable,
+    "Stopped must not offer a replay buffer");
+stateField.SetValue(engine, EngineState.Stopped);
+var blockedPolicy = Enum.Parse(engineType.Assembly.GetType("Aura.Core.Engine.PipelineStopIntent")!, "CaptureBlocked");
+var policyType = engineType.Assembly.GetType("Aura.Core.Engine.PipelineRestartPolicy")!;
+var actions = policyType.GetMethod("For")!.Invoke(null, [blockedPolicy, false, false]);
+var actionsType = actions!.GetType();
+Require((bool)actionsType.GetProperty("KeepReplayBuffer")!.GetValue(actions)! &&
+        (bool)actionsType.GetProperty("KeepAudioBuffer")!.GetValue(actions)! &&
+        !(bool)actionsType.GetProperty("SaveReplay")!.GetValue(actions)!,
+    "CaptureBlocked must keep RAM buffers without writing video to disk");
+Console.WriteLine("PASS: terminal capture block keeps the RAM replay saveable, never active, never auto-saved");
+
 using var encoder = new VideoEncoder();
 encoderType.GetProperty("Fps")!.SetValue(encoder, 60);
 var pipelineType = engineType.Assembly.GetType("Aura.Core.Engine.PipelineSession")!;
@@ -275,9 +313,11 @@ var ddaType = engineType.Assembly.GetType("Aura.Core.Capture.DesktopDuplicationS
 using (var stoppedDda = (IDisposable)Activator.CreateInstance(ddaType, nonPublic: true)!)
 {
     var stopBounded = engineType.GetMethod("StopCaptureBounded", BindingFlags.Static | BindingFlags.NonPublic)!;
-    Require((bool)stopBounded.Invoke(null, [stoppedDda])!, "Idle DDA failed to stop");
+    // Необязательный контекст диагностики передаётся явно: reflection не
+    // подставляет значения по умолчанию для пропущенных аргументов.
+    Require((bool)stopBounded.Invoke(null, [stoppedDda, null])!, "Idle DDA failed to stop");
     ddaType.GetField("_threadStuck", Private)!.SetValue(stoppedDda, true);
-    Require(!(bool)stopBounded.Invoke(null, [stoppedDda])!, "Stuck DDA reported a safe pipeline teardown");
+    Require(!(bool)stopBounded.Invoke(null, [stoppedDda, null])!, "Stuck DDA reported a safe pipeline teardown");
 }
 Console.WriteLine("PASS: stop distinguishes completed teardown from a timed-out capture thread");
 

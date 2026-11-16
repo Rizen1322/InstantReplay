@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -337,6 +337,21 @@ public sealed partial class ReplayEngine
     // generation-safe пересборку и при необходимости смену backend.
     private System.Threading.Timer? _watchdog;
     private CaptureProcessingWatchdog _processingWatchdog = new();
+
+    /// <summary>
+    /// Сторож прогресса потока DDA. Кадров на статичном экране нет законно,
+    /// поэтому смотрим на возвраты цикла захвата из API (включая WAIT_TIMEOUT),
+    /// а не на счётчик кадров. Порог 8 с подтверждается двумя наблюдениями
+    /// подряд: после общего зависания ПК одного устаревшего наблюдения мало, а
+    /// штатное пересоздание дупликации (до 5 с ожидания доступности) не должно
+    /// приниматься за мёртвый поток.
+    /// </summary>
+    private readonly DdaProgressWatchdog _ddaProgress = new(
+        TimeSpan.FromSeconds(8),
+        TimeSpan.FromSeconds(2.5),
+        requiredConfirmations: 2,
+        qpcFrequency: System.Diagnostics.Stopwatch.Frequency);
+    private bool _ddaSuspectLogged;
 
     private long _wdLastReceived = -1;
     private DateTime _wdLastActivity = DateTime.UtcNow;
@@ -735,11 +750,15 @@ public sealed partial class ReplayEngine
         // DDA не присылает кадры, пока изображение рабочего стола не меняется —
         // это штатное поведение AcquireNextFrame, а не зависание. Тишину захвата
         // для него не проверяем, но живость энкодера — да (см. EncoderWedged).
-        bool checkCaptureSilence = _pipeline.Capture is not DesktopDuplicationSource;
+        // То же верно и для DDA в изолированном воркере: тишина кадров на статичном
+        // столе там такая же норма, а живость воркера проверяет его собственный сторож.
+        bool checkCaptureSilence = _pipeline.Capture is not (DesktopDuplicationSource or RemoteDesktopDuplicationSource);
 
         _wdLastReceived = -1;
         _wdLastRate = 0;
         _processingWatchdog = new();
+        _ddaProgress.Reset();
+        _ddaSuspectLogged = false;
         _wdLastActivity = DateTime.UtcNow;
         _wdEvidenceSince = null;
         _wdStaticLogged = false;
@@ -768,6 +787,62 @@ public sealed partial class ReplayEngine
                     _wdEncodedAt = DateTime.UtcNow;
                     _wdLastActivity = DateTime.UtcNow;
                     return;
+                }
+
+                // Зависание самого потока Desktop Duplication. Раньше сторож DDA не
+                // смотрел вовсе (тишина кадров на статичном экране — норма), и поток,
+                // вставший внутри драйвера, обнаруживался только когда человек жал
+                // «стоп»: к этому моменту энкодер бесконечно дублировал последний
+                // кадр, а восстановление потом 131 раз пыталось открыть занятый выход.
+                if (cap is ICaptureDiagnostics captureDiagnostics &&
+                    captureDiagnostics.TryGetDiagnostics(out CaptureDiagnosticsSnapshot dda))
+                {
+                    long nowQpc = System.Diagnostics.Stopwatch.GetTimestamp();
+                    long qpcFrequency = System.Diagnostics.Stopwatch.Frequency;
+                    var sample = new DdaProgressSample(
+                        dda.LoopSequence, dda.LastLoopProgressQpc, dda.PublishedQpc,
+                        dda.Phase, dda.Generation);
+                    DdaProgressVerdict verdict = _ddaProgress.Observe(sample, nowQpc);
+                    if (verdict == DdaProgressVerdict.Frozen)
+                    {
+                        _ddaSuspectLogged = false;
+                        Log.Warn("Engine", $"Сторож проснулся с опозданием — прогресс DDA проверяю заново " +
+                                           $"(одно устаревшее наблюдение не повод останавливать захват): " +
+                                           dda.Describe(nowQpc, qpcFrequency));
+                    }
+                    else if (verdict == DdaProgressVerdict.Suspect)
+                    {
+                        if (!_ddaSuspectLogged)
+                        {
+                            _ddaSuspectLogged = true;
+                            Log.Warn("Engine", $"Поток DDA не возвращается из вызова " +
+                                               $"{dda.SinceLoopProgressSeconds(nowQpc, qpcFrequency):F1} с — " +
+                                               $"проверю ещё раз перед остановкой; {dda.Describe(nowQpc, qpcFrequency)}");
+                        }
+                    }
+                    else if (verdict == DdaProgressVerdict.Progressing)
+                    {
+                        _ddaSuspectLogged = false;
+                    }
+                    else if (verdict == DdaProgressVerdict.Confirmed)
+                    {
+                        long hungGeneration = pipeline.Id;
+                        if (TryBeginCaptureBlock(hungGeneration))
+                        {
+                            string context = dda.Describe(nowQpc, qpcFrequency);
+                            _captureBlockedReason = $"поток Desktop Duplication не продвигается (фаза {dda.Phase})";
+                            Log.Error("Engine", $"Поток DDA завис: {context}; {CaptureDiagnosticContext()}");
+                            Diagnostics.StallDump.Request("DDA: поток захвата не продвигается",
+                                context + "\n" + CaptureDiagnosticContext());
+                            // Пометка ставится ДО остановки: даже если сам Stop не
+                            // уложится в таймаут, новые нативные DuplicateOutput
+                            // для этого выхода запускаться уже не будут.
+                            HeldCaptureOutputs.TryHold(dda.MonitorDeviceId, dda.Generation,
+                                "поток захвата не продвигается", context);
+                            _ = Task.Run(() => BlockCaptureAfterDdaHang(hungGeneration));
+                        }
+                        return;
+                    }
                 }
 
                 // FramesAccepted растёт ДО Convert: ошибки VP видны только по готовым кадрам.
@@ -812,7 +887,8 @@ public sealed partial class ReplayEngine
                     if (_pipeline.Encoder is { DirectNvenc: true } wedgedEncoder)
                     {
                         string nvencTrace = wedgedEncoder.NvencTrace() ?? "";
-                        Diagnostics.StallDump.Request();
+                        Diagnostics.StallDump.Request("NVENC не выдаёт кадры",
+                            $"энкодер молчит {stuck:F1} с, голодание: {starving}, гост: {remoteHost}\n{nvencTrace}");
                         Log.Error("Engine", $"NVENC STALL: энкодер молчит {stuck:F1} с{(starving ? " при занятой видеокарте" : "")}; {SilenceGpuReport()}. Память: {SystemMemory()}. Состояние NVENC:\n{nvencTrace}");
                         if (remoteHost)
                         {
@@ -1008,5 +1084,48 @@ public sealed partial class ReplayEngine
                 Log.Error("Engine", $"Сторож захвата упал: {ex.Message}");
             }
         }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>Захватить право на однократный переход в терминальную блокировку.</summary>
+    private bool TryBeginCaptureBlock(long generation)
+    {
+        if (generation != Interlocked.Read(ref _captureGeneration)) return false;
+        return Interlocked.CompareExchange(ref _captureBlockRequested, 1, 0) == 0;
+    }
+
+    /// <summary>
+    /// После подтверждённого зависания потока DDA: остановить конвейер с
+    /// сохранением RAM-повтора и выйти в терминальное состояние. Работаем в
+    /// фоне: StopLocked ждёт поток захвата до таймаута, а сторож не имеет права
+    /// занимать себя или поток интерфейса этим ожиданием.
+    /// </summary>
+    private void BlockCaptureAfterDdaHang(long generation)
+    {
+        try
+        {
+            lock (_lifecycle)
+            {
+                if (_stopRequested ||
+                    generation != Interlocked.Read(ref _captureGeneration) ||
+                    _state is EngineState.Stopped or EngineState.CaptureBlocked) return;
+                StopLocked(PipelineStopIntent.CaptureBlocked);
+            }
+            if (_state == EngineState.CaptureBlocked) NotifyCaptureBlockedOnce();
+            else Log.Error("Engine", "Терминальная блокировка после зависания DDA не применилась: " +
+                                     $"состояние {_state} изменилось за время остановки");
+        }
+        catch (Exception ex)
+        {
+            // Даже если снос конвейера сорвался, честное состояние важнее: буфер
+            // остаётся в памяти, а новый DDA всё равно запрещён пометкой выхода.
+            Log.Error("Engine", $"Терминальная блокировка после зависания DDA сорвалась: {ex}");
+            try
+            {
+                _captureBlockedReason ??= "поток Desktop Duplication не продвигается";
+                SetState(EngineState.CaptureBlocked);
+                NotifyCaptureBlockedOnce();
+            }
+            catch { }
+        }
     }
 }

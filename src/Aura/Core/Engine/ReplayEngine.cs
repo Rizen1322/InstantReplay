@@ -11,7 +11,14 @@ using Aura.Core.Storage;
 
 namespace Aura.Core.Engine;
 
-public enum EngineState { Stopped, Running, Saving, Recovering }
+/// <summary>
+/// Состояние конвейера. <see cref="CaptureBlocked"/> — терминальное: захват не
+/// восстановился в этом процессе, но накопленный RAM-повтор цел и доступен для
+/// сохранения. Из него не начинается автоматическое восстановление: выход,
+/// который удерживает незавершившаяся сессия DDA, освободит только выход из
+/// процесса (см. <see cref="Capture.HeldCaptureOutputs"/>).
+/// </summary>
+public enum EngineState { Stopped, Running, Saving, Recovering, CaptureBlocked }
 
 /// <summary>
 /// Главный движок Instant Replay: конвейер
@@ -131,6 +138,15 @@ public sealed partial class ReplayEngine : IDisposable
     private readonly object _stateSync = new();
     public EngineState State => _state;
     public event Action<EngineState>? StateChanged;
+
+    /// <summary>
+    /// Терминальная блокировка захвата. <see cref="_captureBlockRequested"/> не
+    /// даёт сторожу и восстановлению запустить переход дважды; причина нужна
+    /// интерфейсу, чтобы объяснить, что случилось.
+    /// </summary>
+    private volatile string? _captureBlockedReason;
+    private int _captureBlockRequested;
+    private int _captureBlockedNotified;
     /// <summary>
     /// Снимок буфера сделан — клип уже гарантирован, дальше только запись файла.
     /// Аргумент — длительность клипа в секундах. Именно по этому событию показывается
@@ -237,8 +253,28 @@ public sealed partial class ReplayEngine : IDisposable
     /// </summary>
     private volatile bool _recordingOnly;
 
-    /// <summary>Повтор включён по-настоящему, а не поднят ради одной записи в файл.</summary>
-    public bool ReplayActive => _state != EngineState.Stopped && !_recordingOnly;
+    /// <summary>
+    /// Повтор включён по-настоящему и кадры сейчас копятся. В терминальной
+    /// блокировке <see cref="EngineState.CaptureBlocked"/> это false: захват
+    /// остановлен, хотя накопленный буфер ещё доступен для сохранения — его
+    /// отдаёт отдельное свойство <see cref="ReplayBufferAvailable"/>.
+    /// </summary>
+    public bool ReplayActive => _state is not (EngineState.Stopped or EngineState.CaptureBlocked) &&
+                                !_recordingOnly;
+
+    /// <summary>
+    /// В памяти (или на диске) лежит повтор, который можно сохранить. Это так и
+    /// после терминальной блокировки: пользователь обязан успеть сохранить клип
+    /// до перезапуска приложения.
+    /// </summary>
+    public bool ReplayBufferAvailable => _state != EngineState.Stopped && !_recordingOnly;
+
+    /// <summary>Захват не восстановился в этом процессе; повтор сохранён и ждёт решения человека.</summary>
+    public bool CaptureBlocked => _state == EngineState.CaptureBlocked;
+
+    /// <summary>Почему захват заблокирован — для интерфейса и лога.</summary>
+    public string? CaptureBlockedReason => _captureBlockedReason;
+
     /// <summary>Сколько идёт обычная запись; null — не пишем.</summary>
     public TimeSpan? RecordingElapsed => _recorder is { } r ? r.Elapsed.Elapsed : null;
     /// <summary>Номер текущей части файла (файл режется по достижении предела MP4).</summary>
@@ -288,6 +324,7 @@ public sealed partial class ReplayEngine : IDisposable
     {
         lock (_lifecycle)
         {
+            if (_state == EngineState.CaptureBlocked) throw CaptureBlockedStartException();
             // Человек включил повтор сам — значит спор о том, надо ли писать,
             // решён в его пользу, и накопленные системные причины паузы больше не
             // действуют. Без этой строки оставшаяся причина держала бы
@@ -313,6 +350,7 @@ public sealed partial class ReplayEngine : IDisposable
 
     private void StartWithFallbackLocked(bool preserveBuffers)
     {
+        if (_state == EngineState.CaptureBlocked) throw CaptureBlockedStartException();
         if (_state != EngineState.Stopped) return;
         // Нет места на диске — повтор не включаем вовсе: копить в памяти клип,
         // который потом не поместится в файл, значит обмануть человека.
@@ -323,6 +361,12 @@ public sealed partial class ReplayEngine : IDisposable
             Interlocked.Exchange(ref _ddaStormCount, 0);
             Interlocked.Exchange(ref _windowRetryCount, 0);
             Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
+            // Новая попытка человека: терминальные пометки сбрасываются, но
+            // реестр удерживаемых выходов — нет, его снимает только освобождение
+            // дупликации или выход из процесса.
+            Interlocked.Exchange(ref _captureBlockRequested, 0);
+            Interlocked.Exchange(ref _captureBlockedNotified, 0);
+            _captureBlockedReason = null;
         }
         DateTimeOffset now = DateTimeOffset.UtcNow;
         CaptureBackend desired = preserveBuffers ? _captureBackend : _preferredCaptureBackend;
@@ -406,6 +450,50 @@ public sealed partial class ReplayEngine : IDisposable
             ? CaptureBackend.DesktopDuplication
             : CaptureBackendPolicy.Alternative(backend);
 
+    private Exception CaptureBlockedStartException()
+    {
+        try
+        {
+            var s = _settings.Current;
+            int index = MonitorLayout.Resolve(s.MonitorIndex, s.MonitorDeviceId);
+            string identity = MonitorLayout.IdentityFor(index);
+            if (HeldCaptureOutputs.IsHeld(identity, out HeldCaptureOutput held))
+                return new CaptureOutputHeldException(held);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Engine", $"Не удалось проверить удерживаемый выход: {ex.Message}");
+        }
+
+        return new InvalidOperationException(
+            "Захват не восстановился после зависания. Накопленный повтор можно сохранить. " +
+            "Для продолжения перезапустите Aura.");
+    }
+
+    private static bool BackendUsesHeldDdaOutput(
+        CaptureBackend backend,
+        int monitorIndex,
+        out HeldCaptureOutput held)
+    {
+        held = null!;
+        bool usesDdaOutput = backend == CaptureBackend.DesktopDuplication ||
+                             (backend == CaptureBackend.MinecraftOpenGl && !ScreenCaptureFactory.WgcAllowed);
+        if (!usesDdaOutput) return false;
+        // Изолированный воркер работает в другом процессе: пометка «выход занят
+        // незавершившейся сессией этого процесса» к нему не относится — воркер
+        // можно убить и поднять заново, Windows освободит дупликацию.
+        if (CaptureHostPolicy.UseRemoteDda) return false;
+        try
+        {
+            return HeldCaptureOutputs.IsHeld(MonitorLayout.IdentityFor(monitorIndex), out held);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Capture", $"Не удалось проверить удерживаемый выход монитора #{monitorIndex}: {ex.Message}");
+            return false;
+        }
+    }
+
     private void StartLocked(
         bool preserveBuffers,
         CaptureBackend backend,
@@ -425,6 +513,15 @@ public sealed partial class ReplayEngine : IDisposable
                 string identity = MonitorLayout.IdentityFor(monitorIndex);
                 _settings.Update(x => x.MonitorDeviceId = identity, "monitor-identity");
             }
+
+            // Выход, который удерживает незавершившаяся сессия DDA, нельзя открывать
+            // заново ни при обычном старте, ни при автовосстановлении, ни при
+            // мониторной части Minecraft. Проверка стоит до создания любых
+            // GPU-объектов, чтобы не тратить нативный вызов и не плодить
+            // E_INVALIDARG — цикл восстановления распознаёт это исключение и
+            // переходит в терминальное состояние с сохранённым повтором.
+            if (BackendUsesHeldDdaOutput(backend, monitorIndex, out HeldCaptureOutput heldOutput))
+                throw new CaptureOutputHeldException(heldOutput);
             GameCaptureTarget? sourceTarget = null;
             if (backend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
             {
@@ -447,6 +544,7 @@ public sealed partial class ReplayEngine : IDisposable
             }
 
             _captureBackend = backend;
+            _audioFormatsAfterStop = null;
             int effectiveReplaySeconds = EffectiveReplaySeconds(s, warn: !preserveBuffers);
 
             _videoBuffer.MaxDurationTicks = TimeSpan.FromSeconds(effectiveReplaySeconds).Ticks;
@@ -898,6 +996,9 @@ public sealed partial class ReplayEngine : IDisposable
         if (failure.Generation != observedGeneration ||
             observedGeneration != Interlocked.Read(ref _captureGeneration) ||
             _stopRequested) return;
+        // Терминальная блокировка: восстановление уже остановлено, новые
+        // пересборки не начинаем. Запоздавшие колбэки старой сессии игнорируем.
+        if (_state == EngineState.CaptureBlocked || Volatile.Read(ref _captureBlockRequested) != 0) return;
         if (failure.TargetRevision != 0)
         {
             GameCaptureTarget? active = ActiveCaptureTarget();
@@ -1138,6 +1239,10 @@ public sealed partial class ReplayEngine : IDisposable
     {
         lock (_lifecycle)
         {
+            // В терминальной блокировке останавливать нечего, а UserStop-путь
+            // освободил бы накопленный RAM-повтор. Причина паузы не записывается:
+            // возобновлять тоже нечего, конвейер сам не поднимется.
+            if (_state == EngineState.CaptureBlocked) return;
             bool added = _systemSuspendReasons.Add(reason);
             if (_continuousRecordingRequested || _recorder is not null)
             {
@@ -1197,12 +1302,18 @@ public sealed partial class ReplayEngine : IDisposable
 
     private void StopLocked(PipelineStopIntent intent = PipelineStopIntent.UserStop)
     {
-        if (intent == PipelineStopIntent.UserStop)
+        if (intent is PipelineStopIntent.UserStop or PipelineStopIntent.CaptureBlocked)
         {
             _continuousRecordingRequested = false;
             CancelCaptureRecovery();
             _gameCaptureRecovery.Stop();
             Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
+        }
+        if (intent == PipelineStopIntent.UserStop)
+        {
+            Interlocked.Exchange(ref _captureBlockRequested, 0);
+            Interlocked.Exchange(ref _captureBlockedNotified, 0);
+            _captureBlockedReason = null;
         }
         bool wedged = false;
         var restartActions = PipelineRestartPolicy.For(
@@ -1235,7 +1346,7 @@ public sealed partial class ReplayEngine : IDisposable
                 _pipeline.Capture.Failed -= _captureFailureHandler;
             // Останавливаем поток захвата, но УСТРОЙСТВО НЕ ТРОГАЕМ: им ещё
             // пользуется пейсер энкодера, см. порядок разрушения ниже
-            wedged = !StopCaptureBounded(_pipeline.Capture);
+            wedged = !StopCaptureBounded(_pipeline.Capture, CaptureDiagnosticContext());
         }
         _captureFrameHandler = null;
         _captureFailureHandler = null;
@@ -1266,7 +1377,9 @@ public sealed partial class ReplayEngine : IDisposable
             else
                 StopRecordingLocked(wait: true);
         }
-        if (intent == PipelineStopIntent.UserStop) _audio.Stop();
+        if (intent == PipelineStopIntent.CaptureBlocked) SnapshotAudioFormatsBeforeStop();
+        else if (intent == PipelineStopIntent.UserStop) _audioFormatsAfterStop = null;
+        if (intent is PipelineStopIntent.UserStop or PipelineStopIntent.CaptureBlocked) _audio.Stop();
 
         // ПОРЯДОК ВАЖЕН, и требований тут ДВА, встречных.
         //
@@ -1289,8 +1402,10 @@ public sealed partial class ReplayEngine : IDisposable
         {
             // Видеокарта не отвечает на этом устройстве: любое освобождение его
             // объектов повисло бы так же. Бросаем конвейер целиком, новый поднимется
-            // на новом устройстве.
-            AbandonWedgedPipeline();
+            // на новом устройстве. В терминальной блокировке новый уже не поднимется
+            // в этом процессе — брошенную сессию всё равно сохраняем целиком, чтобы
+            // не освобождать объекты под живым потоком (см. AbandonedPipelines).
+            AbandonWedgedPipeline(stopWhenLimitReached: intent != PipelineStopIntent.CaptureBlocked);
         }
         else
         {
@@ -1305,12 +1420,20 @@ public sealed partial class ReplayEngine : IDisposable
         else if (!restartActions.KeepReplayBuffer) _videoBuffer.Clear();
         if (!restartActions.KeepAudioBuffer) _audioBuffer.Release();
         System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Interactive;
-        SetState(intent == PipelineStopIntent.UserStop
-            ? EngineState.Stopped
-            : EngineState.Recovering);
-        Log.Info("Engine", intent == PipelineStopIntent.UserStop
-            ? "Instant Replay выключен"
-            : "Видеоконвейер остановлен для автовосстановления; replay остался в RAM");
+        SetState(intent switch
+        {
+            PipelineStopIntent.UserStop => EngineState.Stopped,
+            PipelineStopIntent.CaptureBlocked => EngineState.CaptureBlocked,
+            _ => EngineState.Recovering
+        });
+        Log.Info("Engine", intent switch
+        {
+            PipelineStopIntent.UserStop => "Instant Replay выключен",
+            PipelineStopIntent.CaptureBlocked =>
+                $"Захват переведён в терминальную блокировку ({(string.IsNullOrEmpty(_captureBlockedReason) ? "причина не указана" : _captureBlockedReason)}); " +
+                "накопленный повтор оставлен в RAM для сохранения",
+            _ => "Видеоконвейер остановлен для автовосстановления; replay остался в RAM"
+        });
         // Stop и Dispose оба доходят сюда: итог печатаем один раз
         if (intent == PipelineStopIntent.UserStop && _replayNvencStats is { } replayStart)
         {
@@ -1327,21 +1450,75 @@ public sealed partial class ReplayEngine : IDisposable
     /// ограничения. Раньше в этот момент вставал весь снос конвейера под замком
     /// жизненного цикла, а с ним и приложение.
     /// </summary>
-    private static bool StopCaptureBounded(IScreenCapture capture)
+    private static bool StopCaptureBounded(IScreenCapture capture, string? extraContext = null)
     {
         var stop = Task.Run(capture.Stop);
         try
         {
-            if (stop.Wait(TimeSpan.FromSeconds(6))) return capture.StopCompleted;
+            if (stop.Wait(TimeSpan.FromSeconds(6)))
+            {
+                if (capture.StopCompleted) return true;
+                LogCaptureStopFailure(capture, "поток не завершился, но Stop вернулся", extraContext);
+                return false;
+            }
         }
         catch (AggregateException ex)
         {
             Log.Error("Engine", $"Ошибка остановки захвата: {ex.GetBaseException().Message}");
             return false;
         }
-        Log.Error("Engine", "Захват не остановился за 6 секунд — видеокарта не отвечает на этом устройстве, " +
-                            "конвейер будет брошен и собран заново");
+        LogCaptureStopFailure(capture, "остановка не уложилась в 6 секунд", extraContext);
         return false;
+    }
+
+    /// <summary>
+    /// Остановка захвата провалилась: пишем согласованный снимок фазы, помечаем
+    /// выход занятым и просим дамп ДО того, как конвейер будет брошен. Всё это
+    /// делается по снимку, без замков и вызовов D3D со стороны сторожа.
+    /// </summary>
+    private static void LogCaptureStopFailure(
+        IScreenCapture capture,
+        string reason,
+        string? extraContext)
+    {
+        string diagnostics = "снимок состояния недоступен";
+        if (capture is ICaptureDiagnostics provider && provider.TryGetDiagnostics(out CaptureDiagnosticsSnapshot snapshot))
+        {
+            diagnostics = snapshot.Describe(System.Diagnostics.Stopwatch.GetTimestamp(),
+                                            System.Diagnostics.Stopwatch.Frequency);
+            HeldCaptureOutputs.TryHold(snapshot.MonitorDeviceId, snapshot.Generation, reason, diagnostics);
+        }
+
+        string context = string.IsNullOrEmpty(extraContext)
+            ? diagnostics
+            : diagnostics + "\n" + extraContext;
+        Log.Error("Engine", $"Захват не остановился ({reason}) — видеокарта не отвечает на этом " +
+                            $"устройстве, конвейер будет брошен; {diagnostics}");
+        Aura.Core.Diagnostics.StallDump.Request($"остановка захвата: {reason}", context);
+    }
+
+    /// <summary>
+    /// Что ещё нужно записать рядом с дампом зависшего захвата: ОС, сборка Aura,
+    /// backend, активный путь кодирования, монитор, размер кадра и генерация.
+    /// Ничего из этого не требует живого D3D, поэтому вызов безопасен на границе
+    /// зависания.
+    /// </summary>
+    private string CaptureDiagnosticContext()
+    {
+        try
+        {
+            string os = $"{Environment.OSVersion.VersionString} (build {Environment.OSVersion.Version.Build})";
+            string build = typeof(ReplayEngine).Assembly.GetName().Version?.ToString() ?? "неизвестна";
+            string encoder = _pipeline.Encoder?.EncoderLabel ?? "нет";
+            string canvas = _pipelineCanvas is { } c ? $"{c.Width}x{c.Height}" : "неизвестен";
+            return $"ОС: {os}; сборка Aura: {build}; backend: {_captureBackend}; " +
+                   $"энкодер: {encoder}; монитор: {_pipelineMonitorIdentity ?? "неизвестен"}; " +
+                   $"кадр конвейера: {canvas}; генерация: {Interlocked.Read(ref _captureGeneration)}";
+        }
+        catch (Exception ex)
+        {
+            return $"контекст диагностики недоступен: {ex.Message}";
+        }
     }
 
     /// <summary>
@@ -1349,8 +1526,10 @@ public sealed partial class ReplayEngine : IDisposable
     /// в хосте NVENC при этом не бросается, а убивается: Windows освободит его память.
     /// Брошенных стало слишком много — повтор останавливается: каждый держит
     /// видеопамять, и новая пересборка на той же видеокарте, скорее всего, повиснет так же.
+    /// В терминальной блокировке (stopWhenLimitReached: false) конвейер не
+    /// останавливаем: накопленный RAM-повтор нельзя терять из-за счётчика.
     /// </summary>
-    private void AbandonWedgedPipeline()
+    private void AbandonWedgedPipeline(bool stopWhenLimitReached = true)
     {
         var session = _pipeline;
         session.Encoder?.AbortHost("конвейер брошен", countFailure: false);
@@ -1358,6 +1537,12 @@ public sealed partial class ReplayEngine : IDisposable
         if (session.IsEmpty) return;
         if (AbandonedPipelines.Add(session) >= AbandonedPipelines.Limit)
         {
+            if (!stopWhenLimitReached)
+            {
+                Log.Error("Engine", "Брошенных конвейеров уже предел, но захват в терминальной блокировке — " +
+                                    "повтор оставляю в памяти, новых пересборок не будет");
+                return;
+            }
             Log.Error("Engine", "Слишком много брошенных конвейеров — повтор останавливаю, чтобы не копить видеопамять");
             _ = Task.Run(() =>
             {
@@ -1430,6 +1615,7 @@ public sealed partial class ReplayEngine : IDisposable
     {
         lock (_lifecycle)
         {
+            if (_state == EngineState.CaptureBlocked) throw CaptureBlockedStartException();
             // Через Toggle идут трей и хоткей, то есть основной путь пользователя.
             // Сброс системной паузы обязан быть здесь так же, как в Start и Stop:
             // человек решил сам, и накопленные причины больше не действуют.

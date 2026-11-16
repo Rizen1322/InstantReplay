@@ -387,7 +387,7 @@ public partial class AudioPage : PageBase
     /// </summary>
     private void ShowLevels()
     {
-        bool running = Services.Engine.State != EngineState.Stopped;
+        bool running = Services.Engine.State is not (EngineState.Stopped or EngineState.CaptureBlocked);
         MeterIdle.Visibility = Show(!running);
         var (game, mic) = running ? Services.Engine.AudioLevels : (0f, 0f);
         _gameDb = Smooth(_gameDb, LevelMeter.ToDb(game));

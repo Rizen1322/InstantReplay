@@ -92,6 +92,11 @@
     <Compile Include="..\..\src\Aura\Core\Capture\DuplicationRecovery.cs" Link="App\DuplicationRecovery.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DdaDuplicationPolicy.cs" Link="App\DdaDuplicationPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Capture\DdaLifecycleMonitor.cs" Link="App\DdaLifecycleMonitor.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\CaptureDiagnostics.cs" Link="App\CaptureDiagnostics.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\DdaProgressWatchdog.cs" Link="App\DdaProgressWatchdog.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\HeldCaptureOutputs.cs" Link="App\HeldCaptureOutputs.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\CaptureHostPolicy.cs" Link="App\CaptureHostPolicy.cs" />
+    <Compile Include="..\..\src\Aura\Core\Capture\Host\CaptureHostProtocol.cs" Link="App\CaptureHostProtocol.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderPacingPolicy.cs" Link="App\EncoderPacingPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\EncoderCfrPolicy.cs" Link="App\EncoderCfrPolicy.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\PullCfrPolicy.cs" Link="App\PullCfrPolicy.cs" />

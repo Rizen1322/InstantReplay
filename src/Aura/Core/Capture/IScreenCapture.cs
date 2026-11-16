@@ -1,4 +1,4 @@
-﻿using Vortice.Direct3D11;
+using Vortice.Direct3D11;
 
 namespace Aura.Core.Capture;
 
@@ -137,11 +137,30 @@ public static class ScreenCaptureFactory
 
         if (request.Backend == CaptureBackend.DesktopDuplication)
         {
+            if (CaptureHostPolicy.UseRemoteDda)
+            {
+                Logging.Log.Info("Capture", "Захват через Desktop Duplication в изолированном процессе (--capture-host)");
+                return new RemoteDesktopDuplicationSource(request.MonitorIdentity);
+            }
             Logging.Log.Info("Capture", "Захват через Desktop Duplication (рамки записи нет)");
             return new DesktopDuplicationSource(request.MonitorIdentity);
         }
 
         throw new ArgumentOutOfRangeException(nameof(request), request.Backend, "Неизвестный backend");
+    }
+
+    /// <summary>
+    /// Мониторный источник для мониторной части Minecraft: тот же выбор
+    /// изолированный/в процессе, что и у обычного DDA-захвата.
+    /// </summary>
+    internal static IScreenCapture CreateDdaMonitor(string? monitorIdentity)
+    {
+        if (CaptureHostPolicy.UseRemoteDda)
+        {
+            Logging.Log.Info("Capture", "Монитор Minecraft: Desktop Duplication в изолированном процессе");
+            return new RemoteDesktopDuplicationSource(monitorIdentity);
+        }
+        return new DesktopDuplicationSource(monitorIdentity);
     }
 
     internal static IScreenCapture Create(CaptureBackend backend, int monitorIndex) =>

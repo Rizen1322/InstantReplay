@@ -61,13 +61,16 @@ public sealed partial class ReplayEngine
             ApplyLiveAudioSettings(_settings.Current);
 
         if (group is not ("" or "video" or "audio" or "replay")) return;
-        if (_state == EngineState.Stopped) return;
+        // В терминальной блокировке конвейера нет, а StopLocked(UserStop) из этой
+        // ветки освободил бы накопленный RAM-повтор. Новые настройки применятся
+        // при следующем запуске Aura — сохранить клип важнее.
+        if (_state is EngineState.Stopped or EngineState.CaptureBlocked) return;
 
         // Под одним замком: между остановом и стартом не должен вклиниться ни хоткей
         // сохранения, ни вотчдог со своим перезапуском.
         lock (_lifecycle)
         {
-            if (_state == EngineState.Stopped) return;
+            if (_state is EngineState.Stopped or EngineState.CaptureBlocked) return;
             var now = PipelineConfig.From(_settings.Current);
             var was = _appliedConfig;
             if (was == now) return;

@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -35,6 +35,10 @@ public sealed partial class ReplayEngine
     {
         lock (_lifecycle)
         {
+            // Запись в файл нельзя начать на заблокированном захвате: конвейера
+            // нет, а попытка старта снова упрётся в удерживаемый выход. Честно
+            // говорим об этом вместо «не удалось включить повтор».
+            if (_state == EngineState.CaptureBlocked) throw CaptureBlockedStartException();
             _continuousRecordingRequested = true;
             // Recovery уже владеет обязанностью поднять конвейер. Здесь достаточно
             // записать пользовательский intent; новый сегмент откроется после старта.

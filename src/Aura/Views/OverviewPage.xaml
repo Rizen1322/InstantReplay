@@ -95,6 +95,18 @@
                     </Grid.RowDefinitions>
 
                     <StackPanel Margin="16,15,16,10">
+                        <!-- Терминальная блокировка захвата: DDA не восстановился,
+                             но накопленный RAM-повтор цел. Сохранение работает,
+                             перезапуск приложения — решение человека. -->
+                        <Border x:Name="BlockedBanner" Visibility="Collapsed" CornerRadius="8"
+                                Padding="10,8" Margin="0,0,0,10"
+                                Background="{DynamicResource WarnSoftBrush}">
+                            <StackPanel>
+                                <TextBlock Text="Захват не восстановился" FontWeight="SemiBold" FontSize="13"/>
+                                <TextBlock x:Name="BlockedText" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0"
+                                           Foreground="{DynamicResource Tx2Brush}"/>
+                            </StackPanel>
+                        </Border>
                         <Grid>
                             <TextBlock Text="Мгновенный повтор" Foreground="{DynamicResource Tx2Brush}" FontSize="13" VerticalAlignment="Center"/>
                             <c:Switch x:Name="Master" HorizontalAlignment="Right" Click="Master_Click"/>

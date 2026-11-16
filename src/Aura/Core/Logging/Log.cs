@@ -71,8 +71,13 @@ public static class Log
     /// </summary>
     public static void Init(string? directory = null, string fileSuffix = "")
     {
-        string dir = directory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Aura", "logs");
+        // AURA_LOG_DIR — только для диагностических прогонов из песочницы/CI, где
+        // %LocalAppData% недоступен на запись. Обычная Aura переменную не задаёт.
+        string dir = directory
+                     ?? (Environment.GetEnvironmentVariable("AURA_LOG_DIR") is { Length: > 0 } custom
+                         ? custom
+                         : Path.Combine(Environment.GetFolderPath(
+                             Environment.SpecialFolder.LocalApplicationData), "Aura", "logs"));
         Directory.CreateDirectory(dir);
 
         lock (FileSync)

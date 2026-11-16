@@ -1,4 +1,4 @@
-﻿using Vortice.MediaFoundation;
+using Vortice.MediaFoundation;
 using Aura.Core.Audio;
 using Aura.Core.Buffering;
 using Aura.Core.Capture;
@@ -31,6 +31,9 @@ public sealed partial class ReplayEngine
     {
         lock (_recoverySync)
         {
+            // Переход в терминальную блокировку уже начат: новые попытки
+            // восстановления не имеют смысла и только дёргали бы выход.
+            if (Volatile.Read(ref _captureBlockRequested) != 0) return false;
             if (_recovering != 0)
             {
                 // Новый источник может сломаться ещё до выхода из StartLocked.
@@ -199,6 +202,24 @@ public sealed partial class ReplayEngine
                     {
                         return;
                     }
+                    catch (CaptureOutputHeldException held)
+                    {
+                        // Выход удерживает незавершившаяся сессия DDA этого же
+                        // процесса: повторять старт бессмысленно и вредно — в логе
+                        // друга так набралось 131 E_INVALIDARG. Переходим в честное
+                        // терминальное состояние, сохраняя накопленный повтор.
+                        Log.Error("Engine", $"Автовосстановление остановлено: {held.Message}");
+                        EnterTerminalCaptureBlocked(held.Output);
+                        return;
+                    }
+                    catch (RemoteCaptureHostUnavailableException unavailable)
+                    {
+                        // Изолированный воркер не поднимается после серии перезапусков:
+                        // дальше плодить процессы и занимать чужие DDA-сессии нельзя.
+                        Log.Error("Engine", $"Изолированный захват не восстановился: {unavailable.Message}");
+                        EnterTerminalCaptureBlocked("воркер изолированного захвата не поднимается");
+                        return;
+                    }
                     catch (Exception ex)
                     {
                         Log.Warn("Engine", $"Восстановление {candidate}, попытка {attempt}: {ex.Message}");
@@ -226,5 +247,44 @@ public sealed partial class ReplayEngine
         return elapsed <= 0
             ? 0
             : (long)(elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+    }
+
+    /// <summary>
+    /// Перевести движок в терминальное состояние: захват в этом процессе не
+    /// восстановится, но RAM-повтор цел и доступен для сохранения.
+    ///
+    /// Конвейер к этому моменту уже остановлен (StopLocked с CaptureRestart или
+    /// CaptureBlocked), поэтому здесь только состояние и однократное сообщение.
+    /// Самоперезапуск приложения не запускаем: RAM-буфер между процессами не
+    /// переживёт, и человек должен сначала сохранить клип.
+    /// </summary>
+    private void EnterTerminalCaptureBlocked(in HeldCaptureOutput output) =>
+        EnterTerminalCaptureBlocked($"выход {output.MonitorDeviceId} удерживает незавершившаяся сессия DDA " +
+                                    $"(генерация {output.Generation})");
+
+    /// <summary>
+    /// Терминальное состояние по произвольной причине: изолированный воркер не
+    /// поднимается, нативный вызов завис и т. п. Конвейер к этому моменту уже
+    /// остановлен с сохранением буферов.
+    /// </summary>
+    private void EnterTerminalCaptureBlocked(string reason)
+    {
+        Interlocked.Exchange(ref _captureBlockRequested, 1);
+        _captureBlockedReason = reason;
+        SetState(EngineState.CaptureBlocked);
+        NotifyCaptureBlockedOnce();
+    }
+
+    /// <summary>
+    /// Один раз объяснить человеку, что случилось и что с этим делать. Повторные
+    /// попытки включения не должны снова и снова начинать один и тот же DDA.
+    /// </summary>
+    private void NotifyCaptureBlockedOnce()
+    {
+        if (Interlocked.Exchange(ref _captureBlockedNotified, 1) != 0) return;
+        Log.Warn("Engine", "Захват переведён в терминальную блокировку; накопленный RAM-повтор сохранён, " +
+                           "автоматическое восстановление не повторяется до перезапуска Aura");
+        Warning?.Invoke("Захват не восстановился. Накопленный повтор можно сохранить. " +
+                        "Для продолжения перезапустите Aura.");
     }
 }

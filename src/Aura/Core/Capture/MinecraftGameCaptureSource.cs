@@ -14,7 +14,7 @@ namespace Aura.Core.Capture;
 /// Duplication, как и обычная запись. Раньше гибрид всегда брал WGC, и на
 /// Windows 10 при запуске Minecraft появлялась рамка.
 /// </summary>
-internal sealed class MinecraftGameCaptureSource : IScreenCapture
+internal sealed class MinecraftGameCaptureSource : IScreenCapture, ICaptureDiagnostics
 {
     private readonly GameCaptureTarget _target;
     private readonly IScreenCapture _monitor;
@@ -42,7 +42,7 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
         }
         else
         {
-            _monitor = new DesktopDuplicationSource(monitorIdentity);
+            _monitor = ScreenCaptureFactory.CreateDdaMonitor(monitorIdentity);
             _monitorName = "DDA-monitor";
         }
         _monitor.FrameArrived += OnMonitorFrame;
@@ -59,8 +59,7 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
     public long InvalidCursorShapes => _monitor.InvalidCursorShapes + (_bridge?.InvalidCursorShapes ?? 0);
 
     internal CaptureRouteProbeDiagnostics GetRouteDiagnostics()
-    {
-        GameCaptureRouteState route = _router?.Current ?? GameCaptureRoutePolicy.CreateInitial();
+    {        GameCaptureRouteState route = _router?.Current ?? GameCaptureRoutePolicy.CreateInitial();
         OpenGlGameBridgeDiagnostics bridge = _bridge?.GetDiagnostics() ?? default;
         return new CaptureRouteProbeDiagnostics(
             route.Route,
@@ -75,6 +74,18 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture
             bridge.FramesUploaded,
             bridge.State,
             bridge.Error);
+    }
+
+    /// <summary>
+    /// Диагностика мониторной части. На Windows 10 это Desktop Duplication, и сторож
+    /// должен видеть его фазу так же, как у обычного DDA-захвата.
+    /// </summary>
+    public bool TryGetDiagnostics(out CaptureDiagnosticsSnapshot snapshot)
+    {
+        if (_monitor is ICaptureDiagnostics diagnostics)
+            return diagnostics.TryGetDiagnostics(out snapshot);
+        snapshot = CaptureDiagnosticsSnapshot.Empty;
+        return false;
     }
 
     public event Action<CapturedSurface>? FrameArrived;

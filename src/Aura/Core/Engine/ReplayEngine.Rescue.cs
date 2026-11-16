@@ -77,7 +77,7 @@ public sealed partial class ReplayEngine
         var s = _settings.Current;
         var audioTracks = new List<(AudioTrackKind, Mp4AudioFormat)>();
         foreach (var kind in ReplaySaver.TracksFor(s.TrackMode, s.CaptureGameAudio, s.CaptureMicrophone))
-            if (_audio.FormatOf(kind) is { } audioFormat) audioTracks.Add((kind, audioFormat));
+            if (AudioFormatFor(kind) is { } audioFormat) audioTracks.Add((kind, audioFormat));
 
         var part = new RescuedPart(video, lease, format, audioTracks, start, end, seconds, GameForClip(), DateTime.Now);
         lock (_rescueSync)

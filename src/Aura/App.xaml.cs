@@ -73,6 +73,16 @@ public partial class App : Application
             return;
         }
 
+        // --capture-host SESSION: дочерний процесс изолированного захвата экрана.
+        // Ветка стоит до mutex, Services, трея и настроек: это не вторая Aura, а
+        // рабочий процесс одного источника кадров (см. RemoteDesktopDuplicationSource).
+        int captureHostArg = Array.IndexOf(e.Args, "--capture-host");
+        if (captureHostArg >= 0 && captureHostArg + 1 < e.Args.Length)
+        {
+            Environment.Exit(Core.Capture.Host.CaptureHostServer.Run(e.Args[captureHostArg + 1]));
+            return;
+        }
+
         // Одна копия: вторая не умирает молча, а просит первую показать окно.
         // --dev поднимает отдельную копию рядом с рабочей (проверка вёрстки).
         bool dev = _devInstance = e.Args.Contains("--dev");
@@ -780,6 +790,13 @@ public partial class App : Application
         bool wasActive = false;
         engine.StateChanged += state =>
         {
+            // Терминальная блокировка — не «повтор выключен»: человека уже
+            // предупреждает Warning с объяснением, что клип можно сохранить.
+            if (state == EngineState.CaptureBlocked)
+            {
+                wasActive = false;
+                return;
+            }
             bool active = engine.ReplayActive && state == EngineState.Running;
             if (active && !wasActive)
                 n.Show(NotificationKind.ReplayOn, "Повтор включён");
@@ -1038,8 +1055,21 @@ public partial class App : Application
         }
         catch (Exception ex) when (rethrowIf?.Invoke(ex) != true)
         {
-            Services.Notifications.Show(NotificationKind.Warning, "Не удалось включить повтор", ex.Message);
+            ShowEngineCommandFailure("Не удалось включить повтор", ex);
         }
+    }
+
+    /// <summary>
+    /// Ошибка команды движка для человека. Терминальная блокировка DDA — не
+    /// обычный сбой: сообщение объясняет, что накопленный повтор можно сохранить,
+    /// и что для продолжения нужен перезапуск Aura.
+    /// </summary>
+    private static void ShowEngineCommandFailure(string title, Exception ex)
+    {
+        if (ex is Core.Capture.CaptureOutputHeldException held)
+            Services.Notifications.Show(NotificationKind.Warning, "Захват не восстановился", held.Message);
+        else
+            Services.Notifications.Show(NotificationKind.Warning, title, ex.Message);
     }
 
     /// <summary>
@@ -1083,7 +1113,7 @@ public partial class App : Application
         {
             Services.Notifications.Show(NotificationKind.Warning, "Нет места на диске", ex.Message);
         }
-        catch (Exception ex) { Services.Notifications.Show(NotificationKind.Warning, "Не удалось выполнить команду записи", ex.Message); }
+        catch (Exception ex) { ShowEngineCommandFailure("Не удалось выполнить команду записи", ex); }
         finally { _engineCommandGate.Release(); }
     }
 
@@ -1360,7 +1390,9 @@ public partial class App : Application
         // иначе доходит до StartLocked и останавливает уже запущенный конвейер.
         try
         {
-            _tray.ToolTipText = engine.IsRecordingToFile ? "Aura: идёт запись"
+            _tray.ToolTipText = engine.State == EngineState.CaptureBlocked
+                              ? "Aura: захват не восстановился — сохраните повтор"
+                              : engine.IsRecordingToFile ? "Aura: идёт запись"
                               : running ? "Aura: повтор пишется" : "Aura: выключено";
         }
         catch (InvalidOperationException ex)
@@ -1368,7 +1400,9 @@ public partial class App : Application
             Log.Warn("App", $"Не удалось обновить подсказку значка в трее: {ex.Message}");
         }
         if (_trayToggle is not null) _trayToggle.Header = running ? "Выключить повтор" : "Включить повтор";
-        if (_traySave is not null) _traySave.IsEnabled = engine.State == EngineState.Running;
+        // Сохранить накопленный повтор можно и в терминальной блокировке: именно
+        // для этого этап её и вводит. Раньше пункт включался только в Running.
+        if (_traySave is not null) _traySave.IsEnabled = engine.ReplayBufferAvailable;
     }
 
     /// <summary>

@@ -85,11 +85,19 @@ public partial class OverviewPage : PageBase
     {
         var engine = Services.Engine;
         bool on = engine.ReplayActive;
+        bool blocked = engine.CaptureBlocked;
         var s = Services.Settings.Current;
+        bool canSave = engine.ReplayBufferAvailable;
 
         Master.IsChecked = on;
         bool busy = App.EngineCommandPending;
         Master.IsEnabled = !busy;
+        BlockedBanner.Visibility = blocked ? Visibility.Visible : Visibility.Collapsed;
+        BlockedText.Text = blocked
+            ? (engine.CaptureBlockedReason is { Length: > 0 } reason
+                ? $"Накопленный повтор можно сохранить. Для продолжения перезапустите Aura. Причина: {reason}"
+                : "Накопленный повтор можно сохранить. Для продолжения перезапустите Aura.")
+            : "";
         var buffered = engine.BufferedDuration;
         // Запись в файл без повтора: крупное время — сколько идёт запись, без
         // «из 3:00». Предел повтора к записи отношения не имеет и только путал.
@@ -118,8 +126,10 @@ public partial class OverviewPage : PageBase
         SaveKey.Text = s.HotkeySaveReplay;
         SaveKeyBox.Visibility = string.IsNullOrEmpty(s.HotkeySaveReplay) ? Visibility.Collapsed : Visibility.Visible;
         Save30Key.Text = s.HotkeySaveLast30;
-        SaveButton.IsEnabled = on && !busy;
-        Save30.IsEnabled = on && !busy;
+        // Сохранить накопленный повтор можно и в терминальной блокировке —
+        // для этого она и существует. В Running это привычное поведение.
+        SaveButton.IsEnabled = canSave && !busy;
+        Save30.IsEnabled = canSave && !busy;
 
         bool recording = engine.IsRecordingToFile;
         RecordLabel.Text = busy ? "Подождите…" : recording ? "Стоп" : "Запись";
@@ -129,10 +139,15 @@ public partial class OverviewPage : PageBase
 
         // Живой кадр нужен, пока работает захват, а не только повтор: запись в
         // файл без повтора тоже поднимает захват, и картинка должна быть видна.
-        bool capturing = engine.State != EngineState.Stopped;
+        // В терминальной блокировке захвата нет — не показываем «Жду кадр» и не
+        // оставляем ощущение, что картинка вот-вот появится.
+        bool capturing = engine.State is not (EngineState.Stopped or EngineState.CaptureBlocked);
         FrameIdle.Visibility = capturing && FrameImage.Background is ImageBrush ? Visibility.Collapsed : Visibility.Visible;
-        IdleTitle.Text = capturing ? "Жду кадр" : "Повтор выключен";
-        IdleSub.Text = capturing ? "Картинка появится через пару секунд" : "Включи, чтобы не упустить момент";
+        IdleTitle.Text = blocked ? "Захват не восстановился"
+                       : capturing ? "Жду кадр" : "Повтор выключен";
+        IdleSub.Text = blocked ? "Повтор до сбоя можно сохранить кнопкой ниже"
+                     : capturing ? "Картинка появится через пару секунд"
+                     : "Включи, чтобы не упустить момент";
         if (!capturing) FrameImage.Background = null;
 
         // Шкала ленты: слева самое старое, что лежит в буфере
@@ -171,7 +186,8 @@ public partial class OverviewPage : PageBase
 
     private async Task GrabFrameAsync()
     {
-        if (_grabbing || Services.Engine.State == EngineState.Stopped) return;
+        if (_grabbing) return;
+        if (Services.Engine.State is EngineState.Stopped or EngineState.CaptureBlocked) return;
         if (Window.GetWindow(this) is not { IsVisible: true, WindowState: not WindowState.Minimized }) return;
         _grabbing = true;
         try
@@ -203,7 +219,7 @@ public partial class OverviewPage : PageBase
 
     private void Strip_Down(object sender, MouseButtonEventArgs e)
     {
-        if (Services.Engine.State == EngineState.Stopped) return;
+        if (Services.Engine.State is EngineState.Stopped or EngineState.CaptureBlocked) return;
         _picking = true;
         Strip.CaptureMouse();
         SetPick(e.GetPosition(Strip).X);
