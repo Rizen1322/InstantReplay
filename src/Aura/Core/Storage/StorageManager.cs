@@ -51,6 +51,14 @@ public sealed class StorageManager : IDisposable
 
     private int _rebuilding;
 
+    /// <summary>
+    /// Заявка на ещё одну перестройку, пришедшая во время уже идущей. Снимается
+    /// воркером перед каждым проходом, поэтому следующий проход обязательно берёт
+    /// ТЕКУЩУЮ Root: без этого смена папки во время сборки терялась — оставалась
+    /// собрана старая.
+    /// </summary>
+    private int _rebuildPending;
+
     public event Action<StorageStats>? StatsChanged;
 
     public StorageManager(SettingsManager settings)
@@ -82,18 +90,41 @@ public sealed class StorageManager : IDisposable
         bool stale = force || !_index.IsBuilt || !_index.MatchesRoot(root)
                      || DateTime.UtcNow - _index.BuiltUtc > staleAfter;
         if (!stale) return;
-        if (Interlocked.Exchange(ref _rebuilding, 1) == 1) return; // уже строится
 
-        Task.Run(() =>
+        // Заявку ставим ДО проверки: если сборка уже идёт, она могла читать старую
+        // папку, и после неё нужен ещё один проход — уже по текущей Root.
+        Volatile.Write(ref _rebuildPending, 1);
+        if (Interlocked.Exchange(ref _rebuilding, 1) == 1) return; // сборка уже идёт
+        _ = Task.Run(RebuildLoop);
+    }
+
+    private void RebuildLoop()
+    {
+        while (true)
         {
+            // Снимаем заявку ДО прохода: всё, что попросят во время него, поставит
+            // её снова, и цикл не завершится, пока есть невыполненные заявки.
+            Volatile.Write(ref _rebuildPending, 0);
+
+            string root = Root;
             try
             {
                 _index.Rebuild(root);
                 NotifyStats();
             }
             catch (Exception ex) { Log.Warn("Storage", $"Индекс папки: {ex.Message}"); }
-            finally { Interlocked.Exchange(ref _rebuilding, 0); }
-        });
+
+            if (Volatile.Read(ref _rebuildPending) == 1) continue;
+
+            // Заявка могла прийти ровно между проверкой и снятием признака: снимаем
+            // его и проверяем ещё раз, иначе force-запрос потеряется, а индекс
+            // останется собранным по старой папке.
+            Interlocked.Exchange(ref _rebuilding, 0);
+            if (Volatile.Read(ref _rebuildPending) == 0) return;
+            // Свободный признак заняли — продолжаем сами. Если его уже успела занять
+            // другая заявка (она подняла свой воркер), нашу заявку выполнит он: выходим.
+            if (Interlocked.Exchange(ref _rebuilding, 1) == 1) return;
+        }
     }
 
     /// <summary>

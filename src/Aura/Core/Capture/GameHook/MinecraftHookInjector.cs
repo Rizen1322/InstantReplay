@@ -191,10 +191,13 @@ internal sealed class MinecraftHookInjector
                 return new(MinecraftHookInjectionResult.TimedOut, 0, eligibilityReason);
             }
             if (wait != GameHookNativeMethods.WaitObject0 ||
-                !GameHookNativeMethods.GetExitCodeThread(thread, out uint moduleResult) ||
-                moduleResult == 0)
+                !GameHookNativeMethods.GetExitCodeThread(thread, out uint moduleResult))
             {
                 return Failure(MinecraftHookInjectionResult.LoadLibraryFailed, eligibilityReason);
+            }
+            if (moduleResult == 0 && !IsModuleLoadedInProcess(process, Path.GetFullPath(hookPath)))
+            {
+                return new(MinecraftHookInjectionResult.LoadLibraryFailed, 0, eligibilityReason);
             }
 
             return new(MinecraftHookInjectionResult.Success, 0, eligibilityReason);
@@ -219,6 +222,50 @@ internal sealed class MinecraftHookInjector
         MinecraftHookInjectionResult result,
         MinecraftHookEligibilityReason eligibilityReason) =>
         new(result, Marshal.GetLastWin32Error(), eligibilityReason);
+
+    private static bool IsModuleLoadedInProcess(nint process, string fullHookPath)
+    {
+        nint[] initial = new nint[256];
+        if (!GameHookNativeMethods.K32EnumProcessModules(
+                process,
+                initial,
+                (uint)(initial.Length * nint.Size),
+                out uint needed) ||
+            needed == 0)
+        {
+            return false;
+        }
+
+        int count = (int)(needed / (uint)nint.Size);
+        nint[] modules = count <= initial.Length ? initial : new nint[count];
+        if (count > initial.Length &&
+            !GameHookNativeMethods.K32EnumProcessModules(
+                process,
+                modules,
+                (uint)(modules.Length * nint.Size),
+                out needed))
+        {
+            return false;
+        }
+
+        count = Math.Min(modules.Length, (int)(needed / (uint)nint.Size));
+        char[] buffer = new char[1024];
+        for (int i = 0; i < count; i++)
+        {
+            uint len = GameHookNativeMethods.K32GetModuleFileNameExW(
+                process,
+                modules[i],
+                buffer,
+                (uint)buffer.Length);
+            if (len > 0 && len < buffer.Length)
+            {
+                string path = new(buffer, 0, (int)len);
+                if (string.Equals(path, fullHookPath, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
+    }
 
     private static void QueueDeferredCleanup(nint process, nint thread, nint remotePath)
     {

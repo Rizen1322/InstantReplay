@@ -32,6 +32,7 @@ public sealed class WasapiSource : IDisposable
     private readonly float[] _matrix;   // [выходной канал * входных каналов + входной]
     private readonly int _inChannels;
     private float[] _converted = new float[4096];
+    private long _lastSyntheticQpc;
 
     /// <summary>Процесс, чей звук пишется; null — весь звук устройства.</summary>
     public int? ProcessId { get; }
@@ -199,8 +200,29 @@ public sealed class WasapiSource : IDisposable
                 bool silent = (flags & AudioClientBufferFlags.Silent) != 0;
                 bool discontinuity = (flags & AudioClientBufferFlags.DataDiscontinuity) != 0;
                 bool badTime = (flags & AudioClientBufferFlags.TimestampError) != 0;
-                // У loopback процесса метка времени бывает нулевой: берём «сейчас»
-                if (badTime || qpc <= 0) qpc = NowTicks();
+                long durationTicks = frames * 10_000_000L / Math.Max(1, _format.SampleRate);
+                // У loopback процесса метка времени бывает нулевой: при вычитке пачки
+                // пакетов подряд продвигаем расчётное время на длительность пакета,
+                // чтобы все пакеты пачки не получили одну и ту же метку и не вызвали Resync.
+                if (badTime || qpc <= 0)
+                {
+                    long now = NowTicks();
+                    if (!discontinuity && _lastSyntheticQpc > 0 &&
+                        Math.Abs(now - _lastSyntheticQpc) < 500_000)
+                    {
+                        qpc = _lastSyntheticQpc;
+                        _lastSyntheticQpc += durationTicks;
+                    }
+                    else
+                    {
+                        qpc = now;
+                        _lastSyntheticQpc = now + durationTicks;
+                    }
+                }
+                else
+                {
+                    _lastSyntheticQpc = qpc + durationTicks;
+                }
 
                 Convert(data, frames, silent);
                 _timeline.Push(_converted, frames, _format.SampleRate, qpc, discontinuity);

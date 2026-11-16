@@ -48,7 +48,7 @@ internal static class Program
             }
 
         if (!UninstallLayout.TryResolveInstallRoot(Environment.ProcessPath, out string root) ||
-            !File.Exists(Path.Combine(root, InstallMarkerName)))
+            !UninstallLayout.IsSafeInstallRoot(root, Environment.ProcessPath))
         {
             MessageBoxW(0, "Не удалось определить безопасную папку установки.", "Aura", MbOk | MbIconWarning);
             return 2;
@@ -85,14 +85,30 @@ internal static class Program
 
     private static void StopProcesses()
     {
+        bool asked = false;
+        try
+        {
+            if (EventWaitHandle.TryOpenExisting(@"Global\Aura.Quit", out var quit))
+                using (quit) asked = quit.Set();
+        }
+        catch { }
+
         int current = Environment.ProcessId;
-        foreach (string name in new[] { ProcessName, OldProcessName })
+        foreach (string name in new[] { ProcessName, OldProcessName, "Aura.EncoderHost" })
             foreach (Process process in Process.GetProcessesByName(name))
             {
                 using (process)
                 {
                     if (process.Id == current) continue;
-                    try { process.Kill(); process.WaitForExit(3000); } catch { }
+                    try
+                    {
+                        if (!process.WaitForExit(asked ? 5000 : 0))
+                        {
+                            process.Kill();
+                            process.WaitForExit(3000);
+                        }
+                    }
+                    catch { }
                 }
             }
     }
@@ -146,8 +162,34 @@ internal static class Program
 
     private static void ScheduleDirectoryRemoval(string root)
     {
-        string escaped = root.Replace("'", "''", StringComparison.Ordinal);
-        string script = $"Start-Sleep -Seconds 2; Remove-Item -LiteralPath '{escaped}' -Recurse -Force -ErrorAction SilentlyContinue";
+        string fullRoot = Path.GetFullPath(root);
+        string appDir = Path.Combine(fullRoot, "app");
+        string marker = Path.Combine(fullRoot, InstallMarkerName);
+        string legacyUninstaller = Path.Combine(fullRoot, "Uninstall.exe");
+
+        TryDelete(legacyUninstaller);
+        TryDelete(marker);
+
+        string escapedRoot = fullRoot.Replace("'", "''", StringComparison.Ordinal);
+        string escapedApp = appDir.Replace("'", "''", StringComparison.Ordinal);
+        string escapedMarker = marker.Replace("'", "''", StringComparison.Ordinal);
+        string escapedLegacy = legacyUninstaller.Replace("'", "''", StringComparison.Ordinal);
+        string script =
+            "Start-Sleep -Seconds 2; " +
+            $"$root = '{escapedRoot}'; $app = '{escapedApp}'; " +
+            "function Test-NoReparse([string]$p) { " +
+            "  if (-not (Test-Path -LiteralPath $p)) { return $true } " +
+            "  $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; " +
+            "  return ($null -ne $item) -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) " +
+            "}; " +
+            "if ((Test-NoReparse $root) -and (Test-NoReparse $app)) { " +
+            "  if (Test-Path -LiteralPath $app) { Remove-Item -LiteralPath $app -Recurse -Force -ErrorAction SilentlyContinue }; " +
+            $"  Remove-Item -LiteralPath '{escapedMarker}' -Force -ErrorAction SilentlyContinue; " +
+            $"  Remove-Item -LiteralPath '{escapedLegacy}' -Force -ErrorAction SilentlyContinue; " +
+            "  if ((Test-Path -LiteralPath $root) -and ((Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0)) { " +
+            "    Remove-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue " +
+            "  } " +
+            "}";
         string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
         Process.Start(new ProcessStartInfo(
             "powershell.exe",

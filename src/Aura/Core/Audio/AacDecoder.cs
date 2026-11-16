@@ -16,7 +16,7 @@ public sealed class AacDecoder : IDisposable
     private static readonly Guid ClsidAacDecoder = new("32D186A7-218F-4C75-8876-DD77273A8999");
 
     private readonly IMFTransform _transform;
-    private readonly int _outputSize;
+    private int _outputSize;
     private byte[] _outBuffer = new byte[16384];
 
     public int Channels { get; }
@@ -42,8 +42,20 @@ public sealed class AacDecoder : IDisposable
         }
         // Выход берём из предложенных декодером: собранный вручную тип он отвергает
         // (у него свои обязательные атрибуты). Нужен float с тем же числом каналов.
-        bool chosen = false;
-        for (int index = 0; !chosen; index++)
+        SelectOutputType();
+        UpdateOutputSize();
+        _transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+        _transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Выбрать выходной тип из предложенных декодером: вручную собранный он отвергает
+    /// (у него свои обязательные атрибуты), нужен float с тем же числом каналов.
+    /// Вызывается и в конструкторе, и после MF_E_TRANSFORM_STREAM_CHANGE.
+    /// </summary>
+    private void SelectOutputType()
+    {
+        for (int index = 0; ; index++)
         {
             IMFMediaType offered;
             try { offered = _transform.GetOutputAvailableType(0, index); }
@@ -51,15 +63,19 @@ public sealed class AacDecoder : IDisposable
             using (offered)
             {
                 if (offered.GetGUID(MediaTypeAttributeKeys.Subtype) != AudioFormatGuids.Float ||
-                    offered.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels) != (uint)channels) continue;
+                    offered.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels) != (uint)Channels) continue;
                 _transform.SetOutputType(0, offered, 0);
-                chosen = true;
+                return;
             }
         }
-        if (!chosen) throw new NotSupportedException("декодер AAC не отдаёт float");
-        _outputSize = Math.Max(_transform.GetOutputStreamInfo(0).Size, 1024 * channels * 4 * 2);
-        _transform.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
-        _transform.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+        throw new NotSupportedException("декодер AAC не отдаёт float");
+    }
+
+    /// <summary>Буфер выхода по фактическому типу; после смены формата меньше прежнего не берём.</summary>
+    private void UpdateOutputSize()
+    {
+        _outputSize = Math.Max(_outputSize,
+            Math.Max(_transform.GetOutputStreamInfo(0).Size, 1024 * Channels * 4 * 2));
     }
 
     private static IMFTransform Create()
@@ -99,7 +115,8 @@ public sealed class AacDecoder : IDisposable
 
     private void Drain(List<float> pcm)
     {
-        while (true)
+        // Смен формата подряд может быть несколько (SBR/PS у HE-AAC), но не бесконечно.
+        for (int renegotiated = 0; ;)
         {
             using var sample = MediaFactory.MFCreateSample();
             using (var buffer = MediaFactory.MFCreateMemoryBuffer(_outputSize))
@@ -107,7 +124,19 @@ public sealed class AacDecoder : IDisposable
             var output = new OutputDataBuffer { StreamID = 0, Sample = sample };
             var hr = _transform.ProcessOutput(ProcessOutputFlags.None, 1, ref output, out _);
             output.Events?.Dispose();
-            if (hr.Failure) return; // MF_E_TRANSFORM_NEED_MORE_INPUT
+
+            if (hr == Vortice.MediaFoundation.ResultCode.TransformStreamChange)
+            {
+                // Декодер сменил выходной формат (задержка/upmix): без нового
+                // SetOutputType он дальше не отдаст ни одного кадра. Сэмпл и буфер
+                // освободит using, на следующем проходе соберём их под новый размер.
+                if (++renegotiated > 8) return;
+                SelectOutputType();
+                UpdateOutputSize();
+                continue;
+            }
+            // MF_E_TRANSFORM_NEED_MORE_INPUT (и прочие ошибки) — на выходе пока пусто
+            if (hr.Failure) return;
 
             using var contiguous = sample.ConvertToContiguousBuffer();
             contiguous.Lock(out IntPtr ptr, out _, out int length);

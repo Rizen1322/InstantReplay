@@ -15,7 +15,8 @@ namespace Aura.Core.GameDetection;
 /// РЕЗУЛЬТАТ КЭШИРУЕТСЯ. Движок спрашивает игру раз в две секунды всё время работы
 /// буфера, а разрешение имени для незнакомой программы стоит дорого: MainModule
 /// перечисляет модули процесса, FileVersionInfo открывает exe и читает его ресурсы.
-/// Пока на переднем плане тот же процесс, ответ берётся из кэша.
+/// Пока на переднем плане то же окно того же процесса, ответ берётся из кэша —
+/// причём без обращения к списку процессов системы.
 /// </summary>
 public static class GameDetector
 {
@@ -24,17 +25,18 @@ public static class GameDetector
     /// <summary>Своё имя процесса: окно самой Aura игрой считать нельзя ни при каком раскладе.</summary>
     private static readonly string SelfProcess = GetSelfName();
 
-    // Кэш последнего ответа. Ключ — пара (pid, имя exe): номера процессов система
-    // переиспользует, а вот совпадение номера И имени на другой программе — случай,
-    // которым можно пренебречь.
+    // Кэш последнего ответа. Ключ — пара (pid, hwnd), а не только pid: номер процесса
+    // система переиспользует, а окно принадлежит конкретному процессу, и у нового
+    // процесса будет другое окно. Совпадение и pid, и hwnd на другой программе —
+    // случай, которым можно пренебречь.
     private static readonly object _cacheSync = new();
     private static uint _cachedPid;
-    private static string _cachedExe = "";
+    private static IntPtr _cachedHwnd;
     private static string _cachedName = "";
 
     private static string GetSelfName()
     {
-        try { return Process.GetCurrentProcess().ProcessName; }
+        try { using var self = Process.GetCurrentProcess(); return self.ProcessName; }
         catch { return "aura"; }
     }
 
@@ -42,7 +44,7 @@ public static class GameDetector
     public static void ReloadDatabase()
     {
         _database = GameDatabase.Load();
-        lock (_cacheSync) { _cachedPid = 0; _cachedExe = ""; _cachedName = ""; }
+        lock (_cacheSync) { _cachedPid = 0; _cachedHwnd = IntPtr.Zero; _cachedName = ""; }
     }
 
     public static string DetectForegroundGame()
@@ -54,12 +56,16 @@ public static class GameDetector
             NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
             if (pid == 0) return "Desktop";
 
+            // Сначала дешёвая проверка кэша. Process.GetProcessById перечисляет ВСЕ
+            // процессы системы (NtQuerySystemInformation), а движок спрашивает игру
+            // раз в две секунды — на подавляющем большинстве опросов на переднем плане
+            // то же окно того же процесса, и обходиться без перечисления можно.
+            lock (_cacheSync)
+                if (pid == _cachedPid && hwnd == _cachedHwnd)
+                    return _cachedName;
+
             using var proc = Process.GetProcessById((int)pid);
             string exe = proc.ProcessName;
-
-            lock (_cacheSync)
-                if (pid == _cachedPid && string.Equals(exe, _cachedExe, StringComparison.OrdinalIgnoreCase))
-                    return _cachedName;
 
             string? name = Resolve(proc, exe, hwnd);
 
@@ -67,7 +73,7 @@ public static class GameDetector
             // игр). Не кэшируем: игра часто стартует окном и через секунду
             // разворачивается, и ответ должен смениться вместе с ней.
             if (name is null) return "Desktop";
-            lock (_cacheSync) { _cachedPid = pid; _cachedExe = exe; _cachedName = name; }
+            lock (_cacheSync) { _cachedPid = pid; _cachedHwnd = hwnd; _cachedName = name; }
             return name;
         }
         catch (Exception ex)

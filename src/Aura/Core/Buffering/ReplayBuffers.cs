@@ -200,9 +200,20 @@ public sealed class ReplayAudioBuffer
         public void Add(ReadOnlySpan<byte> frame, long pts)
         {
             if (frame.Length == 0 || frame.Length > _data.Length / 4) return;
-            int pad = _tail + frame.Length <= _data.Length ? 0 : _data.Length - _tail;
-            int need = pad + frame.Length;
-            while (_count > 0 && Used + need > _data.Length) RemoveFirst();
+
+            // pad и need зависят от _tail, а RemoveFirst, опустошая кольцо, сбрасывает
+            // _tail в 0. Поэтому пересчитываем их после КАЖДОГО вытеснения: иначе
+            // запись пошла бы по смещению от старого хвоста, а довесок на стыке
+            // кольца — впустую добавлен к Used (учёт ёмкости разъезжался). Кадр
+            // ограничен четвертью ёмкости, поэтому в пустое кольцо он влезает всегда.
+            int pad, need;
+            while (true)
+            {
+                pad = _tail + frame.Length <= _data.Length ? 0 : _data.Length - _tail;
+                need = pad + frame.Length;
+                if (_count == 0 || Used + need <= _data.Length) break;
+                RemoveFirst();
+            }
 
             int start = (_tail + pad) % _data.Length;
             frame.CopyTo(_data.AsSpan(start));

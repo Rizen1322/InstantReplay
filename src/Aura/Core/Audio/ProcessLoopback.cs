@@ -29,6 +29,7 @@ internal static class ProcessLoopback
         };
         IntPtr paramsPtr = Marshal.AllocHGlobal(Marshal.SizeOf<ActivationParams>());
         IntPtr variantPtr = Marshal.AllocHGlobal(Marshal.SizeOf<BlobVariant>());
+        bool deferredFree = false;
         try
         {
             Marshal.StructureToPtr(parameters, paramsPtr, false);
@@ -39,17 +40,21 @@ internal static class ProcessLoopback
                 Data = paramsPtr
             }, variantPtr, false);
 
-            var handler = new CompletionHandler();
+            var handler = new CompletionHandler(variantPtr, paramsPtr);
             ActivateAudioInterfaceAsync(VirtualDevice, IidAudioClient, variantPtr, handler, out _);
-            if (!handler.Done.Wait(timeout))
+            deferredFree = true;
+            if (!handler.Wait(timeout, out int hr, out object? activated))
                 throw new TimeoutException("система не ответила на запрос звука программы");
-            if (handler.Result < 0) Marshal.ThrowExceptionForHR(handler.Result);
-            return new AudioClient((IAudioClient)handler.Interface!);
+            if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+            return new AudioClient((IAudioClient)activated!);
         }
         finally
         {
-            Marshal.FreeHGlobal(variantPtr);
-            Marshal.FreeHGlobal(paramsPtr);
+            if (!deferredFree)
+            {
+                Marshal.FreeHGlobal(variantPtr);
+                Marshal.FreeHGlobal(paramsPtr);
+            }
         }
     }
 
@@ -122,21 +127,93 @@ internal static class ProcessLoopback
 
     [ClassInterface(ClassInterfaceType.None)]
     [ComVisible(true)]
-    private sealed class CompletionHandler : IActivateAudioInterfaceCompletionHandler, IAgileObject
+    private sealed class CompletionHandler(IntPtr variantPtr, IntPtr paramsPtr) : IActivateAudioInterfaceCompletionHandler, IAgileObject
     {
-        public readonly ManualResetEventSlim Done = new(false);
-        public int Result;
-        public object? Interface;
+        private readonly object _gate = new();
+        private readonly ManualResetEventSlim _done = new(false);
+        private IntPtr _variantPtr = variantPtr;
+        private IntPtr _paramsPtr = paramsPtr;
+        private bool _abandoned;
+        private bool _completed;
+        private int _result;
+        private object? _interface;
 
         public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation activateOperation)
         {
+            int hr;
+            object? iface = null;
             try
             {
-                activateOperation.GetActivateResult(out Result, out object iface);
-                Interface = iface;
+                activateOperation.GetActivateResult(out hr, out iface);
             }
-            catch (Exception ex) { Result = ex.HResult; }
-            finally { Done.Set(); }
+            catch (Exception ex) { hr = ex.HResult; }
+
+            bool releaseCom = false;
+            lock (_gate)
+            {
+                _completed = true;
+                FreeBuffersLocked();
+                if (_abandoned)
+                {
+                    releaseCom = iface is not null;
+                }
+                else
+                {
+                    _result = hr;
+                    _interface = iface;
+                    _done.Set();
+                }
+            }
+            if (releaseCom && iface is not null && Marshal.IsComObject(iface))
+                Marshal.ReleaseComObject(iface);
+        }
+
+        public bool Wait(TimeSpan timeout, out int result, out object? activated)
+        {
+            bool signaled = _done.Wait(timeout);
+            object? toRelease = null;
+            lock (_gate)
+            {
+                if (!signaled && !_completed)
+                {
+                    _abandoned = true;
+                    result = 0;
+                    activated = null;
+                    return false;
+                }
+                FreeBuffersLocked();
+                if (!signaled)
+                {
+                    toRelease = _interface;
+                    _interface = null;
+                    result = 0;
+                    activated = null;
+                }
+                else
+                {
+                    result = _result;
+                    activated = _interface;
+                    _interface = null;
+                }
+            }
+            _done.Dispose();
+            if (toRelease is not null && Marshal.IsComObject(toRelease))
+                Marshal.ReleaseComObject(toRelease);
+            return signaled;
+        }
+
+        private void FreeBuffersLocked()
+        {
+            if (_variantPtr != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(_variantPtr);
+                _variantPtr = IntPtr.Zero;
+            }
+            if (_paramsPtr != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(_paramsPtr);
+                _paramsPtr = IntPtr.Zero;
+            }
         }
     }
 

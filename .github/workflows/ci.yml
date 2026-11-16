@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Установить .NET 9
+      - name: Установить .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -26,6 +26,10 @@ jobs:
       - name: Тесты
         run: dotnet test tests/InstantReplay.Tests/InstantReplay.Tests.csproj -c Release --nologo
 
+      # artifacts/ в .gitignore, поэтому на чистом checkout нативных DLL ещё нет.
+      # Таргеты Aura.csproj собирают хук и Aura.Media64.dll/Zig ДО PrepareResources
+      # (см. комментарий у BuildVerifiedGameCaptureHook): без этого порядок целей
+      # MSBuild встраивал бы отсутствующий/прошлый Aura.GameCaptureHook64.sha256.
       - name: Сборка приложения
         run: dotnet build src/Aura/Aura.csproj -c Release -r win-x64 --nologo
 

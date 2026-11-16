@@ -778,6 +778,7 @@ internal sealed class DesktopDuplicationSource : IScreenCapture, ICaptureDiagnos
                 // одну и ту же ошибку и запись не возвращалась до перезапуска приложения.
                 if (DeviceLoss.IsDeviceLost(ex))
                 {
+                    token.Running = false;
                     Log.Warn("Capture", $"DDA: потеряно устройство ({ex.Message}) — прошу пересобрать конвейер");
                     Failed?.Invoke(new CaptureFailure(
                         CaptureFailureKind.DeviceLost, ex,

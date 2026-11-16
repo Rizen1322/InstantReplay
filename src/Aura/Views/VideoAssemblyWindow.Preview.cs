@@ -145,13 +145,16 @@ public partial class VideoAssemblyWindow
         _waitingAssemblyFrame = true;
         _assemblyOpening = true;
         foreach (var audio in _audioPlayers) if (!continuous || !_placedAudioPlayers.ContainsKey(audio.Player)) audio.Player.Mute = true;
-        await _assemblyPlayback.WaitAsync();
+        bool acquired = false;
         try
         {
+            await _assemblyPlayback.WaitAsync(_lifetime.Token);
+            acquired = true;
             if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
             await StopPreviewAudioAsync(continuous);
             if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;
             var player = _assemblyPlayer;
+            if (player is null) return;
             player.SetPause(true);
             await OpenPreviewAudioAsync(part, start, revision, index);
             if (revision != _assemblyLoadRevision || _lifetime.IsCancellationRequested) return;
@@ -159,7 +162,7 @@ public partial class VideoAssemblyWindow
             var old = _assemblyMedia;
             _assemblyMedia = new Media(_assemblyVlc!, new Uri(part.Path));
             _assemblyMedia.AddOption(":start-time=" + start.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
-            _assemblyPlayer.Mute = true;
+            _assemblyPlayer!.Mute = true;
             // Keep VLC's audio clock through its dummy output, without a second audible copy.
             var media = _assemblyMedia;
             // Смена файла останавливает видеовывод: ему может понадобиться свободный UI-поток.
@@ -198,8 +201,14 @@ public partial class VideoAssemblyWindow
                 _waitingAssemblyFrame = false;
             }
         }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
         catch (Exception ex) { if (!_lifetime.IsCancellationRequested) { Status.Text = ex.Message; Log.Error("Editor", ex); } }
-        finally { if (revision == _assemblyLoadRevision) _assemblyOpening = false; _assemblyPlayback.Release(); }
+        finally
+        {
+            if (revision == _assemblyLoadRevision) _assemblyOpening = false;
+            if (acquired) _assemblyPlayback.Release();
+        }
     }
 
     private void AssemblyPreview_Tick(object? sender, EventArgs e)
@@ -541,17 +550,25 @@ public partial class VideoAssemblyWindow
     {
         _assemblyTimer.Stop();
         AssemblyPreview.MediaPlayer = null;
+        foreach (var item in _thumbs.Values) item.PropertyChanged -= OnThumbPropertyChanged;
         var player = _assemblyPlayer; var media = _assemblyMedia; var engine = _assemblyVlc;
         _assemblyPlayer = null;
-
+        _assemblyMedia = null;
+        _assemblyVlc = null;
 
         _ = Task.Run(async () =>
         {
             await _assemblyPlayback.WaitAsync();
             try { await StopPreviewAudioAsync(); player?.Stop(); player?.Dispose(); media?.Dispose(); engine?.Dispose(); }
-            finally { _assemblyPlayback.Release(); }
-
-
+            finally
+            {
+                _assemblyPlayback.Release();
+                _assemblyPlayback.Dispose();
+            }
+            await _waveformGate.WaitAsync();
+            try { _waveformGate.Release(); }
+            finally { _waveformGate.Dispose(); }
+            _lifetime.Dispose();
         });
     }
 }

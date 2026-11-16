@@ -211,7 +211,18 @@ public static class WhatsNewVideo
                     var p = new LibVLCSharp.Shared.MediaPlayer(e) { EnableHardwareDecoding = true };
                     return (e, p, new LibVLCSharp.Shared.Media(e, new Uri(path)));
                 });
-                if (!window.IsVisible) return;
+                if (!window.IsVisible)
+                {
+                    var (earlyE, earlyP, earlyM) = (engine, player, media);
+                    engine = null; player = null; media = null;
+                    _ = Task.Run(() =>
+                    {
+                        earlyM?.Dispose();
+                        earlyP?.Dispose();
+                        earlyE?.Dispose();
+                    });
+                    return;
+                }
                 player.EndReached += (_, _) => window.Dispatcher.BeginInvoke(() =>
                 {
                     progress.Value = 1;
@@ -235,6 +246,7 @@ public static class WhatsNewVideo
             view.MediaPlayer = null;
             // Остановка LibVLC в фоне: из потока окна она может подвиснуть (см. редактор)
             var (e, p, m) = (engine, player, media);
+            engine = null; player = null; media = null;
             window.Tag = Task.Run(() =>
             {
                 try { p?.Stop(); } catch { }

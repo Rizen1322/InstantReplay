@@ -74,6 +74,32 @@ public class LogTests
         Assert.Null(ex);
     }
 
+    /// <summary>
+    /// Штатный выход закрывает очередь лога насовсем (BlockingCollection не открыть
+    /// повторно). Повторный Init в том же процессе — тесты, диагностический перезапуск —
+    /// обязан завести новую очередь и нового писателя. Раньше он лишь выставлял
+    /// признак «уже запущен», и лог после первого Shutdown молчал до конца процесса.
+    /// </summary>
+    [Fact]
+    public void ПослеShutdownЛогСноваПишет()
+    {
+        string first = NewLogDir();
+        Log.Init(first);
+        string firstPath = Path.Combine(first, $"app-{DateTime.Now:yyyy-MM-dd}.log");
+        Assert.True(WaitForFile(firstPath), "фоновый писатель не создал файл лога за 5 секунд");
+
+        Log.Shutdown();
+
+        string second = NewLogDir();
+        Log.Init(second);
+        string secondPath = Path.Combine(second, $"app-{DateTime.Now:yyyy-MM-dd}.log");
+        Assert.True(WaitForFile(secondPath), "после Shutdown новый писатель не стартовал");
+
+        Log.Info("Test", "строка после перезапуска");
+        Assert.True(WaitForText(secondPath, "строка после перезапуска"),
+                    "лог после повторного Init остался немым");
+    }
+
     private static string NewLogDir() =>
         Path.Combine(Path.GetTempPath(), "AuraLogTests", Guid.NewGuid().ToString("N"));
 

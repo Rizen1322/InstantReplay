@@ -142,7 +142,7 @@ internal sealed class MinecraftGameCaptureSource : IScreenCapture, ICaptureDiagn
         }
         catch
         {
-            _started = false;
+            Stop();
             throw;
         }
         Log.Info(

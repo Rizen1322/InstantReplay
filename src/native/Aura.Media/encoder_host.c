@@ -115,6 +115,8 @@ static IDXGIAdapter1* find_adapter(int64_t luid) {
     return found;
 }
 
+static void destroy_all(void);
+
 static int handle_open(void) {
     if (g_session) { error_text("сессия уже открыта"); return 0; }
     raise_gpu_priority((int)arg(1));
@@ -143,6 +145,7 @@ static int handle_open(void) {
     if (!aura_nvenc_create(g_device, &cfg, &g_applied, &g_session, err, sizeof err)) {
         error_text(err[0] ? err : "сессия NVENC не открылась");
         g_session = NULL;
+        destroy_all();
         return 0;
     }
     g_width = cfg.width;
@@ -160,10 +163,15 @@ static int handle_open(void) {
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-    g_inputCount = g_applied.bufferCount < MAX_BUFFERS ? g_applied.bufferCount : MAX_BUFFERS;
-    for (int i = 0; i < g_inputCount; i++) {
+    int count = g_applied.bufferCount < MAX_BUFFERS ? g_applied.bufferCount : MAX_BUFFERS;
+    for (int i = 0; i < count; i++) {
         hr = ID3D11Device_CreateTexture2D(g_device, &desc, NULL, &g_inputs[i]);
-        if (FAILED(hr)) { error_text("вход NVENC в хосте не создан"); return 0; }
+        if (FAILED(hr)) {
+            error_text("вход NVENC в хосте не создан");
+            destroy_all();
+            return 0;
+        }
+        g_inputCount = i + 1;
     }
     return 1;
 }
@@ -171,6 +179,11 @@ static int handle_open(void) {
 static int handle_attach(void) {
     int count = (int)arg(0);
     if (!g_device || count <= 0 || count > MAX_SLOTS) { error_text("неверный набор слотов"); return 0; }
+    for (int i = 0; i < g_slotCount; i++) {
+        if (g_sharedLock[i]) { IDXGIKeyedMutex_Release(g_sharedLock[i]); g_sharedLock[i] = NULL; }
+        if (g_shared[i]) { ID3D11Texture2D_Release(g_shared[i]); g_shared[i] = NULL; }
+    }
+    g_slotCount = 0;
     const uint64_t* handles = (const uint64_t*)(g_view + OFF_HANDLES);
     for (int i = 0; i < count; i++) {
         HRESULT hr = ID3D11Device_OpenSharedResource(g_device, (HANDLE)(uintptr_t)handles[i],
@@ -179,10 +192,23 @@ static int handle_attach(void) {
             char text[128];
             wsprintfA(text, "общая текстура %d не открылась в хосте (0x%08X)", i, (unsigned)hr);
             error_text(text);
+            for (int j = 0; j < i; j++) {
+                if (g_sharedLock[j]) { IDXGIKeyedMutex_Release(g_sharedLock[j]); g_sharedLock[j] = NULL; }
+                if (g_shared[j]) { ID3D11Texture2D_Release(g_shared[j]); g_shared[j] = NULL; }
+            }
             return 0;
         }
         hr = ID3D11Texture2D_QueryInterface(g_shared[i], &IID_IDXGIKeyedMutex, (void**)&g_sharedLock[i]);
-        if (FAILED(hr)) { error_text("у общей текстуры нет ключа"); return 0; }
+        if (FAILED(hr)) {
+            error_text("у общей текстуры нет ключа");
+            ID3D11Texture2D_Release(g_shared[i]);
+            g_shared[i] = NULL;
+            for (int j = 0; j < i; j++) {
+                if (g_sharedLock[j]) { IDXGIKeyedMutex_Release(g_sharedLock[j]); g_sharedLock[j] = NULL; }
+                if (g_shared[j]) { ID3D11Texture2D_Release(g_shared[j]); g_shared[j] = NULL; }
+            }
+            return 0;
+        }
     }
     g_slotCount = count;
     return 1;
@@ -227,10 +253,12 @@ static int handle_get(void) {
 
 static void destroy_all(void) {
     if (g_session) { aura_nvenc_destroy(g_session); g_session = NULL; }
-    for (int i = 0; i < g_inputCount; i++) if (g_inputs[i]) ID3D11Texture2D_Release(g_inputs[i]);
+    for (int i = 0; i < g_inputCount; i++) {
+        if (g_inputs[i]) { ID3D11Texture2D_Release(g_inputs[i]); g_inputs[i] = NULL; }
+    }
     for (int i = 0; i < g_slotCount; i++) {
-        if (g_sharedLock[i]) IDXGIKeyedMutex_Release(g_sharedLock[i]);
-        if (g_shared[i]) ID3D11Texture2D_Release(g_shared[i]);
+        if (g_sharedLock[i]) { IDXGIKeyedMutex_Release(g_sharedLock[i]); g_sharedLock[i] = NULL; }
+        if (g_shared[i]) { ID3D11Texture2D_Release(g_shared[i]); g_shared[i] = NULL; }
     }
     g_inputCount = g_slotCount = 0;
     if (g_context) { ID3D11DeviceContext_Release(g_context); g_context = NULL; }

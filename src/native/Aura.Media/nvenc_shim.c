@@ -86,6 +86,8 @@ typedef struct Slot {
     NV_ENC_OUTPUT_PTR bitstream;
     HANDLE event;
     NV_ENC_INPUT_PTR mapped;   // вход, отображённый для кадра этого порядкового номера
+    int64_t mappedPts;
+    int64_t mappedSeq;
 } Slot;
 
 typedef struct Registered {
@@ -99,8 +101,10 @@ typedef struct Session {
     void* encoder;
     NV_ENC_BUFFER_FORMAT format;
     int width, height;
+    int bFrames;
     Slot slots[MAX_BUFFERS];
     int slotCount;
+    HANDLE eosEvent;
     int64_t sent;              // сколько кадров отправлено (включая ждущие выхода)
     int64_t got;               // сколько выходов забрано
     Registered registered[MAX_REGISTERED];
@@ -222,6 +226,14 @@ static void destroy_session(Session* s) {
                 CloseHandle(s->slots[i].event);
             }
             if (s->slots[i].bitstream) s->api.nvEncDestroyBitstreamBuffer(s->encoder, s->slots[i].bitstream);
+        }
+        if (s->eosEvent) {
+            NV_ENC_EVENT_PARAMS ev = { 0 };
+            ev.version = NV_ENC_EVENT_PARAMS_VER;
+            ev.completionEvent = s->eosEvent;
+            s->api.nvEncUnregisterAsyncEvent(s->encoder, &ev);
+            CloseHandle(s->eosEvent);
+            s->eosEvent = NULL;
         }
         for (int i = 0; i < s->registeredCount; i++)
             s->api.nvEncUnregisterResource(s->encoder, s->registered[i].handle);
@@ -433,6 +445,7 @@ AURA_EXPORT int aura_nvenc_create(void* d3d11Device, const AuraNvencConfig* cfg,
     s->format = tenBit ? NV_ENC_BUFFER_FORMAT_YUV420_10BIT : NV_ENC_BUFFER_FORMAT_NV12;
     s->width = cfg->width;
     s->height = cfg->height;
+    s->bFrames = bFrames;
 
     // Глубина конвейера: кадры, которые NVENC держит у себя (просмотр вперёд и
     // B-кадры), плюс запас, чтобы подача не ждала выдачу.
@@ -446,14 +459,37 @@ AURA_EXPORT int aura_nvenc_create(void* d3d11Device, const AuraNvencConfig* cfg,
         st = s->api.nvEncCreateBitstreamBuffer(s->encoder, &buffer);
         if (st != NV_ENC_SUCCESS) { set_error(err, errCap, "nvEncCreateBitstreamBuffer", st); destroy_session(s); return 0; }
         s->slots[i].bitstream = buffer.bitstreamBuffer;
+        s->slotCount = i + 1;
 
         s->slots[i].event = CreateEventW(NULL, FALSE, FALSE, NULL);
+        if (!s->slots[i].event) { set_error(err, errCap, "CreateEventW", 0); destroy_session(s); return 0; }
         NV_ENC_EVENT_PARAMS ev = { 0 };
         ev.version = NV_ENC_EVENT_PARAMS_VER;
         ev.completionEvent = s->slots[i].event;
         st = s->api.nvEncRegisterAsyncEvent(s->encoder, &ev);
-        if (st != NV_ENC_SUCCESS) { set_error(err, errCap, "nvEncRegisterAsyncEvent", st); destroy_session(s); return 0; }
-        s->slotCount = i + 1;
+        if (st != NV_ENC_SUCCESS) {
+            CloseHandle(s->slots[i].event);
+            s->slots[i].event = NULL;
+            set_error(err, errCap, "nvEncRegisterAsyncEvent", st);
+            destroy_session(s);
+            return 0;
+        }
+    }
+
+    s->eosEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!s->eosEvent) { set_error(err, errCap, "CreateEventW(EOS)", 0); destroy_session(s); return 0; }
+    {
+        NV_ENC_EVENT_PARAMS ev = { 0 };
+        ev.version = NV_ENC_EVENT_PARAMS_VER;
+        ev.completionEvent = s->eosEvent;
+        st = s->api.nvEncRegisterAsyncEvent(s->encoder, &ev);
+        if (st != NV_ENC_SUCCESS) {
+            CloseHandle(s->eosEvent);
+            s->eosEvent = NULL;
+            set_error(err, errCap, "nvEncRegisterAsyncEvent(EOS)", st);
+            destroy_session(s);
+            return 0;
+        }
     }
 
     if (applied) {
@@ -529,8 +565,26 @@ AURA_EXPORT int aura_nvenc_reconfigure(void* handle, int multipass, int spatialA
     return st == NV_ENC_SUCCESS ? 0 : -(int)st;
 }
 
+static int unmap_completed_inputs(Session* s, int64_t completedPts, int hasCompletedPts, int64_t gotIndex) {
+    int releaseFailed = 0;
+    for (int i = 0; i < s->slotCount; i++) {
+        if (!s->slots[i].mapped) continue;
+        int matchPts = hasCompletedPts && s->slots[i].mappedPts == completedPts;
+        int pastReorderWindow = s->slots[i].mappedSeq + s->bFrames < gotIndex;
+        if (matchPts || pastReorderWindow) {
+            int t = trace_begin(s, API_UNMAP, s->slots[i].mappedSeq);
+            NVENCSTATUS st = s->api.nvEncUnmapInputResource(s->encoder, s->slots[i].mapped);
+            trace_end(s, t, st);
+            if (st != NV_ENC_SUCCESS) releaseFailed = 1;
+            s->slots[i].mapped = NULL;
+        }
+    }
+    return releaseFailed;
+}
+
 AURA_EXPORT int aura_nvenc_free_slots(void* handle) {
     Session* s = (Session*)handle;
+    if (!s || !s->encoder) return 0;
     EnterCriticalSection(&s->lock);
     int free = s->slotCount - (int)(s->sent - s->got);
     LeaveCriticalSection(&s->lock);
@@ -541,21 +595,27 @@ AURA_EXPORT int aura_nvenc_free_slots(void* handle) {
 // 0 — нет свободного буфера, <0 — ошибка NVENC.
 AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int forceIdr) {
     Session* s = (Session*)handle;
+    if (!s || !s->encoder) return -1;
     EnterCriticalSection(&s->lock);
     if (s->sent - s->got >= s->slotCount || s->eosSent) { LeaveCriticalSection(&s->lock); return 0; }
-    Slot* slot = &s->slots[s->sent % s->slotCount];
+    int64_t seq = s->sent;
+    Slot* slot = &s->slots[seq % s->slotCount];
     LeaveCriticalSection(&s->lock);
 
     // Поток выдачи снимает отображение входа — отображение и отправка идут под
     // тем же замком: NVENC не обещает, что эти вызовы можно смешивать из двух потоков.
     EnterCriticalSection(&s->apiLock);
+    if (slot->mapped) {
+        s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
+        slot->mapped = NULL;
+    }
     NV_ENC_REGISTERED_PTR reg = register_texture(s, texture);
     if (!reg) { LeaveCriticalSection(&s->apiLock); return -1000; }
 
     NV_ENC_MAP_INPUT_RESOURCE map = { 0 };
     map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
     map.registeredResource = reg;
-    int t = trace_begin(s, API_MAP, s->sent);
+    int t = trace_begin(s, API_MAP, seq);
     NVENCSTATUS st = s->api.nvEncMapInputResource(s->encoder, &map);
     trace_end(s, t, st);
     if (st != NV_ENC_SUCCESS) { remember_error(s, "nvEncMapInputResource", st); LeaveCriticalSection(&s->apiLock); return -(int)st; }
@@ -573,7 +633,9 @@ AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int 
     if (forceIdr) pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
 
     slot->mapped = map.mappedResource;
-    t = trace_begin(s, API_ENCODE, s->sent);
+    slot->mappedPts = pts;
+    slot->mappedSeq = seq;
+    t = trace_begin(s, API_ENCODE, seq);
     st = s->api.nvEncEncodePicture(s->encoder, &pic);
     trace_end(s, t, st);
     if (st != NV_ENC_SUCCESS && st != NV_ENC_ERR_NEED_MORE_INPUT) {
@@ -594,6 +656,7 @@ AURA_EXPORT int aura_nvenc_encode(void* handle, void* texture, int64_t pts, int 
 // Сообщить о конце потока: NVENC выдаст всё, что держит у себя.
 AURA_EXPORT void aura_nvenc_end(void* handle) {
     Session* s = (Session*)handle;
+    if (!s || !s->encoder) return;
     EnterCriticalSection(&s->lock);
     if (s->eosSent) { LeaveCriticalSection(&s->lock); return; }
     s->eosSent = 1;
@@ -602,8 +665,8 @@ AURA_EXPORT void aura_nvenc_end(void* handle) {
     NV_ENC_PIC_PARAMS pic = { 0 };
     pic.version = NV_ENC_PIC_PARAMS_VER;
     pic.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
-    // В асинхронном режиме конец потока сигналит событием последнего буфера
-    pic.completionEvent = s->slots[s->sent % s->slotCount].event;
+    // Отдельное событие для EOS, чтобы не пересекаться с активными слотами кадров
+    pic.completionEvent = s->eosEvent;
     EnterCriticalSection(&s->apiLock);
     int t = trace_begin(s, API_EOS, s->sent);
     NVENCSTATUS st = s->api.nvEncEncodePicture(s->encoder, &pic);
@@ -624,30 +687,28 @@ AURA_EXPORT void aura_nvenc_end(void* handle) {
 AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t** data, int* size,
                                int64_t* pts, int* pictureType) {
     Session* s = (Session*)handle;
+    if (!s || !s->encoder) return -2;
     EnterCriticalSection(&s->lock);
-    int64_t pending = s->sent - s->got;
+    int64_t gotIndex = s->got;
+    int64_t pending = s->sent - gotIndex;
     LeaveCriticalSection(&s->lock);
     if (pending <= 0) return -2;
 
-    Slot* slot = &s->slots[s->got % s->slotCount];
+    Slot* slot = &s->slots[gotIndex % s->slotCount];
     if (WaitForSingleObject(slot->event, timeoutMs) != WAIT_OBJECT_0) return 0;
 
     NV_ENC_LOCK_BITSTREAM lock = { 0 };
     lock.version = NV_ENC_LOCK_BITSTREAM_VER;
     lock.outputBitstream = slot->bitstream;
-    int t = trace_begin(s, API_LOCK, s->got);
+    int t = trace_begin(s, API_LOCK, gotIndex);
     NVENCSTATUS st = s->api.nvEncLockBitstream(s->encoder, &lock);
     trace_end(s, t, st);
     if (st != NV_ENC_SUCCESS) {
-        // Выход не получить — пропускаем его целиком: снимаем отображение входа и
-        // идём к следующему. Иначе следующий вызов ждал бы уже снятое событие этого
-        // же выхода, и энкодер встал бы насовсем.
+        // Выход не получить — пропускаем его целиком: снимаем отображение входов,
+        // вышедших за окно переупорядочивания, и идём к следующему.
         remember_error(s, "nvEncLockBitstream", st);
         EnterCriticalSection(&s->apiLock);
-        if (slot->mapped) {
-            s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
-            slot->mapped = NULL;
-        }
+        (void)unmap_completed_inputs(s, 0, 0, gotIndex);
         LeaveCriticalSection(&s->apiLock);
         EnterCriticalSection(&s->lock);
         s->got++;
@@ -675,7 +736,7 @@ AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t**
     *size = bytes;
     *pts = (int64_t)lock.outputTimeStamp;
     *pictureType = (int)lock.pictureType;
-    t = trace_begin(s, API_UNLOCK, s->got);
+    t = trace_begin(s, API_UNLOCK, gotIndex);
     st = s->api.nvEncUnlockBitstream(s->encoder, slot->bitstream);
     trace_end(s, t, st);
     // Неуспешное освобождение — не разрешение переиспользовать буфер и вход:
@@ -683,15 +744,11 @@ AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t**
     // непригодна (2), и вызывающий её пересоздаёт
     int releaseFailed = st != NV_ENC_SUCCESS;
 
-    // Вход этого порядкового номера NVENC больше не держит
+    // Снимаем отображение того входа, чей кадр только что закодирован (по PTS),
+    // а также входов, вышедших за окно переупорядочивания B-кадров.
     EnterCriticalSection(&s->apiLock);
-    if (slot->mapped) {
-        t = trace_begin(s, API_UNMAP, s->got);
-        st = s->api.nvEncUnmapInputResource(s->encoder, slot->mapped);
-        trace_end(s, t, st);
-        if (st != NV_ENC_SUCCESS) releaseFailed = 1;
-        slot->mapped = NULL;
-    }
+    if (unmap_completed_inputs(s, (int64_t)lock.outputTimeStamp, 1, gotIndex))
+        releaseFailed = 1;
     LeaveCriticalSection(&s->apiLock);
     if (releaseFailed && result == 1) result = 2;
     EnterCriticalSection(&s->lock);
@@ -703,6 +760,7 @@ AURA_EXPORT int aura_nvenc_get(void* handle, uint32_t timeoutMs, const uint8_t**
 // Заголовок последовательности (SPS/PPS/VPS или OBU заголовка AV1).
 AURA_EXPORT int aura_nvenc_sequence_header(void* handle, uint8_t* buffer, int capacity, int* size) {
     Session* s = (Session*)handle;
+    if (!s || !s->encoder || !buffer || !size || capacity <= 0) return -1;
     NV_ENC_SEQUENCE_PARAM_PAYLOAD payload = { 0 };
     uint32_t written = 0;
     payload.version = NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER;

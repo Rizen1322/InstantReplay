@@ -120,11 +120,12 @@ public sealed class SettingsManager
                     Log.Warn("Settings", "Настройки восстановлены из settings.json.bak");
                     // Испорченный файл уже отложен. Иначе следующее сохранение
                     // переложило бы его на место резервной копии.
-                    File.Copy(BackupPath, FilePath, overwrite: true);
+                    try { File.Copy(BackupPath, FilePath, overwrite: true); }
+                    catch (Exception copyEx) { Log.Warn("Settings", $"Не удалось перезаписать settings.json из резервной копии: {copyEx.Message}"); }
                     return backup;
                 }
             }
-            catch (Exception bex) when (bex is JsonException or NotSupportedException or ArgumentException)
+            catch (Exception bex) when (bex is JsonException or NotSupportedException or ArgumentException or IOException)
             { Log.Warn("Settings", $"settings.json.bak тоже не читается: {bex.Message}"); }
             Log.Warn("Settings", "Резервной копии нет, использую значения по умолчанию");
             return new AppSettings();
@@ -143,14 +144,22 @@ public sealed class SettingsManager
     internal static AppSettings Deserialize(string json)
     {
         var node = JsonNode.Parse(json) as JsonObject ?? throw new JsonException("Ожидался объект настроек.");
-        // Future enum names keep this version's field default, preserving other settings.
+        // Future enum names or out-of-range numeric values keep this version's field default, preserving other settings.
         foreach (var property in typeof(AppSettings).GetProperties())
         {
             if (!property.PropertyType.IsEnum || node[property.Name] is not JsonValue value) continue;
-            if (value.TryGetValue<string>(out var text) &&
-                (!Enum.TryParse(property.PropertyType, text, true, out var parsed) ||
-                 !Enum.IsDefined(property.PropertyType, parsed!)))
-                node.Remove(property.Name);
+            if (value.TryGetValue<string>(out var text))
+            {
+                if (!Enum.TryParse(property.PropertyType, text, true, out var parsed) ||
+                    !Enum.IsDefined(property.PropertyType, parsed!))
+                    node.Remove(property.Name);
+            }
+            else if (value.TryGetValue<int>(out int num))
+            {
+                object enumVal = Enum.ToObject(property.PropertyType, num);
+                if (!Enum.IsDefined(property.PropertyType, enumVal))
+                    node.Remove(property.Name);
+            }
         }
         return node.Deserialize<AppSettings>(JsonOpts) ?? throw new JsonException("файл пуст");
     }

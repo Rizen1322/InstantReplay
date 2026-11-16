@@ -244,7 +244,9 @@ public partial class AudioPage : PageBase
     private static SortedDictionary<string, string>? CollectProcesses(Core.GameDetection.GameDatabase database)
     {
         var names = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        string self = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+        // Process — IDisposable-обёртка: без using дескриптор процесса утекал на каждом сборе списка
+        using var selfProcess = System.Diagnostics.Process.GetCurrentProcess();
+        string self = selfProcess.ProcessName;
 
         void Add(string exe)
         {

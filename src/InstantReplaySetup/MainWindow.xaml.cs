@@ -294,10 +294,32 @@ public partial class MainWindow : Window
     private void DoInstall(bool desktopShortcut, bool autostart)
     {
         _mayRestartPrevious = false;
-        if (App.UpdateMode) InstallTransaction.ValidateUpdateRoot(App.UpdateTarget ?? _root);
         _root = Path.GetFullPath(_root);
         _appDir = Path.Combine(_root, "app");
         _mainExe = Path.Combine(_appDir, ExeName);
+        if (App.UpdateMode)
+        {
+            bool migrating = !string.IsNullOrWhiteSpace(App.UpdateTarget) &&
+                             !Path.GetFullPath(App.UpdateTarget!).TrimEnd('\\')
+                                 .Equals(_root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+            if (migrating)
+            {
+                InstallTransaction.RejectLinks(App.UpdateTarget!);
+                InstallTransaction.RejectLinks(Path.Combine(App.UpdateTarget!, "app"));
+                if (InstallTransaction.IsLegacyInstallRoot(_root))
+                    InstallTransaction.EnsureMarker(_root);
+            }
+            else
+            {
+                if (InstallTransaction.IsLegacyInstallRoot(_root))
+                    InstallTransaction.EnsureMarker(_root);
+                InstallTransaction.ValidateUpdateRoot(_root);
+            }
+        }
+        else if (InstallTransaction.IsLegacyInstallRoot(_root))
+        {
+            InstallTransaction.EnsureMarker(_root);
+        }
         InstallTransaction.ValidateTargetRoot(_root);
         _mayRestartPrevious = Aura.Core.Tools.ExecutableTrust.IsProtected(_mainExe);
         SetStatus("Подготовка…", 2);
@@ -318,11 +340,12 @@ public partial class MainWindow : Window
         catch { }
         foreach (string name in new[] { ProcessName, OldProcessName, "Aura.EncoderHost" })
             foreach (var p in Process.GetProcessesByName(name))
-                try
-                {
-                    if (!p.WaitForExit(App.UpdateMode || asked ? 20000 : 0)) { p.Kill(); p.WaitForExit(3000); }
-                }
-                catch { }
+                using (p)
+                    try
+                    {
+                        if (!p.WaitForExit(App.UpdateMode || asked ? 20000 : 0)) { p.Kill(); p.WaitForExit(3000); }
+                    }
+                    catch { }
 
         MigrateFromInstantReplay();
         var previousRoots = FindPreviousRoots();
@@ -438,12 +461,21 @@ public partial class MainWindow : Window
             try
             {
                 string full = Path.GetFullPath(root).TrimEnd('\\');
+                if (Directory.GetParent(full) is null) return;
                 if (full.Equals(Path.GetFullPath(_root).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return;
-                if (!File.Exists(Path.Combine(full, InstallMarkerName))) return;
+                InstallTransaction.RejectLinks(full);
+                InstallTransaction.RejectLinks(Path.Combine(full, "app"));
+                var marker = new FileInfo(Path.Combine(full, InstallMarkerName));
+                if (!marker.Exists || (marker.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    if (!InstallTransaction.IsLegacyInstallRoot(full)) return;
+                }
                 if (!found.Contains(full, StringComparer.OrdinalIgnoreCase)) found.Add(full);
             }
             catch { }
         }
+        if (!string.IsNullOrWhiteSpace(App.UpdateTarget))
+            Consider(App.UpdateTarget);
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(UninstallKey);
@@ -462,11 +494,27 @@ public partial class MainWindow : Window
     /// </summary>
     private static void RemovePreviousRoot(string root)
     {
-        string app = Path.Combine(root, "app");
+        string fullRoot;
         try
         {
-            if (Directory.Exists(app)) Directory.Delete(app, recursive: true);
-            Log($"Прежняя установка удалена: {root}");
+            fullRoot = Path.GetFullPath(root);
+            if (Directory.GetParent(fullRoot) is null) return;
+            InstallTransaction.RejectLinks(fullRoot);
+            InstallTransaction.RejectLinks(Path.Combine(fullRoot, "app"));
+        }
+        catch (Exception ex)
+        {
+            Log($"Пропуск удаления небезопасной папки ({ex.Message}): {root}");
+            return;
+        }
+
+        string app = Path.Combine(fullRoot, "app");
+        try
+        {
+            var appInfo = new DirectoryInfo(app);
+            if (appInfo.Exists && (appInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                Directory.Delete(app, recursive: true);
+            Log($"Прежняя установка удалена: {fullRoot}");
         }
         catch (Exception ex)
         {
@@ -474,21 +522,28 @@ public partial class MainWindow : Window
             Log($"Прежнюю установку не удалось удалить сразу ({ex.Message}), удалю при перезагрузке: {app}");
             try
             {
-                foreach (string file in Directory.EnumerateFiles(app, "*", SearchOption.AllDirectories))
-                    if (!TryDeleteFile(file)) MoveFileExW(file, null, MovefileDelayUntilReboot);
-                foreach (string dir in Directory.EnumerateDirectories(app, "*", SearchOption.AllDirectories)
-                                                .OrderByDescending(d => d.Length))
-                    MoveFileExW(dir, null, MovefileDelayUntilReboot);
-                MoveFileExW(app, null, MovefileDelayUntilReboot);
+                var appInfo = new DirectoryInfo(app);
+                if (appInfo.Exists && (appInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                {
+                    foreach (string file in Directory.EnumerateFiles(app, "*", SearchOption.AllDirectories))
+                        if (!TryDeleteFile(file)) MoveFileExW(file, null, MovefileDelayUntilReboot);
+                    foreach (string dir in Directory.EnumerateDirectories(app, "*", SearchOption.AllDirectories)
+                                                    .OrderByDescending(d => d.Length))
+                        MoveFileExW(dir, null, MovefileDelayUntilReboot);
+                    MoveFileExW(app, null, MovefileDelayUntilReboot);
+                }
             }
             catch { }
         }
-        TryDelete(Path.Combine(root, "Uninstall.exe"));
-        TryDelete(Path.Combine(root, InstallMarkerName));
+        TryDelete(Path.Combine(fullRoot, "Uninstall.exe"));
+        TryDelete(Path.Combine(fullRoot, InstallMarkerName));
         try
         {
-            if (Directory.Exists(root) && !Directory.EnumerateFileSystemEntries(root).Any())
-                Directory.Delete(root);
+            var rootInfo = new DirectoryInfo(fullRoot);
+            if (rootInfo.Exists &&
+                (rootInfo.Attributes & FileAttributes.ReparsePoint) == 0 &&
+                !Directory.EnumerateFileSystemEntries(fullRoot).Any())
+                Directory.Delete(fullRoot);
         }
         catch { }
     }
@@ -583,9 +638,24 @@ public partial class MainWindow : Window
             using var p = Process.Start(psi);
             if (p is null) return (-1, "процесс не запустился");
 
-            string output = (p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd()).Trim();
-            p.WaitForExit(60000);
-            return (p.HasExited ? p.ExitCode : -1, output.Replace("\r\n", " "));
+            // Оба потока читаем сразу и параллельно: синхронный ReadToEnd до
+            // WaitForExit встаёт намертво, если powershell заполнил буфер трубы и
+            // ждёт, пока мы его вычитаем. Раньше установка могла зависнуть на
+            // регистрации пакета identity.
+            Task<string> stdout = p.StandardOutput.ReadToEndAsync();
+            Task<string> stderr = p.StandardError.ReadToEndAsync();
+            if (!p.WaitForExit(60000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                try { p.WaitForExit(2000); } catch { }
+                // Дочитываем ограниченно: после Kill трубы закрываются, но если
+                // процесс так и не умер, ждать чтения бесконечно нельзя.
+                try { Task.WaitAll(new[] { stdout, stderr }, 2000); } catch { }
+                return (-1, "powershell не завершился за 60 секунд");
+            }
+
+            string output = (stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult()).Trim();
+            return (p.ExitCode, output.Replace("\r\n", " "));
         }
         catch (Exception ex) { return (-1, ex.Message); }
     }
@@ -774,9 +844,21 @@ public partial class MainWindow : Window
         await Task.Run(() =>
         {
             SetStatus("Закрытие приложения…", 15);
-            foreach (string name in new[] { ProcessName, OldProcessName })
+            bool asked = false;
+            try
+            {
+                if (System.Threading.EventWaitHandle.TryOpenExisting(@"Global\Aura.Quit", out var quit))
+                    using (quit) asked = quit.Set();
+            }
+            catch { }
+            foreach (string name in new[] { ProcessName, OldProcessName, "Aura.EncoderHost" })
                 foreach (var p in Process.GetProcessesByName(name))
-                    try { p.Kill(); p.WaitForExit(3000); } catch { }
+                    using (p)
+                        try
+                        {
+                            if (!p.WaitForExit(asked ? 5000 : 0)) { p.Kill(); p.WaitForExit(3000); }
+                        }
+                        catch { }
 
             SetStatus("Удаление ярлыков…", 40);
             foreach (string name in new[] { AppName, OldAppName })
@@ -811,18 +893,56 @@ public partial class MainWindow : Window
             try { Registry.LocalMachine.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false); } catch { }
             TryDelete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu),
                                    "Programs", $"{AppName}.lnk"));
-            try { Directory.Delete(Path.Combine(root, "app"), recursive: true); } catch { }
+            RemovePreviousRoot(root);
         });
 
-        // Сам установщик удаляем отложенно (файл занят, пока процесс жив)
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = "cmd.exe",
-            Arguments = $"/c ping 127.0.0.1 -n 3 > nul & rmdir /s /q \"{root}\"",
-            CreateNoWindow = true,
-            UseShellExecute = false
-        });
+        ScheduleSafeDirectoryCleanup(root);
         Close();
+    }
+
+    private static void ScheduleSafeDirectoryCleanup(string root)
+    {
+        try
+        {
+            string fullRoot = Path.GetFullPath(root);
+            if (!Directory.Exists(fullRoot)) return;
+            InstallTransaction.RejectLinks(fullRoot);
+
+            string appDir = Path.Combine(fullRoot, "app");
+            string marker = Path.Combine(fullRoot, InstallMarkerName);
+            string legacyUninstaller = Path.Combine(fullRoot, "Uninstall.exe");
+
+            string escapedRoot = fullRoot.Replace("'", "''", StringComparison.Ordinal);
+            string escapedApp = appDir.Replace("'", "''", StringComparison.Ordinal);
+            string escapedMarker = marker.Replace("'", "''", StringComparison.Ordinal);
+            string escapedLegacy = legacyUninstaller.Replace("'", "''", StringComparison.Ordinal);
+            string script =
+                "Start-Sleep -Seconds 2; " +
+                $"$root = '{escapedRoot}'; $app = '{escapedApp}'; " +
+                "function Test-NoReparse([string]$p) { " +
+                "  if (-not (Test-Path -LiteralPath $p)) { return $true } " +
+                "  $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; " +
+                "  return ($null -ne $item) -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) " +
+                "}; " +
+                "if ((Test-NoReparse $root) -and (Test-NoReparse $app)) { " +
+                "  if (Test-Path -LiteralPath $app) { Remove-Item -LiteralPath $app -Recurse -Force -ErrorAction SilentlyContinue }; " +
+                $"  Remove-Item -LiteralPath '{escapedMarker}' -Force -ErrorAction SilentlyContinue; " +
+                $"  Remove-Item -LiteralPath '{escapedLegacy}' -Force -ErrorAction SilentlyContinue; " +
+                "  if ((Test-Path -LiteralPath $root) -and ((Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0)) { " +
+                "    Remove-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue " +
+                "  } " +
+                "}";
+            string encoded = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+            Process.Start(new ProcessStartInfo(
+                "powershell.exe",
+                $"-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand {encoded}")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+        }
+        catch { }
     }
 
     /// <summary>Корень установленной Aura из записи «Установленных программ»; null — не найдено.</summary>
@@ -832,10 +952,20 @@ public partial class MainWindow : Window
             try
             {
                 using var key = hive.OpenSubKey(UninstallKey);
-                if (key?.GetValue("InstallLocation") is string root && root.Length > 0 &&
-                    File.Exists(Path.Combine(root, InstallMarkerName)) &&
-                    File.Exists(Path.Combine(root, "app", ExeName)))
-                    return root;
+                if (key?.GetValue("InstallLocation") is not string rawRoot || string.IsNullOrWhiteSpace(rawRoot))
+                    continue;
+                string root = Path.GetFullPath(rawRoot);
+                if (Directory.GetParent(root) is null) continue;
+                InstallTransaction.RejectLinks(root);
+                string appDir = Path.Combine(root, "app");
+                InstallTransaction.RejectLinks(appDir);
+                var marker = new FileInfo(Path.Combine(root, InstallMarkerName));
+                if (!marker.Exists || (marker.Attributes & FileAttributes.ReparsePoint) != 0)
+                    continue;
+                string exePath = Path.Combine(appDir, ExeName);
+                if (!File.Exists(exePath) || !Aura.Core.Tools.ExecutableTrust.IsProtected(exePath))
+                    continue;
+                return root;
             }
             catch { }
         return null;

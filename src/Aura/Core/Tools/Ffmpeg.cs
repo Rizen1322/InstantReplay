@@ -84,8 +84,24 @@ public static class Ffmpeg
                 psi.ArgumentList.Add("-hide_banner");
                 psi.ArgumentList.Add("-encoders");
                 using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
-                string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-                process.WaitForExit(5000);
+                // Читаем оба потока сразу и параллельно. Синхронный ReadToEnd до
+                // WaitForExit встаёт намертво, если ffmpeg заполнил буфер трубы и
+                // ждёт, пока мы его вычитаем, — классическая взаимная блокировка.
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                Task<string> stderr = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(5000))
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { }
+                    try { process.WaitForExit(2000); } catch { }
+                    // Дочитываем ограниченно: после Kill трубы закрываются, но если
+                    // процесс так и не умер, ждать чтения бесконечно нельзя.
+                    try { Task.WaitAll(new[] { stdout, stderr }, 2000); } catch { }
+                    // Половина списка энкодеров хуже, чем никакого: пусть сработает
+                    // общий catch с логом, а не выбор энкодера по обрывку ответа.
+                    throw new TimeoutException("ffmpeg не ответил за 5 секунд");
+                }
+                // WaitForExit(int) не ждёт асинхронных чтений — строки берём из задач.
+                string output = stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult();
                 return output.Split('\n');
             }
             catch (Exception ex)

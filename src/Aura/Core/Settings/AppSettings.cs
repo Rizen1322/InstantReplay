@@ -282,6 +282,8 @@ public sealed class AppSettings
         UiScale = !double.IsFinite(UiScale) || UiScale == 0 ? 0 : Math.Clamp(UiScale, 0.75, 2.0);
 
         if (!Enum.IsDefined(Codec)) Codec = VideoCodec.H264;
+        if (!Enum.IsDefined(BitrateMode)) BitrateMode = BitrateMode.Quality;
+        if (!Enum.IsDefined(BitDepth)) BitDepth = VideoBitDepth.Auto;
         if (!Enum.IsDefined(TrackMode)) TrackMode = AudioTrackMode.Mixed;
         if (!Enum.IsDefined(NotificationPosition)) NotificationPosition = NotificationPosition.BottomRight;
         if (!Enum.IsDefined(Theme) || Theme == AppTheme.Deep) Theme = AppTheme.Dark;

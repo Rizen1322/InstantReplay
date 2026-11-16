@@ -33,9 +33,17 @@ public static class NalUnits
             int payload = start + codeLength;
             int next = FindStart(data, payload, out int nextCodeLength);
             int end = next < 0 ? data.Length : next;
-            // Хвостовые нули перед следующим стартовым кодом — часть 00 00 00 01,
-            // а не данных (trailing_zero_8bits).
-            while (end > payload && data[end - 1] == 0) end--;
+            // Хвостовые нули перед следующим стартовым кодом — часть 00 00 00 01 /
+            // trailing_zero_8bits, но только если есть следующий стартовый код и нуль
+            // не является частью защищённой последовательности 00 00 03 00 в конце NAL.
+            if (next >= 0)
+            {
+                while (end > payload && data[end - 1] == 0 &&
+                       !(end - payload >= 4 && data[end - 2] == 3 && data[end - 3] == 0 && data[end - 4] == 0))
+                {
+                    end--;
+                }
+            }
             if (end > payload) result[count++] = (payload, end - payload);
             start = next;
             codeLength = nextCodeLength;

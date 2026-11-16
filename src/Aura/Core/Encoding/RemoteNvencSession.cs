@@ -44,7 +44,8 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     private const int OffMagic = 0, OffType = 4, OffResult = 8, OffDataLength = 12;
     private const int OffArgs = 16, OffOut = 144, OffConfig = 272, OffApplied = 448, OffHandles = 512, OffError = 1024;
     private const int OffData = 65536;
-    private const long MappingBytes = OffData + 32L * 1024 * 1024;   // самый большой ключевой кадр с запасом
+    private const int MaxDataBytes = 32 * 1024 * 1024;
+    private const long MappingBytes = OffData + (long)MaxDataBytes;   // самый большой ключевой кадр с запасом
     private const int MaxSlots = 64;
 
     private enum Request { Open = 1, Attach, Encode, Get, FreeSlots, Reconfigure, SequenceHeader, Trace, EndOfStream, Destroy, RcInfo }
@@ -69,8 +70,11 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
     private readonly WaitHandle[] _waits;
     private readonly ManualResetEvent _cancel = new(false);
     private bool _awaitingResponse;   // под _call: запрос отправлен, ответа хоста ещё не было
+    private bool _destroySent;        // под _call: Request.Destroy уже отправлен
     private Task? _retire;
     private volatile bool _dead;
+    private int _disposed;
+    private int _released;
     private volatile string _currentCall = "";
     private long _callStarted;
     private long _sent, _got;
@@ -259,6 +263,12 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         if (result == 1)
         {
             int size = ReadInt(OffDataLength);
+            if (size <= 0 || size > MaxDataBytes)
+            {
+                LastSkipFatal = true;
+                LastSkipReason = $"некорректный размер кадра от хоста ({size})";
+                return (default, pts, NvencSession.SkippedPicture);
+            }
             if (_output.Length < size) _output = new byte[Math.Max(size, _output.Length * 2)];
             Marshal.Copy((IntPtr)(_base + OffData), _output, 0, size);
             return (new ArraySegment<byte>(_output, 0, size), pts, type);
@@ -293,6 +303,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         {
             if (CallLocked(Request.SequenceHeader, CallTimeoutMs) != 1) return null;
             int size = ReadInt(OffDataLength);
+            if (size <= 0 || size > MaxDataBytes) return null;
             var header = new byte[size];
             Marshal.Copy((IntPtr)(_base + OffData), header, 0, size);
             return header;
@@ -307,7 +318,9 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         {
             int n = CallLocked(Request.RcInfo, CallTimeoutMs);
             if (n <= 0) return "";
-            var bytes = new byte[Math.Min(n, ReadInt(OffDataLength))];
+            int len = Math.Clamp(Math.Min(n, ReadInt(OffDataLength)), 0, MaxDataBytes);
+            if (len == 0) return "";
+            var bytes = new byte[len];
             Marshal.Copy((IntPtr)(_base + OffData), bytes, 0, bytes.Length);
             return System.Text.Encoding.UTF8.GetString(bytes);
         }
@@ -327,7 +340,9 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         {
             int n = CallLocked(Request.Trace, 2000);
             if (n <= 0) return "журнал пуст";
-            var bytes = new byte[Math.Min(n, ReadInt(OffDataLength))];
+            int len = Math.Clamp(Math.Min(n, ReadInt(OffDataLength)), 0, MaxDataBytes);
+            if (len == 0) return "журнал пуст";
+            var bytes = new byte[len];
             Marshal.Copy((IntPtr)(_base + OffData), bytes, 0, bytes.Length);
             return $"хост PID {ProcessId}\n" + System.Text.Encoding.UTF8.GetString(bytes).TrimEnd();
         }
@@ -361,6 +376,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
         if (_dead) return HostDead;
         _currentCall = type.ToString();
         Interlocked.Exchange(ref _callStarted, Stopwatch.GetTimestamp());
+        if (type == Request.Destroy) _destroySent = true;
         WriteInt(OffType, (int)type);
         _awaitingResponse = true;
         _request.Set();
@@ -403,8 +419,10 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
                 if (_process.HasExited) return;
                 bool idle = !_awaitingResponse ||
                             WaitHandle.WaitAny([_response, _waits[1]], 60_000) == 0;
-                if (idle && !_process.HasExited)
+                if (idle) _awaitingResponse = false;
+                if (idle && !_destroySent && !_process.HasExited)
                 {
+                    _destroySent = true;
                     WriteInt(OffType, (int)Request.Destroy);
                     _request.Set();
                 }
@@ -437,6 +455,7 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         if (!_dead)
         {
             // Штатно: хост сам закрывает сессию и устройство и выходит
@@ -448,12 +467,17 @@ internal sealed unsafe class RemoteNvencSession : INvencSession
             catch { }
         }
         // Хост ещё закрывается: процесс, общая память и события нужны ему до конца
-        if (_retire is { IsCompleted: false } retire) { retire.ContinueWith(_ => Release()); return; }
+        if (_retire is { } retire)
+        {
+            _ = retire.ContinueWith(_ => Release(), TaskScheduler.Default);
+            return;
+        }
         Release();
     }
 
     private void Release()
     {
+        if (Interlocked.Exchange(ref _released, 1) != 0) return;
         try { _process.WaitForExit(2000); } catch { }
         _process.Dispose();
         JobObject.Close(_job);

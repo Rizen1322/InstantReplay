@@ -55,6 +55,10 @@ typedef struct aura_gl_capture_state {
     int height;
     int stride;
     int byte_count;
+    int64_t route_epoch;
+    unsigned write_index;
+    unsigned read_index;
+    unsigned pending_count;
     uint64_t issued_count;
     uint64_t next_issue_100ns;
     int initialized;
@@ -65,20 +69,8 @@ static aura_gl_capture_state g_capture;
 static SRWLOCK g_capture_lock = SRWLOCK_INIT;
 static volatile LONG g_release_requested;
 static volatile LONG g_release_done;
+static volatile LONG g_idle_notified;
 
-/*
- * Время кадра берётся из счётчика производительности, а не из GetTickCount64.
- *
- * GetTickCount64 идёт с шагом системного тика, по умолчанию 15.6 мс, тогда как
- * кадр при 60 кадрах в секунду длится 16.67 мс. Метка времени ложилась на грубую
- * решётку, и в сохранённом клипе это видно как дёрганый ход. Та же метка идёт в
- * PTS кадра, а остальной конвейер (Desktop Duplication, WGC) штампует кадры через
- * QueryPerformanceCounter. Гибридный захват переключает маршруты прямо во время
- * записи, и на каждом переключении шкала времени прыгала.
- *
- * QueryPerformanceCounter общий для всей системы, и .NET Stopwatch.GetTimestamp
- * читает его же, поэтому обе стороны теперь живут на одной шкале.
- */
 static uint64_t now_100ns(void)
 {
     static LARGE_INTEGER frequency;
@@ -112,11 +104,8 @@ static int load_functions(aura_gl_capture_state *state)
     state->buffer_data = (aura_gl_buffer_data_fn)load_gl_function("glBufferData", "glBufferDataARB");
     state->map_buffer = (aura_gl_map_buffer_fn)load_gl_function("glMapBuffer", "glMapBufferARB");
     state->unmap_buffer = (aura_gl_unmap_buffer_fn)load_gl_function("glUnmapBuffer", "glUnmapBufferARB");
-    // Необязательная: на контекстах без кадровых буферов игра не может оставить
-    // свой привязанным, и возвращать нечего.
     state->bind_framebuffer =
         (aura_gl_bind_framebuffer_fn)load_gl_function("glBindFramebuffer", "glBindFramebufferEXT");
-    // Необязательные (GL 3.2 / ARB_sync): без них читаем по-старому, с ожиданием
     state->fence_sync = (aura_gl_fence_sync_fn)load_gl_function("glFenceSync", NULL);
     state->client_wait_sync = (aura_gl_client_wait_sync_fn)load_gl_function("glClientWaitSync", NULL);
     state->delete_sync = (aura_gl_delete_sync_fn)load_gl_function("glDeleteSync", NULL);
@@ -136,6 +125,22 @@ static void drop_fence(aura_gl_capture_state *state, unsigned index)
     state->fences[index] = NULL;
 }
 
+static void flush_pipeline(aura_gl_capture_state *state)
+{
+    if (state->initialized && state->owner_context == wglGetCurrentContext()) {
+        for (unsigned index = 0; index < 3; ++index) drop_fence(state, index);
+    } else {
+        memset(state->fences, 0, sizeof(state->fences));
+    }
+    memset(state->issue_100ns, 0, sizeof(state->issue_100ns));
+    state->write_index = 0;
+    state->read_index = 0;
+    state->pending_count = 0;
+    state->skipped_in_row = 0;
+    state->issued_count = 0;
+    state->next_issue_100ns = 0;
+}
+
 static void release_current_context(aura_gl_capture_state *state)
 {
     if (state->initialized && state->owner_context == wglGetCurrentContext()) {
@@ -144,23 +149,42 @@ static void release_current_context(aura_gl_capture_state *state)
     }
     memset(state->fences, 0, sizeof(state->fences));
     memset(state->pbos, 0, sizeof(state->pbos));
+    memset(state->issue_100ns, 0, sizeof(state->issue_100ns));
     state->initialized = 0;
+    state->write_index = 0;
+    state->read_index = 0;
+    state->pending_count = 0;
+    state->skipped_in_row = 0;
     state->issued_count = 0;
+    state->next_issue_100ns = 0;
 }
 
-static int initialize_ring(aura_gl_capture_state *state, int width, int height)
+static int initialize_ring(aura_gl_capture_state *state, int width, int height, int64_t route_epoch)
 {
     HGLRC current = wglGetCurrentContext();
     if (current == NULL) return 0;
+    LONG was_idle = InterlockedExchange(&g_idle_notified, 0);
     if (state->owner_context == current && state->initialized &&
-        state->width == width && state->height == height) return 1;
+        state->width == width && state->height == height) {
+        if (was_idle != 0 || state->route_epoch != route_epoch) {
+            flush_pipeline(state);
+            state->route_epoch = route_epoch;
+        }
+        return 1;
+    }
 
     if (state->owner_context == current) release_current_context(state);
     else {
         memset(state->fences, 0, sizeof(state->fences));
         memset(state->pbos, 0, sizeof(state->pbos));
+        memset(state->issue_100ns, 0, sizeof(state->issue_100ns));
         state->initialized = 0;
+        state->write_index = 0;
+        state->read_index = 0;
+        state->pending_count = 0;
+        state->skipped_in_row = 0;
         state->issued_count = 0;
+        state->next_issue_100ns = 0;
     }
 
     state->owner_context = current;
@@ -174,6 +198,7 @@ static int initialize_ring(aura_gl_capture_state *state, int width, int height)
     state->height = height;
     state->stride = width * 4;
     state->byte_count = state->stride * height;
+    state->route_epoch = route_epoch;
 
     GLint previous_buffer = 0;
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_buffer);
@@ -220,13 +245,11 @@ static int publish_frame(
 
     slot->frame_sequence = sequence;
     slot->timestamp_100ns = (int64_t)timestamp_100ns;
-    slot->route_epoch = header->route_epoch;
+    slot->route_epoch = state->route_epoch;
     slot->width = state->width;
     slot->height = state->height;
     slot->stride = state->stride;
     slot->byte_count = state->byte_count;
-    // Читаем из потока отрисовки игры: счётчик показа курсора привязан к очереди
-    // ввода потока, и только здесь виден настоящий ответ.
     CURSORINFO cursor = {0};
     cursor.cbSize = sizeof(cursor);
     slot->cursor_visible = GetCursorInfo(&cursor) && (cursor.flags & CURSOR_SHOWING) != 0 ? 1 : 0;
@@ -239,12 +262,55 @@ static int publish_frame(
                (size_t)state->stride);
     }
 
+    InterlockedExchange((volatile LONG *)&header->width, state->width);
+    InterlockedExchange((volatile LONG *)&header->height, state->height);
+    InterlockedExchange((volatile LONG *)&header->stride, state->stride);
     MemoryBarrier();
     InterlockedExchange64((volatile LONG64 *)&slot->sequence_lock, lock_value + 2);
     InterlockedExchange64((volatile LONG64 *)&header->newest_sequence, sequence);
     InterlockedIncrement64((volatile LONG64 *)&header->frames_published);
     SetEvent(ipc->frame_ready_event);
     return 1;
+}
+
+static bool try_drain_oldest_pbo(
+    aura_hook_ipc *ipc,
+    aura_gl_capture_state *state,
+    aura_gl_capture_result *out_result)
+{
+    unsigned read_index = state->read_index;
+    int ready = 1;
+    if (state->fences[read_index] != NULL) {
+        GLenum wait = state->client_wait_sync(state->fences[read_index], 0, 0);
+        ready = wait == GL_ALREADY_SIGNALED || wait == GL_CONDITION_SATISFIED;
+        if (!ready && state->skipped_in_row >= 1) ready = 1;
+        if (!ready) {
+            ++state->skipped_in_row;
+            InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
+            return false;
+        }
+    }
+    state->skipped_in_row = 0;
+
+    drop_fence(state, read_index);
+    state->bind_buffer(GL_PIXEL_PACK_BUFFER, state->pbos[read_index]);
+    const uint8_t *pixels = (const uint8_t *)state->map_buffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+    if (pixels != NULL) {
+        int published = publish_frame(ipc, state, pixels, state->issue_100ns[read_index]);
+        GLboolean unmapped = state->unmap_buffer(GL_PIXEL_PACK_BUFFER);
+        if (published && unmapped == GL_TRUE) {
+            *out_result = AURA_GL_CAPTURE_PUBLISHED;
+        } else {
+            InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
+            *out_result = AURA_GL_CAPTURE_FAILED;
+        }
+    } else {
+        InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
+    }
+
+    state->read_index = (read_index + 1) % 3;
+    --state->pending_count;
+    return true;
 }
 
 aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
@@ -258,17 +324,12 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
     aura_gl_capture_result result = AURA_GL_CAPTURE_SKIPPED;
     aura_gl_capture_state *state = &g_capture;
 
-    // Остановка: кольцо PBO принадлежит контексту игры, и освободить его можно
-    // только отсюда, из потока отрисовки. Поток управления ждёт подтверждения.
     if (InterlockedCompareExchange(&g_release_requested, 0, 0) != 0) {
         release_current_context(state);
         InterlockedExchange(&g_release_done, 1);
         goto done;
     }
 
-    // Размер заднего буфера — это клиентская область окна. GL_VIEWPORT к моменту
-    // SwapBuffers хранит то, что игра выставила последним (проход шейдера,
-    // интерфейс), и чтение шло не того размера. Так же делает OBS.
     int width = 0, height = 0;
     HWND window = dc != NULL ? WindowFromDC(dc) : NULL;
     RECT client;
@@ -292,12 +353,16 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         result = AURA_GL_CAPTURE_FAILED;
         goto done;
     }
-    InterlockedExchange((volatile LONG *)&ipc->header->width, width);
-    InterlockedExchange((volatile LONG *)&ipc->header->height, height);
-    InterlockedExchange((volatile LONG *)&ipc->header->stride, width * 4);
-    if (!initialize_ring(state, width, height)) {
+    int64_t current_epoch = InterlockedCompareExchange64(
+        (volatile LONG64 *)&ipc->header->route_epoch, 0, 0);
+    if (!initialize_ring(state, width, height, current_epoch)) {
         result = state->unsupported ? AURA_GL_CAPTURE_UNSUPPORTED : AURA_GL_CAPTURE_FAILED;
         goto done;
+    }
+    if (state->pending_count == 0) {
+        InterlockedExchange((volatile LONG *)&ipc->header->width, width);
+        InterlockedExchange((volatile LONG *)&ipc->header->height, height);
+        InterlockedExchange((volatile LONG *)&ipc->header->stride, width * 4);
     }
 
     uint64_t now = now_100ns();
@@ -306,12 +371,6 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
         result = AURA_GL_CAPTURE_FAILED;
         goto done;
     }
-    // Расписание копится от прошлого слота, а не от момента съёмки. Раньше
-    // следующий слот ставился на now + интервал: при игре на 70-100 к/с кадр
-    // приходил на пару миллисекунд раньше слота и пропускался, и вместо 60 к/с
-    // в запись шло 35-45. Четверть интервала допуска снимает дребезг кадров
-    // игры, а после долгой паузы (меню, свёрнутое окно) расписание догоняет
-    // текущее время, а не отдаёт пачку кадров подряд.
     uint64_t interval = UINT64_C(10000000) / (uint64_t)target_fps;
     uint64_t slack = interval / 4;
     if (state->next_issue_100ns != 0 && now + slack < state->next_issue_100ns) goto done;
@@ -329,72 +388,45 @@ aura_gl_capture_result aura_gl_capture_present(aura_hook_ipc *ipc, HDC dc)
     glGetIntegerv(GL_READ_BUFFER, &previous_read_buffer);
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_framebuffer);
 
-    // Игра могла оставить привязанным СВОЙ кадровый буфер. Тогда glReadPixels
-    // прочитает его, а не задний буфер окна, и в запись уедет чужая картинка.
-    // Раньше привязка только считывалась и тут же выбрасывалась.
     if (state->bind_framebuffer != NULL && previous_read_framebuffer != 0)
         state->bind_framebuffer(GL_READ_FRAMEBUFFER, 0);
 
-    unsigned write_index = (unsigned)(state->issued_count % 3);
+    // Если все 3 PBO уже в полёте, сначала освобождаем самый старый PBO, чтобы не
+    // перезаписать буфер, в который GPU ещё копирует предыдущий кадр.
+    if (state->pending_count == 3) {
+        if (!try_drain_oldest_pbo(ipc, state, &result)) {
+            goto restore_gl;
+        }
+    }
+
+    unsigned write_index = state->write_index;
     state->bind_buffer(GL_PIXEL_PACK_BUFFER, state->pbos[write_index]);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadBuffer(GL_BACK);
-    while (glGetError() != GL_NO_ERROR) { }       // чужие ошибки нас не касаются
+    while (glGetError() != GL_NO_ERROR) { }
     glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, (void *)0);
-    // Ошибку обязательно снимаем с очереди: иначе она достанется игре, а мы
-    // опубликуем содержимое ПРОШЛОГО кадра из того же PBO как свежее.
     GLenum read_error = glGetError();
     if (read_error != GL_NO_ERROR) {
-        if (state->bind_framebuffer != NULL && previous_read_framebuffer != 0)
-            state->bind_framebuffer(GL_READ_FRAMEBUFFER, (GLuint)previous_read_framebuffer);
-        glReadBuffer((GLenum)previous_read_buffer);
-        glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
-        state->bind_buffer(GL_PIXEL_PACK_BUFFER, (GLuint)previous_buffer);
         InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
         result = AURA_GL_CAPTURE_FAILED;
-        goto done;
+        goto restore_gl;
     }
     state->issue_100ns[write_index] = now;
     drop_fence(state, write_index);
     if (state->fence_sync != NULL)
         state->fences[write_index] = state->fence_sync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    state->write_index = (write_index + 1) % 3;
+    ++state->pending_count;
     ++state->issued_count;
     InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_issued);
-    result = AURA_GL_CAPTURE_ISSUED;
+    if (result != AURA_GL_CAPTURE_PUBLISHED && result != AURA_GL_CAPTURE_FAILED)
+        result = AURA_GL_CAPTURE_ISSUED;
 
-    unsigned read_index = (write_index + 1) % 3;
-    // Кадр в самом старом PBO ещё не дочитан видеокартой: не ждём его на потоке
-    // игры, а пропускаем. Следующий захват этот PBO всё равно перезапишет.
-    int ready = 1;
-    if (state->issued_count >= 3 && state->fences[read_index] != NULL) {
-        GLenum wait = state->client_wait_sync(state->fences[read_index], 0, 0);
-        ready = wait == GL_ALREADY_SIGNALED || wait == GL_CONDITION_SATISFIED;
-        // Один пропуск подряд допустим, второй — уже нет: тогда ждём как раньше
-        if (!ready && state->skipped_in_row >= 1) ready = 1;
-        if (!ready) {
-            ++state->skipped_in_row;
-            InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
-        }
-    }
-    if (ready) state->skipped_in_row = 0;
-
-    if (state->issued_count >= 3 && ready) {
-        drop_fence(state, read_index);
-        state->bind_buffer(GL_PIXEL_PACK_BUFFER, state->pbos[read_index]);
-        const uint8_t *pixels = (const uint8_t *)state->map_buffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-        if (pixels != NULL) {
-            int published = publish_frame(ipc, state, pixels, state->issue_100ns[read_index]);
-            GLboolean unmapped = state->unmap_buffer(GL_PIXEL_PACK_BUFFER);
-            if (published && unmapped == GL_TRUE) result = AURA_GL_CAPTURE_PUBLISHED;
-            else {
-                InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
-                result = AURA_GL_CAPTURE_FAILED;
-            }
-        } else {
-            InterlockedIncrement64((volatile LONG64 *)&ipc->header->frames_dropped);
-        }
+    if (state->pending_count == 3) {
+        (void)try_drain_oldest_pbo(ipc, state, &result);
     }
 
+restore_gl:
     if (state->bind_framebuffer != NULL && previous_read_framebuffer != 0)
         state->bind_framebuffer(GL_READ_FRAMEBUFFER, (GLuint)previous_read_framebuffer);
     glReadBuffer((GLenum)previous_read_buffer);
@@ -422,15 +454,17 @@ bool aura_gl_capture_release_pending(void)
     return InterlockedCompareExchange(&g_release_requested, 0, 0) != 0;
 }
 
+void aura_gl_capture_notify_idle(void)
+{
+    InterlockedExchange(&g_idle_notified, 1);
+}
+
 void aura_gl_capture_abandon(void)
 {
     AcquireSRWLockExclusive(&g_capture_lock);
-    // Буферы здесь НЕ удаляются намеренно: зовут нас из потока управления, у него
-    // нет текущего контекста OpenGL, и вызов ушёл бы в никуда. Освобождает кольцо
-    // поток отрисовки по запросу aura_gl_capture_request_release. Сюда мы попадаем,
-    // только если игра перестала показывать кадры и подтверждения не дождались.
     memset(&g_capture, 0, sizeof(g_capture));
     InterlockedExchange(&g_release_requested, 0);
     InterlockedExchange(&g_release_done, 0);
+    InterlockedExchange(&g_idle_notified, 0);
     ReleaseSRWLockExclusive(&g_capture_lock);
 }

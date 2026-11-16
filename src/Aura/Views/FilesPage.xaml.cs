@@ -22,8 +22,18 @@ public partial class FilesPage : PageBase
         InitializeComponent();
         AddTips(Aside, "files");
         HideAsideWhenNarrow(AsideCol, Aside);
-        Services.Storage.StatsChanged += stats => Dispatcher.BeginInvoke(() => ShowStats(stats));
-        Loaded += (_, _) => Load();
+        Action<StorageStats> onStatsChanged = stats => Dispatcher.BeginInvoke(() => ShowStats(stats));
+        Services.Storage.StatsChanged += onStatsChanged;
+        bool hookedWindowClose = false;
+        Loaded += (_, _) =>
+        {
+            Load();
+            if (!hookedWindowClose && Window.GetWindow(this) is { } window)
+            {
+                hookedWindowClose = true;
+                window.Closed += (_, _) => Services.Storage.StatsChanged -= onStatsChanged;
+            }
+        };
     }
 
     public override bool FillsWindow => true;

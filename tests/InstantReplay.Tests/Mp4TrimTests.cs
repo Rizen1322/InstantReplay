@@ -163,6 +163,24 @@ public class Mp4TrimTests : IDisposable
         Assert.Contains("elst", System.Text.Encoding.ASCII.GetString(moov));
     }
 
+    [Theory]
+    [InlineData(8)]     // обычный mdat
+    [InlineData(16)]    // mdat с 64-битным размером
+    public void Co64_starts_exactly_above_four_gigabytes(int mdatHeader)
+    {
+        // Граница — суммарный размер файла: ftyp 32 байта, moov 4 КБ, данные —
+        // остальное. Ровно uint.MaxValue ещё влезает в 32-битный stco, на байт
+        // больше — уже co64.
+        const long ftyp = 32, moov = 4096;
+        long data = uint.MaxValue - ftyp - moov - mdatHeader;
+        Assert.False(Mp4Trim.NeedsCo64(ftyp, data, mdatHeader, (int)moov));
+        Assert.True(Mp4Trim.NeedsCo64(ftyp, data + 1, mdatHeader, (int)moov));
+
+        // moov — полноправное слагаемое: если под него не оставить места,
+        // те же данные в 32 бита уже не влезают
+        Assert.True(Mp4Trim.NeedsCo64(ftyp, uint.MaxValue - ftyp - mdatHeader, mdatHeader, (int)moov));
+    }
+
     [Fact]
     public void Old_fragmented_recording_cuts_the_same_as_its_converted_copy()
     {

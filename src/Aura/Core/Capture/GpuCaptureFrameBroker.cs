@@ -123,7 +123,14 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
                     {
                         slot.Scope = captured.Scope;
                         slot.CleanCurrent = false;
-                        CopyFrame(captured, slot.Output);
+                        if (captured.Scope == CaptureSurfaceScope.GameWindow)
+                        {
+                            lock (_device) CopyFrame(captured, slot.Output);
+                        }
+                        else
+                        {
+                            CopyFrame(captured, slot.Output);
+                        }
                     });
 
                 _cursorState.Apply(captured.Generation, captured.Cursor);
@@ -135,18 +142,20 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
                 slot.Scope = captured.Scope;
                 slot.CleanCurrent = false;
 
-                // БЕЗ КУРСОРА — БЕЗ ЗАМКА. Копия кадра и нормализация окна не зависят от
-                // состояния конвейера (цель рендера, вьюпорт, шейдеры), а поштучную
+                // БЕЗ КУРСОРА — БЕЗ ЗАМКА для прямой копии монитора. Копия кадра не зависит
+                // от состояния конвейера (цель рендера, вьюпорт, шейдеры), а поштучную
                 // безопасность параллельных вызовов даёт SetMultithreadProtected.
-                //
-                // ЗАЧЕМ ЭТО ВАЖНО. С замком поток захвата ждал, пока обработчик кадров
-                // закончит свою GPU-работу (скейлер, конвертер, копия в пул с Flush).
-                // Под загруженной видеокартой это секунды: в логе кадр в очереди ждал
-                // 1792 мс, захват замирал на 1833 мс, а WGC за это время забивал свой
-                // пул и переставал отдавать кадры — в клипе получался фриз.
+                // Оконный normalizer меняет состояние VideoContext / RTV, поэтому берёт _device.
                 if (!_separateCursor || !_cursorOverlay!.WillDraw(cursor))
                 {
-                    CopyFrame(captured, slot.Output);
+                    if (captured.Scope == CaptureSurfaceScope.GameWindow)
+                    {
+                        lock (_device) CopyFrame(captured, slot.Output);
+                    }
+                    else
+                    {
+                        CopyFrame(captured, slot.Output);
+                    }
                     return;
                 }
 

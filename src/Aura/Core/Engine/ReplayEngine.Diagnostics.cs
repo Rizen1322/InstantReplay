@@ -23,6 +23,7 @@ namespace Aura.Core.Engine;
 /// </summary>
 public sealed partial class ReplayEngine
 {
+    private readonly object _statsSync = new();
     private long _lastNoSlot;
     private long _lastLate;
 
@@ -97,6 +98,14 @@ public sealed partial class ReplayEngine
     }
 
     private void DumpStats(string label)
+    {
+        lock (_statsSync)
+        {
+            DumpStatsCore(label);
+        }
+    }
+
+    private void DumpStatsCore(string label)
     {
         ExpireRescued(force: false);
         var enc = _pipeline.Encoder;
@@ -200,6 +209,24 @@ public sealed partial class ReplayEngine
         _lastReceived = rcv; _lastAccepted = acc;
         _lastRequests = req; _lastPacerBlocked = blocked;
         _statsWindowStart = snapshotAt;
+    }
+
+    /// <summary>
+    /// Закрыть PDH-запросы диагностики. Каждый PdhOpenQueryW держит объект ядра до
+    /// PdhCloseQuery, а живут эти поля столько же, сколько движок: без Dispose
+    /// дескрипторы висели до конца процесса. Зовётся из Dispose, когда таймеры уже
+    /// остановлены, поэтому гонки с DumpStats и сторожем нет. Повторный вызов
+    /// безопасен: поля обнуляются и пересоздадутся лениво, если понадобятся снова.
+    /// </summary>
+    private void DisposeDiagnostics()
+    {
+        try { _gpuLoad?.Dispose(); } catch { }
+        _gpuLoad = null;
+        try { _wdOurGpu?.Dispose(); } catch { }
+        _wdOurGpu = null;
+        try { _wdAllGraphics?.Dispose(); } catch { }
+        _wdAllGraphics = null;
+        _wdSilentOurGpu = _wdSilentGraphics = -1;
     }
 
     /// <summary>

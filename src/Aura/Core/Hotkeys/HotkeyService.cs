@@ -178,15 +178,37 @@ public sealed class HotkeyService : IDisposable
     private long _lastKeyboardEvent;
     private long _lastReinstall;
 
+    /// <summary>
+    /// Закрыть зажатую push-to-talk, если клавиша физически уже отпущена: отпускание
+    /// мог не увидеть хук (передний план у приложения с более высокими правами — его
+    /// ввод низкоуровневому хуку не приходит, или хук в этот момент переустанавливался).
+    /// Без этой сверки микрофон оставался бы открытым навсегда.
+    /// </summary>
+    private void ResetStuckPushToTalk()
+    {
+        if (!_pushToTalkHeld) return;
+        (uint vk, bool ctrl, bool shift, bool alt, bool win)? binding;
+        lock (_mapLock) binding = _pushToTalk;
+        // Бинд сняли или сменили, пока клавиша была зажата: отпускания старой клавиши
+        // уже не будет, и держать микрофон открытым не за что.
+        if (binding is { } key && (GetAsyncKeyState((int)key.vk) & 0x8000) != 0) return;
+        _pushToTalkHeld = false;
+        try { PushToTalkChanged?.Invoke(false, NowTicks()); }
+        catch (Exception ex) { Log.Warn("Hotkeys", $"Push-to-talk: {ex.Message}"); }
+    }
+
     /// <summary>Compare physical keyboard/button state with events received by our hooks.</summary>
     private void CheckHookAlive()
     {
+        // Раньше всего: зажатая push-to-talk — единственное состояние хука, которое само
+        // не восстановится, а ошибка стоит постоянно открытого микрофона.
+        ResetStuckPushToTalk();
         long now = Environment.TickCount64;
         if (_mouseBound && _mouseHook == IntPtr.Zero) UpdateMouseHook();
         if (now - _lastReinstall < 1000) return;
         bool missedPress = false;
         if (now - _lastKeyboardEvent >= 250)
-            for (uint vk = 4; vk < 256; vk++)
+            for (uint vk = 8; vk < 256; vk++)
                 if (vk is not 0x10 and not 0x11 and not 0x12 &&
                     (GetAsyncKeyState((int)vk) & 0x8000) != 0 && !_keysDown.Contains(vk))
                 { missedPress = true; break; }

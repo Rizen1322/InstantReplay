@@ -76,8 +76,14 @@ public abstract class ArenaStorage
 
     public void AddRef()
     {
-        if (Interlocked.Increment(ref _refs) <= 1)
-            throw new ObjectDisposedException(nameof(ArenaStorage));
+        while (true)
+        {
+            int current = Volatile.Read(ref _refs);
+            if (current <= 0)
+                throw new ObjectDisposedException(nameof(ArenaStorage));
+            if (Interlocked.CompareExchange(ref _refs, current + 1, current) == current)
+                return;
+        }
     }
 
     public void Release()

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDir,
     [switch]$RunProtocolTests,
     [switch]$RunGlTests
@@ -36,6 +36,10 @@ foreach ($required in $requiredFiles) {
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+
+$zigCache = Join-Path $nativeRoot ".zig-cache"
+New-Item -ItemType Directory -Path $zigCache -Force | Out-Null
+& icacls $zigCache /setintegritylevel "(OI)(CI)Medium" /T *> $null
 
 Push-Location $nativeRoot
 try {

@@ -60,16 +60,26 @@ if ((Test-Path $KeyPath) -and -not $Force) {
 & $openssl ecparam -name prime256v1 -genkey -noout -out $KeyPath
 if ($LASTEXITCODE -ne 0) { Write-Host "ОШИБКА: не удалось создать ключ" -ForegroundColor Red; exit 1 }
 
-$pubDer = Join-Path $env:TEMP 'aura-release-pub.der'
-# Без перенаправления stderr: openssl пишет туда «read EC key» — обычный отчёт о
-# работе, но Windows PowerShell 5.1 при перенаправлении заворачивает КАЖДУЮ строку
-# нативного stderr в ошибку и роняет скрипт при $ErrorActionPreference = 'Stop',
-# даже когда программа вернула ноль.
-& $openssl ec -in $KeyPath -pubout -outform DER -out $pubDer
-if ($LASTEXITCODE -ne 0) { Write-Host "ОШИБКА: не удалось извлечь открытый ключ" -ForegroundColor Red; exit 1 }
+# Ограничиваем доступ к закрытому ключу только текущим пользователем, администраторами и SYSTEM
+& icacls $KeyPath /inheritance:r /grant:r "$($env:USERNAME):(F)" "*S-1-5-32-544:(F)" "*S-1-5-18:(F)" | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "ПРЕДУПРЕЖДЕНИЕ: не удалось ограничить ACL для $KeyPath" -ForegroundColor Yellow }
 
-$publicKey = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pubDer))
-Remove-Item $pubDer -Force
+$pubDer = Join-Path $env:TEMP ("aura-release-pub-" + [Guid]::NewGuid().ToString("N") + ".der")
+try {
+    # Без перенаправления stderr: openssl пишет туда «read EC key» — обычный отчёт о
+    # работе, но Windows PowerShell 5.1 при перенаправлении заворачивает КАЖДУЮ строку
+    # нативного stderr в ошибку и роняет скрипт при $ErrorActionPreference = 'Stop',
+    # даже когда программа вернула ноль.
+    & $openssl ec -in $KeyPath -pubout -outform DER -out $pubDer
+    if ($LASTEXITCODE -ne 0) { Write-Host "ОШИБКА: не удалось извлечь открытый ключ" -ForegroundColor Red; exit 1 }
+
+    $publicKey = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pubDer))
+}
+finally {
+    if (Test-Path -LiteralPath $pubDer) {
+        Remove-Item -LiteralPath $pubDer -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host ""
 Write-Host "Закрытый ключ: $KeyPath" -ForegroundColor Green

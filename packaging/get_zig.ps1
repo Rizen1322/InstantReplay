@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -12,6 +12,7 @@ $expectedSha256 = "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75
 $downloadUrl = "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"
 
 if (Test-Path -LiteralPath $zigExe -PathType Leaf) {
+    & icacls $zigExe /setintegritylevel Medium *> $null
     Write-Output $zigExe
     exit 0
 }
@@ -44,6 +45,7 @@ if (-not (Test-Path -LiteralPath $zigExe -PathType Leaf)) {
     throw "После распаковки не найден $zigExe"
 }
 
+& icacls $zigExe /setintegritylevel Medium *> $null
 Write-Output $zigExe
 # Явный код выхода: вызывающие скрипты проверяют $LASTEXITCODE, а без exit он
 # остаётся пустым, и свежескачанный Zig считался бы неудачей.

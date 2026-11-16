@@ -480,13 +480,34 @@ public sealed class VideoProcessorNv12 : IDisposable
         catch (Exception ex)
         {
             var d = frame.Description;
-            var owner = frame.Device; // Vortice кеширует эту обёртку; Dispose здесь её обнулит.
+            nint owner = OwnerDevicePointer(frame);
             throw new InvalidOperationException(
                 $"VP input: {d.Width}x{d.Height} {d.Format}, bind {d.BindFlags}, " +
                 $"usage {d.Usage}, samples {d.SampleDescription.Count}, array {d.ArraySize}, " +
-                $"device 0x{owner.NativePointer:X}/0x{_device.NativePointer:X}, " +
+                $"device 0x{(long)owner:X}/0x{(long)_device.NativePointer:X}, " +
                 $"configured {_srcW}x{_srcH} → {OutWidth}x{OutHeight}", ex);
         }
+    }
+
+    /// <summary>
+    /// Указатель устройства-владельца текстуры без обёртки Vortice.
+    ///
+    /// frame.Device создаёт (и кеширует в самой текстуре) обёртку ID3D11Device:
+    /// оставить её нельзя — она держит устройство лишней ссылкой, а освободить
+    /// в catch-ветке означало бы обнулить общий кеш прямо в момент отказа, когда
+    /// код ошибки ещё может понадобиться выше. Поэтому зовём GetDevice напрямую
+    /// по vtable и сразу отпускаем полученную ссылку: для текста ошибки нужен
+    /// только адрес устройства.
+    /// </summary>
+    private static unsafe nint OwnerDevicePointer(ID3D11Texture2D texture)
+    {
+        // IUnknown (QueryInterface/AddRef/Release) — три первых слота, GetDevice — четвёртый
+        void** vtable = *(void***)texture.NativePointer;
+        var getDevice = (delegate* unmanaged[Stdcall]<nint, nint*, int>)vtable[3];
+        nint device = 0;
+        if (getDevice(texture.NativePointer, &device) < 0) device = 0;
+        if (device != 0) System.Runtime.InteropServices.Marshal.Release(device);
+        return device;
     }
 
     private void ReleaseCore()

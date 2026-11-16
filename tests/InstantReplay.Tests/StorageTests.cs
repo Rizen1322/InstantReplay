@@ -163,6 +163,34 @@ public class ClipIndexTests : IDisposable
     }
 
     [Fact]
+    public void РазноеНаписаниеТогоЖеПутиНеУдваиваетРазмер()
+    {
+        // Тот же файл можно записать по-разному: с «./» в пути или, на Windows,
+        // через прямой слэш. Индекс хранит нормализованный ключ, поэтому искать
+        // существующую запись он обязан по нему же, иначе один файл посчитается
+        // дважды — и в объёме, и в числе клипов.
+        string clip = CreateFile("clip.mp4", 200);
+        string roundabout = Path.Combine(_root, ".", "clip.mp4");
+
+        var index = new ClipIndex();
+        index.Add(new ClipFile(clip, 200, DateTime.UtcNow, true));
+        index.Add(new ClipFile(roundabout, 200, DateTime.UtcNow, true));
+
+        Assert.Equal(1, index.Count);
+        Assert.Equal(200, index.TotalBytes);
+        Assert.Equal(1, index.ClipCount);
+
+        if (OperatingSystem.IsWindows())
+        {
+            index.Add(new ClipFile(clip.Replace('\\', '/'), 200, DateTime.UtcNow, true));
+
+            Assert.Equal(1, index.Count);
+            Assert.Equal(200, index.TotalBytes);
+            Assert.Equal(1, index.ClipCount);
+        }
+    }
+
+    [Fact]
     public void ПереименованиеСохраняетОбъём()
     {
         string clip = CreateFile("old.mp4", 400);

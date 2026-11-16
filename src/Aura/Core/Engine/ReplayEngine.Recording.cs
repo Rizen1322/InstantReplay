@@ -257,7 +257,7 @@ public sealed partial class ReplayEngine
         RecordingStartedUtc ??= DateTime.UtcNow;
         _recorderNvencStats = NvencStats.Take();
         _recorderDetached = false;
-        _recorderSequenceHeader = _bufferSequenceHeader;
+        _recorderSequenceHeader = _bufferSequenceHeader ?? _pipeline.Encoder.TryGetSequenceHeader();
         _recorderStream = (_bufferCodec, _bufferWidth, _bufferHeight, _bufferFps);
         if (!_splittingRecording) RecordingChanged?.Invoke(true);
     }

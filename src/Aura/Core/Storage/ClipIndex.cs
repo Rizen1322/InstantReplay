@@ -97,13 +97,16 @@ public sealed class ClipIndex
 
     private void AddLocked(ClipFile file)
     {
-        if (_files.TryGetValue(file.Path, out var existing))
+        // Ключ — всегда нормализованный путь: «папка/файл.mp4» и «папка\файл.mp4»
+        // (и прочие написания того же файла) должны давать одну запись, иначе
+        // повторное добавление удвоило бы и объём, и число клипов.
+        string key = Normalize(file.Path);
+        if (_files.TryGetValue(key, out var existing))
         {
             _totalBytes -= existing.SizeBytes;
             if (existing.IsClip) _clipCount--;
         }
-        // Describe уже отдаёт FullName, но ключ нормализуем явно — Remove ищет так же
-        _files[Normalize(file.Path)] = file;
+        _files[key] = file;
         _totalBytes += file.SizeBytes;
         if (file.IsClip) _clipCount++;
     }

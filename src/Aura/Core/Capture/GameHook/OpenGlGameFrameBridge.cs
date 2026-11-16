@@ -34,6 +34,7 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
     private readonly bool _captureCursor;
     private readonly long _generation;
     private readonly object _identitySync = new();
+    private readonly object _viewSync = new();
     private readonly GameHookFrameReader _reader = new();
     private readonly MinecraftHookInjectionQuarantine _quarantine = new();
     private readonly ManualResetEvent _stopEvent = new(false);
@@ -132,13 +133,17 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
 
     public OpenGlGameBridgeDiagnostics GetDiagnostics()
     {
-        if (_framePointer is null)
-            return new OpenGlGameBridgeDiagnostics(
-                long.MaxValue, 0, 0, 0,
-                FramesUploaded, FramesRejected,
-                GameHookState.Empty, GameHookError.None);
+        GameHookHeader header;
+        lock (_viewSync)
+        {
+            if (_framePointer is null)
+                return new OpenGlGameBridgeDiagnostics(
+                    long.MaxValue, 0, 0, 0,
+                    FramesUploaded, FramesRejected,
+                    GameHookState.Empty, GameHookError.None);
 
-        GameHookHeader header = Unsafe.ReadUnaligned<GameHookHeader>(ref *_framePointer);
+            header = Unsafe.ReadUnaligned<GameHookHeader>(ref *_framePointer);
+        }
         long now = Environment.TickCount64 * 10_000;
         long heartbeatAge = header.HookHeartbeat100ns <= 0 || now <= header.HookHeartbeat100ns
             ? 0
@@ -187,9 +192,9 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
         }
         catch (Exception ex)
         {
-            // Ошибка до завершения Start должна сорвать запуск provider. Иначе
-            // recovery уже держит свой single-flight флаг, проигнорирует Failed,
-            // а GamePending навсегда останется на последнем кадре.
+            // Ошибка до завершения Start должна сорвать запуск provider и остановить
+            // уже запущенные фоновые потоки/таймеры этого экземпляра.
+            Dispose();
             throw new InvalidOperationException("Не удалось запустить Minecraft OpenGL bridge", ex);
         }
     }
@@ -197,18 +202,21 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
     public void SetRoute(long routeEpoch, bool captureEnabled)
     {
         if (routeEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(routeEpoch));
-        if (_framePointer is null) return;
 
         lock (_identitySync)
         {
             _expected = _expected with { RouteEpoch = routeEpoch };
-            GameHookHeader* header = (GameHookHeader*)_framePointer;
-            Volatile.Write(ref header->RouteEpoch, routeEpoch);
-            Volatile.Write(
-                ref Unsafe.As<GameHookCommand, int>(ref header->Command),
-                captureEnabled
-                    ? (int)GameHookCommand.Capture
-                    : (int)GameHookCommand.Idle);
+            lock (_viewSync)
+            {
+                if (_framePointer is null) return;
+                GameHookHeader* header = (GameHookHeader*)_framePointer;
+                Volatile.Write(ref header->RouteEpoch, routeEpoch);
+                Volatile.Write(
+                    ref Unsafe.As<GameHookCommand, int>(ref header->Command),
+                    captureEnabled
+                        ? (int)GameHookCommand.Capture
+                        : (int)GameHookCommand.Idle);
+            }
         }
         Volatile.Write(ref _captureEnabled, captureEnabled ? 1 : 0);
         if (captureEnabled)
@@ -217,7 +225,7 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             Volatile.Write(ref _healthGraceUntilTick, now + 3_000);
             Volatile.Write(ref _lastFrameProgressTick, now);
         }
-        _controlEvent?.Set();
+        try { _controlEvent?.Set(); } catch (ObjectDisposedException) { }
     }
 
     private void CreateSharedObjects(
@@ -307,63 +315,101 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             {
                 GameHookFrameExpectedIdentity expected;
                 lock (_identitySync) expected = _expected;
-                GameHookHeader peek = _memoryView.ReadHeader();
+                IGameHookMemoryView? memoryView = _memoryView;
+                if (memoryView is null) continue;
+                GameHookHeader peek = memoryView.ReadHeader();
                 if (peek.Width <= 0 || peek.Height <= 0 ||
                     peek.Width > GameHookProtocol.MaxWidth ||
                     peek.Height > GameHookProtocol.MaxHeight)
                     continue;
-                EnsureTextures(peek.Width, peek.Height);
-                MappedSubresource mapped = _context.Map(
-                    _uploadTexture!,
-                    0,
-                    MapMode.WriteDiscard,
-                    Vortice.Direct3D11.MapFlags.None);
                 GameHookFrameSnapshot frame;
                 bool accepted;
-                try
+                lock (_device)
                 {
-                    int peekByteCount = checked(peek.Stride * peek.Height);
-                    if (peek.Stride > 0 && mapped.RowPitch == peek.Stride &&
-                        peekByteCount <= _scratch.Length)
+                    EnsureTextures(peek.Width, peek.Height);
+                    MappedSubresource mapped = _context.Map(
+                        _uploadTexture!,
+                        0,
+                        MapMode.WriteDiscard,
+                        Vortice.Direct3D11.MapFlags.None);
+                    try
                     {
-                        var directDestination = new Span<byte>(
-                            (void*)mapped.DataPointer,
-                            peekByteCount);
-                        accepted = _reader.TryRead(
-                            _memoryView,
-                            expected,
-                            directDestination,
-                            out frame,
-                            out _);
-                    }
-                    else
-                    {
-                        accepted = _reader.TryRead(
-                            _memoryView,
-                            expected,
-                            _scratch,
-                            out frame,
-                            out _);
-                        if (accepted)
+                        int peekByteCount = checked(peek.Stride * peek.Height);
+                        if (peek.Stride > 0 && mapped.RowPitch == peek.Stride &&
+                            peekByteCount <= _scratch.Length)
                         {
-                            fixed (byte* source = _scratch)
+                            var directDestination = new Span<byte>(
+                                (void*)mapped.DataPointer,
+                                peekByteCount);
+                            accepted = _reader.TryRead(
+                                memoryView,
+                                expected,
+                                directDestination,
+                                out frame,
+                                out _);
+                            if (accepted &&
+                                (frame.Width != peek.Width ||
+                                 frame.Height != peek.Height ||
+                                 frame.Stride != peek.Stride ||
+                                 frame.ByteCount != peekByteCount))
                             {
-                                byte* destination = (byte*)mapped.DataPointer;
-                                for (int row = 0; row < frame.Height; ++row)
+                                accepted = false;
+                            }
+                        }
+                        else
+                        {
+                            accepted = _reader.TryRead(
+                                memoryView,
+                                expected,
+                                _scratch,
+                                out frame,
+                                out _);
+                            if (accepted)
+                            {
+                                if (frame.Width != _textureWidth || frame.Height != _textureHeight)
                                 {
-                                    Buffer.MemoryCopy(
-                                        source + row * frame.Stride,
-                                        destination + row * mapped.RowPitch,
-                                        mapped.RowPitch,
-                                        frame.Stride);
+                                    _context.Unmap(_uploadTexture!, 0);
+                                    EnsureTextures(frame.Width, frame.Height);
+                                    mapped = _context.Map(
+                                        _uploadTexture!,
+                                        0,
+                                        MapMode.WriteDiscard,
+                                        Vortice.Direct3D11.MapFlags.None);
+                                }
+
+                                if (frame.Width <= 0 || frame.Height <= 0 ||
+                                    frame.Height > _textureHeight ||
+                                    frame.Stride <= 0 || frame.Stride > mapped.RowPitch ||
+                                    frame.ByteCount < checked(frame.Stride * frame.Height) ||
+                                    frame.ByteCount > _scratch.Length)
+                                {
+                                    accepted = false;
+                                }
+                                else
+                                {
+                                    fixed (byte* source = _scratch)
+                                    {
+                                        byte* destination = (byte*)mapped.DataPointer;
+                                        for (int row = 0; row < frame.Height; ++row)
+                                        {
+                                            Buffer.MemoryCopy(
+                                                source + (nint)row * frame.Stride,
+                                                destination + (nint)row * mapped.RowPitch,
+                                                mapped.RowPitch,
+                                                frame.Stride);
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                finally
-                {
-                    _context.Unmap(_uploadTexture!, 0);
+                    finally
+                    {
+                        _context.Unmap(_uploadTexture!, 0);
+                    }
+
+                    if (accepted)
+                        _context.CopyResource(_frameTexture!, _uploadTexture!);
                 }
 
                 if (!accepted)
@@ -372,7 +418,6 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
                     continue;
                 }
 
-                _context.CopyResource(_frameTexture!, _uploadTexture!);
                 Interlocked.Increment(ref _framesUploaded);
                 FrameArrived?.Invoke(new OpenGlGameFrame(
                     _frameTexture!,
@@ -426,13 +471,17 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
 
     private void HeartbeatAndCheckHealth()
     {
-        if (_framePointer is null || _disposed) return;
-        GameHookHeader* header = (GameHookHeader*)_framePointer;
+        if (_disposed) return;
         long nowTick = Environment.TickCount64;
-        Volatile.Write(ref header->ControllerHeartbeat100ns, nowTick * 10_000);
-        if (Volatile.Read(ref _injectionComplete) == 0) return;
-
-        GameHookHeader snapshot = Unsafe.ReadUnaligned<GameHookHeader>(ref *_framePointer);
+        GameHookHeader snapshot;
+        lock (_viewSync)
+        {
+            if (_framePointer is null || _disposed) return;
+            GameHookHeader* header = (GameHookHeader*)_framePointer;
+            Volatile.Write(ref header->ControllerHeartbeat100ns, nowTick * 10_000);
+            if (Volatile.Read(ref _injectionComplete) == 0) return;
+            snapshot = Unsafe.ReadUnaligned<GameHookHeader>(ref *_framePointer);
+        }
         long published = snapshot.FramesPublished;
         if (published != Volatile.Read(ref _lastNativePublished))
         {
@@ -487,13 +536,16 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
             }
         }
         _heartbeatTimer = null;
-        if (_framePointer is not null)
+        lock (_viewSync)
         {
-            GameHookHeader* header = (GameHookHeader*)_framePointer;
-            Volatile.Write(
-                ref Unsafe.As<GameHookCommand, int>(ref header->Command),
-                (int)GameHookCommand.Stop);
-            _controlEvent?.Set();
+            if (_framePointer is not null)
+            {
+                GameHookHeader* header = (GameHookHeader*)_framePointer;
+                Volatile.Write(
+                    ref Unsafe.As<GameHookCommand, int>(ref header->Command),
+                    (int)GameHookCommand.Stop);
+                _controlEvent?.Set();
+            }
         }
         _stopEvent.Set();
         bool readerStopped = !_readerThread.IsAlive || _readerThread.Join(TimeSpan.FromSeconds(2));
@@ -519,20 +571,22 @@ internal sealed unsafe class OpenGlGameFrameBridge : IDisposable
 
     private void ReleaseResources()
     {
+        lock (_viewSync)
+        {
+            _memoryView = null;
+            if (_frameView is not null && _framePointer is not null)
+            {
+                _framePointer = null;
+                _frameView.SafeMemoryMappedViewHandle.ReleasePointer();
+            }
+            if (_bootstrapView is not null && _bootstrapPointer is not null)
+            {
+                _bootstrapPointer = null;
+                _bootstrapView.SafeMemoryMappedViewHandle.ReleasePointer();
+            }
+        }
         _frameTexture?.Dispose();
         _uploadTexture?.Dispose();
-        if (_frameView is not null && _framePointer is not null)
-        {
-            _framePointer -= _frameView.PointerOffset;
-            _frameView.SafeMemoryMappedViewHandle.ReleasePointer();
-            _framePointer = null;
-        }
-        if (_bootstrapView is not null && _bootstrapPointer is not null)
-        {
-            _bootstrapPointer -= _bootstrapView.PointerOffset;
-            _bootstrapView.SafeMemoryMappedViewHandle.ReleasePointer();
-            _bootstrapPointer = null;
-        }
         _controlEvent?.Dispose();
         _frameReadyEvent?.Dispose();
         _frameView?.Dispose();

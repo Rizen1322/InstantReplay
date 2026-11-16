@@ -172,6 +172,7 @@ internal sealed class GameHookFrameReader
 
         view.CopyTo(payloadOffset, destination[..slot.ByteCount]);
 
+        Interlocked.MemoryBarrier();
         long secondLock = view.ReadInt64Volatile(slotOffset);
         if (secondLock != firstLock || (secondLock & 1) != 0)
             return Reject(GameHookFrameReadResult.TornSlot, out result);

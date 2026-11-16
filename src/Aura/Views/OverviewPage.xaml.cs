@@ -41,9 +41,27 @@ public partial class OverviewPage : PageBase
 
         _tick.Tick += (_, _) => Refresh();
         _frameTick.Tick += async (_, _) => await GrabFrameAsync();
-        ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = LoadRecentAsync());
-        ClipCommands.ClipAdded += path => Dispatcher.BeginInvoke(() => { _ = path; _ = LoadRecentAsync(); });
-        ReplayFilmstrip.Changed += () => Dispatcher.BeginInvoke(BuildStrip);
+        Action onLibraryChanged = () => Dispatcher.BeginInvoke(() => _ = LoadRecentAsync());
+        Action<string> onClipAdded = path => Dispatcher.BeginInvoke(() => { _ = path; _ = LoadRecentAsync(); });
+        Action onFilmstripChanged = () => Dispatcher.BeginInvoke(BuildStrip);
+        ClipCommands.LibraryChanged += onLibraryChanged;
+        ClipCommands.ClipAdded += onClipAdded;
+        ReplayFilmstrip.Changed += onFilmstripChanged;
+
+        bool hookedWindowClose = false;
+        Loaded += (_, _) =>
+        {
+            if (hookedWindowClose || Window.GetWindow(this) is not { } window) return;
+            hookedWindowClose = true;
+            window.Closed += (_, _) =>
+            {
+                _tick.Stop();
+                _frameTick.Stop();
+                ClipCommands.LibraryChanged -= onLibraryChanged;
+                ClipCommands.ClipAdded -= onClipAdded;
+                ReplayFilmstrip.Changed -= onFilmstripChanged;
+            };
+        };
 
         SizeChanged += (_, _) => Relayout();
 

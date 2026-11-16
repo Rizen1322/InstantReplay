@@ -26,6 +26,7 @@ static void observe_present(HDC hdc)
             (volatile LONG *)&ipc->header->command,
             0,
             0) != AURA_GAME_HOOK_COMMAND_CAPTURE && !aura_gl_capture_release_pending()) {
+        aura_gl_capture_notify_idle();
         return;
     }
 

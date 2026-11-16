@@ -21,4 +21,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AuraUninstall</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Aura/Core/Tools/ExecutableTrust.cs" Link="ExecutableTrust.cs" />
+  </ItemGroup>
 </Project>

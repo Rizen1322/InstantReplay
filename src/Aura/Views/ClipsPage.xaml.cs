@@ -52,14 +52,29 @@ public partial class ClipsPage : PageBase
         // Прокрутку ищем именно в Loaded: OnShown зовётся сразу после присвоения
         // содержимого окну, когда визуального дерева над страницей ещё нет и
         // подниматься к ScrollViewer просто не по чему.
+        Action onLibraryChanged = () => Dispatcher.BeginInvoke(() => _ = ReloadAsync());
+        Action<string> onClipAdded = path => Dispatcher.BeginInvoke(() => InsertClip(path));
+        Action<ClipItem> onSelectRequested = clip => Dispatcher.BeginInvoke(() => ToggleSelection(clip));
+        bool hookedWindowClose = false;
         Loaded += (_, _) =>
         {
             if (!_loaded) _ = ReloadAsync();
             HookScroll();
+            if (!hookedWindowClose && Window.GetWindow(this) is { } window)
+            {
+                hookedWindowClose = true;
+                window.Closed += (_, _) =>
+                {
+                    _thumbs?.Cancel();
+                    ClipCommands.LibraryChanged -= onLibraryChanged;
+                    ClipCommands.ClipAdded -= onClipAdded;
+                    ClipCommands.SelectRequested -= onSelectRequested;
+                };
+            }
         };
-        ClipCommands.LibraryChanged += () => Dispatcher.BeginInvoke(() => _ = ReloadAsync());
-        ClipCommands.ClipAdded += path => Dispatcher.BeginInvoke(() => InsertClip(path));
-        ClipCommands.SelectRequested += clip => Dispatcher.BeginInvoke(() => ToggleSelection(clip));
+        ClipCommands.LibraryChanged += onLibraryChanged;
+        ClipCommands.ClipAdded += onClipAdded;
+        ClipCommands.SelectRequested += onSelectRequested;
         SizeChanged += (_, _) => { UpdateBarLayout(); UpdateSelectionBarOffset(); };
     }
 

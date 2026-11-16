@@ -146,12 +146,26 @@ internal sealed class EncoderTexturePool : IDisposable
             var handles = new IntPtr[slots];
             for (int i = 0; i < slots; i++)
             {
-                var capture = Aura.Core.Diagnostics.GpuResourceLedger.Track(captureDevice.CreateTexture2D(desc), "общий пул");
-                var captureLock = capture.QueryInterface<IDXGIKeyedMutex>();
-                using (var resource = capture.QueryInterface<IDXGIResource>()) handles[i] = resource.SharedHandle;
-                _shared[i] = new SharedSlot(null, null, capture, captureLock);
-                _slots[i] = capture;
-                _slotOf[capture.NativePointer] = i;
+                ID3D11Texture2D? capture = null;
+                IDXGIKeyedMutex? captureLock = null;
+                try
+                {
+                    capture = Aura.Core.Diagnostics.GpuResourceLedger.Track(captureDevice.CreateTexture2D(desc), "общий пул");
+                    captureLock = capture.QueryInterface<IDXGIKeyedMutex>();
+                    using (var resource = capture.QueryInterface<IDXGIResource>()) handles[i] = resource.SharedHandle;
+                    _shared[i] = new SharedSlot(null, null, capture, captureLock);
+                    _slots[i] = capture;
+                    _slotOf[capture.NativePointer] = i;
+                }
+                catch
+                {
+                    if (_shared[i] is null)
+                    {
+                        captureLock?.Dispose();
+                        capture?.Dispose();
+                    }
+                    throw;
+                }
             }
             SharedHandles = handles;
         }
@@ -207,14 +221,32 @@ internal sealed class EncoderTexturePool : IDisposable
         {
             for (int i = 0; i < slots; i++)
             {
-                var encoder = Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(desc), "общий пул");
-                var encoderLock = encoder.QueryInterface<IDXGIKeyedMutex>();
-                using var resource = encoder.QueryInterface<IDXGIResource>();
-                var capture = captureDevice.OpenSharedResource<ID3D11Texture2D>(resource.SharedHandle);
-                var captureLock = capture.QueryInterface<IDXGIKeyedMutex>();
-                _shared[i] = new SharedSlot(encoder, encoderLock, capture, captureLock);
-                _slots[i] = capture;
-                _slotOf[capture.NativePointer] = i;
+                ID3D11Texture2D? encoder = null;
+                IDXGIKeyedMutex? encoderLock = null;
+                ID3D11Texture2D? capture = null;
+                IDXGIKeyedMutex? captureLock = null;
+                try
+                {
+                    encoder = Aura.Core.Diagnostics.GpuResourceLedger.Track(encoderDevice.CreateTexture2D(desc), "общий пул");
+                    encoderLock = encoder.QueryInterface<IDXGIKeyedMutex>();
+                    using var resource = encoder.QueryInterface<IDXGIResource>();
+                    capture = captureDevice.OpenSharedResource<ID3D11Texture2D>(resource.SharedHandle);
+                    captureLock = capture.QueryInterface<IDXGIKeyedMutex>();
+                    _shared[i] = new SharedSlot(encoder, encoderLock, capture, captureLock);
+                    _slots[i] = capture;
+                    _slotOf[capture.NativePointer] = i;
+                }
+                catch
+                {
+                    if (_shared[i] is null)
+                    {
+                        captureLock?.Dispose();
+                        capture?.Dispose();
+                        encoderLock?.Dispose();
+                        encoder?.Dispose();
+                    }
+                    throw;
+                }
             }
         }
         catch
@@ -279,11 +311,20 @@ internal sealed class EncoderTexturePool : IDisposable
                 }
             }
             long copyStart = Diagnostics.PipelineProbe.Now();
-            lock (_device)
+            try
             {
-                gpuTimer?.Mark(context);
-                context.CopyResource(shared.Capture, source);
-                gpuTimer?.Mark(context);
+                lock (_device)
+                {
+                    gpuTimer?.Mark(context);
+                    context.CopyResource(shared.Capture, source);
+                    gpuTimer?.Mark(context);
+                }
+            }
+            catch
+            {
+                try { shared.CaptureLock.ReleaseSync(0); } catch { }
+                _ledger.Release(slot);
+                throw;
             }
             Diagnostics.PipelineProbe.PoolCopy.Add(copyStart, Diagnostics.PipelineProbe.Now());
             shared.CaptureLock.ReleaseSync(1);      // отпускает и отправляет копию видеокарте
@@ -291,35 +332,43 @@ internal sealed class EncoderTexturePool : IDisposable
             return shared.Capture;
         }
 
-        var destination = _slots[slot];
-        var desc = source.Description;
-        if (destination is null || destination.Description.Width != desc.Width
-                                || destination.Description.Height != desc.Height)
+        try
         {
-            desc.BindFlags = _renderTarget ? BindFlags.RenderTarget : BindFlags.None;
-            desc.MiscFlags = ResourceOptionFlags.None;
-            var created = KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "пул энкодера"));
-            lock (_sync)
+            var destination = _slots[slot];
+            var desc = source.Description;
+            if (destination is null || destination.Description.Width != desc.Width
+                                    || destination.Description.Height != desc.Height)
             {
-                if (destination is not null)
+                desc.BindFlags = _renderTarget ? BindFlags.RenderTarget : BindFlags.None;
+                desc.MiscFlags = ResourceOptionFlags.None;
+                var created = KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "пул энкодера"));
+                lock (_sync)
                 {
-                    _slotOf.Remove(destination.NativePointer);
-                    destination.Dispose();
+                    if (destination is not null)
+                    {
+                        _slotOf.Remove(destination.NativePointer);
+                        destination.Dispose();
+                    }
+                    destination = _slots[slot] = created;
+                    _slotOf[created.NativePointer] = slot;
                 }
-                destination = _slots[slot] = created;
-                _slotOf[created.NativePointer] = slot;
             }
+            lock (_device)
+            {
+                gpuTimer?.Mark(context);
+                context.CopyResource(destination, source);
+                gpuTimer?.Mark(context);
+                // Сразу отправить копию видеокарте: энкодер берёт кадр из другого потока,
+                // и копия не должна ждать в буфере команд, пока его отправит кто-то ещё.
+                context.Flush();
+            }
+            return destination;
         }
-        lock (_device)
+        catch
         {
-            gpuTimer?.Mark(context);
-            context.CopyResource(destination, source);
-            gpuTimer?.Mark(context);
-            // Сразу отправить копию видеокарте: энкодер берёт кадр из другого потока,
-            // и копия не должна ждать в буфере команд, пока его отправит кто-то ещё.
-            context.Flush();
+            _ledger.Release(slot);
+            throw;
         }
-        return destination;
     }
 
     private ID3D11Texture2D? _latest;
@@ -336,21 +385,27 @@ internal sealed class EncoderTexturePool : IDisposable
     /// воспроизведено и снято стеками потоков. Эта текстура в энкодер не уходит
     /// никогда, поэтому копировать с неё можно всегда.
     /// </summary>
-    public ID3D11Texture2D? Latest => _latest;
+    public ID3D11Texture2D? Latest
+    {
+        get { lock (_sync) return _latest; }
+    }
 
     /// <summary>Запомнить настоящий кадр как источник будущих дубликатов.</summary>
     public void KeepLatest(ID3D11Texture2D source, ID3D11DeviceContext context)
     {
-        var desc = source.Description;
-        if (_latest is null || _latest.Description.Width != desc.Width
-                            || _latest.Description.Height != desc.Height)
+        lock (_sync)
         {
-            desc.BindFlags = BindFlags.None;
-            desc.MiscFlags = ResourceOptionFlags.None;
-            _latest?.Dispose();
-            _latest = KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "последний кадр"));
+            var desc = source.Description;
+            if (_latest is null || _latest.Description.Width != desc.Width
+                                || _latest.Description.Height != desc.Height)
+            {
+                desc.BindFlags = BindFlags.None;
+                desc.MiscFlags = ResourceOptionFlags.None;
+                _latest?.Dispose();
+                _latest = KeepResident(Aura.Core.Diagnostics.GpuResourceLedger.Track(_device.CreateTexture2D(desc), "последний кадр"));
+            }
+            lock (_device) context.CopyResource(_latest, source);
         }
-        lock (_device) context.CopyResource(_latest, source);
     }
 
     /// <summary>Ещё одна ссылка на занятую текстуру пула.</summary>
@@ -439,10 +494,19 @@ internal sealed class EncoderTexturePool : IDisposable
             // Кадр вытеснен из очереди, не дойдя до энкодера: слот стоит на ключе 1.
             // Возвращаем ключ 0, иначе следующая копия захвата его не получит.
             var shared = _shared[sharedSlot]!;
-            if (shared.Written && AcquireSync(shared.CaptureLock, 1, 20) == 0)
+            if (shared.Written)
             {
-                shared.Written = false;
-                shared.CaptureLock.ReleaseSync(0);
+                int acquired = AcquireSync(shared.CaptureLock, 1, 20);
+                if (acquired == WaitAbandoned)
+                {
+                    ReportAbandoned();
+                    return;
+                }
+                if (acquired == 0)
+                {
+                    shared.Written = false;
+                    shared.CaptureLock.ReleaseSync(0);
+                }
             }
             _ledger.Release(sharedSlot);
             return;

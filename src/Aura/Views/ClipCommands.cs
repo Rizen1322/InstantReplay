@@ -154,16 +154,29 @@ public static class ClipCommands
     /// <summary>
     /// Скриншот в буфер обмена. Раньше здесь копировался путь строкой — вставить
     /// картинку из «Клипов» было нельзя, приходилось открывать файл и копировать
-    /// оттуда.
+    /// оттуда. Копирование асинхронное: буфер мог быть занят, и повторы с паузой
+    /// больше не морозят окно. После await продолжаем на потоке интерфейса
+    /// (уведомления и буфер обмена живут там).
     /// </summary>
-    private static void CopyImageToClipboard(ClipItem item)
+    private static async void CopyImageToClipboard(ClipItem item)
     {
-        if (ImageClipboard.CopyFile(item.FullPath))
-            Services.Notifications.Show(Core.Notifications.NotificationKind.Screenshot,
-                "Скриншот скопирован");
-        else
+        try
+        {
+            if (await ImageClipboard.CopyFileAsync(item.FullPath))
+                Services.Notifications.Show(Core.Notifications.NotificationKind.Screenshot,
+                    "Скриншот скопирован");
+            else
+                Services.Notifications.Show(Core.Notifications.NotificationKind.Warning,
+                    "Не удалось скопировать", "буфер обмена занят другой программой");
+        }
+        catch (Exception ex)
+        {
+            // async void вне try/catch обрушил бы приложение после await, а не показал
+            // предупреждение: вызывающий код такой метод уже не оборачивает.
+            Log.Error("Library", ex);
             Services.Notifications.Show(Core.Notifications.NotificationKind.Warning,
-                "Не удалось скопировать", "буфер обмена занят другой программой");
+                "Не удалось скопировать", ex.Message);
+        }
     }
 
     private static async void RenameAsync(ClipItem item)

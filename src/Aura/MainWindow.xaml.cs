@@ -53,18 +53,47 @@ public partial class MainWindow : Window
 
         ApplyUiScale(Services.Settings.Current.UiScale);
 
-        Services.Engine.StateChanged += _ => Services.Ui.Enqueue(SyncMaster);
-        Services.Engine.RecordingChanged += recording => Services.Ui.Enqueue(() =>
+        Action<EngineState> onStateChanged = _ => Services.Ui.Enqueue(SyncMaster);
+        Action<bool> onRecordingChanged = recording => Services.Ui.Enqueue(() =>
         {
             _recordingSince = recording ? DateTime.UtcNow : null;
             SyncMaster();
         });
-        Services.Storage.StatsChanged += stats => Dispatcher.BeginInvoke(() => ShowDisk(stats));
-        _statusTick.Tick += (_, _) => SyncMaster();
-        Services.Settings.Changed += group => Services.Ui.Enqueue(() =>
+        Action<Core.Storage.StorageStats> onStatsChanged = stats => Dispatcher.BeginInvoke(() => ShowDisk(stats));
+        Action<string> onSettingsChanged = group => Services.Ui.Enqueue(() =>
         {
             if (group is "" or "ui") ApplyUiScale(Services.Settings.Current.UiScale);
         });
+
+        Services.Engine.StateChanged += onStateChanged;
+        Services.Engine.RecordingChanged += onRecordingChanged;
+        Services.Storage.StatsChanged += onStatsChanged;
+        _statusTick.Tick += (_, _) => SyncMaster();
+        Services.Settings.Changed += onSettingsChanged;
+
+        IsVisibleChanged += (_, _) =>
+        {
+            if (!IsLoaded) return;
+            if (IsVisible)
+            {
+                SyncMaster();
+                _statusTick.Start();
+            }
+            else
+            {
+                _statusTick.Stop();
+            }
+        };
+
+        Closed += (_, _) =>
+        {
+            _statusTick.Stop();
+            _current?.OnHidden();
+            Services.Engine.StateChanged -= onStateChanged;
+            Services.Engine.RecordingChanged -= onRecordingChanged;
+            Services.Storage.StatsChanged -= onStatsChanged;
+            Services.Settings.Changed -= onSettingsChanged;
+        };
 
         Loaded += (_, _) =>
         {
@@ -72,7 +101,7 @@ public partial class MainWindow : Window
             Navigate(StartPage);
             SyncMaster();
             ShowDisk(Services.Storage.GetStats());
-            _statusTick.Start();
+            if (IsVisible) _statusTick.Start();
             _ = CheckUpdateAsync();
         };
     }

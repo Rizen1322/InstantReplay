@@ -134,6 +134,16 @@ public sealed class VideoEncoder : IDisposable
 
     private readonly Queue<EncoderInputFrame> _inputQueue = new();
     private readonly object _queueLock = new();
+
+    // Семафор — это ТОЛЬКО «разбудить того, кто ждёт кадр», а не счётчик кадров:
+    // сколько кадров на самом деле лежит в очереди, знает _inputQueue. Раньше
+    // считалось, что сигнал == кадр, и счётчик расходился с глубиной очереди:
+    // вытеснение кадра пыталось его уменьшить проверкой CurrentCount и отдельным
+    // Wait(0) (между ними счётчик менялся), TakeInput съедал сигнал и возвращал
+    // false на пустой очереди, а Clear при закрытии сигналы не трогал вовсе.
+    // Лишние разрешения будили вхолостую, а потерянное заставляло ждать кадр,
+    // который уже лежит в очереди, до самого таймаута. Источник правды — очередь,
+    // см. TakeInput.
     private readonly SemaphoreSlim _inputAvailable = new(0);
     private long _frameDurationTicks;
 
@@ -876,19 +886,45 @@ public sealed class VideoEncoder : IDisposable
         }
     }
 
-    /// <summary>Взять кадр из очереди (ждать не дольше <paramref name="timeoutMs"/>).</summary>
+    /// <summary>
+    /// Взять кадр из очереди, подождав не дольше <paramref name="timeoutMs"/>.
+    ///
+    /// Сигнал семафора — только повод заглянуть в очередь, а не «кадр»: кадры
+    /// считает сама очередь под _queueLock. Поэтому ждём сигнал, затем проверяем
+    /// очередь, и если она пуста (сигналов могло накопиться больше, чем кадров, —
+    /// их не трогают при вытеснении и Clear), ждём следующий сигнал с остатком
+    /// таймаута. Под _queueLock семафор не ждём: иначе Enqueue не отпустит замок
+    /// и сигнала не будет никогда.
+    /// </summary>
     private bool TakeInput(int timeoutMs, out EncoderInputFrame item)
     {
         item = default;
-        if (!_inputAvailable.Wait(timeoutMs)) return false;
-        lock (_queueLock)
+        long startQpc = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (true)
         {
-            if (_inputQueue.Count == 0) return false;
-            item = _inputQueue.Dequeue();
-            NoteDequeued(item);
+            int remainingMs = 0;
+            if (timeoutMs > 0)
+            {
+                long elapsedMs = (long)System.Diagnostics.Stopwatch.GetElapsedTime(startQpc).TotalMilliseconds;
+                remainingMs = (int)Math.Max(0L, timeoutMs - elapsedMs);
+            }
+
+            bool signaled = _inputAvailable.Wait(remainingMs);
+
+            lock (_queueLock)
+            {
+                if (_inputQueue.Count > 0)
+                {
+                    item = _inputQueue.Dequeue();
+                    NoteDequeued(item);
+                    Interlocked.Increment(ref InputRequests);
+                    return true;
+                }
+            }
+
+            // Сигнал был, но кадр успели забрать/вытеснить — ждём следующий.
+            if (!signaled || remainingMs == 0) return false;
         }
-        Interlocked.Increment(ref InputRequests);
-        return true;
     }
 
     /// <summary>Перенести кадр на устройство энкодера и отправить в NVENC.</summary>
@@ -1842,13 +1878,18 @@ public sealed class VideoEncoder : IDisposable
     {
         // Метки вокруг копии нужны и здесь: без второй стадии замер не закрывается и
         // время преобразования на видеокарте в лог не попадало вовсе.
-        gpuTimer?.Mark(_context!);
-        _copyPool!.KeepLatest(nv12PoolTexture, _context!);
-        gpuTimer?.Mark(_context!);
-        Interlocked.Increment(ref PullCandidatesWindow);
-        long ready = NowQpcTicks();
         lock (_pullLock)
+        {
+            lock (_device!)
+            {
+                gpuTimer?.Mark(_context!);
+                _copyPool!.KeepLatest(nv12PoolTexture, _context!);
+                gpuTimer?.Mark(_context!);
+            }
+            Interlocked.Increment(ref PullCandidatesWindow);
+            long ready = NowQpcTicks();
             _pullCandidate = new PullCandidate(_copyPool.Latest, captureTicks, ready, ++_pullSequence);
+        }
     }
 
     /// <summary>Один тик пейсера в pull-модели: закрыть созревшие слоты.</summary>
@@ -1903,9 +1944,15 @@ public sealed class VideoEncoder : IDisposable
 
                 if (takeFresh)
                 {
-                    if (!PutCandidateIntoFrame(candidate, pts)) break;
-                    Interlocked.Increment(ref PullFreshWindow);
-                    _pullRepeatStreak = 0;
+                    if (PutCandidateIntoFrame(candidate, pts))
+                    {
+                        Interlocked.Increment(ref PullFreshWindow);
+                        _pullRepeatStreak = 0;
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref PullSkippedWindow);
+                    }
                 }
                 // Просроченный слот без повтора пропускаем, а не встаём на нём: иначе при
                 // забитой очереди цикл каждый тик ломался на первом же повторе и свежий
@@ -1926,15 +1973,20 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Свежий кадр в слот. false — нет свободного слота пула или очередь не приняла.</summary>
     private bool PutCandidateIntoFrame(in PullCandidate candidate, long pts)
     {
-        // Самый свежий на этот момент: если после плана пришёл ещё кадр, «последний
-        // кадр» уже его — берём его время, а не устаревшее из плана.
+        // Самый свежий на этот момент: копирование и чтение метки времени под одним
+        // замком, чтобы новый кандидат не подменил пиксели отдельно от времени.
         long captureTicks;
-        lock (_pullLock) captureTicks = Math.Max(_pullCandidate.CaptureTicks, candidate.CaptureTicks);
-        if (_copyPool!.Latest is null) return false;
-
-        var texture = _copyPool.TryCopy(_copyPool.Latest, _context!);
+        ID3D11Texture2D? texture;
+        lock (_pullLock)
+        {
+            captureTicks = Math.Max(_pullCandidate.CaptureTicks, candidate.CaptureTicks);
+            var latest = _copyPool!.Latest;
+            if (latest is null) return false;
+            texture = _copyPool.TryCopy(latest, _context!);
+        }
         if (texture is null)
         {
+            Interlocked.Increment(ref FramesDroppedRealQueue);
             Interlocked.Increment(ref FramesDroppedNoSlot);
             return false;
         }
@@ -1965,15 +2017,20 @@ public sealed class VideoEncoder : IDisposable
     /// <summary>Повтор прошлого кадра. false — повтор делать нечем или очередь его не приняла.</summary>
     private bool PutRepeatIntoFrame(long pts, bool encoderBehind)
     {
-        if (_copyPool!.Latest is null) return false;
-        if (!CanEnqueueDuplicate(encoderBehind))
+        ID3D11Texture2D? duplicate;
+        lock (_pullLock)
         {
-            Interlocked.Increment(ref FramesSuppressedDuplicates);
-            Interlocked.Increment(ref PacerBlocked);
-            return false;
-        }
+            var latest = _copyPool!.Latest;
+            if (latest is null) return false;
+            if (!CanEnqueueDuplicate(encoderBehind))
+            {
+                Interlocked.Increment(ref FramesSuppressedDuplicates);
+                Interlocked.Increment(ref PacerBlocked);
+                return false;
+            }
 
-        var duplicate = _copyPool.TryCopy(_copyPool.Latest, _context!);
+            duplicate = _copyPool.TryCopy(latest, _context!);
+        }
         if (duplicate is null)
         {
             Interlocked.Increment(ref PacerBlocked);
@@ -2047,7 +2104,8 @@ public sealed class VideoEncoder : IDisposable
             else if (admission == EncoderQueueAdmission.EvictOldestReal)
             {
                 _copyPool?.Release(_inputQueue.Dequeue().Texture);
-                RemoveOneAvailableSignal();
+                // Сигнал не трогаем: он лишь будит ждущего, а кадры считает очередь
+                // (см. _inputAvailable и TakeInput).
                 Interlocked.Increment(ref FramesDroppedRealQueue);
                 Interlocked.Increment(ref FramesDroppedQueue);
             }
@@ -2107,12 +2165,7 @@ public sealed class VideoEncoder : IDisposable
             if (index != removalIndex) _inputQueue.Enqueue(frame);
             else _copyPool?.Release(frame.Texture);
         }
-        RemoveOneAvailableSignal();
-    }
-
-    private void RemoveOneAvailableSignal()
-    {
-        if (_inputAvailable.CurrentCount > 0) _inputAvailable.Wait(0);
+        // Сигнал не трогаем: семафор — будильник, а не счётчик кадров (см. TakeInput).
     }
 
     /// <summary>
@@ -2623,7 +2676,7 @@ public sealed class VideoEncoder : IDisposable
         Diagnostics.PipelineProbe.DrainOutput.Add(drainStart, Diagnostics.PipelineProbe.Now());
         FrameEncoded?.Invoke(new EncodedFrame(_scratch, 0, currentLength,
                                               sample.SampleTime, sample.SampleDuration, keyframe, dts));
-        Interlocked.Exchange(ref _lastDeliveredDts, dts);
+        Interlocked.Exchange(ref _lastDeliveredDts, dts == long.MinValue ? sample.SampleTime : dts);
     }
 
     private static ulong PackLong(int hi, int lo) => ((ulong)(uint)hi << 32) | (uint)lo;

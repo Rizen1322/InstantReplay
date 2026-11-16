@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using Aura.Core.Logging;
+using Aura.Core.Settings;
 using Aura.Core.Storage;
 
 namespace Aura.Core.Library;
@@ -29,9 +31,21 @@ public sealed class ClipItem : INotifyPropertyChanged
 
         // Игра = имя папки, в которой лежит файл (раскладка Videos\Aura\<Игра>\).
         // Файл прямо в корне — значит раскладка по играм была выключена.
+        // Подпись «без папки» — не данные, а то, что видит человек: она идёт через
+        // Loc, иначе в английском интерфейсе торчало бы русское «Без папки».
         string? dir = Path.GetDirectoryName(path);
-        Game = dir is null || PathsEqual(dir, root) ? "Без папки" : Path.GetFileName(dir);
+        Game = dir is null || PathsEqual(dir, root) ? Loc.T("no_folder") : Path.GetFileName(dir);
     }
+
+    /// <summary>
+    /// Культура дат на карточке — по языку интерфейса, а не по системе: в английском
+    /// интерфейсе «14 июл.» выглядел бы чужим. Lang читается на каждый вызов, так что
+    /// вычисляемые свойства отдают дату на актуальном языке; уже нарисованные
+    /// карточки перечитают их при следующей перезагрузке списка.
+    /// </summary>
+    private static CultureInfo DateCulture => Loc.Lang == AppLanguage.Ru
+        ? CultureInfo.GetCultureInfo("ru-RU")
+        : CultureInfo.GetCultureInfo("en-US");
 
     private static bool PathsEqual(string a, string b) => string.Equals(
         Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
@@ -51,12 +65,12 @@ public sealed class ClipItem : INotifyPropertyChanged
 
     /// <summary>Время на карточке: сегодняшние — часы, остальные — дата.</summary>
     public string CardTime => Created.Date == DateTime.Today ? Created.ToString("HH:mm")
-        : Created.Date == DateTime.Today.AddDays(-1) ? "вчера"
-        : Created.ToString("d MMM", System.Globalization.CultureInfo.GetCultureInfo("ru-RU")).TrimEnd('.');
+        : Created.Date == DateTime.Today.AddDays(-1) ? Loc.T("yesterday")
+        : Created.ToString("d MMM", DateCulture).TrimEnd('.');
 
     /// <summary>Вторая строка карточки: размер и разрешение, у скриншота — пометка.</summary>
     public string CardDetail => IsScreenshot
-        ? $"Скриншот, {SizeText}"
+        ? $"{Loc.T("screenshot")}, {SizeText}"
         : Resolution is { Length: > 0 } res ? $"{SizeText}, {res}" : SizeText;
     public string PlaceholderGlyph => IsScreenshot ? "\uE722" : "\uE714";
 
@@ -65,10 +79,10 @@ public sealed class ClipItem : INotifyPropertyChanged
     {
         get
         {
-            var parts = new List<string> { Game, Created.ToString("dd MMMM yyyy, HH:mm"), SizeText };
+            var parts = new List<string> { Game, Created.ToString("dd MMMM yyyy, HH:mm", DateCulture), SizeText };
             if (Duration is TimeSpan d) parts.Add(FormatDuration(d));
             if (Resolution is { Length: > 0 } r) parts.Add(r);
-            if (IsScreenshot) parts.Add("скриншот");
+            if (IsScreenshot) parts.Add(Loc.T("screenshot_note"));
             return string.Join(" · ", parts);
         }
     }
@@ -116,7 +130,13 @@ public sealed class ClipItem : INotifyPropertyChanged
     /// <summary>Миниатюру запрашиваем один раз на файл, даже если карточка переиспользована.</summary>
     internal bool ThumbRequested { get; set; }
 
-    public string DurationText => IsScreenshot ? "PNG"
+    /// <summary>
+    /// Плашка формата у снимка — настоящее расширение файла. Раньше здесь была
+    /// зашита строка «PNG», и у .jpg/.jpeg карточка врала о формате.
+    /// </summary>
+    private string Badge => Path.GetExtension(FullPath).TrimStart('.').ToUpperInvariant();
+
+    public string DurationText => IsScreenshot ? Badge
         : Duration is TimeSpan d ? FormatDuration(d) : "";
 
     public Visibility DurationVisibility =>

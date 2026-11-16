@@ -56,7 +56,38 @@ internal sealed class InstallTransaction : IDisposable
         writer.WriteLine("Aura installation root. This marker is required by AuraUninstall.exe.");
     }
 
-    private static void RejectLinks(string path)
+    internal static bool IsLegacyInstallRoot(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return false;
+        try
+        {
+            root = Path.GetFullPath(root);
+            if (!Directory.Exists(root)) return false;
+            RejectLinks(root);
+            string app = Path.Combine(root, "app");
+            if (!Directory.Exists(app)) return false;
+            RejectLinks(app);
+            if (!File.Exists(Path.Combine(app, "Aura.exe")) &&
+                !File.Exists(Path.Combine(app, "InstantReplay.exe")))
+                return false;
+
+            foreach (string entry in Directory.EnumerateFileSystemEntries(root))
+            {
+                string name = Path.GetFileName(entry);
+                if (!name.Equals("app", StringComparison.OrdinalIgnoreCase) &&
+                    !name.Equals("Uninstall.exe", StringComparison.OrdinalIgnoreCase) &&
+                    !name.Equals(".aura-install-root", StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static void RejectLinks(string path)
     {
         for (var dir = new DirectoryInfo(path); dir is not null; dir = dir.Parent)
             if (dir.Exists && (dir.Attributes & FileAttributes.ReparsePoint) != 0)
@@ -68,9 +99,26 @@ internal sealed class InstallTransaction : IDisposable
         if (!File.Exists(Path.Combine(StagingDirectory, "Aura.exe")) ||
             !File.Exists(Path.Combine(StagingDirectory, "AuraUninstall.exe")))
             throw new InvalidDataException("В поставке нет Aura.exe или AuraUninstall.exe.");
-        if (Directory.Exists(_app)) Directory.Move(_app, _backup);
-        Directory.Move(StagingDirectory, _app);
-        _installed = true;
+        bool movedOld = false;
+        if (Directory.Exists(_app))
+        {
+            Directory.Move(_app, _backup);
+            movedOld = true;
+        }
+        try
+        {
+            Directory.Move(StagingDirectory, _app);
+            _installed = true;
+        }
+        catch
+        {
+            if (movedOld && !Directory.Exists(_app) && Directory.Exists(_backup))
+            {
+                try { Directory.Move(_backup, _app); }
+                catch { }
+            }
+            throw;
+        }
     }
 
     public void Complete()
@@ -86,8 +134,26 @@ internal sealed class InstallTransaction : IDisposable
     {
         if (!_complete)
         {
-            if (_installed) Directory.Move(_app, StagingDirectory);
-            if (Directory.Exists(_backup)) Directory.Move(_backup, _app);
+            if (_installed)
+            {
+                try
+                {
+                    if (Directory.Exists(StagingDirectory))
+                        Directory.Delete(StagingDirectory, recursive: true);
+                    if (Directory.Exists(_app))
+                        Directory.Move(_app, StagingDirectory);
+                }
+                catch
+                {
+                    try { if (Directory.Exists(_app)) Directory.Delete(_app, recursive: true); }
+                    catch { }
+                }
+            }
+            if (!Directory.Exists(_app) && Directory.Exists(_backup))
+            {
+                try { Directory.Move(_backup, _app); }
+                catch { }
+            }
         }
         try { if (Directory.Exists(StagingDirectory)) Directory.Delete(StagingDirectory, recursive: true); }
         catch (IOException) { }

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDir
 )
 
@@ -31,6 +31,11 @@ foreach ($required in @(
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+
+$zigCache = Join-Path $nativeRoot ".zig-cache"
+New-Item -ItemType Directory -Path $zigCache -Force | Out-Null
+& icacls $zigCache /setintegritylevel "(OI)(CI)Medium" /T *> $null
+
 Push-Location $nativeRoot
 try {
     & $zigExe build --prefix $OutputDir --release=fast

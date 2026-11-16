@@ -32,6 +32,10 @@ public static class Loc
         ["rec_saved"]      = ("Запись сохранена ({0})", "Recording saved ({0})"),
         ["shot_saved"]     = ("Скриншот сохранён", "Screenshot saved"),
         ["shot_failed"]    = ("Не удалось сделать скриншот", "Screenshot failed"),
+        ["no_folder"]      = ("Без папки", "No folder"),
+        ["yesterday"]      = ("вчера", "yesterday"),
+        ["screenshot"]     = ("Скриншот", "Screenshot"),
+        ["screenshot_note"]= ("скриншот", "screenshot"),
     };
 
     public static string T(string key, params object[] args)

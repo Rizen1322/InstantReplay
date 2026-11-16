@@ -22,11 +22,12 @@ internal static class ColorSampling
     /// мониторе с масштабом 125% или на втором мониторе окно и кадр меряются
     /// в разных единицах.
     /// </summary>
-    public static Color At(BitmapSource shot, Point at, double windowWidth)
+    public static Color At(BitmapSource shot, Point at, double windowWidth, double windowHeight = 0)
     {
-        double factor = shot.PixelWidth / Math.Max(1, windowWidth);
-        int x = Math.Clamp((int)(at.X * factor), 0, shot.PixelWidth - 1);
-        int y = Math.Clamp((int)(at.Y * factor), 0, shot.PixelHeight - 1);
+        double factorX = shot.PixelWidth / Math.Max(1, windowWidth);
+        double factorY = windowHeight > 0 ? shot.PixelHeight / Math.Max(1, windowHeight) : factorX;
+        int x = Math.Clamp((int)(at.X * factorX), 0, shot.PixelWidth - 1);
+        int y = Math.Clamp((int)(at.Y * factorY), 0, shot.PixelHeight - 1);
 
         var pixel = new byte[4];
         shot.CopyPixels(new Int32Rect(x, y, 1, 1), pixel, 4, 0);

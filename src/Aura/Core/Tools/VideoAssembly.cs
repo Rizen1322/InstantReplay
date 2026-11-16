@@ -16,15 +16,25 @@ public sealed record VideoFileInfo(TimeSpan Duration, int Width, int Height, dou
 
 public static partial class VideoAssembly
 {
+    // ReadInfoAsync вызывается на каждый файл и каждую проверку границ, а создание
+    // LibVLC заново грузит нативные модули и кодеки — это дорого. Поэтому один общий
+    // движок на процесс, потокобезопасно создаётся Lazy. Не освобождаем его вообще:
+    // Media.Parse завершается в потоке колбэка VLC, и освобождение движка оттуда
+    // зависает (движок ждёт тот же колбэк). Media по-прежнему создаётся на вызов.
+    private static readonly Lazy<LibVLC> InfoEngine = new(() =>
+    {
+        LibVLCSharp.Shared.Core.Initialize();
+        return new LibVLC("--quiet", "--no-video-title-show");
+    });
+
     public static Task<VideoFileInfo> ReadInfoAsync(string path, CancellationToken ct = default) => Task.Run(async () =>
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Видеофайл не найден.", path);
-        LibVLCSharp.Shared.Core.Initialize();
-        using var engine = new LibVLC("--quiet", "--no-video-title-show");
-        using var media = new Media(engine, new Uri(System.IO.Path.GetFullPath(path)));
+        using var media = new Media(InfoEngine.Value, new Uri(System.IO.Path.GetFullPath(path)));
         using var cancel = ct.Register(media.ParseStop);
         await media.Parse(MediaParseOptions.ParseLocal, timeout: 15000, cancellationToken: ct);
-        // Parse may finish on VLC's callback thread; disposing VLC there waits for that same callback.
+        // Parse может завершиться в потоке колбэка VLC: продолжение уводим в пул потоков,
+        // чтобы не работать с Media в чужом колбэке.
         await Task.Yield();
         ct.ThrowIfCancellationRequested();
         var videos = media.Tracks.Where(t => t.TrackType == TrackType.Video).ToArray();

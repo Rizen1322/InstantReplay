@@ -45,7 +45,9 @@ internal static class MinecraftProcessInspector
                            processMachine == ImageFileMachineUnknown;
 
             ReadTokenIdentity(processHandle, out string processSid, out int processIntegrity);
-            string currentSid = WindowsIdentity.GetCurrent().User?.Value ?? string.Empty;
+            // WindowsIdentity держит дескриптор токена: без Dispose он утекал на каждой проверке
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+            string currentSid = identity.User?.Value ?? string.Empty;
             int currentIntegrity = ReadCurrentIntegrity();
             bool protectedOrUnknown = !GameHookNativeMethods.GetProcessInformation(
                                           processHandle,

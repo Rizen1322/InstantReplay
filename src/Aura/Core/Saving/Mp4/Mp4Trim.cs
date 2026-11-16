@@ -71,7 +71,7 @@ public static class Mp4Trim
             selected.Add((audio, 0, audio.Sizes.Length - 1));
         }
         double end = Enumerable.Range(0, video.Sizes.Length).Max(i => video.Pts(i) + (double)video.Duration(i) / video.Timescale);
-        WriteSelection(source, output, selected, 0, end, 0, fragmented ? null : Mp4Keyframes.ReadTopLevel(source, "ftyp"), moov, progress, ct);
+        WriteSelection(source, output, selected, 0, end, 0, fragmented ? null : Mp4Keyframes.ReadTopLevel(source, "ftyp"), progress, ct);
     }
 
     internal sealed class SourceTrack
@@ -159,7 +159,7 @@ public static class Mp4Trim
             picked.Add((memory, 0, memory.Sizes.Length - 1));
         }
 
-        WriteSelection(source, output, picked, start, end, anchor, ftyp, moov, progress, ct);
+        WriteSelection(source, output, picked, start, end, anchor, ftyp, progress, ct);
     }
 
     /// <summary>
@@ -251,8 +251,14 @@ public static class Mp4Trim
             bool largeMdat = dataLength + 8 > uint.MaxValue;
             int mdatHeader = largeMdat ? 16 : 8;
             byte[] ftyp = DefaultFtyp();
-            bool co64 = ftyp.Length + dataLength + mdatHeader + Mp4Defragment.BuildMoov(outTracks, false).Length * 2L > uint.MaxValue;
-            long dataStart = ftyp.Length + Mp4Defragment.BuildMoov(outTracks, co64).Length + mdatHeader;
+            // Размер ИТОГОВОГО moov — вклад в раскладку файла, и он сам зависит от co64
+            // (запись co64 длиннее на 4 байта на каждый кусок): сначала собираем пробу
+            // с 32-битными смещениями и смотрим, влезает ли файл в uint.MaxValue.
+            // Длина moov от значений смещений не зависит, только от co64.
+            byte[] probeMoov = Mp4Defragment.BuildMoov(outTracks, false);
+            bool co64 = NeedsCo64(ftyp.Length, dataLength, mdatHeader, probeMoov.Length);
+            if (co64) probeMoov = Mp4Defragment.BuildMoov(outTracks, true);
+            long dataStart = ftyp.Length + probeMoov.Length + mdatHeader;
             foreach (var index in new[] { videoIndex, audioIndex })
                 for (int c = 0; c < index.Chunks.Count; c++)
                     index.Chunks[c] = (index.Chunks[c].Offset + dataStart, index.Chunks[c].Count);
@@ -346,12 +352,22 @@ public static class Mp4Trim
         ct.ThrowIfCancellationRequested();
         var mixed = InMemory(mix(clips));
         double end = mixed.DtsTime(mixed.Sizes.Length - 1) + (double)mixed.LastDuration / mixed.Timescale;
-        WriteSelection(source, output, [(mixed, 0, mixed.Sizes.Length - 1)], 0, end, 0, null, moov, null, ct);
+        WriteSelection(source, output, [(mixed, 0, mixed.Sizes.Length - 1)], 0, end, 0, null, null, ct);
     }
+
+    /// <summary>
+    /// Влезут ли смещения кусков в 32-битный stco: суммарный размер файла
+    /// (ftyp + ИТОГОВЫЙ moov + заголовок mdat + данные) не должен превышать
+    /// uint.MaxValue. <paramref name="moovLen"/> — длина moov, собранного с stco:
+    /// с co64 он длиннее на 4 байта на каждый кусок, и по нему проверка — нижняя
+    /// граница, а точную раскладку даёт повторная сборка.
+    /// </summary>
+    internal static bool NeedsCo64(long ftypLen, long dataLen, int mdatHeader, int moovLen) =>
+        ftypLen + dataLen + mdatHeader + moovLen > uint.MaxValue;
 
     private static void WriteSelection(Stream source, string output,
         List<(SourceTrack Track, int First, int Last)> picked, double start, double end, double anchor,
-        byte[]? ftyp, byte[] moov, Action<double>? progress, CancellationToken ct)
+        byte[]? ftyp, Action<double>? progress, CancellationToken ct)
     {
         // Порядок данных в mdat: куски по полсекунды от каждой дорожки по очереди
         var order = new List<(int Track, int First, int Count)>();
@@ -410,8 +426,14 @@ public static class Mp4Trim
         ftyp ??= DefaultFtyp();
         bool largeMdat = dataLength + 8 > uint.MaxValue;
         int mdatHeader = largeMdat ? 16 : 8;
-        bool co64 = ftyp.Length + dataLength + mdatHeader + moov.Length * 2L > uint.MaxValue;
-        long dataStart = ftyp.Length + Mp4Defragment.BuildMoov(outTracks, co64).Length + mdatHeader;
+        // Длину moov исходника (у фрагментов ~1 КБ) брать нельзя: в файле будет
+        // ИТОГОВЫЙ moov, и он сам зависит от co64 (запись co64 длиннее на 4 байта
+        // на кусок). Собираем пробу с 32-битными смещениями и проверяем размер:
+        // длина moov от значений смещений не зависит, только от co64.
+        byte[] probeMoov = Mp4Defragment.BuildMoov(outTracks, false);
+        bool co64 = NeedsCo64(ftyp.Length, dataLength, mdatHeader, probeMoov.Length);
+        if (co64) probeMoov = Mp4Defragment.BuildMoov(outTracks, true);
+        long dataStart = ftyp.Length + probeMoov.Length + mdatHeader;
         foreach (var index in indexes)
             for (int c = 0; c < index.Chunks.Count; c++)
                 index.Chunks[c] = (index.Chunks[c].Offset + dataStart, index.Chunks[c].Count);

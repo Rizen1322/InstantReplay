@@ -141,6 +141,9 @@ public sealed class AudioMixerEngine : IDisposable
     /// процесса ждёт систему до 5 с, дольше периода таймера, и вызовы наслаивались.
     /// </summary>
     private readonly object _gameSwitch = new();
+    private readonly object _deviceWakeSync = new();
+    private int _restartingRender;
+    private int _restartingCapture;
     private MMDeviceEnumerator? _deviceWatchEnumerator;
     private DefaultDeviceWatcher? _deviceWatcher;
     private int _generation;
@@ -254,9 +257,10 @@ public sealed class AudioMixerEngine : IDisposable
         if (captureMic && _mic is null) RestartSource(DataFlow.Capture);
     }
 
-    private WasapiSource? OpenSource(bool loopback)
+    private WasapiSource? OpenSource(bool loopback, bool announceFailure = true)
     {
-        var line = loopback ? _gameLine! : _micLine!;
+        var line = loopback ? _gameLine : _micLine;
+        if (line is null) return null;
         try
         {
             var source = new WasapiSource(loopback, loopback ? _renderDeviceId : _captureDeviceId, line);
@@ -266,9 +270,12 @@ public sealed class AudioMixerEngine : IDisposable
         catch (Exception ex)
         {
             Log.Error("Audio", $"{(loopback ? "Loopback" : "Микрофон")} недоступен: {ex.Message}");
-            Warning?.Invoke(loopback
-                ? "Звук игры записать не удалось — проверьте устройство вывода в настройках"
-                : "Микрофон записать не удалось — проверьте устройство в настройках");
+            if (announceFailure)
+            {
+                Warning?.Invoke(loopback
+                    ? "Звук игры записать не удалось — проверьте устройство вывода в настройках"
+                    : "Микрофон записать не удалось — проверьте устройство в настройках");
+            }
             return null;
         }
     }
@@ -389,10 +396,25 @@ public sealed class AudioMixerEngine : IDisposable
             },
             // Появилось или включилось устройство: если источник ждёт своё
             // устройство, пробуем сразу, а не через минуту
-            () => _deviceArrived.Set());
+            PulseDeviceArrived);
             _deviceWatchEnumerator.RegisterEndpointNotificationCallback(_deviceWatcher);
         }
         catch (Exception ex) { Log.Warn("Audio", $"Слежение за устройствами недоступно: {ex.Message}"); }
+    }
+
+    private void PulseDeviceArrived()
+    {
+        lock (_deviceWakeSync) Monitor.PulseAll(_deviceWakeSync);
+    }
+
+    private void WaitDeviceOrDelay(int delayMs, int generation)
+    {
+        if (delayMs <= 0) return;
+        lock (_deviceWakeSync)
+        {
+            if (!_running || generation != Volatile.Read(ref _generation)) return;
+            Monitor.Wait(_deviceWakeSync, delayMs);
+        }
     }
 
     /// <summary>
@@ -407,50 +429,63 @@ public sealed class AudioMixerEngine : IDisposable
         // Звук отдельных программ от устройства не зависит: их переподключает
         // слежение за процессами
         if (loopback && ProcessMode) return;
+        ref int restarting = ref (loopback ? ref _restartingRender : ref _restartingCapture);
+        if (Interlocked.CompareExchange(ref restarting, 1, 0) != 0)
+        {
+            PulseDeviceArrived();
+            return;
+        }
         Task.Run(() =>
         {
-            // Windows шлёт уведомление до того, как новое устройство готово. А
-            // выдернутые наушники или засыпающий USB-микрофон бывают недоступны
-            // дольше: раньше одна неудачная попытка оставляла запись без звука до
-            // перезапуска. Теперь пробуем с растущей паузой, а потом раз в минуту,
-            // пока устройство не вернётся: выбранный USB-микрофон, воткнутый через
-            // пять минут, тоже должен подхватиться. Появление любого устройства
-            // будит попытку сразу.
-            int attempt = 0;
-            foreach (int delay in RecoveryDelays())
+            try
             {
-                if (attempt++ == InitialRecoveryAttempts)
-                    Log.Warn("Audio", $"{(loopback ? "Звук игры" : "Микрофон")}: устройство пока недоступно, " +
-                                      "жду его появления");
-                if (delay <= 1000) Thread.Sleep(delay);
-                else _deviceArrived.WaitOne(delay);
-                if (!_running || generation != Volatile.Read(ref _generation)) return;
-
-                WasapiSource? replacement;
-                WasapiSource? old;
-                // Источник игры меняем под тем же замком, что и слежение за процессом
-                if (loopback) Monitor.Enter(_gameSwitch);
-                try
+                // Windows шлёт уведомление до того, как новое устройство готово. А
+                // выдернутые наушники или засыпающий USB-микрофон бывают недоступны
+                // дольше: раньше одна неудачная попытка оставляла запись без звука до
+                // перезапуска. Теперь пробуем с растущей паузой, а потом раз в минуту,
+                // пока устройство не вернётся: выбранный USB-микрофон, воткнутый через
+                // пять минут, тоже должен подхватиться. Появление любого устройства
+                // будит попытку сразу.
+                int attempt = 0;
+                foreach (int delay in RecoveryDelays())
                 {
-                    replacement = OpenSource(loopback);
-                    if (replacement is null) continue;
-                    lock (_sync)
+                    if (attempt++ == InitialRecoveryAttempts)
+                        Log.Warn("Audio", $"{(loopback ? "Звук игры" : "Микрофон")}: устройство пока недоступно, " +
+                                          "жду его появления");
+                    WaitDeviceOrDelay(delay, generation);
+                    if (!_running || generation != Volatile.Read(ref _generation)) return;
+
+                    WasapiSource? replacement;
+                    WasapiSource? old;
+                    // Источник игры меняем под тем же замком, что и слежение за процессом
+                    if (loopback) Monitor.Enter(_gameSwitch);
+                    try
                     {
-                        if (!_running || generation != _generation)
+                        replacement = OpenSource(loopback, announceFailure: false);
+                        if (replacement is null) continue;
+                        lock (_sync)
                         {
-                            replacement.Dispose();
-                            return;
+                            if (!_running || generation != _generation)
+                            {
+                                replacement.Dispose();
+                                return;
+                            }
+                            if (loopback) { old = _game; _game = replacement; }
+                            else { old = _mic; _mic = replacement; }
                         }
-                        if (loopback) { old = _game; _game = replacement; }
-                        else { old = _mic; _mic = replacement; }
                     }
+                    finally { if (loopback) Monitor.Exit(_gameSwitch); }
+                    Log.Info("Audio", loopback
+                        ? "Устройство вывода сменилось — источник звука игры пересоздан"
+                        : "Устройство ввода сменилось — микрофон пересоздан");
+                    old?.Dispose();
+                    return;
                 }
-                finally { if (loopback) Monitor.Exit(_gameSwitch); }
-                Log.Info("Audio", loopback
-                    ? "Устройство вывода сменилось — источник звука игры пересоздан"
-                    : "Устройство ввода сменилось — микрофон пересоздан");
-                old?.Dispose();
-                return;
+            }
+            finally
+            {
+                if (loopback) Interlocked.Exchange(ref _restartingRender, 0);
+                else Interlocked.Exchange(ref _restartingCapture, 0);
             }
         });
     }
@@ -463,9 +498,6 @@ public sealed class AudioMixerEngine : IDisposable
         foreach (int delay in new[] { 300, 1000, 2000, 4000, 8000, 15000, 30000 }) yield return delay;
         while (true) yield return 60_000;
     }
-
-    /// <summary>Будит ожидающее восстановление источника: в системе появилось устройство.</summary>
-    private readonly AutoResetEvent _deviceArrived = new(false);
 
     private sealed class DefaultDeviceWatcher(Action<DataFlow> onDefaultChanged, Action onDeviceArrived) : IMMNotificationClient
     {
@@ -643,6 +675,7 @@ public sealed class AudioMixerEngine : IDisposable
     {
         Interlocked.Increment(ref _generation);
         _running = false;
+        PulseDeviceArrived();
         _processWatch?.Dispose();
         _processWatch = null;
         try

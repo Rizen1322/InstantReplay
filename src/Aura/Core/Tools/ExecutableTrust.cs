@@ -27,7 +27,16 @@ internal static class ExecutableTrust
                 FileSystemRights rights = dir.FullName == file.DirectoryName ? Write :
                     FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles |
                     FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
-                if ((dir.Attributes & FileAttributes.ReparsePoint) != 0 || !Protected(dir.GetAccessControl(), rights)) return false;
+                if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) return false;
+                var security = dir.GetAccessControl();
+                if (!Protected(security, rights)) return false;
+                // Папка с защищённой (protected) DACL — граница доверия: так установщик
+                // закрепляет корень установки (HardenDirectory: владелец Administrators,
+                // наследование отключено), и так же устроены Program Files. Всё выше —
+                // пользовательские каталоги вроде D:\Games и D:\, владеть ими можно,
+                // но писать в саму папку уже нет, поэтому выше не поднимаемся. Если
+                // защищённой папки на пути нет — идём до корня, как раньше.
+                if (security.AreAccessRulesProtected) return true;
             }
             return true;
         }

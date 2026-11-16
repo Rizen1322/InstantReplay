@@ -246,6 +246,16 @@ internal sealed class WgcCaptureSession : IScreenCapture
         {
             DrainFrames(sender);
         }
+        catch (CaptureFrameSizeMismatchException ex)
+        {
+            Log.Warn("Capture", $"{_sourceName}: изменился размер кадра ({ex.Message})");
+            Failed?.Invoke(new CaptureFailure(
+                CaptureFailureKind.CaptureFormatChanged,
+                ex,
+                $"{_sourceName}: изменился размер источника",
+                _generation,
+                _targetRevision));
+        }
         catch (Exception ex) when (DeviceLoss.IsDeviceLost(ex))
         {
             Log.Warn("Capture", $"{_sourceName}: потеряно устройство ({ex.Message})");

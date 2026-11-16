@@ -27,7 +27,9 @@ namespace Aura.Views;
 /// </summary>
 public partial class RegionCaptureWindow : Window
 {
+    private const int SwpNoSize = 0x0001;
     private const int SwpNoZOrder = 0x0004;
+    private const int SwpNoActivate = 0x0010;
     private const int SwpShowWindow = 0x0040;
 
     /// <summary>Порядок ручек совпадает с InkLayer.HandlePoints.</summary>
@@ -95,6 +97,14 @@ public partial class RegionCaptureWindow : Window
     private const double EraseTolerance = 6;
     private Rect _selection;
     private bool _hasSelection, _selecting, _drawing, _resizing, _moving;
+
+    /// <summary>
+    /// Идёт завершение снимка (копирование/сохранение). Нужен из-за асинхронного
+    /// копирования в буфер: пока оно ждёт освобождения буфера, Enter/Ctrl+C не должны
+    /// запустить второе, параллельное завершение поверх первого.
+    /// </summary>
+    private bool _finishing;
+
     private Grip _grip;
     private Point _dragStart;
     private Rect _startRect;
@@ -285,6 +295,10 @@ public partial class RegionCaptureWindow : Window
     private void PlaceOverMonitor()
     {
         var hwnd = new WindowInteropHelper(this).Handle;
+        // Сначала переносим окно на нужный монитор без смены размера, чтобы система
+        // обработала WM_DPICHANGED для его масштаба, и только затем задаём размер в пикселях.
+        NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, _monitorX, _monitorY, 0, 0,
+            SwpNoSize | SwpNoZOrder | SwpNoActivate);
         NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, _monitorX, _monitorY, _pixelWidth, _pixelHeight,
             SwpNoZOrder | SwpShowWindow);
     }
@@ -610,14 +624,16 @@ public partial class RegionCaptureWindow : Window
     /// </summary>
     private (int X, int Y) ToPixels(Point point)
     {
-        double factor = Root.ActualWidth > 0 ? _pixelWidth / Root.ActualWidth : 1;
-        return ((int)Math.Round(point.X * factor), (int)Math.Round(point.Y * factor));
+        double factorX = Root.ActualWidth > 0 ? _pixelWidth / Root.ActualWidth : 1;
+        double factorY = Root.ActualHeight > 0 ? _pixelHeight / Root.ActualHeight : factorX;
+        return ((int)Math.Round(point.X * factorX), (int)Math.Round(point.Y * factorY));
     }
 
     private Rect ToDips(PixelRect r)
     {
-        double factor = _pixelWidth > 0 ? Root.ActualWidth / _pixelWidth : 1;
-        return new Rect(r.X * factor, r.Y * factor, r.Width * factor, r.Height * factor);
+        double factorX = _pixelWidth > 0 ? Root.ActualWidth / _pixelWidth : 1;
+        double factorY = _pixelHeight > 0 ? Root.ActualHeight / _pixelHeight : factorX;
+        return new Rect(r.X * factorX, r.Y * factorY, r.Width * factorX, r.Height * factorY);
     }
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
@@ -894,7 +910,7 @@ public partial class RegionCaptureWindow : Window
     {
         try
         {
-            var color = ColorSampling.At(_shot, at, Root.ActualWidth);
+            var color = ColorSampling.At(_shot, at, Root.ActualWidth, Root.ActualHeight);
             var brush = new SolidColorBrush(color);
             brush.Freeze();
             PeekDot.Fill = brush;
@@ -922,7 +938,7 @@ public partial class RegionCaptureWindow : Window
     {
         try
         {
-            var picked = ColorSampling.At(_shot, at, Root.ActualWidth);
+            var picked = ColorSampling.At(_shot, at, Root.ActualWidth, Root.ActualHeight);
             _color = picked;
             HighlightSwatch();
             EyedropperBtn.ToolTip = $"Пипетка: взят цвет #{picked.R:X2}{picked.G:X2}{picked.B:X2}";
@@ -969,7 +985,8 @@ public partial class RegionCaptureWindow : Window
             double width = Root.ActualWidth, height = Root.ActualHeight;
             if (width <= 0 || height <= 0) return;
 
-            double factor = _shot.PixelWidth / width;
+            double factorX = _shot.PixelWidth / width;
+            double factorY = _shot.PixelHeight / height;
             int cell = Math.Max(8, (int)Math.Round(_shot.PixelWidth / PixelateCells));
             int smallWidth = Math.Max(1, _shot.PixelWidth / cell);
             int smallHeight = Math.Max(1, _shot.PixelHeight / cell);
@@ -985,7 +1002,7 @@ public partial class RegionCaptureWindow : Window
             image.Arrange(new Rect(0, 0, width, height));
 
             var bitmap = new RenderTargetBitmap(
-                _shot.PixelWidth, _shot.PixelHeight, 96 * factor, 96 * factor, PixelFormats.Pbgra32);
+                _shot.PixelWidth, _shot.PixelHeight, 96 * factorX, 96 * factorY, PixelFormats.Pbgra32);
             bitmap.Render(image);
             bitmap.Freeze();
             Ink.Blurred = bitmap;
@@ -1123,8 +1140,9 @@ public partial class RegionCaptureWindow : Window
     /// <summary>Плашка с размером — и для своего выделения, и для подсвеченной области.</summary>
     private void ShowSizeChip(Rect area)
     {
-        double factor = _shot.PixelWidth / Math.Max(1, Root.ActualWidth);
-        SizeText.Text = $"{Math.Round(area.Width * factor)} × {Math.Round(area.Height * factor)}";
+        double factorX = _shot.PixelWidth / Math.Max(1, Root.ActualWidth);
+        double factorY = _shot.PixelHeight / Math.Max(1, Root.ActualHeight);
+        SizeText.Text = $"{Math.Round(area.Width * factorX)} × {Math.Round(area.Height * factorY)}";
         Canvas.SetLeft(SizeChip, Math.Max(4, area.Left));
         Canvas.SetTop(SizeChip, Math.Max(4, area.Top - 26));
         SizeChip.Visibility = Visibility.Visible;
@@ -1149,11 +1167,16 @@ public partial class RegionCaptureWindow : Window
 
     // ---------------- Результат ----------------
 
-    private void Finish(bool copy, bool save)
+    private async void Finish(bool copy, bool save)
     {
+        // Пока идёт запись в буфер, окно остаётся живым (см. CopyAsync): повторное
+        // нажатие кнопки или Enter/Ctrl+C не должно запустить второй Finish.
+        if (_finishing) return;
+
         // Недонабранная подпись должна попасть в снимок, а не пропасть по кнопке
         CommitCaption();
         if (!_hasSelection) return;
+        _finishing = true;
 
         try
         {
@@ -1163,7 +1186,9 @@ public partial class RegionCaptureWindow : Window
             var image = RenderSelection();
             image.Freeze();
 
-            if (copy && !ImageClipboard.Copy(image))
+            // await без ConfigureAwait(false): продолжение обязано вернуться на поток
+            // интерфейса — в буфер обмена, Close() и события окна.
+            if (copy && !await ImageClipboard.CopyAsync(image))
             {
                 Failed?.Invoke(new InvalidOperationException("буфер обмена занят другой программой"));
                 Close();
@@ -1220,14 +1245,15 @@ public partial class RegionCaptureWindow : Window
     /// </summary>
     private BitmapSource RenderSelection()
     {
-        double factor = _shot.PixelWidth / Math.Max(1, Root.ActualWidth);
-        int width = Math.Max(1, (int)Math.Round(_selection.Width * factor));
-        int height = Math.Max(1, (int)Math.Round(_selection.Height * factor));
+        double factorX = _shot.PixelWidth / Math.Max(1, Root.ActualWidth);
+        double factorY = _shot.PixelHeight / Math.Max(1, Root.ActualHeight);
+        int width = Math.Max(1, (int)Math.Round(_selection.Width * factorX));
+        int height = Math.Max(1, (int)Math.Round(_selection.Height * factorY));
 
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
-            dc.PushTransform(new ScaleTransform(factor, factor));
+            dc.PushTransform(new ScaleTransform(factorX, factorY));
             dc.PushTransform(new TranslateTransform(-_selection.X, -_selection.Y));
             dc.DrawImage(_shot, new Rect(0, 0, Root.ActualWidth, Root.ActualHeight));
             Ink.DrawShapes(dc);

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using LibVLCSharp.Shared;
 
 namespace Aura.Core.Tools;
@@ -55,10 +56,9 @@ public static partial class VideoAssembly
         media.AddOption(":avcodec-hw=none");
         media.AddOption(":no-sout-audio");
         media.AddOption(":stop-time=" + end.TotalSeconds.ToString("0.######", CultureInfo.InvariantCulture));
-        string destination = output.Replace('\\', '/').Replace("'", "\\'");
         // The bundled VLC has MPEG-4 Part 2, but no 8-bit x264 encoder. Windows can
         // decode this intermediate even without the optional HEVC extension.
-        media.AddOption(":sout=#transcode{vcodec=mp4v,venc=avcodec{codec=mpeg4},vb=24000}:std{access=file,mux=mp4,dst='" + destination + "'}");
+        media.AddOption(":sout=#transcode{vcodec=mp4v,venc=avcodec{codec=mpeg4},vb=24000}:std{access=file,mux=mp4,dst=" + ChainValue(output) + "}");
         using var player = new MediaPlayer(vlc);
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         player.EndReached += (_, _) => completed.TrySetResult();
@@ -73,4 +73,27 @@ public static partial class VideoAssembly
         }
         finally { player.Stop(); }
     }, ct);
+
+    /// <summary>
+    /// Значение опции для строки :sout. VLC разбирает её как цепочку (config_ChainCreate)
+    /// и раскрывает значения через config_StringUnescape: специальные символы \, " и '
+    /// экранируются обратной косой чертой, а само значение заключается в ДВОЙНЫЕ кавычки.
+    /// Внутри кавычек } , и : — обычные символы, поэтому путь с такими знаками не ломает
+    /// цепочку. Разделители пути Windows заменяются прямыми слэшами.
+    /// </summary>
+    internal static string ChainValue(string path)
+    {
+        var value = new StringBuilder(path.Length + 2);
+        value.Append('"');
+        foreach (char c in path)
+        {
+            if (c == '\\') value.Append('/');
+            else
+            {
+                if (c is '"' or '\'') value.Append('\\');
+                value.Append(c);
+            }
+        }
+        return value.Append('"').ToString();
+    }
 }

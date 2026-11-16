@@ -35,8 +35,9 @@ public partial class VideoAssemblyWindow : Window
         var window = new VideoAssemblyWindow();
         foreach (var segment in segments) window._segments.Add(segment);
         if (window._segments.Count > 0) window.Segments.SelectedIndex = 0;
-        var owner = Application.Current.Windows.OfType<Window>().LastOrDefault(w => w.IsActive);
-        if (owner is not null) window.Owner = owner;
+        var owner = Application.Current.Windows.OfType<Window>().LastOrDefault(w => w.IsActive)
+                    ?? Application.Current.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible);
+        if (owner is not null && owner.IsLoaded) window.Owner = owner;
         else window.WindowStartupLocation = WindowStartupLocation.CenterScreen;
         if (paths is not null) window.Loaded += async (_, _) => await window.AddFilesAsync(paths.ToArray());
         window.ShowDialog();

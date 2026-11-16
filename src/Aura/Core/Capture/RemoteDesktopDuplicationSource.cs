@@ -54,6 +54,17 @@ internal sealed class RemoteDesktopDuplicationSource : IScreenCapture
 
     public void Prepare(int monitorIndex, int targetFps, bool captureCursor, long generation)
     {
+        if (_session is not null)
+        {
+            Stop();
+            if (!_stuck)
+            {
+                _session.Dispose();
+                _session = null;
+                _device = null;
+                _context = null;
+            }
+        }
         if (RemoteCaptureFailureBudget.HasUnretiredWorker)
             throw new RemoteCaptureHostUnavailableException(
                 "предыдущий воркер захвата не завершился даже после принудительного завершения");
@@ -118,10 +129,9 @@ internal sealed class RemoteDesktopDuplicationSource : IScreenCapture
             int index = WaitHandle.WaitAny(waits, 100);
             if (!_running) return;
             if (index == 1) return;
-            bool processed = false;
             if (index == 0)
             {
-                while (_running && TryProcessNextFrame()) processed = true;
+                while (_running && TryProcessNextFrame()) { }
             }
 
             long now = Stopwatch.GetTimestamp();
@@ -191,9 +201,19 @@ internal sealed class RemoteDesktopDuplicationSource : IScreenCapture
             CaptureSurfaceScope.Monitor,
             TargetRevision: 0);
         Interlocked.Increment(ref _framesReceived);
+        bool delivered = false;
         try
         {
             FrameArrived?.Invoke(surface);
+            delivered = true;
+        }
+        catch (CaptureFrameSizeMismatchException ex)
+        {
+            Fail(CaptureFailureKind.CaptureFormatChanged, ex.Message);
+        }
+        catch (Exception ex) when (DeviceLoss.IsDeviceLost(ex))
+        {
+            Fail(CaptureFailureKind.DeviceLost, $"Изолированный DDA: потеряно GPU-устройство ({ex.Message})");
         }
         catch (Exception ex)
         {
@@ -201,12 +221,15 @@ internal sealed class RemoteDesktopDuplicationSource : IScreenCapture
         }
         finally
         {
-            Interlocked.Increment(ref _framesAccepted);
             _session.MarkProcessed(slot, best);
             _session.ReleaseSlot(slot);
-            RemoteCaptureFailureBudget.NoteHealthy(Interlocked.Read(ref _framesAccepted));
+            if (delivered)
+            {
+                long accepted = Interlocked.Increment(ref _framesAccepted);
+                RemoteCaptureFailureBudget.NoteHealthy(accepted);
+            }
         }
-        return true;
+        return delivered;
     }
 
     private void HandleHostGone()

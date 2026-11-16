@@ -70,6 +70,21 @@ internal static class GameHookNativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetExitCodeThread(nint thread, out uint exitCode);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool K32EnumProcessModules(
+        nint process,
+        [Out] nint[] modules,
+        uint cb,
+        out uint cbNeeded);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint K32GetModuleFileNameExW(
+        nint process,
+        nint module,
+        [Out] char[] fileName,
+        uint size);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern nint GetModuleHandleW(string moduleName);
 

@@ -74,6 +74,12 @@ public partial class VideoAssemblyWindow
         Loaded += (_, _) => FitTimeline();
     }
 
+    private void OnThumbPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ClipItem.Thumbnail) && !_lifetime.IsCancellationRequested)
+            Timeline.InvalidateVisual();
+    }
+
     private ClipItem ProjectItem(string path)
     {
         if (_thumbs.TryGetValue(path, out var existing)) return existing;
@@ -81,7 +87,7 @@ public partial class VideoAssemblyWindow
         if (_sourceInfo.TryGetValue(path, out var info)) item.Duration = info.Duration;
         _thumbs[path] = item;
         _projectMedia.Add(item);
-        item.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ClipItem.Thumbnail)) Timeline.InvalidateVisual(); };
+        item.PropertyChanged += OnThumbPropertyChanged;
         _ = ClipThumbnails.LoadAsync(item);
         if (SourceAudioTracks(path) > 0) RequestWaveform(path);
         return item;

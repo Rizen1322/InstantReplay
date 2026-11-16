@@ -864,8 +864,11 @@ public partial class App : Application
             }
             if (group is "" or "ui")
             {
-                Loc.Lang = Services.Settings.Current.Language;
-                ApplyTheme(Services.Settings.Current.Theme);
+                Services.Ui.Enqueue(() =>
+                {
+                    Loc.Lang = Services.Settings.Current.Language;
+                    ApplyTheme(Services.Settings.Current.Theme);
+                });
             }
         };
     }
@@ -1301,8 +1304,11 @@ public partial class App : Application
                                 $"(ошибка {System.Runtime.InteropServices.Marshal.GetLastWin32Error()})");
                 return;
             }
+            nint previous = _trayIconHandle;
             _trayIconHandle = handle;
             _tray.TrayIcon.Icon = handle;
+            if (previous != 0 && previous != handle)
+                DestroyIcon(previous);
         }
         catch (Exception ex)
         {
@@ -1317,6 +1323,9 @@ public partial class App : Application
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
     private static extern nint LoadImage(nint instance, string name, uint type, int cx, int cy, uint load);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(nint hIcon);
 
     /// <summary>
     /// Сколько раз пробуем создать значок, прежде чем сдаться.
@@ -1523,7 +1532,15 @@ public partial class App : Application
         Step("слежение за папкой", () => Services.Storage.Dispose());
         Step("хоткеи", () => Services.Hotkeys.Dispose());
         Step("движок", () => Services.Engine.Dispose());
-        Step("значок в трее", () => _tray?.Dispose());
+        Step("значок в трее", () =>
+        {
+            _tray?.Dispose();
+            if (_trayIconHandle != 0)
+            {
+                DestroyIcon(_trayIconHandle);
+                _trayIconHandle = 0;
+            }
+        });
         Step("Media Foundation", () => MediaFactory.MFShutdown());
 
         // Environment.Exit убивает фоновый поток лога на месте — сначала даём ему

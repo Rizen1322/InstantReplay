@@ -80,6 +80,9 @@
     <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\third_party\nvenc\**\*.*" />
     <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\third_party\rnnoise\**\*.*" />
     <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\packaging\build_media_native.ps1" />
+    <!-- Тот же загрузчик Zig, что у хука: без него инкрементальный таргет не
+         заметил бы смену закреплённой версии Zig и собрал бы старым. -->
+    <MediaNativeSource Include="$(MSBuildProjectDirectory)\..\..\packaging\get_zig.ps1" />
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\native\Aura.GameCaptureHook\**\*.*" />
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\..\third_party\minhook\**\*.c" />
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\..\third_party\minhook\**\*.h" />
@@ -87,8 +90,14 @@
     <GameCaptureHookSource Include="$(MSBuildProjectDirectory)\..\..\packaging\get_zig.ps1" />
   </ItemGroup>
 
+  <!-- Нативные сборки идут ДО PrepareResources, а не до CoreCompile.
+       Встраиваемый Aura.GameCaptureHook64.sha256 объявлен как EmbeddedResource, и
+       Csc читает его на шаге Compile уже после PrepareResources. Если собрать хук
+       в BeforeTargets="CoreCompile", на чистом дереве (CI, artifacts/ в .gitignore)
+       ресурса ещё нет — сборка падает, а при инкрементальной сборке встраивается
+       ПРЕДЫДУЩИЙ манифест, и Aura отвергает только что собранный хук. -->
   <Target Name="BuildVerifiedGameCaptureHook"
-          BeforeTargets="CoreCompile"
+          BeforeTargets="PrepareResources;CoreCompile"
           Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Aura'"
           Inputs="@(GameCaptureHookSource)"
           Outputs="$(GameCaptureHookOutput)\Aura.GameCaptureHook64.dll;$(GameCaptureHookOutput)\Aura.GameCaptureHook64.sha256">
@@ -101,7 +110,7 @@
 
   <!-- Aura.Media64.dll (src/native/Aura.Media): прямой NVENC и RNNoise. Собирается Zig, как и хук. -->
   <Target Name="BuildMediaNative"
-          BeforeTargets="CoreCompile"
+          BeforeTargets="PrepareResources;CoreCompile"
           Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Aura'"
           Inputs="@(MediaNativeSource)"
           Outputs="$(GameCaptureHookOutput)\Aura.Media64.dll;$(GameCaptureHookOutput)\Aura.EncoderHost.exe">

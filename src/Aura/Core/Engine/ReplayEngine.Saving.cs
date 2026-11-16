@@ -17,6 +17,8 @@ public sealed partial class ReplayEngine
     /// жизненного цикла: его читает продолжение задачи сохранения, а Stop() держит
     /// этот замок, дожидаясь той же задачи.
     /// </summary>
+    private readonly object _saveQueueSync = new();
+    private bool _savingActive;
     private int _pendingSave;
     private volatile int _pendingSaveSeconds; // 0 — длина из настроек
 
@@ -104,31 +106,59 @@ public sealed partial class ReplayEngine
         // Прошлый клип ещё пишется. Раньше нажатие здесь молча терялось, и человек
         // думал, что хоткей не сработал. Теперь оно ставится в очередь и выполнится
         // сразу после текущей записи.
-        if (_state == EngineState.Saving || _saveTask is { IsCompleted: false })
+        lock (_saveQueueSync)
         {
-            _pendingSaveSeconds = secondsOverride ?? 0;
-            if (Interlocked.Exchange(ref _pendingSave, 1) == 0)
-                Warning?.Invoke("Предыдущий клип ещё сохраняется — этот сохранится сразу после него");
-            return;
+            if (_savingActive || _state == EngineState.Saving || _saveTask is { IsCompleted: false })
+            {
+                _pendingSaveSeconds = secondsOverride ?? 0;
+                bool firstQueued = Interlocked.Exchange(ref _pendingSave, 1) == 0;
+                if (firstQueued)
+                    Warning?.Invoke("Предыдущий клип ещё сохраняется — этот сохранится сразу после него");
+                return;
+            }
         }
 
         // Состояние Recovering сохранению не мешает: захват пересобирается, но буфер
         // со всеми кадрами и описанием потока лежит в памяти. Раньше нажатие во время
         // восстановления терялось молча — ровно в тот момент, когда игра дёрнулась.
-        if (_videoBuffer.TotalBytes == 0 || _bufferSequenceHeader is null && _bufferCodec != VideoCodec.AV1)
+        byte[]? sequenceHeaderSnapshot;
+        long totalVideoBytes;
+        lock (_rescueSync)
+        {
+            sequenceHeaderSnapshot = _bufferSequenceHeader;
+            totalVideoBytes = _videoBuffer.TotalBytes;
+        }
+        if (totalVideoBytes == 0 || sequenceHeaderSnapshot is null && _bufferCodec != VideoCodec.AV1)
         {
             // Новый энкодер ещё ничего не накопил, но часть до сбоя лежит в памяти.
             // Запись файла в фоне: здесь держится замок жизненного цикла.
             long rescueWindow = TimeSpan.FromSeconds(secondsOverride ?? _settings.Current.ReplayLengthSeconds).Ticks;
             if (HasRescued(rescueWindow))
             {
-                _ = Task.Run(() =>
+                lock (_saveQueueSync) _savingActive = true;
+                if (_state == EngineState.Running) SetState(EngineState.Saving);
+                var rescueTask = Task.Run(() =>
                 {
-                    if (PublishRescued(rescueWindow) is { } rescuedOnly)
-                        ReplaySaved?.Invoke(rescuedOnly.Path, rescuedOnly.Seconds);
-                    else
-                        SaveFailed?.Invoke("Буфер ещё пуст");
+                    _saveTaskId = Task.CurrentId;
+                    try
+                    {
+                        if (PublishRescued(rescueWindow) is { } rescuedOnly)
+                            ReplaySaved?.Invoke(rescuedOnly.Path, rescuedOnly.Seconds);
+                        else
+                            SaveFailed?.Invoke("Буфер ещё пуст");
+                    }
+                    finally
+                    {
+                        CompleteSavingState();
+                    }
                 });
+                _saveTask = rescueTask;
+                lock (_writerTasksSync) _writerTasks.Add(rescueTask);
+                _ = rescueTask.ContinueWith(completed =>
+                {
+                    lock (_writerTasksSync) _writerTasks.Remove(completed);
+                    RunPendingSave();
+                }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
                 return;
             }
             SaveFailed?.Invoke(_state switch
@@ -161,7 +191,19 @@ public sealed partial class ReplayEngine
 
         long wanted = TimeSpan.FromSeconds(secondsOverride ?? s.ReplayLengthSeconds).Ticks;
         long snapshotStart = saveClock.ElapsedMilliseconds;
-        VideoSnapshot video = _videoBuffer.TakeSnapshot(wanted, out long snapshotToken);
+        VideoSnapshot video;
+        long snapshotToken;
+        VideoCodec bufferCodec;
+        int bufferWidth, bufferHeight, bufferFps;
+        lock (_rescueSync)
+        {
+            video = _videoBuffer.TakeSnapshot(wanted, out snapshotToken);
+            sequenceHeaderSnapshot = _bufferSequenceHeader;
+            bufferCodec = _bufferCodec;
+            bufferWidth = _bufferWidth;
+            bufferHeight = _bufferHeight;
+            bufferFps = _bufferFps;
+        }
         long snapshotMs = saveClock.ElapsedMilliseconds - snapshotStart;
         var lease = new SnapshotLease(_videoBuffer, snapshotToken, video);
         if (video.Count == 0)
@@ -174,9 +216,9 @@ public sealed partial class ReplayEngine
         Mp4VideoFormat videoFormat;
         try
         {
-            videoFormat = Mp4VideoFormat.FromBitstream(ContainerCodec(_bufferCodec), _bufferWidth, _bufferHeight,
-                                                       _bufferSequenceHeader ?? [], video[0].Span)
-                          with { FrameRate = _bufferFps };
+            videoFormat = Mp4VideoFormat.FromBitstream(ContainerCodec(bufferCodec), bufferWidth, bufferHeight,
+                                                       sequenceHeaderSnapshot ?? [], video[0].Span)
+                          with { FrameRate = bufferFps };
         }
         catch (Exception ex)
         {
@@ -215,6 +257,7 @@ public sealed partial class ReplayEngine
         // В Recovering состояние и так ведёт восстановление.
         if (_state == EngineState.Running) SetState(EngineState.Saving);
         bool inGame = !string.Equals(game, "Desktop", StringComparison.OrdinalIgnoreCase);
+        lock (_saveQueueSync) _savingActive = true;
         _saveTask = Task.Run(() =>
         {
             _saveTaskId = Task.CurrentId;
@@ -264,8 +307,13 @@ public sealed partial class ReplayEngine
     /// <summary>Выполнить сохранение, которое ждало в очереди.</summary>
     private void RunPendingSave()
     {
-        if (Interlocked.Exchange(ref _pendingSave, 0) == 0) return;
-        int seconds = _pendingSaveSeconds;
+        int seconds;
+        lock (_saveQueueSync)
+        {
+            _savingActive = false;
+            if (Interlocked.Exchange(ref _pendingSave, 0) == 0) return;
+            seconds = _pendingSaveSeconds;
+        }
         try { SaveReplay(seconds > 0 ? seconds : null); }
         catch (Exception ex) { Log.Error("Engine", ex); }
     }

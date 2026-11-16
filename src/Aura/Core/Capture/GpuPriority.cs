@@ -66,7 +66,9 @@ internal static class GpuPriority
     private static void EnableIncreasePriorityPrivilege()
     {
         if (Interlocked.Exchange(ref _privilegeTried, 1) != 0) return;
-        if (!OpenProcessToken(System.Diagnostics.Process.GetCurrentProcess().Handle, 0x0020 | 0x0008, out IntPtr token)) return;
+        // Process — тоже IDisposable-обёртка (держит дескриптор процесса), не бросаем её
+        using var self = System.Diagnostics.Process.GetCurrentProcess();
+        if (!OpenProcessToken(self.Handle, 0x0020 | 0x0008, out IntPtr token)) return;
         try
         {
             if (!LookupPrivilegeValueW(null, "SeIncreaseBasePriorityPrivilege", out long luid)) return;

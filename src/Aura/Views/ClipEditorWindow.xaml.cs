@@ -91,8 +91,10 @@ public partial class ClipEditorWindow : Window
         VideoFileDrop.Attach(this, paths =>
         {
             if (_exportCancellation is not null) return;
+            var segments = SelectedSegments();
             _player?.SetPause(true);
-            VideoAssemblyWindow.ShowSegments(SelectedSegments(), paths);
+            Close();
+            VideoAssemblyWindow.ShowSegments(segments, paths);
         });
         _volume = Services.Settings.Current.EditorVolumePercent;
         VolumeSlider.Value = _volume;

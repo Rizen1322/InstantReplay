@@ -29,7 +29,18 @@ namespace Aura.Core.Logging;
 /// </summary>
 public static class Log
 {
-    private static readonly BlockingCollection<string> Queue = new(4096);
+    /// <summary>Предел очереди: при шторме лучше потерять строку, чем притормозить захват.</summary>
+    private const int QueueCapacity = 4096;
+
+    /// <summary>
+    /// Очередь, из которой писатель забирает строки. Не readonly: Shutdown закрывает
+    /// BlockingCollection насовсем, а открыть закрытую коллекцию заново нельзя —
+    /// поэтому следующий Init обязан завести новую. Меняется только под Lifecycle.
+    /// </summary>
+    private static BlockingCollection<string> _queue = new(QueueCapacity);
+
+    /// <summary>Жизненный цикл очереди и писателя: Init/Shutdown.</summary>
+    private static readonly object Lifecycle = new();
 
     /// <summary>Через сколько выбрасывать накопленный счётчик повторов, даже если они продолжаются.</summary>
     private static readonly TimeSpan RepeatFlush = TimeSpan.FromSeconds(5);
@@ -53,8 +64,12 @@ public static class Log
     private static int _repeats;
     private static DateTime _repeatSince = DateTime.MinValue;
 
-    /// <summary>Писатель один на процесс, даже если Init позвали повторно (тесты).</summary>
-    private static int _started;
+    /// <summary>
+    /// Поток записи текущей очереди. После Shutdown он завершается, и следующий Init
+    /// (тесты, перезапуск в том же процессе) обязан поднять нового писателя: иначе
+    /// закрытая очередь осталась бы немой, а лог — без новых строк.
+    /// </summary>
+    private static Thread? _writer;
 
     /// <summary>Хвост имени файла: у копии --dev он свой, см. <see cref="Init"/>.</summary>
     private static string _suffix = "";
@@ -92,8 +107,23 @@ public static class Log
         foreach (var f in Directory.EnumerateFiles(dir, "app-*.log"))
             try { if (File.GetLastWriteTimeUtc(f) < DateTime.UtcNow.AddDays(-7)) File.Delete(f); } catch { }
 
-        if (Interlocked.Exchange(ref _started, 1) == 0)
-            new Thread(Writer) { IsBackground = true, Name = "LogWriter" }.Start();
+        // Писатель живёт ровно одну очередь. Shutdown закрывает её окончательно,
+        // поэтому после него заводим И очередь, И поток заново: закрытая коллекция
+        // так и осталась бы пустой, и лог молчал бы до перезапуска процесса.
+        lock (Lifecycle)
+        {
+            bool restart = _queue.IsAddingCompleted;
+            if (restart) _queue = new BlockingCollection<string>(QueueCapacity);
+
+            if (restart || _writer is not { IsAlive: true })
+            {
+                // Коллекцию передаём в поток явно: следующий Init может подменить поле
+                // ещё до старта потока, а писатель обязан разбирать СВОЮ очередь.
+                var queue = _queue;
+                _writer = new Thread(() => Writer(queue)) { IsBackground = true, Name = "LogWriter" };
+                _writer.Start();
+            }
+        }
 
         Info("App", $"===== Instant Replay запущен, PID {Environment.ProcessId} =====");
     }
@@ -119,7 +149,10 @@ public static class Log
             var file = EnsureFile();
             if (file is null) { WriteAside(line); return; }
 
-            for (int i = 0; i < FatalTailLines && Queue.TryTake(out var pending); i++)
+            // Берём очередь один раз: под нами её уже никто не подменит (Init после
+            // Shutdown зовут не в предсмертном пути), а лок Lifecycle тут не нужен.
+            var queue = _queue;
+            for (int i = 0; i < FatalTailLines && queue.TryTake(out var pending); i++)
                 WriteCollapsed(file, pending);
 
             FlushRepeats(file);
@@ -138,10 +171,29 @@ public static class Log
     /// </summary>
     public static void Shutdown()
     {
-        try { Queue.CompleteAdding(); } catch { }
+        var (queue, writer) = CloseQueue();
+
         // Ждём недолго: выход приложения не должен подвисать из-за лога.
-        for (int i = 0; i < 100 && Queue.Count > 0; i++) Thread.Sleep(10);
+        for (int i = 0; i < 100 && queue.Count > 0; i++) Thread.Sleep(10);
+
+        // Даём писателю завершиться и закрыть файл: следующий Init в том же процессе
+        // (тесты) не должен пересечься с его finally на общем StreamWriter.
+        try { writer?.Join(500); } catch { }
+
         lock (FileSync) { try { _file?.Flush(); } catch { } }
+    }
+
+    /// <summary>
+    /// Закрыть текущую очередь и вернуть её вместе с писателем. Дальше ждать их
+    /// нужно уже вне Lifecycle: под локом не место ожиданию диска.
+    /// </summary>
+    private static (BlockingCollection<string> Queue, Thread? Writer) CloseQueue()
+    {
+        lock (Lifecycle)
+        {
+            try { _queue.CompleteAdding(); } catch { }
+            return (_queue, _writer);
+        }
     }
 
     public static void Info(string tag, string msg)  => Enqueue("INF", tag, msg);
@@ -159,9 +211,13 @@ public static class Log
         // Очередь не бесконечна: при шторме лучше потерять строку, чем притормозить
         // поток захвата на ожидании места. После Shutdown она закрыта — TryAdd на
         // закрытой коллекции бросает, и это не повод падать на выходе.
+        // Ссылку берём один раз: если между строкой и добавлением Init после
+        // Shutdown успел подменить очередь, строка уйдёт в старую и потеряется —
+        // это допустимо, главное не писать в закрытую и не ждать на логе.
+        var queue = _queue;
         try
         {
-            if (Queue.TryAdd(line)) return;
+            if (queue.TryAdd(line)) return;
 
             // Потеря строк молча означает лог с дырой, о которой никто не знает:
             // при разборе падения кажется, что события просто не было. Считаем
@@ -169,17 +225,19 @@ public static class Log
             // не стал источником шторма.
             long lost = Interlocked.Increment(ref _dropped);
             if (lost is 1 or 100 or 10_000 or 1_000_000)
-                Queue.TryAdd($"{DateTime.Now:HH:mm:ss.fff} [WRN] [Log] " +
+                queue.TryAdd($"{DateTime.Now:HH:mm:ss.fff} [WRN] [Log] " +
                              $"очередь лога переполнена, потеряно строк: {lost}");
         }
         catch (InvalidOperationException) { }
     }
 
-    private static void Writer()
+    private static void Writer(BlockingCollection<string> queue)
     {
         try
         {
-            foreach (var line in Queue.GetConsumingEnumerable())
+            // GetConsumingEnumerable ждёт на семафоре, а не крутит цикл: пока очередь
+            // пуста, поток спит. После CompleteAdding он доразбирает хвост и выходит.
+            foreach (var line in queue.GetConsumingEnumerable())
                 lock (FileSync)
                 {
                     try
@@ -189,7 +247,7 @@ public static class Log
                         WriteCollapsed(file, line);
                         // Сбрасываем на диск, когда очередь опустела: под нагрузкой строки
                         // копятся в буфере, в покое лог всегда актуален.
-                        if (Queue.Count == 0) file.Flush();
+                        if (queue.Count == 0) file.Flush();
                     }
                     catch (Exception ex)
                     {

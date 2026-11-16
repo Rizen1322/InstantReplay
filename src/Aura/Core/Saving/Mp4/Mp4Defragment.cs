@@ -332,14 +332,22 @@ public static class Mp4Defragment
             int nameEnd = Array.IndexOf(trakBytes, (byte)0, nameStart, hdlr.Offset + hdlr.Size - nameStart);
             string name = TextEncoding.UTF8.GetString(trakBytes, nameStart, (nameEnd < 0 ? hdlr.Offset + hdlr.Size : nameEnd) - nameStart);
             long mediaStart = 0;
-            if (elst.Offset >= 0)
+            if (elst.Offset >= 0 && elst.Offset + 16 <= trakBytes.Length)
             {
                 bool ev1 = trakBytes[elst.Offset + 8] == 1;
+                uint entryCount = BinaryPrimitives.ReadUInt32BigEndian(trakBytes.AsSpan(elst.Offset + 12));
                 int entry = elst.Offset + 16;
-                mediaStart = ev1
-                    ? (long)BinaryPrimitives.ReadUInt64BigEndian(trakBytes.AsSpan(entry + 8))
-                    : BinaryPrimitives.ReadInt32BigEndian(trakBytes.AsSpan(entry + 4));
-                if (mediaStart < 0) mediaStart = 0;
+                int entrySize = ev1 ? 20 : 12;
+                int elstEnd = Math.Min(trakBytes.Length, elst.Offset + elst.Size);
+                for (uint i = 0; i < entryCount && entry + entrySize <= elstEnd; i++, entry += entrySize)
+                {
+                    long mt = ev1
+                        ? BinaryPrimitives.ReadInt64BigEndian(trakBytes.AsSpan(entry + 8))
+                        : BinaryPrimitives.ReadInt32BigEndian(trakBytes.AsSpan(entry + 4));
+                    if (mt == -1) continue; // пустой отрезок перед началом медиа
+                    if (mt >= 0) mediaStart = mt;
+                    break;
+                }
             }
             infos[id] = (handler == "soun", timescale, width, height, name,
                          trakBytes.AsSpan(stsd.Offset, stsd.Size).ToArray(), mediaStart);
@@ -355,7 +363,7 @@ public static class Mp4Defragment
             while (pos + 8 <= data.Length)
             {
                 int size = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pos));
-                if (size < 8) break;
+                if (size < 8 || pos + size > data.Length) break;
                 if (TextEncoding.ASCII.GetString(data, pos + 4, 4) == "traf")
                     if (!ReadTraf(data, pos, size, moof.Offset, infos, indexes)) return null;
                 pos += size;
@@ -511,23 +519,26 @@ public static class Mp4Defragment
         while (pos + 8 <= end)
         {
             int boxSize = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pos));
-            if (boxSize < 8) return false;
+            if (boxSize < 12 || pos + boxSize > end) return false;
+            int boxEnd = pos + boxSize;
             string type = TextEncoding.ASCII.GetString(data, pos + 4, 4);
             uint flags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pos + 8)) & 0xFFFFFF;
             byte version = data[pos + 8];
             int p = pos + 12;
             if (type == "tfhd")
             {
+                if (p + 4 > boxEnd) return false;
                 trackId = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4;
                 if (!indexes.TryGetValue(trackId, out index)) return false;
-                if ((flags & 0x1) != 0) { baseOffset = (long)BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(p)); p += 8; }
-                if ((flags & 0x2) != 0) p += 4;
-                if ((flags & 0x8) != 0) { defDuration = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4; }
-                if ((flags & 0x10) != 0) { defSize = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4; }
-                if ((flags & 0x20) != 0) { defFlags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); }
+                if ((flags & 0x1) != 0) { if (p + 8 > boxEnd) return false; baseOffset = (long)BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(p)); p += 8; }
+                if ((flags & 0x2) != 0) { if (p + 4 > boxEnd) return false; p += 4; }
+                if ((flags & 0x8) != 0) { if (p + 4 > boxEnd) return false; defDuration = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4; }
+                if ((flags & 0x10) != 0) { if (p + 4 > boxEnd) return false; defSize = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4; }
+                if ((flags & 0x20) != 0) { if (p + 4 > boxEnd) return false; defFlags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); }
             }
             else if (type == "tfdt" && index is not null)
             {
+                if (p + (version == 1 ? 8 : 4) > boxEnd) return false;
                 dts = version == 1 ? (long)BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(p))
                                    : BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p));
                 if (index.FirstDts < 0) index.FirstDts = dts;
@@ -535,12 +546,19 @@ public static class Mp4Defragment
             else if (type == "trun" && index is not null)
             {
                 bool audio = infos[trackId].Audio;
+                if (p + 4 > boxEnd) return false;
                 int count = (int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4;
+                if (count < 0) return false;
                 long offset = baseOffset;
-                if ((flags & 0x1) != 0) { offset += BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(p)); p += 4; }
+                if ((flags & 0x1) != 0) { if (p + 4 > boxEnd) return false; offset += BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(p)); p += 4; }
                 uint firstFlags = defFlags;
                 bool hasFirstFlags = (flags & 0x4) != 0;
-                if (hasFirstFlags) { firstFlags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4; }
+                if (hasFirstFlags) { if (p + 4 > boxEnd) return false; firstFlags = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p)); p += 4; }
+                int perSampleBytes = (((flags & 0x100) != 0) ? 4 : 0) +
+                                     (((flags & 0x200) != 0) ? 4 : 0) +
+                                     (((flags & 0x400) != 0) ? 4 : 0) +
+                                     (((flags & 0x800) != 0) ? 4 : 0);
+                if ((long)p + (long)count * perSampleBytes > boxEnd) return false;
                 index.Chunks.Add((offset, count));
                 if (index.FirstDts < 0) index.FirstDts = Math.Max(0, dts);
                 for (int i = 0; i < count; i++)
@@ -612,7 +630,7 @@ public static class Mp4Defragment
             while (pos + 8 <= end)
             {
                 int size = (int)BinaryPrimitives.ReadUInt32BigEndian(box.AsSpan(pos));
-                if (size < 8) break;
+                if (size < 8 || pos + size > end) break;
                 if (TextEncoding.ASCII.GetString(box, pos + 4, 4) == part) { found = (pos, size); break; }
                 pos += size;
             }

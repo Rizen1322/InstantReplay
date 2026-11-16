@@ -127,8 +127,10 @@ public partial class ClipEditorWindow
     private void Assembly_Click(object sender, RoutedEventArgs e)
     {
         if (_exportCancellation is not null) return;
+        var segments = SelectedSegments();
         _player?.SetPause(true);
-        VideoAssemblyWindow.ShowSegments(SelectedSegments());
+        Close();
+        VideoAssemblyWindow.ShowSegments(segments);
     }
 
     private async Task ExportAssemblyAsync()

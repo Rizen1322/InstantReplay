@@ -35,6 +35,14 @@ public sealed class ClipFolderWatcher : IDisposable
     /// <summary>Пути, о которых сообщим следующим сигналом. Один путь считается один раз.</summary>
     private readonly HashSet<string> _pending = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Следующий сигнал должен означать «пройди папку целиком», а не список путей.
+    /// Ставится при переполнении списка и при сбое слежения, когда часть событий
+    /// потеряна. Пока флаг стоит, отдельные пути копить незачем: полный обход
+    /// увидит и их, а непустой список заставил бы StorageManager обход пропустить.
+    /// </summary>
+    private bool _rescanAll;
+
     private FileSystemWatcher? _watcher;
     private System.Threading.Timer? _settleTimer;
     private string _root = "";
@@ -90,17 +98,22 @@ public sealed class ClipFolderWatcher : IDisposable
     {
         lock (_sync)
         {
+            // Полный обход уже заказан: он увидит и этот файл, а копить пути
+            // бессмысленно — непустой список отменил бы обход у StorageManager.
+            if (_rescanAll) return;
+
             // Список путей не бесконечен. Массовая операция в проводнике (удалили
             // сотню записей разом) насыпала бы их тысячами, а решение всё равно
             // одно: раз путей слишком много, разбирать их поштучно незачем, дешевле
             // пройти папку. Пустой список именно это и означает.
-            if (_pending.Count >= 512) return;
-
-            // Переименование это два пути: и старый, и новый нас интересуют.
             if (e is RenamedEventArgs renamed && !string.IsNullOrEmpty(renamed.OldFullPath))
                 _pending.Add(renamed.OldFullPath);
             if (!string.IsNullOrEmpty(e.FullPath)) _pending.Add(e.FullPath);
-            if (_pending.Count >= 512) _pending.Clear();
+            if (_pending.Count >= 512)
+            {
+                _pending.Clear();
+                _rescanAll = true;
+            }
         }
         Schedule();
     }
@@ -115,6 +128,10 @@ public sealed class ClipFolderWatcher : IDisposable
         {
             root = _root;
             StopCore();
+            // Набранные пути не описывают всё, что случилось: часть событий
+            // потеряна. Следующий сигнал должен означать «проверь всё».
+            _pending.Clear();
+            _rescanAll = true;
         }
         // Часть событий потеряна — сообщаем пустым списком, это значит «проверь всё».
         Schedule();
@@ -139,7 +156,16 @@ public sealed class ClipFolderWatcher : IDisposable
         string[] paths;
         lock (_sync)
         {
-            paths = [.. _pending];
+            if (_rescanAll)
+            {
+                // Потерянные события списком не описать — отдаём сигнал «проверь всё».
+                _rescanAll = false;
+                paths = [];
+            }
+            else
+            {
+                paths = [.. _pending];
+            }
             _pending.Clear();
         }
 

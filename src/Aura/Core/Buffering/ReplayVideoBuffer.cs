@@ -438,8 +438,34 @@ public sealed class ReplayVideoBuffer
             }
             // Голова могла остаться посреди GOP — доснимаем до ближайшего keyframe,
             // но не опустошаем буфер целиком (случай сломанного GOP).
+            bool noKeyframesLeft = false;
             if (freedSpace)
+            {
                 while (_ringCount > 1 && !At(0).IsKeyframe) EvictFirst();
+                noKeyframesLeft = _ringCount > 0 && !At(0).IsKeyframe;
+            }
+            if (noKeyframesLeft)
+            {
+                // Вытеснение съело ВСЕ ключевые кадры: голова кольца — P-кадр, и
+                // такой буфер не декодируется. Начинаем заново: бросаем остаток,
+                // сбрасываем хвост записи в 0 (_reserved == 0 — иначе вытеснение не
+                // запускалось, так что сброс корректен) и ждём следующий ключевой.
+                // Входящий кадр теряем — как в DropLocked.
+                while (_ringCount > 0) EvictFirst();   // _used уходит в 0 вместе с последним
+                _tail = 0;
+                _awaitKeyframe = true;
+                if (!_warnedNoKeyframes)
+                {
+                    _warnedNoKeyframes = true;
+                    Log.Warn("Buffer", "Вытеснение убрало из арены все ключевые кадры — повтор начнётся со следующего");
+                }
+                needKeyframe = DropLocked();
+                // Хвост записи сброшен, поэтому пересчитываем живые блоки арены:
+                // головы в ней нет, все блоки, кроме хвостового и следующего, свободны.
+                _lastHeadChunk = -1;
+                AfterMove();
+                goto done;
+            }
             if (_used + need > _capacity)
             {
                 // Место не освободилось: почти вся арена занята снимком, который

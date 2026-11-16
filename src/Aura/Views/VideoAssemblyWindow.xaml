@@ -115,7 +115,10 @@
     <ScrollViewer x:Name="TimelineScroll" Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" CanContentScroll="False" ScrollChanged="TimelineScroll_Changed" PreviewMouseWheel="TimelineScroll_Wheel">
      <c:AssemblyTimeline x:Name="Timeline" AllowDrop="True" DragOver="Timeline_DragOver" Drop="Timeline_Drop">
       <c:AssemblyTimeline.ContextMenu><ContextMenu>
+       <MenuItem Header="Обрезать выбранный фрагмент…" Click="Edit_Click"/>
        <MenuItem Header="Разрезать в позиции просмотра" InputGestureText="S" Click="SplitAssembly_Click"/>
+       <MenuItem Header="Переместить выше" Click="Up_Click"/>
+       <MenuItem Header="Переместить ниже" Click="Down_Click"/>
        <MenuItem Header="Удалить выбранное" InputGestureText="Delete" Click="Remove_Click"/>
        <Separator/>
        <MenuItem Header="Заглушить / включить звуковой фрагмент" Click="MuteAudioEvent_Click"/>

@@ -291,8 +291,15 @@ public static class ScreenshotService
             catch (Exception ex) { tcs.TrySetException(ex); }
         };
 
-        source.Start();
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        try
+        {
+            source.Start();
+            return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            ReleaseStaging();
+        }
     }
 
     /// <summary>
@@ -381,6 +388,26 @@ public static class ScreenshotService
 
     /// <summary>Когда закончилось последнее чтение кадра (TickCount64) и сколько оно ждало: для строки стоп-кадра.</summary>
     internal static (long EndedMs, double WaitedMs) LastReadback { get; private set; }
+
+    /// <summary>
+    /// Отпустить закешированную staging-текстуру вместе с устройством, на котором
+    /// она создана. Текстура держит устройство живым сама по себе, поэтому после
+    /// одноразового снимка или смены устройства захвата старая видеокарта и её
+    /// видеопамять оставались занятыми до конца процесса. Замок тот же, что у
+    /// чтения: освобождать её под идущим Map нельзя. Повторный вызов безопасен,
+    /// следующее чтение создаст текстуру заново.
+    /// </summary>
+    internal static void ReleaseStaging()
+    {
+        lock (StagingSync)
+        {
+            _staging?.Dispose();
+            _staging = null;
+            _stagingDevice = 0;
+            _stagingWidth = _stagingHeight = 0;
+            _stagingFormat = default;
+        }
+    }
 
     private static readonly object StagingSync = new();
     private static ID3D11Texture2D? _staging;

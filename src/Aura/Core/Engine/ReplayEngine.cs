@@ -740,23 +740,36 @@ public sealed partial class ReplayEngine : IDisposable
                 {
                     if (!frame.IsKeyframe) return;
                     byte[]? currentSequenceHeader = encoder.TryGetSequenceHeader();
-                    if (!EncodedStreamCompatibility.SameSequenceHeader(
-                            previousSequenceHeader, currentSequenceHeader))
+                    lock (_rescueSync)
                     {
-                        // Склеить со старыми кадрами нельзя, но и стирать их незачем:
-                        // см. ReplayEngine.Rescue.cs
-                        Log.Warn("Engine", "Параметры новой сессии энкодера отличаются — " +
-                                           "старая часть повтора уходит в отдельный файл");
-                        RescueBufferBeforeFormatChange(previousSequenceHeader, previousCodec,
-                                                       previousWidth, previousHeight, previousFps);
+                        if (!EncodedStreamCompatibility.SameSequenceHeader(
+                                previousSequenceHeader, currentSequenceHeader))
+                        {
+                            // Склеить со старыми кадрами нельзя, но и стирать их незачем:
+                            // см. ReplayEngine.Rescue.cs
+                            Log.Warn("Engine", "Параметры новой сессии энкодера отличаются — " +
+                                               "старая часть повтора уходит в отдельный файл");
+                            RescueBufferBeforeFormatChange(previousSequenceHeader, previousCodec,
+                                                           previousWidth, previousHeight, previousFps);
+                        }
+                        _bufferSequenceHeader = currentSequenceHeader;
+                        if (_recorder is not null && !_recorderDetached)
+                            _recorderSequenceHeader ??= currentSequenceHeader;
+                        awaitingRestartKeyframe = false;
+                        _encodedStreamReady = true;
+                        _videoBuffer.Add(frame);
                     }
-                    _bufferSequenceHeader = currentSequenceHeader;
-                    awaitingRestartKeyframe = false;
-                    _encodedStreamReady = true;
+                    return;
                 }
-                else if (frame.IsKeyframe)
+                if (frame.IsKeyframe)
                 {
-                    _bufferSequenceHeader = encoder.TryGetSequenceHeader();
+                    byte[]? currentSequenceHeader = encoder.TryGetSequenceHeader();
+                    lock (_rescueSync)
+                    {
+                        _bufferSequenceHeader = currentSequenceHeader;
+                        if (_recorder is not null && !_recorderDetached)
+                            _recorderSequenceHeader ??= currentSequenceHeader;
+                    }
                 }
                 _videoBuffer.Add(frame);
             };
@@ -1319,17 +1332,16 @@ public sealed partial class ReplayEngine : IDisposable
         var restartActions = PipelineRestartPolicy.For(
             intent, continuousRecordingActive: _recorder is not null, formatCompatible: true);
         Interlocked.Increment(ref _captureGeneration); // все колбэки старого источника больше не действуют
-        DumpStats("на выключении");
-        // Итог работы энкодера: главное — сколько картинка стояла
-        if (_pipeline.Encoder is { } finishing)
-            try { Log.Info("Engine", finishing.HealthReport()); } catch { }
-        // Дожидаемся уже начатых колбэков: обычный Dispose возвращается сразу, и
-        // вотчдог продолжал работать параллельно сносу — вплоть до попытки поднять
-        // захват на уже освобождённом источнике.
+        // Дожидаемся уже начатых колбэков ДО финальной сводки: обычный Dispose
+        // возвращается сразу, и вотчдог или таймер статистики могли работать параллельно сносу.
         StopTimer(ref _gameTimer);
         StopTimer(ref _watchdog);
         StopTimer(ref _probeTimer);
         StopTimer(ref _statsTimer);
+        DumpStats("на выключении");
+        // Итог работы энкодера: главное — сколько картинка стояла
+        if (_pipeline.Encoder is { } finishing)
+            try { Log.Info("Engine", finishing.HealthReport()); } catch { }
 
         // Сохранение работает с буферами и клипом в арене — снести всё это под ним
         // означает потерять клип, который пользователю уже показали как сохранённый.
@@ -1410,6 +1422,12 @@ public sealed partial class ReplayEngine : IDisposable
         else
         {
             _pipeline.DisposeOrdered();
+            // Снимок мог разово снять кадр на устройстве захвата: staging-текстура
+            // ScreenshotService держит устройство живым сама по себе, и без сброса
+            // старое устройство вместе с видеопамятью оставалось бы занятым до конца
+            // процесса. Освобождаем её после конвейера: тот же замок StagingSync, что
+            // и у чтения, не даёт снести текстуру под идущим Map.
+            Capture.ScreenshotService.ReleaseStaging();
         }
         lock (_captureTargetSync) _activeCaptureTarget = null;
 
@@ -1660,6 +1678,9 @@ public sealed partial class ReplayEngine : IDisposable
     public void Dispose()
     {
         Stop();
+        // PDH-запросы диагностики живут столько же, сколько движок: закрываем их
+        // здесь, иначе дескрипторы объектов ядра висят до конца процесса.
+        DisposeDiagnostics();
         _audio.Dispose();
         _frameGate.Dispose();
     }

@@ -255,7 +255,10 @@ internal sealed unsafe class CaptureHostRing : IDisposable
 
     public void OpenParentFence(nint handle)
     {
-        using var device5 = ChildFence.Device.QueryInterface<ID3D11Device5>();
+        // ChildFence.Device — кешируемая обёртка Vortice: она тоже держит устройство,
+        // поэтому освобождаем её вместе с device5, а не оставляем сборщику мусора
+        using var childDevice = ChildFence.Device;
+        using var device5 = childDevice.QueryInterface<ID3D11Device5>();
         ParentFence = device5.OpenSharedFence(handle);
         // Дубликат принадлежал нашему процессу; fence держит ссылку сам.
         CaptureHostNative.CloseHandle(handle);
@@ -300,6 +303,8 @@ internal sealed unsafe class CaptureHostLoop
     private long _fenceValue;
     private long _sequence;
     private long _droppedFrames;
+    private CaptureCursorUpdate _pendingCursor;
+    private bool _hasPendingCursor;
     private volatile bool _stopped;
 
     public CaptureHostLoop(CaptureHostControl control, CaptureHostRing ring,
@@ -318,6 +323,10 @@ internal sealed unsafe class CaptureHostLoop
     public void OnFrame(CapturedSurface surface)
     {
         if (_stopped) return;
+        CaptureCursorUpdate cursor = _hasPendingCursor
+            ? MergeCursor(_pendingCursor, surface.Cursor)
+            : surface.Cursor;
+
         int slot = -1;
         long released = 0;
         for (int i = 0; i < CaptureHostProtocol.SlotCount; i++)
@@ -332,14 +341,17 @@ internal sealed unsafe class CaptureHostLoop
         }
         if (slot < 0)
         {
+            _pendingCursor = cursor;
+            _hasPendingCursor = true;
             Interlocked.Increment(ref _droppedFrames);
             return;
         }
+        _hasPendingCursor = false;
+        _pendingCursor = default;
         _lastReleasedSeen[slot] = released;
 
         // Метаданные и форма курсора — до публикации fence/события: потребитель
         // читает их только после того, как увидит «кадр готов».
-        CaptureCursorUpdate cursor = surface.Cursor;
         DdaCursorShape? shape = cursor.Shape;
         int shapeLength = shape is null ? 0 : Math.Min(shape.Pixels.Length, CaptureHostProtocol.SlotShapeCapacity);
         if (shape is not null && shapeLength == shape.Pixels.Length)
@@ -369,5 +381,36 @@ internal sealed unsafe class CaptureHostLoop
         _control.WriteSlotLong(slot, SlotOffSequence, Interlocked.Increment(ref _sequence));
         Interlocked.MemoryBarrier();
         _frameReady.Set();
+    }
+
+    private static CaptureCursorUpdate MergeCursor(
+        in CaptureCursorUpdate older,
+        in CaptureCursorUpdate newer)
+    {
+        if (newer.Mode != CaptureCursorMode.Separate ||
+            older.Mode != CaptureCursorMode.Separate ||
+            newer.ResetState)
+        {
+            return newer;
+        }
+
+        bool reset = older.ResetState;
+        bool hasPos = older.HasPosition || newer.HasPosition;
+        int x = newer.HasPosition ? newer.X : older.X;
+        int y = newer.HasPosition ? newer.Y : older.Y;
+        bool newerKnowsVis = newer.HasPosition || newer.HasVisibility;
+        bool olderKnowsVis = older.HasPosition || older.HasVisibility;
+        bool visible = newerKnowsVis ? newer.Visible : older.Visible;
+        bool hasVis = (olderKnowsVis || newerKnowsVis) && !hasPos;
+        DdaCursorShape? shape = newer.Shape ?? older.Shape;
+        return new CaptureCursorUpdate(
+            CaptureCursorMode.Separate,
+            hasPos,
+            visible,
+            x,
+            y,
+            shape,
+            reset,
+            hasVis);
     }
 }

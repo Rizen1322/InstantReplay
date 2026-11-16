@@ -293,21 +293,29 @@ public sealed class UpdateService
         else info.Create(security);
     }
 
-    /// <summary>Сопутствующий файл релиза; null — его нет или он не читается.</summary>
+    /// <summary>Сопутствующий файл релиза; null — файла в релизе нет.</summary>
     private static async Task<string?> TryGetTextAsync(string? url, CancellationToken ct)
     {
-        if (!UpdateVerification.IsTrustedHost(url)) return null;
+        if (string.IsNullOrWhiteSpace(url) || !UpdateVerification.IsTrustedHost(url)) return null;
         try { return await Http.GetStringAsync(url!, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex) { Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}"); return null; }
+        catch (Exception ex)
+        {
+            Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}");
+            throw new HttpRequestException($"Не удалось скачать файл проверки обновления: {ex.Message}", ex);
+        }
     }
 
     private static async Task<byte[]?> TryGetBytesAsync(string? url, CancellationToken ct)
     {
-        if (!UpdateVerification.IsTrustedHost(url)) return null;
+        if (string.IsNullOrWhiteSpace(url) || !UpdateVerification.IsTrustedHost(url)) return null;
         try { return await Http.GetByteArrayAsync(url!, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex) { Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}"); return null; }
+        catch (Exception ex)
+        {
+            Log.Warn("Update", $"Не удалось прочитать {url}: {ex.Message}");
+            throw new HttpRequestException($"Не удалось скачать подпись обновления: {ex.Message}", ex);
+        }
     }
 
     /// <summary>

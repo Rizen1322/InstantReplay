@@ -32,6 +32,9 @@ bool aura_gl_capture_release_done(void);
 /* Cleanup must be allowed through the present gate even after STOP/IDLE. */
 bool aura_gl_capture_release_pending(void);
 
+/* Пометить конвейер PBO неактивным при переходе в IDLE, чтобы при возврате не отдать старые кадры. */
+void aura_gl_capture_notify_idle(void);
+
 void aura_gl_capture_abandon(void);
 
 #endif

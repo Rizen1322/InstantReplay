@@ -31,7 +31,25 @@ $setupExe = Join-Path $root 'dist\InstantReplaySetup.exe'
 $appExe = Join-Path $root 'dist\app_publish\Aura.exe'
 
 function Step($text) { Write-Host "`n== $text ==" -ForegroundColor Cyan }
-function Fail($text) { Write-Host "ОШИБКА: $text" -ForegroundColor Red; exit 1 }
+
+# Версия в csproj поднята, но ещё не закоммичена. Любой провал до коммита обязан
+# вернуть файл в прежнее состояние: иначе после неудачной сборки рабочее дерево
+# остаётся с поднятой версией, следующий запуск релиза видит «грязный» git и
+# отказывается работать, а номер версии уже потрачен.
+$script:versionPendingRestore = $false
+
+function Fail($text) {
+    if ($script:versionPendingRestore) {
+        try {
+            [IO.File]::WriteAllText($csproj, $script:originalCsproj, $utf8)
+            Write-Host "   Версия в Aura.csproj возвращена к $current" -ForegroundColor Yellow
+        }
+        catch { Write-Host "   Не удалось вернуть версию в Aura.csproj: $($_.Exception.Message)" -ForegroundColor Red }
+        $script:versionPendingRestore = $false
+    }
+    Write-Host "ОШИБКА: $text" -ForegroundColor Red
+    exit 1
+}
 
 # ---------- gh CLI ----------
 # В PATH он есть не всегда (например, сразу после установки), поэтому ищем и по
@@ -72,6 +90,8 @@ function Find-OpenSsl {
 # работают в ANSI и превращают кириллицу в комментариях csproj в мусор.
 $utf8 = [Text.UTF8Encoding]::new($false)
 $content = [IO.File]::ReadAllText($csproj, $utf8)
+# Исходный текст — для отката, если сборка после подъёма версии не удастся.
+$script:originalCsproj = $content
 if ($content -notmatch '<Version>([\d]+)\.([\d]+)\.([\d]+)</Version>') {
     Fail "Не удалось прочитать <Version> из $csproj"
 }
@@ -155,11 +175,16 @@ $content = $content `
     -replace '<FileVersion>[\d\.]+</FileVersion>', "<FileVersion>$assembly</FileVersion>" `
     -replace '<Version>[\d\.]+</Version>', "<Version>$new</Version>"
 [IO.File]::WriteAllText($csproj, $content, $utf8)
+$script:versionPendingRestore = $true
 Write-Host "   AssemblyVersion/FileVersion = $assembly, Version = $new"
 
 # ---------- Сборка ----------
 Step "3/6 Сборка установщика"
-& (Join-Path $root 'build_setup.ps1')
+# try/catch: build_setup.ps1 работает с ErrorActionPreference=Stop и падает
+# исключением. Без перехвата скрипт завершился бы мимо Fail, и поднятая версия
+# осталась бы в csproj незакоммиченной.
+try { & (Join-Path $root 'build_setup.ps1') }
+catch { Fail "Сборка не удалась: $($_.Exception.Message)" }
 if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) { Fail "Сборка не удалась" }
 if (-not (Test-Path $setupExe)) { Fail "Установщик не собрался: $setupExe" }
 
@@ -215,6 +240,8 @@ try {
     git add -- src/Aura/Aura.csproj
     git commit -q -m "Release $tag"
     if ($LASTEXITCODE -ne 0) { Fail "Не удалось закоммитить версию; тег и релиз не созданы" }
+    # Версия уже в коммите: откат файла сделал бы дерево грязным относительно HEAD.
+    $script:versionPendingRestore = $false
     git tag $tag
     if ($LASTEXITCODE -ne 0) { Fail "Не удалось создать тег $tag" }
     Write-Host "   Коммит и тег $tag созданы"

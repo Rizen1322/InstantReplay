@@ -34,10 +34,21 @@ internal static class GpuScheduling
                 for (int i = 0; i < e.NumAdapters; i++)
                 {
                     var adapter = Marshal.PtrToStructure<AdapterInfo>(adapters + i * size);
-                    Marshal.WriteInt32(caps, 0);
-                    var query = new Query { Adapter = adapter.Handle, Type = Wddm27Caps, Data = caps, Size = 4 };
-                    if (D3DKMTQueryAdapterInfo(ref query) != 0) continue;
-                    if ((Marshal.ReadInt32(caps) & 0b10) != 0) any = true;   // HwSchEnabled
+                    try
+                    {
+                        Marshal.WriteInt32(caps, 0);
+                        var query = new Query { Adapter = adapter.Handle, Type = Wddm27Caps, Data = caps, Size = 4 };
+                        if (D3DKMTQueryAdapterInfo(ref query) != 0) continue;
+                        if ((Marshal.ReadInt32(caps) & 0b10) != 0) any = true;   // HwSchEnabled
+                    }
+                    finally
+                    {
+                        if (adapter.Handle != 0)
+                        {
+                            var close = new CloseAdapter { Handle = adapter.Handle };
+                            _ = D3DKMTCloseAdapter(ref close);
+                        }
+                    }
                 }
             }
             finally { Marshal.FreeHGlobal(caps); }
@@ -61,6 +72,10 @@ internal static class GpuScheduling
     [StructLayout(LayoutKind.Sequential)]
     private struct Query { public uint Adapter; public int Type; public IntPtr Data; public uint Size; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CloseAdapter { public uint Handle; }
+
     [DllImport("gdi32.dll")] private static extern int D3DKMTEnumAdapters2(ref Enum2 e);
     [DllImport("gdi32.dll")] private static extern int D3DKMTQueryAdapterInfo(ref Query q);
+    [DllImport("gdi32.dll")] private static extern int D3DKMTCloseAdapter(ref CloseAdapter c);
 }

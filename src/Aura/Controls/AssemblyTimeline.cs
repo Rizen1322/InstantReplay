@@ -84,13 +84,42 @@ public sealed class AssemblyTimeline : FrameworkElement
         InvalidateVisual();
     }
     protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new System.Windows.Automation.Peers.FrameworkElementAutomationPeer(this);
-    private static readonly Brush Canvas = new SolidColorBrush(Color.FromRgb(18, 21, 28));
-    private static readonly Brush Video = new SolidColorBrush(Color.FromRgb(45, 74, 101));
-    private static readonly Brush Audio = new SolidColorBrush(Color.FromRgb(44, 85, 72));
-    private static readonly Brush Highlight = new SolidColorBrush(Color.FromRgb(86, 190, 255));
-    private static readonly Brush TextColor = new SolidColorBrush(Color.FromRgb(231, 236, 244));
-    private static readonly Brush Muted = new SolidColorBrush(Color.FromRgb(144, 156, 176));
+    // Кисти и перья постоянных цветов создаются и замораживаются один раз: OnRender
+    // выполняется на каждый кадр перетаскивания, новых Freezable там быть не должно.
+    private static readonly Brush Canvas = FrozenBrush(Color.FromRgb(18, 21, 28));
+    private static readonly Brush Video = FrozenBrush(Color.FromRgb(45, 74, 101));
+    private static readonly Brush Audio = FrozenBrush(Color.FromRgb(44, 85, 72));
+    private static readonly Brush AlternateAudio = FrozenBrush(Color.FromRgb(66, 57, 93));
+    private static readonly Brush ClipCaption = FrozenBrush(Color.FromArgb(210, 22, 31, 43));
+    private static readonly Brush Highlight = FrozenBrush(Color.FromRgb(86, 190, 255));
+    private static readonly Brush TextColor = FrozenBrush(Color.FromRgb(231, 236, 244));
+    private static readonly Brush Muted = FrozenBrush(Color.FromRgb(144, 156, 176));
+    private static readonly Pen GridPen = FrozenPen(Color.FromRgb(41, 47, 59), 1);
+    private static readonly Pen GapPen = FrozenPen(Color.FromRgb(58, 66, 80), 1, DashStyles.Dash);
+    private static readonly Pen ClipBorder = FrozenPen(Color.FromRgb(75, 93, 112), 1);
+    private static readonly Pen SelectedBorder = FrozenPen(Color.FromRgb(86, 190, 255), 2);
+    private static readonly Pen AudioBorder = FrozenPen(Color.FromRgb(61, 102, 88), 1);
+    private static readonly Pen DetachedAudioBorder = FrozenPen(Color.FromRgb(144, 156, 176), 1);
+    private static readonly Pen WavePenEven = FrozenPen(Color.FromRgb(134, 214, 180), 1);
+    private static readonly Pen WavePenOdd = FrozenPen(Color.FromRgb(184, 163, 239), 1);
+    private static readonly Pen DetachedWavePen = FrozenPen(Color.FromRgb(154, 213, 192), 1);
+    private static readonly Pen DropPen = FrozenPen(Color.FromRgb(86, 190, 255), 3);
+    private static readonly Pen CursorPen = FrozenPen(Colors.White, 1.5);
     private static readonly Typeface Font = new("Segoe UI");
+
+    private static SolidColorBrush FrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+    private static Pen FrozenPen(Color color, double thickness, DashStyle? dash = null)
+    {
+        var pen = new Pen(FrozenBrush(color), thickness);
+        if (dash is not null) pen.DashStyle = dash;
+        pen.Freeze();
+        return pen;
+    }
 
     private void Text(DrawingContext dc, string text, double x, double y, double maxWidth, Brush? color = null, double size = 11)
     {
@@ -102,18 +131,17 @@ public sealed class AssemblyTimeline : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         dc.DrawRectangle(Canvas, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        var grid = new Pen(new SolidColorBrush(Color.FromRgb(41, 47, 59)), 1);
         double step = new[] { .1, .2, .5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600 }.FirstOrDefault(s => s * _scale >= 85);
         if (step <= 0) step = 7200;
         double endX = Math.Min(ActualWidth, VisibleLeft + VisibleWidth + 100);
         for (double second = Math.Floor(VisibleLeft / _scale / step) * step; second * _scale < endX; second += step)
         {
             double x = second * _scale;
-            dc.DrawLine(grid, new Point(x, 24), new Point(x, LaneBottom));
+            dc.DrawLine(GridPen, new Point(x, 24), new Point(x, LaneBottom));
             Text(dc, TimeSpan.FromSeconds(second).ToString(second < 3600 ? @"mm\:ss\.f" : @"hh\:mm\:ss"), x + 5, 4, 80, Muted);
         }
         for (int track = 0; track <= AudioTracks; track++)
-            dc.DrawLine(grid, new Point(0, AudioTop + track * AudioLaneHeight - 4), new Point(ActualWidth, AudioTop + track * AudioLaneHeight - 4));
+            dc.DrawLine(GridPen, new Point(0, AudioTop + track * AudioLaneHeight - 4), new Point(ActualWidth, AudioTop + track * AudioLaneHeight - 4));
         double gapOffset = 0;
         for (int i = 0; i < _parts.Count; i++)
         {
@@ -124,8 +152,7 @@ public sealed class AssemblyTimeline : FrameworkElement
             double gapWidth = gap.TotalSeconds * _scale;
             gapOffset += _parts[i].Duration.TotalSeconds;
             if (gapLeft + gapWidth < VisibleLeft || gapLeft > endX) continue;
-            dc.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromRgb(58, 66, 80)), 1) { DashStyle = DashStyles.Dash },
-                new Rect(gapLeft + 1, VideoTop, Math.Max(1, gapWidth - 2), 84));
+            dc.DrawRectangle(null, GapPen, new Rect(gapLeft + 1, VideoTop, Math.Max(1, gapWidth - 2), 84));
             Text(dc, "Пусто", gapLeft + 8, VideoTop + 34, Math.Max(1, gapWidth - 16), Muted, 10);
         }
         int lastDensePixel = int.MinValue;
@@ -154,14 +181,14 @@ public sealed class AssemblyTimeline : FrameworkElement
             }
             bool selected = i == _selected;
             bool selectedVideo = selected && (SelectedAudioTrack < 0 || part.AudioLinked);
-            var border = new Pen(selectedVideo ? Highlight : new SolidColorBrush(Color.FromRgb(75, 93, 112)), selectedVideo ? 2 : 1);
+            var border = selectedVideo ? SelectedBorder : ClipBorder;
             dc.PushOpacity(_gesture == Gesture.Move && _moved && i == _dragIndex ? .4 : 1);
             dc.DrawRoundedRectangle(Video, border, new Rect(x + 1, VideoTop, Math.Max(1, width - 2), 84), 3, 3);
             dc.PushClip(new RectangleGeometry(new Rect(x + 3, VideoTop + 2, Math.Max(1, width - 6), 80)));
             if (Thumbnail?.Invoke(part.Path) is { } image)
                 for (double tile = x + 3 + Math.Max(0, Math.Floor((VisibleLeft - x) / 96)) * 96; tile < Math.Min(x + width, endX + 96); tile += 96)
                     dc.DrawImage(image, new Rect(tile, VideoTop + 2, 94, 53));
-            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(210, 22, 31, 43)), null, new Rect(x + 3, VideoTop + 56, Math.Max(1, width - 6), 25));
+            dc.DrawRectangle(ClipCaption, null, new Rect(x + 3, VideoTop + 56, Math.Max(1, width - 6), 25));
             Text(dc, part.Name, x + 9, VideoTop + 60, width - 18);
             dc.Pop();
             for (int track = 0; !part.AudioDetached && track < (AudioTrackCount?.Invoke(part.Path) ?? 0); track++)
@@ -176,17 +203,17 @@ public sealed class AssemblyTimeline : FrameworkElement
                     bool active = selected && SelectedAudioTrack == track &&
                         SelectedAudioSeconds >= audio.Start.TotalSeconds && SelectedAudioSeconds < audio.End.TotalSeconds;
                     double gain = audio.Gain * state.Gain(AnySolo) * (part.AudioTrack >= 0 && part.AudioTrack != track ? 0 : 1);
-                    var audioBorder = new Pen(active ? Highlight : new SolidColorBrush(Color.FromRgb(61, 102, 88)), active ? 2 : 1);
+                    var audioBorder = active ? SelectedBorder : AudioBorder;
                     dc.PushOpacity(gain <= 0 ? .4 : 1);
-                    dc.DrawRoundedRectangle(audio.Removed ? Canvas : track % 2 == 0 ? Audio : new SolidColorBrush(Color.FromRgb(66, 57, 93)), audioBorder,
+                    dc.DrawRoundedRectangle(audio.Removed ? Canvas : track % 2 == 0 ? Audio : AlternateAudio, audioBorder,
                         new Rect(ax + 1, row, Math.Max(1, aw - 2), AudioLaneHeight - 9), 3, 3);
                     dc.PushClip(new RectangleGeometry(new Rect(ax + 3, row + 2, Math.Max(1, aw - 6), AudioLaneHeight - 13)));
                     var wave = Waveform?.Invoke(part.Path, track);
                     double center = row + 39;
-                    dc.DrawLine(grid, new Point(ax + 3, center), new Point(ax + aw - 3, center));
+                    dc.DrawLine(GridPen, new Point(ax + 3, center), new Point(ax + aw - 3, center));
                     if (wave is not null && !audio.Removed)
                     {
-                        var wavePen = new Pen(new SolidColorBrush(track % 2 == 0 ? Color.FromRgb(134, 214, 180) : Color.FromRgb(184, 163, 239)), 1);
+                        var wavePen = track % 2 == 0 ? WavePenEven : WavePenOdd;
                         for (double px = Math.Max(ax + 4, VisibleLeft); px < Math.Min(ax + aw - 3, endX); px += 2)
                         {
                             double source = part.Start.TotalSeconds + (px - x) / _scale;
@@ -216,14 +243,14 @@ public sealed class AssemblyTimeline : FrameworkElement
             double gain = audio.Gain * state.Gain(AnySolo), row = AudioTop + sound.Track * AudioLaneHeight;
             bool active = sound.Owner == _selected && sound.Event == SelectedAudioEvent;
             dc.PushOpacity(gain <= 0 ? .4 : 1);
-            dc.DrawRoundedRectangle(sound.Track % 2 == 0 ? Audio : new SolidColorBrush(Color.FromRgb(66, 57, 93)), new Pen(active ? Highlight : Muted, active ? 2 : 1), new Rect(ax + 1, row, Math.Max(1, aw - 2), AudioLaneHeight - 9), 3, 3);
+            dc.DrawRoundedRectangle(sound.Track % 2 == 0 ? Audio : AlternateAudio, active ? SelectedBorder : DetachedAudioBorder, new Rect(ax + 1, row, Math.Max(1, aw - 2), AudioLaneHeight - 9), 3, 3);
             dc.PushClip(new RectangleGeometry(new Rect(ax + 3, row + 2, Math.Max(1, aw - 6), AudioLaneHeight - 13)));
             var wave = Waveform?.Invoke(sound.Path, sound.Track);
             double center = row + 39;
-            dc.DrawLine(grid, new(ax + 3, center), new(ax + aw - 3, center));
+            dc.DrawLine(GridPen, new(ax + 3, center), new(ax + aw - 3, center));
             if (wave is not null && !audio.Removed)
             {
-                var pen = new Pen(new SolidColorBrush(Color.FromRgb(154, 213, 192)), 1);
+                var pen = DetachedWavePen;
                 for (double px = Math.Max(ax + 4, VisibleLeft); px < Math.Min(ax + aw - 3, endX); px += 2)
                 {
                     double source = audio.Start.TotalSeconds + (px - ax) / _scale;
@@ -237,11 +264,11 @@ public sealed class AssemblyTimeline : FrameworkElement
         if (_gesture == Gesture.Move && _moved)
         {
             double drop = VideoTimeline.Offset(_parts, _insertion) * _scale;
-            dc.DrawLine(new Pen(Highlight, 3), new Point(drop, 27), new Point(drop, LaneBottom));
+            dc.DrawLine(DropPen, new Point(drop, 27), new Point(drop, LaneBottom));
             Text(dc, "Вставить сюда", drop + 7, LaneBottom + 3, 130, Highlight);
         }
         double cursor = _position * _scale;
-        dc.DrawLine(new Pen(Brushes.White, 1.5), new Point(cursor, 24), new Point(cursor, LaneBottom + 5));
+        dc.DrawLine(CursorPen, new Point(cursor, 24), new Point(cursor, LaneBottom + 5));
         var marker = new StreamGeometry();
         using (var g = marker.Open()) { g.BeginFigure(new Point(cursor - 6, 22), true, true); g.LineTo(new Point(cursor + 6, 22), true, false); g.LineTo(new Point(cursor, 30), true, false); }
         dc.DrawGeometry(Brushes.White, null, marker);
