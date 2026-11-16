@@ -173,6 +173,10 @@ internal static class IndependentAudioCheck
         Call("SeekAssembly", 1.0); await Ready();
         Call("SeekAssembly", 1.2); await Ready();
         Require(!preview.IsPlaying, "Paused preview started playing after a same-clip seek");
+        var timeText = (TextBlock)window.FindName("PreviewTime");
+        Require(timeText.Text.Contains('.'), "Preview timecode did not show milliseconds: " + timeText.Text);
+        Require(timeline.ToolTip is null, "Timeline still shows the large hover tooltip");
+        Require(timeline.ContextMenu?.Style is not null, "Timeline context menu has no dark style");
         double beforeStep = playhead.Value;
         var stepKey = new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(window)!, 0, Key.Left)
         { RoutedEvent = Keyboard.PreviewKeyDownEvent, Source = timeline };

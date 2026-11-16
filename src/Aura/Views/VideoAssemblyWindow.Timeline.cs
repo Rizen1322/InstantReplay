@@ -52,7 +52,7 @@ public partial class VideoAssemblyWindow
             if (!_assemblyScrubbing) _assemblyPlayer?.SetPause(true);
             _assemblyScrubbing = true;
             SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
-            PreviewTime.Text = $"{TimeSpan.FromSeconds(seconds):hh\\:mm\\:ss} / {TimeSpan.FromSeconds(AssemblyPosition.Maximum):hh\\:mm\\:ss}";
+            PreviewTime.Text = $"{Clock(seconds)} / {Clock(AssemblyPosition.Maximum)}";
             FollowTimelinePosition(seconds);
             if (seconds < LeadingGapEnd) { AssemblyPreview.Visibility = Visibility.Hidden; return; }
             AssemblyPreview.Visibility = Visibility.Visible;

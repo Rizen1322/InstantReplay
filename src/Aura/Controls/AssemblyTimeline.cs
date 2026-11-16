@@ -58,7 +58,6 @@ public sealed class AssemblyTimeline : FrameworkElement
     {
         Focusable = true; ClipToBounds = true; Height = 230;
         System.Windows.Automation.AutomationProperties.SetName(this, "Монтажная шкала. Видео и связанный звук");
-        ToolTip = "Тяните клип — переставить · тяните край — подрезать · после U тяните видео — сдвинуть его, оставив звук · щёлкните по линейке — позиция · Ctrl+колесо — масштаб";
     }
 
     public void SetSegments(IReadOnlyList<VideoSegment> parts)

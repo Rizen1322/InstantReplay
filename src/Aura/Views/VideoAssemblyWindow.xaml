@@ -84,7 +84,7 @@
       <Button x:Name="PlayAssembly" Content="▶ Смотреть" Click="PlayAssembly_Click" ToolTip="Space / Enter — воспроизведение · K — пауза" Margin="0,0,10,0"/>
       <CheckBox x:Name="MutePreview" Style="{StaticResource MontageCheck}" Content="Без звука" VerticalAlignment="Center" Checked="Mute_Changed" Unchecked="Mute_Changed"/>
      </StackPanel>
-     <TextBlock x:Name="PreviewTime" Text="00:00 / 00:00" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="Consolas" FontSize="17"/>
+     <TextBlock x:Name="PreviewTime" Text="00:00:00.000 / 00:00:00.000" HorizontalAlignment="Right" VerticalAlignment="Center" FontFamily="Consolas" FontSize="16" MinWidth="250" TextAlignment="Right"/>
     </DockPanel>
    </Grid>
   </Grid>
@@ -114,7 +114,11 @@
     </StackPanel>
     <ScrollViewer x:Name="TimelineScroll" Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" CanContentScroll="False" ScrollChanged="TimelineScroll_Changed" PreviewMouseWheel="TimelineScroll_Wheel">
      <c:AssemblyTimeline x:Name="Timeline" AllowDrop="True" DragOver="Timeline_DragOver" Drop="Timeline_Drop">
-      <c:AssemblyTimeline.ContextMenu><ContextMenu>
+      <c:AssemblyTimeline.ContextMenu><ContextMenu Style="{DynamicResource TrayMenu}">
+        <ContextMenu.Resources>
+         <Style TargetType="MenuItem" BasedOn="{StaticResource TrayMenuItem}"/>
+         <Style TargetType="Separator" BasedOn="{StaticResource TrayMenuSeparator}"/>
+        </ContextMenu.Resources>
        <MenuItem Header="Обрезать выбранный фрагмент…" Click="Edit_Click"/>
        <MenuItem Header="Разрезать в позиции просмотра" InputGestureText="S" Click="SplitAssembly_Click"/>
        <MenuItem Header="Переместить выше" Click="Up_Click"/>

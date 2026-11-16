@@ -271,6 +271,9 @@ public partial class VideoAssemblyWindow
             Math.Clamp(time - _segments[_previewIndex].Start.TotalSeconds, 0, _segments[_previewIndex].Duration.TotalSeconds);
         UpdateAssemblyPlayhead(global);
     }
+    private static string Clock(double seconds) =>
+        $"{TimeSpan.FromSeconds(Math.Max(0, seconds)):hh\\:mm\\:ss\\.fff}";
+
     private void UpdateAssemblyPlayhead(double global)
     {
         if (!_assemblyScrubbing)
@@ -280,7 +283,7 @@ public partial class VideoAssemblyWindow
             _changingAssembly = false;
             Timeline.Position = global;
             if (_wantAssemblyPlaying) FollowTimelinePosition(global);
-            PreviewTime.Text = $"{TimeSpan.FromSeconds(global):hh\\:mm\\:ss} / {TimeSpan.FromSeconds(AssemblyPosition.Maximum):hh\\:mm\\:ss}";
+            PreviewTime.Text = $"{Clock(global)} / {Clock(AssemblyPosition.Maximum)}";
         }
         PlayAssembly.Content = _wantAssemblyPlaying ? "Ⅱ Пауза" : "▶ Смотреть ролик";
     }
