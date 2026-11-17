@@ -379,7 +379,7 @@ public partial class VideoAssemblyWindow
         }
         else _assemblyPlayer.SetPause(true);
         PlayAssembly.Content = _wantAssemblyPlaying ? "Ⅱ Пауза" : "▶ Смотреть ролик";
-        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0);
+        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0, seek: _wantAssemblyPlaying);
     }
     private void ToStart_Click(object sender, RoutedEventArgs e) => SeekAssembly(0);
     private void Mute_Changed(object sender, RoutedEventArgs e) => SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);

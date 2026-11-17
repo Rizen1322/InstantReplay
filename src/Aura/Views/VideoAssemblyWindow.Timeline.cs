@@ -226,15 +226,35 @@ public partial class VideoAssemblyWindow
         { if (!e.IsRepeat) ShuttleAssembly(key); }
         else if (key is Key.Left or Key.Right && modifiers is ModifierKeys.None or ModifierKeys.Alt or ModifierKeys.Shift)
         {
-            double fps = Segments.SelectedItem is VideoSegment part && _sourceInfo.TryGetValue(part.Path, out var info) ? info.Fps : 30;
-            double step = modifiers == ModifierKeys.Shift ? 1 : 1 / Math.Max(1, fps);
+            int direction = key == Key.Left ? -1 : 1;
+            double target = modifiers == ModifierKeys.Shift ? Timeline.Position + direction : FrameStepTarget(direction);
             _wantAssemblyPlaying = false;
             _assemblyPlayer?.SetPause(true);
             PlayAssembly.Content = "▶ Смотреть ролик";
-            SeekAssembly(Math.Clamp(Timeline.Position + (key == Key.Left ? -step : step), 0, AssemblyPosition.Maximum));
+            SeekAssembly(Math.Clamp(target, 0, AssemblyPosition.Maximum));
         }
         else return;
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Позиция соседнего кадра по сетке кадров исходника. Раньше к позиции просто
+    /// прибавлялась 1/fps, а позиция приходит из VLC в целых миллисекундах: шаг
+    /// назад и вперёд не возвращал на исходный кадр (.805 → .788 → .804), и ошибка
+    /// копилась. Теперь берём номер текущего кадра и переходим ровно на ±1.
+    /// </summary>
+    private double FrameStepTarget(int direction)
+    {
+        double position = Timeline.Position;
+        var (index, source) = VideoTimeline.Locate(_segments, position);
+        if (index < 0 || index >= _segments.Count) return position + direction / 30.0;
+        var part = _segments[index];
+        double fps = _sourceInfo.TryGetValue(part.Path, out var info) ? Math.Max(1, info.Fps) : 30;
+        // В пустом участке или в хвосте звука после видео сетки кадров нет.
+        if (VideoTimeline.ClipAt(_segments, position) != index) return position + direction / fps;
+        double frame = Math.Round(source * fps) + direction;
+        // Выход за край клипа уводит в соседний клип или в пустой участок — как и раньше.
+        return VideoTimeline.Offset(_segments, index) + frame / fps - part.Start.TotalSeconds;
     }
 
     private static bool IsAssemblyTextInput(DependencyObject? source)

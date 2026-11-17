@@ -12,7 +12,17 @@ using Aura.Core.Saving.Mp4;
 
 namespace Aura.Core.Tools;
 
-public sealed record VideoFileInfo(TimeSpan Duration, int Width, int Height, double Fps, int AudioTracks, bool Transformed = false);
+public sealed record VideoFileInfo(TimeSpan Duration, int Width, int Height, double Fps, int AudioTracks, bool Transformed = false)
+{
+    /// <summary>FourCC видеокодека по данным VLC ("av01", "hevc", "h264"…); null — неизвестен.</summary>
+    public string? VideoCodec { get; init; }
+}
+
+/// <summary>В ffmpeg нет декодера для кодека исходника (например, AV1 в минимальной сборке).</summary>
+public sealed class FfmpegDecoderMissingException(string message) : InvalidOperationException(message);
+
+/// <summary>Windows (Media Foundation) не смогла перекодировать ролик.</summary>
+public sealed class WindowsTranscodeException(string message) : InvalidOperationException(message);
 
 public static partial class VideoAssembly
 {
@@ -46,8 +56,22 @@ public static partial class VideoAssembly
         if (video.Orientation is VideoOrientation.LeftTop or VideoOrientation.LeftBottom or VideoOrientation.RightTop or VideoOrientation.RightBottom)
             (width, height) = (height, width);
         return new VideoFileInfo(TimeSpan.FromMilliseconds(media.Duration), width, height,
-            double.IsFinite(fps) && fps > 0 ? Math.Min(fps, 240) : 30, media.Tracks.Count(t => t.TrackType == TrackType.Audio), video.Orientation != VideoOrientation.TopLeft);
+            double.IsFinite(fps) && fps > 0 ? Math.Min(fps, 240) : 30, media.Tracks.Count(t => t.TrackType == TrackType.Audio), video.Orientation != VideoOrientation.TopLeft)
+        { VideoCodec = FourCC(videos[0].Codec) };
     }, ct);
+
+    private static string? FourCC(uint codec)
+    {
+        if (codec == 0) return null;
+        Span<char> chars = stackalloc char[4];
+        for (int i = 0; i < 4; i++)
+        {
+            char c = (char)((codec >> (8 * i)) & 0xFF);
+            chars[i] = c is >= ' ' and <= '~' ? c : ' ';
+        }
+        string value = new string(chars).Trim();
+        return value.Length == 0 ? null : value;
+    }
 
     public static async Task<string> RenderAsync(IReadOnlyList<VideoSegment> segments, string output,
         string? ffmpeg = null, int? targetMegabytes = null, IProgress<double>? progress = null,
@@ -70,11 +94,30 @@ public static partial class VideoAssembly
             // а без ffmpeg остаётся быстрый запасной путь.
             if (!copied && targetMegabytes is null && segments.Count > 1 && ffmpeg is null)
                 copied = await TryConcatAsync(segments, temp, progress, ct);
+            if (!copied && ffmpeg is not null && await UndecodableCodecAsync(segments, ffmpeg, ct) is string codec)
+            {
+                // Минимальный ffmpeg не умеет, например, AV1 (запись Aura на RTX 40):
+                // такие исходники монтирует Windows или VLC, а не ffmpeg.
+                Logging.Log.Info("Editor", $"ffmpeg не декодирует {codec}; монтаж через Windows");
+                ffmpeg = null;
+            }
             if (!copied && ffmpeg is not null)
-                await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct);
-            else if (!copied)
+            {
+                try
+                {
+                    await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct);
+                    copied = true;
+                }
+                catch (FfmpegDecoderMissingException ex)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Logging.Log.Info("Editor", "ffmpeg не смог прочитать исходник, монтаж через Windows: " + ex.Message);
+                    File.Delete(temp);
+                }
+            }
+            if (!copied)
                 try { await Task.Run(() => RenderWindowsAsync(segments, temp, targetMegabytes, progress, ct), ct); }
-                catch (System.Runtime.InteropServices.COMException ex)
+                catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or WindowsTranscodeException)
                 {
                     ct.ThrowIfCancellationRequested();
                     Logging.Log.Warn("Editor", $"Windows не смогла выполнить монтаж (0x{ex.HResult:X8}: {ex.Message}); резервный путь с промежуточным перекодированием");
@@ -91,6 +134,17 @@ public static partial class VideoAssembly
             return output;
         }
         finally { try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    }
+
+    /// <summary>Первый видеокодек исходников, который этот ffmpeg не декодирует; null — все читаются.</summary>
+    private static async Task<string?> UndecodableCodecAsync(IReadOnlyList<VideoSegment> segments, string ffmpeg, CancellationToken ct)
+    {
+        foreach (string path in segments.Select(s => s.Path).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var info = await ReadInfoAsync(path, ct);
+            if (!Ffmpeg.CanDecode(ffmpeg, info.VideoCodec)) return info.VideoCodec;
+        }
+        return null;
     }
 
     /// <summary>
@@ -277,7 +331,7 @@ public static partial class VideoAssembly
         var result = await render;
         ct.ThrowIfCancellationRequested();
         if (result != TranscodeFailureReason.None)
-            throw new InvalidOperationException($"Windows не смогла обработать формат видео ({result}). Выберите ffmpeg в окне сборки.");
+            throw new WindowsTranscodeException($"Windows не смогла обработать формат видео ({result}). Выберите ffmpeg в окне сборки.");
     }
 
     private static uint TargetBitrate(int megabytes, double seconds)
@@ -315,6 +369,7 @@ public static partial class VideoAssembly
         var psi = new ProcessStartInfo(ffmpeg)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
             WorkingDirectory = System.IO.Path.GetDirectoryName(ffmpeg),
             Environment = { ["PATH"] = System.IO.Path.GetDirectoryName(ffmpeg) + System.IO.Path.PathSeparator + System.Environment.SystemDirectory }
         };
@@ -433,6 +488,10 @@ public static partial class VideoAssembly
             finally { await Task.WhenAll(errorReader, progressReader); }
             if (process.ExitCode != 0)
             {
+                // Кодека исходника в этой сборке нет — другой энкодер не поможет.
+                if (errors.FirstOrDefault(e => e.Contains("no decoder found", StringComparison.OrdinalIgnoreCase) ||
+                                               e.Contains("Decoder not found", StringComparison.OrdinalIgnoreCase)) is string missing)
+                    throw new FfmpegDecoderMissingException(missing.Trim());
                 if (!softwareEncoder && encoder != "libx264")
                 {
                     Logging.Log.Info("Editor", $"Аппаратный энкодер {encoder} не подошёл, повторяю на libx264: {string.Join(" ", errors.TakeLast(2))}");

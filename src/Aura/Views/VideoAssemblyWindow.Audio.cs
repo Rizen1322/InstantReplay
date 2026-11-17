@@ -236,6 +236,7 @@ public partial class VideoAssemblyWindow
             var media = new Media(vlc, new Uri(path));
             media.AddOption(":no-video");
             media.AddOption(":start-paused");
+            media.AddOption($":audio-track={track}");
             media.AddOption(":start-time=" + start.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
             var player = new LibVLCSharp.Shared.MediaPlayer(vlc);
             // MMDevice volume/mute controls the shared process session, not an individual track.
@@ -335,7 +336,10 @@ public partial class VideoAssemblyWindow
                 audio.Player.Volume = (int)Math.Round(Math.Cbrt(gain) * 100);
                 audio.Player.Mute = MutePreview.IsChecked == true || gain <= 0 || _reversePreviewRate > 0;
                 // Muted events must keep their clock running; disabling tracks/repeated seeks rebuild audio output.
-                if (audioSeek && !_continuousPlacedAudio.Remove(audio.Player)) audio.Player.Time = (long)(Math.Max(0, audioSource) * 1000);
+                bool drifted = !audioPause && !audioSeek && audio.Player.State == VLCState.Playing &&
+                    Math.Abs(audio.Player.Time / 1000.0 - audioSource) > 0.18;
+                if ((audioSeek || drifted) && !_continuousPlacedAudio.Remove(audio.Player))
+                    audio.Player.Time = (long)(Math.Max(0, audioSource) * 1000);
                 audio.Player.SetPause(audioPause);
             }
             catch (ObjectDisposedException) { }

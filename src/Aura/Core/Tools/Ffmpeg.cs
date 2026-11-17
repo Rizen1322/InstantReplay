@@ -68,11 +68,15 @@ public static class Ffmpeg
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string[]> EncoderCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string[]> DecoderCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private static string[] EncodersOf(string ffmpeg)
+    private static string[] EncodersOf(string ffmpeg) => CodecsOf(ffmpeg, "-encoders", EncoderCache);
+    private static string[] DecodersOf(string ffmpeg) => CodecsOf(ffmpeg, "-decoders", DecoderCache);
+
+    private static string[] CodecsOf(string ffmpeg, string option, System.Collections.Concurrent.ConcurrentDictionary<string, string[]> cache)
     {
         ffmpeg = Path.GetFullPath(ffmpeg);
-        return EncoderCache.GetOrAdd(ffmpeg, path =>
+        return cache.GetOrAdd(ffmpeg, path =>
         {
             try
             {
@@ -82,7 +86,7 @@ public static class Ffmpeg
                     RedirectStandardOutput = true, RedirectStandardError = true
                 };
                 psi.ArgumentList.Add("-hide_banner");
-                psi.ArgumentList.Add("-encoders");
+                psi.ArgumentList.Add(option);
                 using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
                 // Читаем оба потока сразу и параллельно. Синхронный ReadToEnd до
                 // WaitForExit встаёт намертво, если ffmpeg заполнил буфер трубы и
@@ -106,7 +110,7 @@ public static class Ffmpeg
             }
             catch (Exception ex)
             {
-                Log.Info("Ffmpeg", "Не удалось прочитать список энкодеров: " + ex.Message);
+                Log.Info("Ffmpeg", $"Не удалось прочитать список ({option}): " + ex.Message);
                 return [];
             }
         });
@@ -130,103 +134,54 @@ public static class Ffmpeg
     public static string SelectSoftwareEncoder(string ffmpeg) => Has(ffmpeg, "libx264") ? "libx264" : "mpeg4";
 
     /// <summary>
+    /// Есть ли в этом ffmpeg декодер для видеокодека с данным FourCC (как его называет VLC).
+    /// Неизвестный кодек или нечитаемый список декодеров — «да»: пусть решит сам ffmpeg.
+    /// </summary>
+    public static bool CanDecode(string ffmpeg, string? fourcc)
+    {
+        string[]? names = fourcc?.ToLowerInvariant() switch
+        {
+            "av01" => ["av1", "libdav1d", "libaom-av1", "av1_cuvid", "av1_qsv"],
+            "hevc" or "hvc1" or "hev1" or "h265" => ["hevc", "hevc_cuvid", "hevc_qsv"],
+            "h264" or "avc1" or "avc3" or "x264" => ["h264", "h264_cuvid", "h264_qsv"],
+            "vp09" or "vp90" => ["vp9", "libvpx-vp9", "vp9_cuvid"],
+            "vp08" or "vp80" => ["vp8", "libvpx"],
+            _ => null
+        };
+        if (names is null) return true;
+        var decoders = DecodersOf(ffmpeg);
+        if (decoders.Length == 0) return true;
+        // Строка списка: " VFS..D h264    H.264 / AVC ..." — имя второй колонкой.
+        return decoders.Select(line => line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Any(parts => parts.Length >= 2 && parts[0].StartsWith('V') && names.Contains(parts[1], StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// Пережать клип так, чтобы файл влез в лимит.
     ///
-    /// Битрейт считается от длительности, а разрешение опускается, если битрейта
-    /// на исходное просто не хватит: 1440p на 400 кбит/с — это каша, 720p при том
-    /// же весе смотрится нормально.
+    /// Работает тем же конвейером, что и сохранение монтажа: аппаратный H.264
+    /// (NVENC/QSV/AMF) с запасным программным энкодером, сведение всех звуковых
+    /// дорожек и запасной путь через Windows/VLC, если ffmpeg не читает исходник
+    /// (например, AV1). Раньше здесь был жёстко прописан libx264, которого нет в
+    /// минимальной LGPL-сборке, — сжатие падало с «Encoder not found».
+    /// Битрейт считается от длительности, разрешение опускается при нехватке.
     /// </summary>
     public static async Task<string> CompressAsync(
         string ffmpeg, string input, TimeSpan duration, int targetMegabytes, CancellationToken ct = default)
     {
         if (duration <= TimeSpan.Zero) throw new InvalidOperationException("не удалось определить длительность клипа");
 
-        const int audioKbps = 96;
-        // 3% запаса на контейнер: mp4 сверху добавляет свои таблицы
-        double totalKbps = targetMegabytes * 8.0 * 1024 * 0.97 / duration.TotalSeconds;
-        int videoKbps = Math.Max(300, (int)(totalKbps - audioKbps));
-
-        string scale = videoKbps switch
-        {
-            < 700 => "scale=-2:480",
-            < 1500 => "scale=-2:720",
-            < 3500 => "scale=-2:1080",
-            _ => ""
-        };
-
         string desiredOutput = Path.Combine(
             Path.GetDirectoryName(input)!,
             Path.GetFileNameWithoutExtension(input) + $" ({targetMegabytes} МБ).mp4");
         string output = FileNaming.NextAvailablePath(desiredOutput, File.Exists);
-        string partPath = output + ".part";
 
-        var psi = new ProcessStartInfo(ExecutableTrust.RequireProtected(ffmpeg))
-        {
-            WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)),
-            Environment = { ["PATH"] = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)) + Path.PathSeparator + System.Environment.SystemDirectory },
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true
-        };
-        psi.ArgumentList.Add("-n");
-        psi.ArgumentList.Add("-hide_banner");
-        // ffmpeg по умолчанию слушает stdin (клавиша «q» и прочее). У процесса без
-        // консоли stdin — унаследованный дескриптор приложения, и чтение из него
-        // может встать намертво: ffmpeg ждёт ввода, мы ждём ffmpeg.
-        psi.ArgumentList.Add("-nostdin");
-        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
-        if (scale.Length > 0) { psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(scale); }
-        psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add("libx264");
-        psi.ArgumentList.Add("-preset"); psi.ArgumentList.Add("veryfast");
-        psi.ArgumentList.Add("-b:v"); psi.ArgumentList.Add($"{videoKbps}k");
-        psi.ArgumentList.Add("-maxrate"); psi.ArgumentList.Add($"{(int)(videoKbps * 1.2)}k");
-        psi.ArgumentList.Add("-bufsize"); psi.ArgumentList.Add($"{videoKbps * 2}k");
-        psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("yuv420p");
-        psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
-        psi.ArgumentList.Add("-b:a"); psi.ArgumentList.Add($"{audioKbps}k");
-        psi.ArgumentList.Add("-movflags"); psi.ArgumentList.Add("+faststart");
-        // У временного файла расширение .part, поэтому контейнер задаём явно.
-        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("mp4");
-        psi.ArgumentList.Add(partPath);
-
-        Log.Info("Ffmpeg", $"Сжатие {Path.GetFileName(input)} → {videoKbps} кбит/с {scale}");
-
-        try
-        {
-            using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
-            string errors;
-            try
-            {
-                errors = await process.StandardError.ReadToEndAsync(ct);
-                await process.WaitForExitAsync(ct);
-            }
-            catch (OperationCanceledException)
-            {
-                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-                try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
-                throw;
-            }
-
-            if (process.ExitCode != 0)
-            {
-                string tail = string.Join(" ", errors.Split('\n').TakeLast(3)).Trim();
-                throw new InvalidOperationException($"ffmpeg вернул ошибку: {tail}");
-            }
-
-            long bytes = new FileInfo(partPath).Length;
-            long limitBytes = targetMegabytes * 1024L * 1024L;
-            if (bytes > limitBytes)
-                throw new InvalidOperationException(
-                    $"результат получился {ByteSize.Format(bytes)}, больше лимита {targetMegabytes} МБ");
-
-            File.Move(partPath, output);
-            return output;
-        }
-        catch
-        {
-            try { File.Delete(partPath); } catch { }
-            throw;
-        }
+        var info = await VideoAssembly.ReadInfoAsync(input, ct);
+        TimeSpan end = info.Duration > TimeSpan.Zero ? info.Duration : duration;
+        Log.Info("Ffmpeg", $"Сжатие {Path.GetFileName(input)} до {targetMegabytes} МБ: {end.TotalSeconds:F1} с, " +
+                           $"{info.Width}×{info.Height}, кодек {info.VideoCodec ?? "?"}, звуковых дорожек {info.AudioTracks}");
+        return await VideoAssembly.RenderAsync([new VideoSegment(input, TimeSpan.Zero, end)], output, ffmpeg,
+            targetMegabytes, progress: null, ct);
     }
 
     /// <summary>
@@ -249,7 +204,8 @@ public static class Ffmpeg
             WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)),
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardError = true
+            RedirectStandardError = true,
+            StandardErrorEncoding = System.Text.Encoding.UTF8
         };
         psi.ArgumentList.Add("-n");
         psi.ArgumentList.Add("-hide_banner");
@@ -345,7 +301,7 @@ public static class Ffmpeg
         var psi = new ProcessStartInfo(ffmpeg)
         {
             WorkingDirectory = Path.GetDirectoryName(ffmpeg), UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardError = true,
+            RedirectStandardError = true, StandardErrorEncoding = System.Text.Encoding.UTF8,
             Environment = { ["PATH"] = Path.GetDirectoryName(ffmpeg) + Path.PathSeparator + System.Environment.SystemDirectory }
         };
         string labels = string.Concat(Enumerable.Range(0, tracks).Select(i => $"[0:a:{i}]"));
