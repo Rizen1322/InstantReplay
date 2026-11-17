@@ -23,7 +23,7 @@ public static partial class VideoAssembly
                 string source = segment.Path;
                 TimeSpan? stop = segment.End;
                 TimeSpan progressSpan = segment.End;
-                bool trimmed = false;
+                double? prePrefix = null;
                 // Вырезаем нужный кусок по ключевым кадрам до VLC: иначе при монтаже
                 // конца двухминутной записи VLC перекодирует все две минуты с начала.
                 if (string.Equals(Path.GetExtension(source), ".mp4", StringComparison.OrdinalIgnoreCase))
@@ -32,13 +32,13 @@ public static partial class VideoAssembly
                     files.Add(cut);
                     try
                     {
-                        await Task.Run(() => Mp4Trim.Cut(source, cut, segment.Start.TotalSeconds, segment.End.TotalSeconds,
-                            audioTrack: -2, progress: null, ct), ct);
+                        double anchor = await Task.Run(() => Mp4Trim.CutWithAnchor(source, cut, segment.Start.TotalSeconds,
+                            segment.End.TotalSeconds, audioTrack: -2, ct), ct);
                         var cutInfo = await ReadInfoAsync(cut, ct);
                         source = cut;
                         stop = null;
                         progressSpan = cutInfo.Duration > TimeSpan.Zero ? cutInfo.Duration : segment.Duration;
-                        trimmed = true;
+                        prePrefix = Math.Max(0, segment.Start.TotalSeconds - anchor);
                     }
                     catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or ArgumentException)
                     {
@@ -50,19 +50,23 @@ public static partial class VideoAssembly
                 int index = i;
                 await NormalizeWithVlcAsync(source, converted, stop, progressSpan,
                     new Progress<double>(p => progress?.Report((index + p) / segments.Count * 0.5)), ct);
-                if (trimmed)
+                if (prePrefix is not null)
                     try { File.Delete(source); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 var result = await ReadInfoAsync(converted, ct);
-                TimeSpan expected = trimmed ? segment.Duration : segment.End;
+                TimeSpan expected = prePrefix is not null ? segment.Duration : segment.End;
                 if (result.Duration + TimeSpan.FromMilliseconds(100) < expected)
                     throw new InvalidDataException($"Не удалось подготовить видео для монтажа: длительность {result.Duration.TotalSeconds:F3} из {expected.TotalSeconds:F3} с.");
-                TimeSpan start = TimeSpan.Zero, end = segment.End;
-                if (trimmed)
+                TimeSpan start, end = segment.End;
+                if (prePrefix is double prefix)
                 {
-                    // Если VLC при transcode проигнорировал elst, в начале остался префикс до ключевого кадра.
-                    double extra = Math.Max(0, (result.Duration - segment.Duration).TotalSeconds);
-                    start = TimeSpan.FromSeconds(extra);
-                    end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, extra + segment.Duration.TotalSeconds));
+                    // Если VLC при transcode проигнорировал elst, видео начинается с ключевого кадра anchor,
+                    // а в хвосте могут быть лишние B-кадры: берём точный сдвиг от anchor, не от result.Duration.
+                    double withElst = segment.Duration.TotalSeconds;
+                    double withoutElst = withElst + prefix;
+                    bool ignoredElst = prefix > 0.05 &&
+                        Math.Abs(result.Duration.TotalSeconds - withoutElst) < Math.Abs(result.Duration.TotalSeconds - withElst);
+                    start = ignoredElst ? TimeSpan.FromSeconds(prefix) : TimeSpan.Zero;
+                    end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, start.TotalSeconds + withElst));
                 }
                 else
                 {

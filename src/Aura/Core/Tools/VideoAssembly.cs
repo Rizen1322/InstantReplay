@@ -89,11 +89,6 @@ public static partial class VideoAssembly
         try
         {
             bool copied = targetMegabytes is null && segments.Count == 1 && await TryRemuxAsync(segments[0], temp, progress, ct);
-            // Склейка с несколькими elst быстрая, но браузеры читают только первую правку.
-            // Поэтому при наличии ffmpeg многоклиповый монтаж идёт через аппаратный транскод,
-            // а без ffmpeg остаётся быстрый запасной путь.
-            if (!copied && targetMegabytes is null && segments.Count > 1 && ffmpeg is null)
-                copied = await TryConcatAsync(segments, temp, progress, ct);
             if (!copied && ffmpeg is not null && await UndecodableCodecAsync(segments, ffmpeg, ct) is string codec)
             {
                 // Минимальный ffmpeg не умеет, например, AV1 (запись Aura на RTX 40):
@@ -101,6 +96,11 @@ public static partial class VideoAssembly
                 Logging.Log.Info("Editor", $"ffmpeg не декодирует {codec}; монтаж через Windows");
                 ffmpeg = null;
             }
+            // Склейка с несколькими elst быстрая, но браузеры читают только первую правку.
+            // Поэтому при наличии ffmpeg многоклиповый монтаж идёт через аппаратный транскод,
+            // а без ffmpeg (или при нечитаемом кодеке вроде AV1) остаётся быстрый запасной путь.
+            if (!copied && targetMegabytes is null && segments.Count > 1 && ffmpeg is null)
+                copied = await TryConcatAsync(segments, temp, progress, ct);
             if (!copied && ffmpeg is not null)
             {
                 try
@@ -112,7 +112,7 @@ public static partial class VideoAssembly
                 {
                     ct.ThrowIfCancellationRequested();
                     Logging.Log.Info("Editor", "ffmpeg не смог прочитать исходник, монтаж через Windows: " + ex.Message);
-                    File.Delete(temp);
+                    try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 }
             }
             if (!copied)
@@ -121,7 +121,7 @@ public static partial class VideoAssembly
                 {
                     ct.ThrowIfCancellationRequested();
                     Logging.Log.Warn("Editor", $"Windows не смогла выполнить монтаж (0x{ex.HResult:X8}: {ex.Message}); резервный путь с промежуточным перекодированием");
-                    File.Delete(temp);
+                    try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                     await Task.Run(() => RenderWithVlcAsync(segments, temp, targetMegabytes, progress, ct), ct);
                 }
             ct.ThrowIfCancellationRequested();
@@ -182,7 +182,7 @@ public static partial class VideoAssembly
                 $"звук {(mixAudio ? "сведён в одну дорожку" : audioTrack < 0 ? "без звука" : "дорожка " + (audioTrack + 1))}");
             return true;
         }
-        catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or System.Runtime.InteropServices.COMException or ArgumentException)
+        catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException)
         {
             File.Delete(output);
             Logging.Log.Info("Editor", "Быстрый экспорт фрагмента недоступен: " + ex.Message);
@@ -404,7 +404,7 @@ public static partial class VideoAssembly
             if (segment.AudioTrack >= tracks && segment.AudioTrack >= 0) throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
             bool samePicture = source.Width == width && source.Height == height && Math.Abs(source.Fps - first.Fps) < .01;
             string prepare = samePicture
-                ? "format=yuv420p,setpts=PTS-STARTPTS"
+                ? "setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
                 : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS";
             graph.Append($"[{i}:v:0]{prepare}[v{i}];");
         }
@@ -447,13 +447,15 @@ public static partial class VideoAssembly
             }
             else if (encoder == "h264_qsv")
             {
-                Args("-preset", "veryfast", "-global_quality", "20");
+                Args("-preset", "veryfast");
                 if (bitrate is uint qsvBitrate) Args("-b:v", qsvBitrate.ToString(CultureInfo.InvariantCulture));
+                else Args("-global_quality", "20");
             }
             else if (encoder == "h264_amf")
             {
-                Args("-quality", "balanced", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22");
-                if (bitrate is uint amfBitrate) Args("-b:v", amfBitrate.ToString(CultureInfo.InvariantCulture));
+                Args("-quality", "balanced");
+                if (bitrate is uint amfBitrate) Args("-rc", "vbr_peak", "-b:v", amfBitrate.ToString(CultureInfo.InvariantCulture));
+                else Args("-rc", "cqp", "-qp_i", "20", "-qp_p", "22");
             }
             else if (encoder == "mpeg4")
             {
@@ -472,7 +474,7 @@ public static partial class VideoAssembly
             var errorReader = Task.Run(async () =>
             {
                 while (await process.StandardError.ReadLineAsync() is { } line)
-                { errors.Enqueue(line); if (errors.Count > 12) errors.Dequeue(); }
+                { errors.Enqueue(line); if (errors.Count > 40) errors.Dequeue(); }
             });
             var progressReader = Task.Run(async () =>
             {
@@ -490,23 +492,25 @@ public static partial class VideoAssembly
             finally { await Task.WhenAll(errorReader, progressReader); }
             if (process.ExitCode != 0)
             {
-                // Кодека исходника в этой сборке нет — другой энкодер не поможет.
+                // Кодека/контейнера исходника в этой сборке нет — другой энкодер не поможет.
                 if (errors.FirstOrDefault(e => e.Contains("no decoder found", StringComparison.OrdinalIgnoreCase) ||
-                                               e.Contains("Decoder not found", StringComparison.OrdinalIgnoreCase)) is string missing)
+                                               e.Contains("Decoder not found", StringComparison.OrdinalIgnoreCase) ||
+                                               e.Contains("Demuxer not found", StringComparison.OrdinalIgnoreCase) ||
+                                               e.Contains("Cannot find a decoder", StringComparison.OrdinalIgnoreCase)) is string missing)
                     throw new FfmpegDecoderMissingException(missing.Trim());
+                if (!legacyScript && errors.Any(e => e.Contains("Unrecognized option", StringComparison.OrdinalIgnoreCase)))
+                {
+                    File.Delete(temp);
+                    scriptLock.Dispose(); File.Delete(script);
+                    await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript: true, softwareEncoder);
+                    return;
+                }
                 if (!softwareEncoder && encoder != "libx264")
                 {
                     Logging.Log.Info("Editor", $"Аппаратный энкодер {encoder} не подошёл, повторяю на libx264: {string.Join(" ", errors.TakeLast(2))}");
                     File.Delete(temp);
                     scriptLock.Dispose(); File.Delete(script);
                     await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript, softwareEncoder: true);
-                    return;
-                }
-                if (!legacyScript && errors.Any(e => e.Contains("Unrecognized option", StringComparison.OrdinalIgnoreCase)))
-                {
-                    File.Delete(temp);
-                    scriptLock.Dispose(); File.Delete(script);
-                    await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript: true, softwareEncoder);
                     return;
                 }
                 throw new InvalidOperationException("ffmpeg: " + string.Join(" ", errors.TakeLast(4)));

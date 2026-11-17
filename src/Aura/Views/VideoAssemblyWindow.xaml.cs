@@ -133,7 +133,7 @@ public partial class VideoAssemblyWindow : Window
             _segments[owner] = _segments[owner] with { AudioEvents = _segments[owner].AudioEvents.Concat(keepAudio).ToArray() };
         }
         Segments.SelectedIndex = Math.Min(index, _segments.Count - 1);
-        if (_segments.Count == 0) { _assemblyPlayer?.SetPause(true); TrimPanel.IsEnabled = false; }
+        if (_segments.Count == 0) { _previewIndex = -1; _assemblyPlayer?.Stop(); _ = StopPreviewAudioAsync(); TrimPanel.IsEnabled = false; }
     }
 
     private void ChooseFfmpeg_Click(object sender, RoutedEventArgs e)
@@ -190,7 +190,7 @@ public partial class VideoAssemblyWindow : Window
         try
         {
             string output = await VideoAssembly.RenderAsync(parts, picker.FileName, _ffmpeg, limit,
-                new Progress<double>(p => { Progress.Value = p; Status.Text = $"Сохраняю ролик… {p:P0}"; }), cancellation.Token);
+                new Progress<double>(p => { if (_export is not null) { Progress.Value = p; Status.Text = $"Сохраняю ролик… {p:P0}"; } }), cancellation.Token);
             ClipCommands.RegisterSavedVideo(output);
             Status.Text = "Сохранено: " + output;
         }

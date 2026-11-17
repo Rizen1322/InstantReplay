@@ -270,6 +270,7 @@ public partial class VideoAssemblyWindow
         if (_assemblyPlayer is null || _segments.Count == 0) return;
         FreezeTail();
         FreezeGap();
+        bool wasReversed = false;
         if (key == Key.J)
         {
             _reversePreviewRate = _reversePreviewRate > 0 ? Math.Min(8, _reversePreviewRate * 2) : 1;
@@ -281,8 +282,9 @@ public partial class VideoAssemblyWindow
         }
         else
         {
-            if (_reversePreviewRate > 0) _audioRestartPositions.Clear();
-            _forwardPreviewRate = _wantAssemblyPlaying && _reversePreviewRate == 0 ? Math.Min(8, _forwardPreviewRate * 2) : 1;
+            wasReversed = _reversePreviewRate > 0;
+            if (wasReversed) _audioRestartPositions.Clear();
+            _forwardPreviewRate = _wantAssemblyPlaying && !wasReversed ? Math.Min(8, _forwardPreviewRate * 2) : 1;
             _reversePreviewRate = 0; _wantAssemblyPlaying = true;
             if (_gapPosition is null && AssemblyPosition.Value < LeadingGapEnd - .001) SeekAssembly(AssemblyPosition.Value);
             _assemblyPlayer.SetRate((float)_forwardPreviewRate);
@@ -291,7 +293,7 @@ public partial class VideoAssemblyWindow
             else if (_tailPosition is null && _assemblyPlayer.State == LibVLCSharp.Shared.VLCState.Ended) SeekAssembly(0);
             else if (_tailPosition is null) _assemblyPlayer.SetPause(false);
         }
-        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0);
+        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0, seek: wasReversed);
     }
 
     private void ProjectMedia_MouseDown(object sender, MouseButtonEventArgs e)

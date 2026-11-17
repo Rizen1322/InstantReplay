@@ -201,9 +201,9 @@ public partial class VideoAssemblyWindow
                 _waitingAssemblyFrame = false;
             }
         }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) { }
-        catch (Exception ex) { if (!_lifetime.IsCancellationRequested) { Status.Text = ex.Message; Log.Error("Editor", ex); } }
+        catch (OperationCanceledException) { if (revision == _assemblyLoadRevision) _waitingAssemblyFrame = false; }
+        catch (ObjectDisposedException) { if (revision == _assemblyLoadRevision) _waitingAssemblyFrame = false; }
+        catch (Exception ex) { if (revision == _assemblyLoadRevision) _waitingAssemblyFrame = false; if (!_lifetime.IsCancellationRequested) { Status.Text = ex.Message; Log.Error("Editor", ex); } }
         finally
         {
             if (revision == _assemblyLoadRevision) _assemblyOpening = false;
@@ -333,9 +333,10 @@ public partial class VideoAssemblyWindow
         {
             bool paused = !_wantAssemblyPlaying || _assemblyScrubbing;
             if (paused) _assemblyPlayer.SetPause(true);
-            _assemblyPlayer.Time = (long)(Math.Clamp(source, _segments[index].Start.TotalSeconds,
+            _assemblyPlayer.Time = (long)Math.Round(Math.Clamp(source, _segments[index].Start.TotalSeconds,
                 Math.Max(_segments[index].Start.TotalSeconds, _segments[index].End.TotalSeconds)) * 1000);
-            UpdateAssemblyPlayhead(time);
+            if (paused) _assemblyPlayer.NextFrame();
+            UpdateAssemblyPlayhead(Timeline.Position);
             SyncPreviewAudio(source, seek: true);
             return;
         }
@@ -379,7 +380,7 @@ public partial class VideoAssemblyWindow
         }
         else _assemblyPlayer.SetPause(true);
         PlayAssembly.Content = _wantAssemblyPlaying ? "Ⅱ Пауза" : "▶ Смотреть ролик";
-        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0, seek: _wantAssemblyPlaying);
+        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0);
     }
     private void ToStart_Click(object sender, RoutedEventArgs e) => SeekAssembly(0);
     private void Mute_Changed(object sender, RoutedEventArgs e) => SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);

@@ -34,7 +34,9 @@ public partial class VideoAssemblyWindow
     private double LeadingGapEnd => _segments.Count > 0 ? _segments[0].Gap.TotalSeconds : 0;
     private double ProjectDuration => Math.Max(VideoDuration, AssemblySounds.Where(s => !s.Removed).Select(s => s.Finish.TotalSeconds).DefaultIfEmpty(0).Max());
     private bool IndependentAudioSelected => Segments.SelectedItem is VideoSegment part && Timeline.SelectedAudioTrack >= 0 &&
-        (!part.AudioLinked || Timeline.SelectedAudioEvent >= 0 && Timeline.SelectedAudioEvent < part.AudioEvents.Count &&
+        (!part.AudioLinked && (Timeline.SelectedAudioEvent < 0 || Timeline.SelectedAudioEvent < part.AudioEvents.Count &&
+            part.AudioEvents[Timeline.SelectedAudioEvent].Track == Timeline.SelectedAudioTrack) ||
+         Timeline.SelectedAudioEvent >= 0 && Timeline.SelectedAudioEvent < part.AudioEvents.Count &&
             part.AudioEvents[Timeline.SelectedAudioEvent].SourcePath is string path && path != part.Path);
     private AssemblyAudioTrack AudioTrackState(int track) => track < _audioTracks.Count ? _audioTracks[track] : new();
     private int SourceAudioTracks(string path) => _sourceInfo.TryGetValue(path, out var info) ? info.AudioTracks : 0;
@@ -72,7 +74,7 @@ public partial class VideoAssemblyWindow
                 volumeRow.Children.Add(volume); body.Children.Add(volumeRow);
                 var row = new Border { Height = Controls.AssemblyTimeline.AudioLaneHeight, BorderThickness = new Thickness(3, 0, 1, 1), Child = body };
                 row.SetResourceReference(Border.BorderBrushProperty, "SepBrush");
-                row.PreviewMouseLeftButtonDown += (_, _) => { _activeAudioTrack = track; Timeline.SelectedAudioTrack = track; RefreshAudioHeaders(); };
+                row.PreviewMouseLeftButtonDown += (_, _) => { _activeAudioTrack = track; Timeline.SelectedAudioTrack = track; Timeline.SelectedAudioEvent = -1; RefreshAudioHeaders(); };
                 row.PreviewMouseWheel += (_, e) =>
                 {
                     if (_export is not null || Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
@@ -323,7 +325,12 @@ public partial class VideoAssemblyWindow
                     if (active && _activePlacedAudio.Add(audio.Player)) audioSeek = true;
                     else if (!active) _activePlacedAudio.Remove(audio.Player);
                 }
-                else gain = part.AudioDetached ? 0 : AssemblyAudio.GainAt(part, audio.Track, source);
+                else
+                {
+                    bool outsideClip = _tailPosition is not null || _gapPosition is not null;
+                    gain = outsideClip || part.AudioDetached ? 0 : AssemblyAudio.GainAt(part, audio.Track, source);
+                    audioPause |= outsideClip;
+                }
                 gain *= AudioTrackState(audio.Track).Gain(AnyAudioSolo);
                 if (gain > 0 && audioSource + .1 < end && (audioSeek || _wantAssemblyPlaying) && audio.Player.State == VLCState.Ended &&
                     (!_audioRestartPositions.TryGetValue(audio.Player, out double previousRestart) || audioSource < previousRestart - .1))

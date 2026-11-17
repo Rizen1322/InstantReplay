@@ -304,17 +304,21 @@ internal static class Mp4Boxes
     /// <summary>Список правок из нескольких отрезков подряд: пустой отрезок и показ медиа.</summary>
     public static void Edts(BoxWriter w, IReadOnlyList<Mp4Defragment.Edit> edits, bool always = false)
     {
-        if (!always && edits.All(e => e.EmptyMovie <= 0 && e.MediaStart <= 0)) return;
+        var entries = edits.Where(e => e.EmptyMovie > 0 || e.Duration > 0).ToArray();
+        if (!always && entries.All(e => e.EmptyMovie <= 0 && e.MediaStart <= 0)) return;
         w.Begin("edts");
         w.BeginFull("elst", 1, 0);
-        w.U32((uint)edits.Sum(e => e.EmptyMovie > 0 ? 2 : 1));
-        foreach (var edit in edits)
+        w.U32((uint)entries.Sum(e => (e.EmptyMovie > 0 ? 1 : 0) + (e.Duration > 0 ? 1 : 0)));
+        foreach (var edit in entries)
         {
             if (edit.EmptyMovie > 0)
             {
                 w.U64((ulong)edit.EmptyMovie); w.U64(unchecked((ulong)-1L)); w.U32(0x00010000);
             }
-            w.U64(edit.Duration); w.U64((ulong)Math.Max(0, edit.MediaStart)); w.U32(0x00010000);
+            if (edit.Duration > 0)
+            {
+                w.U64(edit.Duration); w.U64((ulong)Math.Max(0, edit.MediaStart)); w.U32(0x00010000);
+            }
         }
         w.End();
         w.End();

@@ -58,8 +58,10 @@ public static class VideoTimeline
         fps = double.IsFinite(fps) && fps > 0 ? fps : 30;
         double minimum = Math.Max(0.05, 1 / fps);
         double Snap(double value) => snap ? Math.Round(value * fps) / fps : value;
+        double maxLeft = Math.Max(0, part.End.TotalSeconds - minimum);
+        double maxRight = Math.Max(part.Start.TotalSeconds + minimum, Math.Max(sourceDuration, part.End.TotalSeconds));
         return left
-            ? part with { Start = TimeSpan.FromSeconds(Math.Clamp(Snap(part.Start.TotalSeconds + delta), 0, Math.Max(0, part.End.TotalSeconds - minimum))) }
-            : part with { End = TimeSpan.FromSeconds(Math.Clamp(Snap(part.End.TotalSeconds + delta), part.Start.TotalSeconds + minimum, Math.Max(sourceDuration, part.End.TotalSeconds))) };
+            ? part with { Start = TimeSpan.FromSeconds(Math.Clamp(Snap(part.Start.TotalSeconds + delta), 0, maxLeft)) }
+            : part with { End = TimeSpan.FromSeconds(Math.Clamp(Snap(part.End.TotalSeconds + delta), part.Start.TotalSeconds + minimum, maxRight)) };
     }
 }

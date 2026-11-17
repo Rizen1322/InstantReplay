@@ -107,7 +107,19 @@ public static class Mp4Trim
     /// </summary>
     public static void Cut(string input, string output, double start, double end, int audioTrack,
                            Action<double>? progress = null, CancellationToken ct = default,
-                           AudioMixer? mix = null)
+                           AudioMixer? mix = null) =>
+        CutCore(input, output, start, end, audioTrack, progress, ct, mix, out _);
+
+    /// <summary>То же, что <see cref="Cut"/>, но возвращает PTS ключевого кадра, с которого началась копия.</summary>
+    internal static double CutWithAnchor(string input, string output, double start, double end, int audioTrack,
+                                         CancellationToken ct = default)
+    {
+        CutCore(input, output, start, end, audioTrack, progress: null, ct, mix: null, out double anchor);
+        return anchor;
+    }
+
+    private static void CutCore(string input, string output, double start, double end, int audioTrack,
+                                Action<double>? progress, CancellationToken ct, AudioMixer? mix, out double anchor)
     {
         using var source = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
                                           1, FileOptions.RandomAccess);
@@ -137,7 +149,7 @@ public static class Mp4Trim
             start = Math.Max(start, video.Pts(key));
         }
         if (end - start < 0.05) throw new ArgumentOutOfRangeException(nameof(end), "фрагмент пуст");
-        double anchor = video.Pts(key);
+        anchor = video.Pts(key);
 
         var picked = new List<(SourceTrack Track, int First, int Last)>();
         picked.Add((video, key, LastBefore(video, key, end)));
