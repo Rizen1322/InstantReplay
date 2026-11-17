@@ -257,8 +257,9 @@ public static partial class VideoAssembly
 
     private static async Task RenderWindowsAsync(IReadOnlyList<VideoSegment> segments, string temp,
         int? targetMegabytes, IProgress<double>? progress, CancellationToken ct,
-        IReadOnlyDictionary<string, string>? originalAudio = null)
+        IReadOnlyList<VideoSegment>? audioSegments = null)
     {
+        audioSegments ??= segments;
         var composition = new MediaComposition();
         Logging.Log.Info("Editor", $"Windows: подготовка {segments.Count} видеофрагментов");
         var sources = new Dictionary<string, MediaClip>(StringComparer.OrdinalIgnoreCase);
@@ -283,19 +284,18 @@ public static partial class VideoAssembly
             composition.Clips.Add(clip);
             offset += end - segment.Start;
         }
-        string AudioPath(string path) => originalAudio?.GetValueOrDefault(path) ?? path;
         Logging.Log.Info("Editor", "Windows: подготовка звуковых источников");
-        foreach (string path in segments.Select(p => AudioPath(p.Path)).Concat(segments.SelectMany(p => p.AudioEvents).Select(e => e.SourcePath).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (string path in audioSegments.Select(p => p.Path).Concat(audioSegments.SelectMany(p => p.AudioEvents).Select(e => e.SourcePath).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase))
             if (!sources.ContainsKey(path)) sources[path] = await MediaClip.CreateFromFileAsync(await StorageFile.GetFileFromPathAsync(Path.GetFullPath(path)));
-        int TrackCount(string path) => sources[AudioPath(path)].EmbeddedAudioTracks.Count;
-        foreach (var part in segments)
+        int TrackCount(string path) => sources[path].EmbeddedAudioTracks.Count;
+        foreach (var part in audioSegments)
             if (part.AudioTrack >= TrackCount(part.Path) && part.AudioTrack >= 0 ||
                 part.AudioEvents.Any(e => e.Track >= TrackCount(e.SourcePath ?? part.Path)))
                 throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-        var sounds = AssemblyAudio.Sounds(segments, TrackCount);
+        var sounds = AssemblyAudio.Sounds(audioSegments, TrackCount);
         foreach (var sound in sounds.Where(s => s.Gain > 0))
         {
-            string path = AudioPath(sound.Path);
+            string path = sound.Path;
             var source = sources[path];
             int nativeTrack = (int)VideoEditor.WindowsAudioTrackIndex(path, source.EmbeddedAudioTracks.Count, sound.Track);
             var audio = BackgroundAudioTrack.CreateFromEmbeddedAudioTrack(source.EmbeddedAudioTracks[nativeTrack]);
