@@ -170,14 +170,16 @@ public static partial class VideoAssembly
         // Выбрать произвольное подмножество дорожек нельзя: только одну или все.
         if (tracks.Length > 1 && tracks.Length != info.AudioTracks) return false;
         int audioTrack = tracks.Length switch { 0 => -2, 1 => tracks[0], _ => -1 };
+        bool mixAudio = tracks.Length > 1;
 
         var clock = Stopwatch.StartNew();
         try
         {
             await Task.Run(() => Mp4Trim.Cut(part.Path, output, part.Start.TotalSeconds, part.End.TotalSeconds,
-                audioTrack, value => progress?.Report(value), ct), ct);
+                audioTrack, value => progress?.Report(value), ct,
+                mixAudio ? clips => AudioMixdown.Mix(clips, ct) : null), ct);
             Logging.Log.Info("Editor", $"Экспорт фрагмента без перекодирования видео: {clock.ElapsedMilliseconds} мс, " +
-                $"звук {(audioTrack < 0 ? "все/без звука" : "дорожка " + (audioTrack + 1))}");
+                $"звук {(mixAudio ? "сведён в одну дорожку" : audioTrack < 0 ? "без звука" : "дорожка " + (audioTrack + 1))}");
             return true;
         }
         catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or System.Runtime.InteropServices.COMException or ArgumentException)

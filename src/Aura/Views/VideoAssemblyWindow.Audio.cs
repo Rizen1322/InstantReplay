@@ -336,9 +336,7 @@ public partial class VideoAssemblyWindow
                 audio.Player.Volume = (int)Math.Round(Math.Cbrt(gain) * 100);
                 audio.Player.Mute = MutePreview.IsChecked == true || gain <= 0 || _reversePreviewRate > 0;
                 // Muted events must keep their clock running; disabling tracks/repeated seeks rebuild audio output.
-                bool drifted = !audioPause && !audioSeek && audio.Player.State == VLCState.Playing &&
-                    Math.Abs(audio.Player.Time / 1000.0 - audioSource) > 0.18;
-                if ((audioSeek || drifted) && !_continuousPlacedAudio.Remove(audio.Player))
+                if (audioSeek && !_continuousPlacedAudio.Remove(audio.Player))
                     audio.Player.Time = (long)(Math.Max(0, audioSource) * 1000);
                 audio.Player.SetPause(audioPause);
             }
