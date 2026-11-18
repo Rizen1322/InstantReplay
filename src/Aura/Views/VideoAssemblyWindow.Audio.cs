@@ -70,7 +70,7 @@ public partial class VideoAssemblyWindow
                 var volumeRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
                 var db = new TextBlock { Width = 48, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center, FontSize = 10 };
                 DockPanel.SetDock(db, Dock.Right); volumeRow.Children.Add(db);
-                var volume = new Slider { Width = double.NaN, Minimum = 0, Maximum = 1, TickFrequency = .05, IsSnapToTickEnabled = true, ToolTip = "Громкость дорожки · колесо над заголовком" };
+                var volume = new Slider { Width = double.NaN, Minimum = 0, Maximum = 1, TickFrequency = .05, IsSnapToTickEnabled = true, Focusable = false, ToolTip = "Громкость дорожки · колесо над дорожкой или заголовком" };
                 volumeRow.Children.Add(volume); body.Children.Add(volumeRow);
                 var row = new Border { Height = Controls.AssemblyTimeline.AudioLaneHeight, BorderThickness = new Thickness(3, 0, 1, 1), Child = body };
                 row.SetResourceReference(Border.BorderBrushProperty, "SepBrush");
@@ -150,8 +150,16 @@ public partial class VideoAssemblyWindow
         Segments.SelectedIndex = index; _changingAssembly = false;
         RefreshTimeline(); SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? source);
     }
-    private void AdjustAudioEvent(int index, int track, double source, int delta) => ChangeAudioEvent(index, track, source,
-        e => e with { Volume = Math.Clamp(e.Volume + delta * .05, 0, 1), Muted = false, Removed = false }, coalesce: true);
+    private void AdjustAudioEvent(int index, int track, double source, int delta)
+    {
+        if (index >= 0 && index < _segments.Count && _segments[index].AudioLinked && Timeline.SelectedAudioEvent < 0)
+        {
+            SetAudioTrack(track, AudioTrackState(track) with { Volume = Math.Clamp(AudioTrackState(track).Volume + delta * .05, 0, 1), Muted = false }, coalesce: true);
+            return;
+        }
+        ChangeAudioEvent(index, track, source,
+            e => e with { Volume = Math.Clamp(e.Volume + delta * .05, 0, 1), Muted = false, Removed = false }, coalesce: true);
+    }
     private void MuteAudioEvent_Click(object sender, RoutedEventArgs e) => ChangeAudioEvent(Segments.SelectedIndex,
         Timeline.SelectedAudioTrack, Timeline.SelectedAudioSeconds, a => a with { Muted = !a.Muted, Removed = false });
 

@@ -161,7 +161,7 @@ public static class Mp4Trim
             picked.Add((a, first, LastBefore(a, first, end)));
         }
 
-        if (mix is not null && picked.Count > 2)
+        if (mix is not null && picked.Count > 1)
         {
             var clips = picked.Skip(1).Select(p => Clip(source, p.Track, p.First, p.Last)).ToList();
             ct.ThrowIfCancellationRequested();

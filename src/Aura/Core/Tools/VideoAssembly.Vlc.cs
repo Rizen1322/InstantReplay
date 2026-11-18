@@ -132,7 +132,7 @@ public static partial class VideoAssembly
             media.AddOption(":stop-time=" + stop.TotalSeconds.ToString("0.######", CultureInfo.InvariantCulture));
         // The bundled VLC has MPEG-4 Part 2, but no 8-bit x264 encoder. Windows can
         // decode this intermediate even without the optional HEVC extension.
-        media.AddOption(":sout=#transcode{vcodec=mp4v,venc=avcodec{codec=mpeg4},vb=24000}:std{access=file,mux=mp4,dst=" + ChainValue(output) + "}");
+        media.AddOption(":sout=#transcode{vcodec=mp4v,venc=avcodec{codec=mpeg4,qmin=2,qmax=3,mbd=2},vb=35000}:std{access=file,mux=mp4,dst=" + ChainValue(output) + "}");
         using var player = new MediaPlayer(vlc);
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         player.EndReached += (_, _) => completed.TrySetResult();

@@ -9,7 +9,7 @@ public static class AudioMixdown
 
     public static Mp4Trim.AacClip Mix(IReadOnlyList<Mp4Trim.AacClip> tracks) => Mix(tracks, CancellationToken.None);
 
-    public static Mp4Trim.AacClip Mix(IReadOnlyList<Mp4Trim.AacClip> tracks, CancellationToken ct)
+    public static Mp4Trim.AacClip Mix(IReadOnlyList<Mp4Trim.AacClip> tracks, CancellationToken ct, Func<int, double, float>? gainAt = null)
     {
         ct.ThrowIfCancellationRequested();
         const int rate = AacEncoder.SampleRate;
@@ -36,7 +36,12 @@ public static class AudioMixdown
             {
                 ct.ThrowIfCancellationRequested();
                 Array.Clear(block);
-                foreach (var reader in readers) reader.AddTo(block, at);
+                double timeSeconds = start + (at + BlockFrames * 0.5) / rate;
+                for (int t = 0; t < readers.Count; t++)
+                {
+                    float gain = gainAt is null ? 1f : gainAt(t, timeSeconds);
+                    readers[t].AddTo(block, at, gain);
+                }
                 if (readers.All(r => r.Ended)) total = readers.Max(r => r.ActualEnd);
                 limiter.Process(block, BlockFrames);
                 int first = Math.Min(skip, BlockFrames);
@@ -79,7 +84,7 @@ public static class AudioMixdown
             _decoder = new AacDecoder(clip.SampleRate, clip.Channels, clip.Config);
         }
 
-        public void AddTo(float[] block, int at)
+        public void AddTo(float[] block, int at, float gain = 1f)
         {
             int first = Math.Clamp(_offset - at, 0, BlockFrames);
             int last = Math.Clamp(End - at, 0, BlockFrames);
@@ -100,8 +105,10 @@ public static class AudioMixdown
                 int have = Math.Min(last - first, (_pcm.Count - _sample) / _clip.Channels);
                 for (int i = 0; i < have; i++)
                 {
-                    block[(first + i) * 2] += _pcm[_sample++];
-                    block[(first + i) * 2 + 1] += _clip.Channels == 1 ? _pcm[_sample - 1] : _pcm[_sample++];
+                    float left = _pcm[_sample++] * gain;
+                    float right = _clip.Channels == 1 ? left : _pcm[_sample++] * gain;
+                    block[(first + i) * 2] += left;
+                    block[(first + i) * 2 + 1] += right;
                 }
                 first += have;
             }

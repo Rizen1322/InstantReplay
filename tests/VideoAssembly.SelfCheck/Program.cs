@@ -469,8 +469,8 @@ var uiThread = new Thread(() =>
                         audioTimelineType.GetMethod("AdjustAudioAt")!.Invoke(audioTimeline, [new System.Windows.Point(wheelTime * 100, 220), -120]);
                     Require((int)assemblyType.GetField("_assemblyLoadRevision", flags)!.GetValue(assembly)! == loadBeforeVolume &&
                         (bool)assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)!, "Volume scrolling restarted or paused playback");
-                    Require(Math.Abs(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) - .5) < .001,
-                        "Wheel over one audio event changed the wrong gain");
+                    Require(Math.Abs(trackStates[1].Volume - .5) < .001 && AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 1,
+                        "Wheel over linked audio lane did not update track volume or stacked event gain");
                     long playingTime = assemblyPlayer.Time;
                     using var playingMedia = assemblyPlayer.Media!;
                     int pictures = playingMedia.Statistics.DisplayedPictures;
@@ -480,7 +480,7 @@ var uiThread = new Thread(() =>
                         $"want={assemblyType.GetField("_wantAssemblyPlaying", flags)!.GetValue(assembly)}, wait={assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)}, opening={assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)}, scrub={assemblyType.GetField("_assemblyScrubbing", flags)!.GetValue(assembly)}, " +
                         $"gap={assemblyType.GetField("_gapPosition", flags)!.GetValue(assembly)}, tail={assemblyType.GetField("_tailPosition", flags)!.GetValue(assembly)}");
                     AudioCall("UndoAssembly_Click", null, new System.Windows.RoutedEventArgs());
-                    Require(AssemblyAudio.GainAt((VideoSegment)list.Items[2], 1, .5) == 1, "A wheel gesture required multiple undo steps");
+                    Require(trackStates[1].Volume == 1, "A wheel gesture required multiple undo steps");
                     AudioCall("SeekAssembly", list.Items.Cast<VideoSegment>().Take(2).Sum(p => p.Duration.TotalSeconds) + 1.5);
                     for (int i = 0; i < 120 && ((bool)assemblyType.GetField("_assemblyOpening", flags)!.GetValue(assembly)! ||
                         (bool)assemblyType.GetField("_waitingAssemblyFrame", flags)!.GetValue(assembly)!); i++) await Task.Delay(25);

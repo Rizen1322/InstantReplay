@@ -154,7 +154,7 @@ public static partial class VideoAssembly
     /// </summary>
     private static async Task<bool> TryRemuxAsync(VideoSegment part, string output, IProgress<double>? progress, CancellationToken ct)
     {
-        if (part.Gap != TimeSpan.Zero || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase)) return false;
+        if (part.Gap != TimeSpan.Zero || part.AudioDetached || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase)) return false;
         var info = await ReadInfoAsync(part.Path, ct);
         if (info.Transformed || part.End > info.Duration + TimeSpan.FromMilliseconds(20)) return false;
         if (part.AudioTrack >= info.AudioTracks && part.AudioTrack >= 0 ||
@@ -162,24 +162,26 @@ public static partial class VideoAssembly
             throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
 
         var sounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks).Where(s => !s.Removed).ToArray();
+        if (sounds.Any(s => s.Finish > part.Duration + TimeSpan.FromMilliseconds(10))) return false;
         var audible = sounds.Where(s => s.Gain > 0).ToArray();
-        // Потоковое копирование умеет только целые дорожки без сдвига и усиления.
-        if (audible.Any(s => s.Path != part.Path || s.Gain != 1 || s.Position != TimeSpan.Zero ||
-            s.Start != part.Start || s.End != part.End)) return false;
+        if (audible.Any(s => s.Path != part.Path)) return false;
         var tracks = audible.Select(s => s.Track).Distinct().OrderBy(t => t).ToArray();
-        // Выбрать произвольное подмножество дорожек нельзя: только одну или все.
-        if (tracks.Length > 1 && tracks.Length != info.AudioTracks) return false;
         int audioTrack = tracks.Length switch { 0 => -2, 1 => tracks[0], _ => -1 };
-        bool mixAudio = tracks.Length > 1;
+        bool directCopy = tracks.Length == 0 ||
+            tracks.Length == 1 && audible.Length == 1 && Math.Abs(audible[0].Gain - 1) < 1e-4 &&
+            audible[0].Start == part.Start && audible[0].End == part.End;
+        Mp4Trim.AudioMixer? mix = directCopy ? null
+            : tracks.Length == 1
+                ? clips => AudioMixdown.Mix(clips, ct, (_, sec) => (float)AssemblyAudio.GainAt(part, tracks[0], sec))
+                : clips => AudioMixdown.Mix(clips, ct, (t, sec) => (float)AssemblyAudio.GainAt(part, t, sec));
 
         var clock = Stopwatch.StartNew();
         try
         {
             await Task.Run(() => Mp4Trim.Cut(part.Path, output, part.Start.TotalSeconds, part.End.TotalSeconds,
-                audioTrack, value => progress?.Report(value), ct,
-                mixAudio ? clips => AudioMixdown.Mix(clips, ct) : null), ct);
+                audioTrack, value => progress?.Report(value), ct, mix), ct);
             Logging.Log.Info("Editor", $"Экспорт фрагмента без перекодирования видео: {clock.ElapsedMilliseconds} мс, " +
-                $"звук {(mixAudio ? "сведён в одну дорожку" : audioTrack < 0 ? "без звука" : "дорожка " + (audioTrack + 1))}");
+                $"звук {(mix is not null ? "сведён в одну дорожку" : audioTrack < 0 ? "без звука" : "дорожка " + (audioTrack + 1))}");
             return true;
         }
         catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException)
@@ -200,9 +202,10 @@ public static partial class VideoAssembly
         if (segments.Count < 2) return false;
         var infos = new Dictionary<string, VideoFileInfo>(StringComparer.OrdinalIgnoreCase);
         var tracks = new List<int>();
+        bool needsMix = false;
         foreach (var part in segments)
         {
-            if (part.Gap != TimeSpan.Zero || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase))
+            if (part.Gap != TimeSpan.Zero || part.AudioDetached || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase))
                 return false;
             if (!infos.TryGetValue(part.Path, out var info)) infos[part.Path] = info = await ReadInfoAsync(part.Path, ct);
             if (info.Transformed || part.Start < TimeSpan.Zero || part.End > info.Duration + TimeSpan.FromMilliseconds(20))
@@ -211,14 +214,16 @@ public static partial class VideoAssembly
                 part.AudioEvents.Any(e => (e.SourcePath is null || e.SourcePath == part.Path) && e.Track >= info.AudioTracks))
                 throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
             var sounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks).Where(s => !s.Removed).ToArray();
-            if (sounds.Any(s => s.Finish > part.Duration + TimeSpan.FromMilliseconds(1))) return false;
+            if (sounds.Any(s => s.Finish > part.Duration + TimeSpan.FromMilliseconds(10))) return false;
             var audible = sounds.Where(s => s.Gain > 0).ToArray();
-            if (audible.Any(s => s.Path != part.Path || s.Gain != 1 || s.Position != TimeSpan.Zero ||
-                s.Start != part.Start || s.End != part.End)) return false;
+            if (audible.Any(s => s.Path != part.Path)) return false;
             var audibleTracks = audible.Select(s => s.Track).Distinct().ToArray();
-            if (audibleTracks.Length > 1) return false;
-            tracks.Add(audibleTracks.Length == 0 ? -2 : audibleTracks[0]);
+            bool segmentNeedsMix = audibleTracks.Length > 1 ||
+                audible.Any(s => Math.Abs(s.Gain - 1) >= 1e-4 || s.Start != part.Start || s.End != part.End);
+            needsMix |= segmentNeedsMix;
+            tracks.Add(audibleTracks.Length == 0 ? -2 : audibleTracks.Length == 1 ? audibleTracks[0] : -1);
         }
+        if (!needsMix && tracks.Where(t => t >= 0).Distinct().Count() > 1) needsMix = true;
 
         var tempParts = new List<string>();
         try
@@ -230,8 +235,12 @@ public static partial class VideoAssembly
                 tempParts.Add(cut);
                 var part = segments[i];
                 int index = i;
+                int audioTrack = tracks[index] == -2 ? -2 : needsMix ? -1 : tracks[index];
+                Mp4Trim.AudioMixer? mix = audioTrack == -2 || !needsMix
+                    ? null
+                    : clips => AudioMixdown.Mix(clips, ct, (t, sec) => (float)AssemblyAudio.GainAt(part, t, sec));
                 await Task.Run(() => Mp4Trim.Cut(part.Path, cut, part.Start.TotalSeconds, part.End.TotalSeconds,
-                    tracks[index], value => progress?.Report((index + value) / segments.Count * 0.7), ct), ct);
+                    audioTrack, value => progress?.Report((index + value) / segments.Count * 0.7), ct, mix), ct);
             }
             var durations = segments.Select(s => s.Duration.TotalSeconds).ToArray();
             var clock = Stopwatch.StartNew();
@@ -322,7 +331,7 @@ public static partial class VideoAssembly
         profile.Video.FrameRate.Numerator = (uint)Math.Clamp(Math.Round((double)srcRate.Numerator / Math.Max(1u, srcRate.Denominator)), 1, 240);
         profile.Video.FrameRate.Denominator = 1;
         profile.Video.Bitrate = targetMegabytes is int limit
-            ? TargetBitrate(limit, offset.TotalSeconds) : Math.Max(8_000_000u, original.Video.Bitrate);
+            ? TargetBitrate(limit, offset.TotalSeconds) : Math.Max(20_000_000u, original.Video.Bitrate);
         var size = OutputSize((int)profile.Video.Width, (int)profile.Video.Height, targetMegabytes.HasValue ? profile.Video.Bitrate : null);
         profile.Video.Width = (uint)size.Width; profile.Video.Height = (uint)size.Height;
         profile.Audio.Bitrate = 128000;

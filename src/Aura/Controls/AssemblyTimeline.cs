@@ -314,14 +314,17 @@ public sealed class AssemblyTimeline : FrameworkElement
         SelectedAudioEvent = -1;
         int audioTrack = (int)Math.Floor((point.Y - AudioTop) / AudioLaneHeight);
         SelectedAudioTrack = point.Y >= AudioTop && audioTrack < (AudioTrackCount?.Invoke(_parts[_dragIndex].Path) ?? 0) ? audioTrack : -1;
-        SelectedAudioSeconds = _parts[_dragIndex].Start.TotalSeconds + point.X / _scale - VideoTimeline.Offset(_parts, _dragIndex);
+        double clickedTime = Math.Clamp(point.X / _scale, 0, total);
+        Position = clickedTime;
+        SelectedAudioSeconds = Math.Clamp(_parts[_dragIndex].Start.TotalSeconds + clickedTime - VideoTimeline.Offset(_parts, _dragIndex),
+            _parts[_dragIndex].Start.TotalSeconds, _parts[_dragIndex].End.TotalSeconds);
         SelectClip?.Invoke(_dragIndex);
         SelectAudio?.Invoke(_dragIndex, SelectedAudioTrack, SelectedAudioSeconds);
         double left = VideoTimeline.Offset(_parts, _dragIndex) * _scale;
         double right = left + _parts[_dragIndex].Duration.TotalSeconds * _scale;
         double grip = Math.Min(8, (right - left) / 3);
         _gesture = point.X - left <= grip ? Gesture.Left : right - point.X <= grip ? Gesture.Right : Gesture.Move;
-        if (SelectedAudioTrack >= 0 && !_parts[_dragIndex].AudioLinked) _gesture = Gesture.AudioSelect;
+        if (SelectedAudioTrack >= 0) _gesture = Gesture.AudioSelect;
         else if (_gesture == Gesture.Move && _parts.Count == 1 && _parts[_dragIndex] is { AudioLinked: false, AudioDetached: true })
         {
             _gesture = Gesture.VideoPlace;
@@ -365,9 +368,12 @@ public sealed class AssemblyTimeline : FrameworkElement
             else _audioTrim = original with { End = TimeSpan.FromSeconds(Math.Clamp(original.End.TotalSeconds + delta, original.Start.TotalSeconds + .05, info.Item1)) };
             Resize();
         }
-        else if (_gesture == Gesture.Cursor)
+        else if (_gesture == Gesture.Cursor || _gesture == Gesture.AudioSelect && _moved)
         {
             Position = Math.Clamp(point.X / _scale, 0, Math.Max(_parts.Sum(p => p.Gap.TotalSeconds + p.Duration.TotalSeconds), _sounds.Select(s => s.Finish.TotalSeconds).DefaultIfEmpty(0).Max()));
+            if (_gesture == Gesture.AudioSelect && _dragIndex >= 0 && _dragIndex < _parts.Count)
+                SelectedAudioSeconds = Math.Clamp(_parts[_dragIndex].Start.TotalSeconds + Position - VideoTimeline.Offset(_parts, _dragIndex),
+                    _parts[_dragIndex].Start.TotalSeconds, _parts[_dragIndex].End.TotalSeconds);
             Scrub?.Invoke(Position);
         }
         else if (_gesture == Gesture.VideoPlace && _dragIndex >= 0)
@@ -413,6 +419,7 @@ public sealed class AssemblyTimeline : FrameworkElement
         {
             int target = Math.Clamp(insertion > index ? insertion - 1 : insertion, 0, _parts.Count - 1);
             if (target != index) Reorder?.Invoke(index, target);
+            else Seek?.Invoke(Math.Max(0, point.X / _scale));
         }
         else if (_moved && trim is not null && trim != _parts[index]) TrimClip?.Invoke(index, trim);
         InteractionEnded?.Invoke(true);

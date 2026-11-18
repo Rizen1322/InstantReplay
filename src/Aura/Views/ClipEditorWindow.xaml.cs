@@ -172,7 +172,17 @@ public partial class ClipEditorWindow : Window
     private bool _snapshotOnly;
 
     public static void ShowFor(ClipItem item)
-        => VideoAssemblyWindow.ShowFiles([item.FullPath]);
+    {
+        var window = new ClipEditorWindow(item);
+        var owner = Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault(w => w.IsVisible);
+        if (owner is not null) window.Owner = owner;
+        else
+        {
+            window.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            window.ShowInTaskbar = true;
+        }
+        window.ShowDialog();
+    }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
@@ -420,11 +430,6 @@ public partial class ClipEditorWindow : Window
             {
                 bool fresh = Environment.TickCount64 - _seekTick < 600;
                 bool arrived = Math.Abs(CurrentSeconds - target) < 0.12;
-                if (!_player.IsPlaying && arrived && Environment.TickCount64 - _seekTick >= 250)
-                {
-                    _seekTarget = null;
-                    return CurrentSeconds;
-                }
                 if (!_player.IsPlaying || fresh)
                 {
                     if (!arrived || !_player.IsPlaying) return target;
@@ -565,16 +570,6 @@ public partial class ClipEditorWindow : Window
     {
         if (_player is null) return;
         if (_player.IsPlaying) _player.SetPause(true);
-        if (delta > TimeSpan.Zero && _seekTarget is null)
-        {
-            _player.NextFrame();
-            Dispatcher.BeginInvoke(() =>
-            {
-                UpdatePlayhead(CurrentSeconds);
-                UpdatePreviewTime(CurrentSeconds);
-            }, DispatcherPriority.Background);
-            return;
-        }
         Seek(LogicalSeconds + delta.TotalSeconds);
     }
 

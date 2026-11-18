@@ -20,6 +20,7 @@ public partial class VideoAssemblyWindow
     private readonly Stack<AssemblySnapshot> _assemblyHistory = new();
     private readonly Stack<AssemblySnapshot> _assemblyRedo = new();
     private readonly DispatcherTimer _assemblyTimer = new() { Interval = TimeSpan.FromMilliseconds(80) };
+    private readonly DispatcherTimer _assemblyFrameRefresh = new() { Interval = TimeSpan.FromMilliseconds(75) };
     private readonly SemaphoreSlim _assemblyPlayback = new(1, 1);
     private LibVLC? _assemblyVlc;
     private LibVLCSharp.Shared.MediaPlayer? _assemblyPlayer;
@@ -66,6 +67,12 @@ public partial class VideoAssemblyWindow
         AssemblyPosition.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((_, _) =>
         { _assemblyScrubbing = false; SeekAssembly(AssemblyPosition.Value); }));
         _assemblyTimer.Tick += AssemblyPreview_Tick;
+        _assemblyFrameRefresh.Tick += (_, _) =>
+        {
+            _assemblyFrameRefresh.Stop();
+            if (_assemblyPlayer is null || _assemblyOpening || _wantAssemblyPlaying || _reversePreviewRate > 0) return;
+            _assemblyPlayer.NextFrame();
+        };
         Loaded += async (_, _) =>
         {
             try
@@ -203,6 +210,11 @@ public partial class VideoAssemblyWindow
                 // проигрывал первые полсекунды, а покадровая перемотка не работала.
                 _assemblyPlayer.SetPause(true);
                 _waitingAssemblyFrame = false;
+                _pausedSeekTarget = VideoTimeline.Offset(_segments, index) + Math.Clamp(start - part.Start.TotalSeconds, 0, part.Duration.TotalSeconds);
+                _pausedSeekTick = Environment.TickCount64;
+                UpdateAssemblyPlayhead(_pausedSeekTarget.Value);
+                _assemblyFrameRefresh.Stop();
+                _assemblyFrameRefresh.Start();
             }
         }
         catch (OperationCanceledException) { if (revision == _assemblyLoadRevision) _waitingAssemblyFrame = false; }
@@ -275,12 +287,12 @@ public partial class VideoAssemblyWindow
         }
         SyncPreviewAudio(time, seek: alignAudio);
         if (!_assemblyScrubbing && _wantAssemblyPlaying && time >= _segments[_previewIndex].End.TotalSeconds - 0.08) { AdvanceAssembly(); return; }
-        double global = VideoTimeline.Offset(_segments, _previewIndex) +
-            Math.Clamp(time - _segments[_previewIndex].Start.TotalSeconds, 0, _segments[_previewIndex].Duration.TotalSeconds);
-        if (!_wantAssemblyPlaying && !_assemblyScrubbing && _pausedSeekTarget is double seekTarget &&
-            Environment.TickCount64 - _pausedSeekTick < 500)
-            global = seekTarget;
-        UpdateAssemblyPlayhead(global);
+        if (_wantAssemblyPlaying || _reversePreviewRate > 0)
+        {
+            double global = VideoTimeline.Offset(_segments, _previewIndex) +
+                Math.Clamp(time - _segments[_previewIndex].Start.TotalSeconds, 0, _segments[_previewIndex].Duration.TotalSeconds);
+            UpdateAssemblyPlayhead(global);
+        }
     }
     private static string Clock(double seconds) =>
         $"{TimeSpan.FromSeconds(Math.Max(0, seconds)):hh\\:mm\\:ss\\.fff}";
@@ -349,7 +361,7 @@ public partial class VideoAssemblyWindow
             if (paused) _assemblyPlayer.SetPause(true);
             _assemblyPlayer.Time = (long)Math.Round(Math.Clamp(source, _segments[index].Start.TotalSeconds,
                 Math.Max(_segments[index].Start.TotalSeconds, _segments[index].End.TotalSeconds)) * 1000);
-            if (paused) _assemblyPlayer.NextFrame();
+            if (paused) { _assemblyFrameRefresh.Stop(); _assemblyFrameRefresh.Start(); }
             UpdateAssemblyPlayhead(Timeline.Position);
             SyncPreviewAudio(source, seek: true);
             return;
@@ -569,6 +581,7 @@ public partial class VideoAssemblyWindow
     private void CloseAssemblyPreview()
     {
         _assemblyTimer.Stop();
+        _assemblyFrameRefresh.Stop();
         AssemblyPreview.MediaPlayer = null;
         foreach (var item in _thumbs.Values) item.PropertyChanged -= OnThumbPropertyChanged;
         var player = _assemblyPlayer; var media = _assemblyMedia; var engine = _assemblyVlc;

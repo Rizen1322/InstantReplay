@@ -180,7 +180,7 @@
                                 <c:Icon x:Name="MuteIcon" Data="{DynamicResource Ico.Speaker}" Size="15"/>
                             </Button>
                             <Slider x:Name="VolumeSlider" Width="110" Minimum="0" Maximum="150" TickFrequency="5"
-                                    IsSnapToTickEnabled="True" VerticalAlignment="Center" Margin="2,0,10,0"
+                                    IsSnapToTickEnabled="True" Focusable="False" VerticalAlignment="Center" Margin="2,0,10,0"
                                     ValueChanged="Volume_Changed"
                                     ToolTip="Громкость предпросмотра (↑/↓ шагом 10%). На сохранённый файл не влияет"/>
                             <TextBlock x:Name="VolumeValue" Text="100%" MinWidth="38" VerticalAlignment="Center" FontWeight="SemiBold"

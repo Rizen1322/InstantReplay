@@ -39,7 +39,13 @@ public partial class VideoAssemblyWindow
             if (_export is not null) return;
             _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
             SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
-            Segments.SelectedIndex = index;
+            if (Segments.SelectedIndex != index)
+            {
+                _changingAssembly = true;
+                Segments.SelectedIndex = index;
+                _changingAssembly = false;
+                Timeline.SelectedIndex = index;
+            }
         };
         Timeline.Seek += seconds =>
         {
@@ -59,7 +65,7 @@ public partial class VideoAssemblyWindow
             var (index, source) = VideoTimeline.Locate(_segments, seconds);
             long now = Environment.TickCount64;
             if (index == _previewIndex && !_assemblyOpening && now - _lastTimelineScrub >= 100 && _assemblyPlayer is not null)
-            { _lastTimelineScrub = now; _assemblyPlayer.Time = (long)(source * 1000); _assemblyPlayer.NextFrame(); }
+            { _lastTimelineScrub = now; _assemblyPlayer.Time = (long)(source * 1000); _assemblyFrameRefresh.Stop(); _assemblyFrameRefresh.Start(); }
         };
         Timeline.InteractionEnded += committed =>
         {
@@ -136,6 +142,12 @@ public partial class VideoAssemblyWindow
     {
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) ZoomTimeline(e.Delta > 0 ? 1.25 : .8, e.GetPosition(Timeline).X);
         else if (Keyboard.Modifiers == ModifierKeys.None && Timeline.AdjustAudioAt(e.GetPosition(Timeline), e.Delta)) { }
+        else if (TimelineScroll.ScrollableWidth <= 1)
+        {
+            _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
+            double step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1.0 : 0.2;
+            SeekAssembly(Math.Clamp(Timeline.Position - Math.Sign(e.Delta) * step, 0, AssemblyPosition.Maximum));
+        }
         else TimelineScroll.ScrollToHorizontalOffset(TimelineScroll.HorizontalOffset - e.Delta);
         e.Handled = true;
     }

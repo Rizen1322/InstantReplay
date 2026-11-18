@@ -31,7 +31,8 @@ public static class ClipCommands
     {
         if (items.Any(i => i.IsScreenshot))
         { Dialogs.Say("Выберите видео", "Для монтажа выделите только видео, без скриншотов."); return; }
-        VideoAssemblyWindow.ShowFiles(items.Select(i => i.FullPath));
+        if (items.Count == 1) ClipEditorWindow.ShowFor(items[0]);
+        else VideoAssemblyWindow.ShowFiles(items.Select(i => i.FullPath));
     });
 
     /// <summary>Пережать под лимит вложения. Скриншоты и так лёгкие.</summary>
