@@ -75,7 +75,7 @@
    <GridSplitter Grid.Column="1" Width="7" HorizontalAlignment="Stretch" Background="Transparent" ResizeDirection="Columns"/>
    <Grid Grid.Column="2">
     <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-     <Border Background="#090B10" CornerRadius="8" BorderBrush="{DynamicResource SepBrush}" BorderThickness="1">
+     <Border Background="#090B10" CornerRadius="8" BorderBrush="{DynamicResource SepBrush}" BorderThickness="1" PreviewMouseDown="Preview_MouseDown">
      <Grid><TextBlock x:Name="EmptyPreview" Text="Перетащите видео на шкалу" Foreground="#8993A5" HorizontalAlignment="Center" VerticalAlignment="Center"/><vlc:VideoView x:Name="AssemblyPreview"/></Grid>
     </Border>
     <DockPanel Grid.Row="1" Margin="0,8,0,0">

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -16,6 +17,7 @@ public sealed record VideoFileInfo(TimeSpan Duration, int Width, int Height, dou
 {
     /// <summary>FourCC видеокодека по данным VLC ("av01", "hevc", "h264"…); null — неизвестен.</summary>
     public string? VideoCodec { get; init; }
+    public bool Anamorphic { get; init; }
 }
 
 /// <summary>В ffmpeg нет декодера для кодека исходника (например, AV1 в минимальной сборке).</summary>
@@ -37,10 +39,17 @@ public static partial class VideoAssembly
         return new LibVLC("--quiet", "--no-video-title-show");
     });
 
+    private static readonly ConcurrentDictionary<string, (long Length, DateTime WriteUtc, VideoFileInfo Info)> InfoCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, bool> LegacyFilterScriptCache = new(StringComparer.OrdinalIgnoreCase);
+
     public static Task<VideoFileInfo> ReadInfoAsync(string path, CancellationToken ct = default) => Task.Run(async () =>
     {
-        if (!File.Exists(path)) throw new FileNotFoundException("Видеофайл не найден.", path);
-        using var media = new Media(InfoEngine.Value, new Uri(System.IO.Path.GetFullPath(path)));
+        string full = Path.GetFullPath(path);
+        var fi = new FileInfo(full);
+        if (!fi.Exists) throw new FileNotFoundException("Видеофайл не найден.", path);
+        if (InfoCache.TryGetValue(full, out var cached) && cached.Length == fi.Length && cached.WriteUtc == fi.LastWriteTimeUtc)
+            return cached.Info;
+        using var media = new Media(InfoEngine.Value, new Uri(full));
         using var cancel = ct.Register(media.ParseStop);
         await media.Parse(MediaParseOptions.ParseLocal, timeout: 15000, cancellationToken: ct);
         // Parse может завершиться в потоке колбэка VLC: продолжение уводим в пул потоков,
@@ -51,13 +60,16 @@ public static partial class VideoAssembly
         if (videos.Length == 0 || media.Duration <= 0) throw new InvalidDataException("В файле нет доступного видео или не определена длительность.");
         var video = videos[0].Data.Video;
         double fps = video.FrameRateDen > 0 ? (double)video.FrameRateNum / video.FrameRateDen : 30;
+        bool anamorphic = video.SarDen > 0 && video.SarNum > 0 && video.SarNum != video.SarDen;
         int width = checked((int)Math.Round(video.Width * (video.SarDen > 0 ? (double)video.SarNum / video.SarDen : 1)));
         int height = (int)video.Height;
         if (video.Orientation is VideoOrientation.LeftTop or VideoOrientation.LeftBottom or VideoOrientation.RightTop or VideoOrientation.RightBottom)
             (width, height) = (height, width);
-        return new VideoFileInfo(TimeSpan.FromMilliseconds(media.Duration), width, height,
+        var info = new VideoFileInfo(TimeSpan.FromMilliseconds(media.Duration), width, height,
             double.IsFinite(fps) && fps > 0 ? Math.Min(fps, 240) : 30, media.Tracks.Count(t => t.TrackType == TrackType.Audio), video.Orientation != VideoOrientation.TopLeft)
-        { VideoCodec = FourCC(videos[0].Codec) };
+        { VideoCodec = FourCC(videos[0].Codec), Anamorphic = anamorphic };
+        InfoCache[full] = (fi.Length, fi.LastWriteTimeUtc, info);
+        return info;
     }, ct);
 
     private static string? FourCC(uint codec)
@@ -88,11 +100,28 @@ public static partial class VideoAssembly
         string temp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(output)!, $".aura-assembly-{Guid.NewGuid():N}.part.mp4");
         try
         {
-            bool copied = segments.Count == 1 && await TryRemuxAsync(segments[0], temp, progress, ct);
+            bool tryRemux = segments.Count == 1;
+            if (tryRemux && targetMegabytes is int estLimit)
+            {
+                var info = await ReadInfoAsync(segments[0].Path, ct);
+                double totalSec = Math.Max(0.1, info.Duration.TotalSeconds);
+                double estimatedBytes = new FileInfo(segments[0].Path).Length * (segments[0].Duration.TotalSeconds / totalSec);
+                tryRemux = estimatedBytes <= estLimit * 1024.0 * 1024.0 * 1.15;
+            }
+            bool copied = tryRemux && await TryRemuxAsync(segments[0], temp, progress, ct);
             if (copied && targetMegabytes is int remuxLimit && new FileInfo(temp).Length > remuxLimit * 1024L * 1024L)
             {
                 try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 copied = false;
+            }
+            if (!copied && segments.Count > 1 && await CanTryFastConcatAsync(segments, targetMegabytes, ct))
+            {
+                copied = await TryConcatAsync(segments, temp, progress, ct);
+                if (copied && targetMegabytes is int concatLimit && new FileInfo(temp).Length > concatLimit * 1024L * 1024L)
+                {
+                    try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    copied = false;
+                }
             }
             if (!copied && ffmpeg is not null && await UndecodableCodecAsync(segments, ffmpeg, ct) is string codec)
             {
@@ -101,15 +130,12 @@ public static partial class VideoAssembly
                 Logging.Log.Info("Editor", $"ffmpeg не декодирует {codec}; монтаж через Windows");
                 ffmpeg = null;
             }
-            // Склейка с несколькими elst быстрая, но браузеры читают только первую правку.
-            // Поэтому при наличии ffmpeg многоклиповый монтаж идёт через аппаратный транскод,
-            // а без ffmpeg (или при нечитаемом кодеке вроде AV1) остаётся быстрый запасной путь.
-            if (!copied && targetMegabytes is null && segments.Count > 1 && ffmpeg is null)
-                copied = await TryConcatAsync(segments, temp, progress, ct);
             async Task TranscodeAsync(double bitrateScale)
             {
                 bool done = false;
-                if (ffmpeg is not null)
+                bool preferWindowsOverMpeg4 = ffmpeg is not null &&
+                    string.Equals(Ffmpeg.SelectVideoEncoder(ffmpeg), "mpeg4", StringComparison.OrdinalIgnoreCase);
+                if (ffmpeg is not null && !preferWindowsOverMpeg4)
                 {
                     try
                     {
@@ -128,6 +154,16 @@ public static partial class VideoAssembly
                     catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or WindowsTranscodeException)
                     {
                         ct.ThrowIfCancellationRequested();
+                        if (ffmpeg is not null && preferWindowsOverMpeg4)
+                        {
+                            try
+                            {
+                                try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                                await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, bitrateScale: bitrateScale);
+                                return;
+                            }
+                            catch (FfmpegDecoderMissingException) { }
+                        }
                         Logging.Log.Warn("Editor", $"Windows не смогла выполнить монтаж (0x{ex.HResult:X8}: {ex.Message}); резервный путь с промежуточным перекодированием");
                         try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                         await Task.Run(() => RenderWithVlcAsync(segments, temp, targetMegabytes, progress, ct), ct);
@@ -139,7 +175,7 @@ public static partial class VideoAssembly
             if (size == 0) throw new InvalidDataException("Не удалось записать видео.");
             if (targetMegabytes is int limit && size > limit * 1024L * 1024L)
             {
-                double retryScale = Math.Clamp(0.90 * (limit * 1024.0 * 1024.0) / size * 0.90, 0.25, 0.78);
+                double retryScale = Math.Clamp(0.90 * (limit * 1024.0 * 1024.0) / size * 0.96, 0.20, 0.88);
                 Logging.Log.Info("Editor", $"Размер {size / (1024.0 * 1024.0):F2} МБ превысил лимит {limit} МБ; повтор с коэффициентом {retryScale:F2}");
                 try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 await TranscodeAsync(retryScale);
@@ -154,6 +190,25 @@ public static partial class VideoAssembly
             return output;
         }
         finally { try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    }
+
+    private static async Task<bool> CanTryFastConcatAsync(IReadOnlyList<VideoSegment> segments, int? targetMegabytes, CancellationToken ct)
+    {
+        VideoFileInfo? baseline = null;
+        double estimatedBytes = 0;
+        foreach (var part in segments)
+        {
+            if (part.Gap != TimeSpan.Zero || part.AudioDetached || !string.Equals(Path.GetExtension(part.Path), ".mp4", StringComparison.OrdinalIgnoreCase))
+                return false;
+            var info = await ReadInfoAsync(part.Path, ct);
+            baseline ??= info;
+            if (info.Width != baseline.Width || info.Height != baseline.Height ||
+                !string.Equals(info.VideoCodec, baseline.VideoCodec, StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (targetMegabytes is not null)
+                estimatedBytes += new FileInfo(part.Path).Length * (part.Duration.TotalSeconds / Math.Max(0.1, info.Duration.TotalSeconds));
+        }
+        return targetMegabytes is not int limit || estimatedBytes <= limit * 1024.0 * 1024.0 * 1.15;
     }
 
     /// <summary>Первый видеокодек исходников, который этот ffmpeg не декодирует; null — все читаются.</summary>
@@ -348,8 +403,16 @@ public static partial class VideoAssembly
         var srcRate = firstProps.Width > 0 && firstProps.Height > 0 && firstProps.FrameRate.Numerator > 0 ? firstProps.FrameRate : original.Video.FrameRate;
         profile.Video.Width = srcWidth;
         profile.Video.Height = srcHeight;
-        profile.Video.FrameRate.Numerator = (uint)Math.Clamp(Math.Round((double)srcRate.Numerator / Math.Max(1u, srcRate.Denominator)), 1, 240);
-        profile.Video.FrameRate.Denominator = 1;
+        if (srcRate.Denominator > 0 && (double)srcRate.Numerator / srcRate.Denominator is >= 1 and <= 240)
+        {
+            profile.Video.FrameRate.Numerator = srcRate.Numerator;
+            profile.Video.FrameRate.Denominator = srcRate.Denominator;
+        }
+        else
+        {
+            profile.Video.FrameRate.Numerator = 30;
+            profile.Video.FrameRate.Denominator = 1;
+        }
         profile.Video.Bitrate = targetMegabytes is int limit
             ? TargetBitrate(limit, offset.TotalSeconds, bitrateScale) : Math.Max(20_000_000u, original.Video.Bitrate);
         var size = OutputSize((int)profile.Video.Width, (int)profile.Video.Height, targetMegabytes.HasValue ? profile.Video.Bitrate : null);
@@ -378,7 +441,7 @@ public static partial class VideoAssembly
 
     private static (int Width, int Height) OutputSize(int width, int height, uint? bitrate)
     {
-        int maxHeight = bitrate switch { < 700000 => 480, < 1500000 => 720, < 3500000 => 1080, _ => height };
+        int maxHeight = bitrate switch { < 700000 => 480, < 1500000 => 720, < 4500000 => 1080, < 8000000 => 1440, _ => height };
         double scale = Math.Min(1, (double)maxHeight / Math.Max(1, height));
         return (Math.Max(2, (int)(width * scale) / 2 * 2), Math.Max(2, (int)(height * scale) / 2 * 2));
     }
@@ -398,6 +461,7 @@ public static partial class VideoAssembly
         var (width, height) = OutputSize(first.Width, first.Height, bitrate);
         string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
         ffmpeg = ExecutableTrust.RequireProtected(ffmpeg);
+        if (!legacyScript && LegacyFilterScriptCache.GetValueOrDefault(ffmpeg)) legacyScript = true;
         string encoder = softwareEncoder ? Ffmpeg.SelectSoftwareEncoder(ffmpeg) : Ffmpeg.SelectVideoEncoder(ffmpeg);
         Logging.Log.Info("Editor", $"FFmpeg: {segments.Count} фрагментов, видео {encoder}, {width}×{height}");
         var psi = new ProcessStartInfo(ffmpeg)
@@ -409,26 +473,43 @@ public static partial class VideoAssembly
         };
         void Args(params string[] args) { foreach (string arg in args) psi.ArgumentList.Add(arg); }
         Args("-nostdin", "-hide_banner", "-n", "-progress", "pipe:1", "-nostats");
+        bool useCuda = segments.Count == 1 && videoDuration > 15;
         foreach (var segment in segments)
         {
             if (segment.Start >= infos[segment.Path].Duration || segment.End > infos[segment.Path].Duration + TimeSpan.FromMilliseconds(100))
                 throw new InvalidDataException("Границы фрагмента выходят за конец видео.");
             // CUDA-декодер на нескольких входах/MKV иногда встаёт намертво; MP4-входы
-            // проверены, а MKV надёжнее отдать программному декодеру.
+            // проверены на длинных фрагментах, а MKV и короткие надёжнее отдать CPU/d3d11va.
             bool isMp4 = string.Equals(System.IO.Path.GetExtension(segment.Path), ".mp4", StringComparison.OrdinalIgnoreCase);
-            if ((encoder is "h264_nvenc" or "hevc_nvenc") && isMp4)
+            if ((encoder is "h264_nvenc" or "hevc_nvenc") && isMp4 && useCuda)
                 Args("-hwaccel", "cuda");
             else if (string.Equals(infos[segment.Path].VideoCodec, "av01", StringComparison.OrdinalIgnoreCase))
                 Args("-hwaccel", "d3d11va");
             Args("-ss", Number(segment.Start.TotalSeconds), "-t", Number(segment.Duration.TotalSeconds), "-i", System.IO.Path.GetFullPath(segment.Path));
         }
         var graph = new StringBuilder();
-        foreach (var sound in audible)
+        var audioSources = new string[audible.Length];
+        int extraAudioCount = 0;
+        for (int i = 0; i < audible.Length; i++)
         {
+            var sound = audible[i];
             if (sound.Track >= infos[sound.Path].AudioTracks || sound.Start >= infos[sound.Path].Duration || sound.End > infos[sound.Path].Duration + TimeSpan.FromMilliseconds(100))
                 throw new InvalidDataException("Звуковой фрагмент выходит за границы исходника.");
+            var owner = segments[sound.Owner];
+            if (!sound.Detached && string.Equals(Path.GetFullPath(sound.Path), Path.GetFullPath(owner.Path), StringComparison.OrdinalIgnoreCase) &&
+                sound.Start >= owner.Start && sound.End <= owner.End)
+            {
+                double relStart = (sound.Start - owner.Start).TotalSeconds;
+                double relEnd = (sound.End - owner.Start).TotalSeconds;
+                audioSources[i] = $"[{sound.Owner}:a:{sound.Track}]atrim=start={Number(relStart)}:end={Number(relEnd)},asetpts=PTS-STARTPTS";
+            }
+            else
+            {
+                int extraIdx = segments.Count + extraAudioCount++;
+                Args("-ss", Number(sound.Start.TotalSeconds), "-t", Number(sound.Duration.TotalSeconds), "-i", Path.GetFullPath(sound.Path));
+                audioSources[i] = $"[{extraIdx}:a:{sound.Track}]atrim=duration={Number(sound.Duration.TotalSeconds)},asetpts=PTS-STARTPTS";
+            }
         }
-        foreach (var sound in audible) Args("-ss", Number(sound.Start.TotalSeconds), "-t", Number(sound.Duration.TotalSeconds), "-i", Path.GetFullPath(sound.Path));
         for (int i = 0; i < segments.Count; i++)
         {
             var segment = segments[i];
@@ -436,10 +517,11 @@ public static partial class VideoAssembly
             int tracks = source.AudioTracks;
             if (segment.AudioEvents.Any(e => e.Track >= infos[e.SourcePath ?? segment.Path].AudioTracks)) throw new InvalidDataException("Звуковой фрагмент ссылается на отсутствующую дорожку.");
             if (segment.AudioTrack >= tracks && segment.AudioTrack >= 0) throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-            bool samePicture = source.Width == width && source.Height == height && Math.Abs(source.Fps - first.Fps) < .01;
+            bool samePicture = !source.Anamorphic && source.Width == width && source.Height == height && Math.Abs(source.Fps - first.Fps) < .01;
+            string trimDur = $"trim=duration={Number(segment.Duration.TotalSeconds)},";
             string prepare = samePicture
-                ? "setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
-                : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS";
+                ? $"setsar=1,format=yuv420p,{trimDur}setpts=PTS-STARTPTS"
+                : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,{trimDur}setpts=PTS-STARTPTS";
             graph.Append($"[{i}:v:0]{prepare}[v{i}];");
         }
         int pieces = 0;
@@ -461,7 +543,7 @@ public static partial class VideoAssembly
         for (int i = 0; i < audible.Length; i++)
         {
             var sound = audible[i];
-            graph.Append($"[{segments.Count + i}:a:{sound.Track}]atrim=duration={Number(sound.Duration.TotalSeconds)},asetpts=PTS-STARTPTS,volume={Number(sound.Gain)},aresample=48000,aformat=channel_layouts=stereo,adelay={Number(sound.Position.TotalMilliseconds)}:all=1[a{i}];");
+            graph.Append($"{audioSources[i]},volume={Number(sound.Gain)},aresample=48000,aformat=channel_layouts=stereo,adelay={Number(sound.Position.TotalMilliseconds)}:all=1[a{i}];");
         }
         for (int i = 0; i < audible.Length; i++) graph.Append($"[a{i}]");
         graph.Append(audible.Length == 0 ? "anullsrc=r=48000:cl=stereo," : audible.Length == 1 ? "anull," : $"amix=inputs={audible.Length}:duration=longest:normalize=0,alimiter=limit=0.97:level=disabled,");
@@ -474,19 +556,19 @@ public static partial class VideoAssembly
             Args(legacyScript ? "-filter_complex_script" : "-/filter_complex", script, "-map", "[v]", "-map", "[a]", "-c:v", encoder);
             if (encoder == "h264_nvenc")
             {
-                Args("-preset", "p4", "-tune", "hq", "-rc", "vbr");
-                if (bitrate is uint nvencBitrate) Args("-b:v", ((uint)(nvencBitrate * 0.95)).ToString(CultureInfo.InvariantCulture), "-maxrate", nvencBitrate.ToString(CultureInfo.InvariantCulture), "-bufsize", nvencBitrate.ToString(CultureInfo.InvariantCulture));
+                Args("-preset", "p4", "-tune", "hq", "-rc", "vbr", "-spatial-aq", "1");
+                if (bitrate is uint nvencBitrate) Args("-b:v", ((uint)(nvencBitrate * 0.96)).ToString(CultureInfo.InvariantCulture), "-maxrate", ((uint)(nvencBitrate * 1.04)).ToString(CultureInfo.InvariantCulture), "-bufsize", ((uint)(nvencBitrate * 1.5)).ToString(CultureInfo.InvariantCulture));
                 else Args("-cq", "19", "-b:v", "0");
             }
             else if (encoder == "h264_qsv")
             {
-                Args("-preset", "veryfast");
+                Args("-preset", "veryfast", "-profile:v", "high");
                 if (bitrate is uint qsvBitrate) Args("-b:v", ((uint)(qsvBitrate * 0.95)).ToString(CultureInfo.InvariantCulture), "-maxrate", qsvBitrate.ToString(CultureInfo.InvariantCulture), "-bufsize", qsvBitrate.ToString(CultureInfo.InvariantCulture));
                 else Args("-global_quality", "20");
             }
             else if (encoder == "h264_amf")
             {
-                Args("-quality", "balanced");
+                Args("-quality", "balanced", "-profile:v", "high");
                 if (bitrate is uint amfBitrate) Args("-rc", "vbr_peak", "-b:v", ((uint)(amfBitrate * 0.95)).ToString(CultureInfo.InvariantCulture), "-maxrate", amfBitrate.ToString(CultureInfo.InvariantCulture), "-bufsize", amfBitrate.ToString(CultureInfo.InvariantCulture));
                 else Args("-rc", "cqp", "-qp_i", "20", "-qp_p", "22");
             }
@@ -538,6 +620,7 @@ public static partial class VideoAssembly
                     throw new FfmpegDecoderMissingException(missing.Trim());
                 if (!legacyScript && errors.Any(e => e.Contains("Unrecognized option", StringComparison.OrdinalIgnoreCase)))
                 {
+                    LegacyFilterScriptCache[ffmpeg] = true;
                     File.Delete(temp);
                     scriptLock.Dispose(); File.Delete(script);
                     await RenderFfmpegAsync(segments, temp, ffmpeg, targetMegabytes, progress, ct, legacyScript: true, softwareEncoder, bitrateScale);

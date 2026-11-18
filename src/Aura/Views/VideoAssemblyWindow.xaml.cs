@@ -93,15 +93,39 @@ public partial class VideoAssemblyWindow : Window
         if (picker.ShowDialog(this) == true) await AddFilesAsync(picker.FileNames);
     }
 
+    private void Preview_MouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e) => Timeline.Focus();
+
     private void Edit_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || Segments.SelectedItem is not VideoSegment segment) return;
-        int index = _segments.IndexOf(segment);
+        int index = Segments.SelectedIndex;
         var edited = ClipEditorWindow.PickSegments(segment, this);
-        if (edited is null) return;
+        if (edited is null || edited.Count == 0) return;
+        RememberAssembly();
+        InvalidatePlacedAudio();
+        var detachedEvents = segment.AudioEvents.Where(a => a.Position is not null).ToArray();
+        var linkedEvents = segment.AudioEvents.Where(a => a.Position is null).ToArray();
+        var built = new List<VideoSegment>(edited.Count);
+        for (int i = 0; i < edited.Count; i++)
+        {
+            var part = edited[i];
+            var clippedLinked = linkedEvents
+                .Where(a => a.End > part.Start && a.Start < part.End)
+                .Select(a => a with { Start = a.Start > part.Start ? a.Start : part.Start, End = a.End < part.End ? a.End : part.End });
+            var events = new List<AudioEvent>(clippedLinked);
+            if (i == 0) events.AddRange(detachedEvents);
+            built.Add(part with
+            {
+                Id = i == 0 ? segment.Id : Guid.NewGuid(),
+                Gap = i == 0 ? segment.Gap : TimeSpan.Zero,
+                AudioLinked = segment.AudioLinked,
+                AudioDetached = segment.AudioDetached,
+                AudioEvents = events.ToArray()
+            });
+        }
         _segments.RemoveAt(index);
-        foreach (var part in edited) _segments.Insert(index++, part);
-        Segments.SelectedIndex = index - 1;
+        for (int i = 0; i < built.Count; i++) _segments.Insert(index + i, built[i]);
+        Segments.SelectedIndex = index + built.Count - 1;
     }
 
     private void Move(int direction)
@@ -117,6 +141,19 @@ public partial class VideoAssemblyWindow : Window
         if (_export is not null || Segments.SelectedIndex < 0) return;
         if (IndependentAudioSelected)
         {
+            if (Timeline.SelectedAudioEvent < 0 && Segments.SelectedItem is VideoSegment { AudioDetached: true } detachedPart)
+            {
+                for (int i = 0; i < detachedPart.AudioEvents.Count; i++)
+                {
+                    var ev = detachedPart.AudioEvents[i];
+                    if (!ev.Removed && ev.Track == Timeline.SelectedAudioTrack && ev.Position is TimeSpan pos &&
+                        Timeline.Position >= pos.TotalSeconds && Timeline.Position < (pos + ev.End - ev.Start).TotalSeconds)
+                    {
+                        Timeline.SelectedAudioEvent = i;
+                        break;
+                    }
+                }
+            }
             ChangeAudioEvent(Segments.SelectedIndex, Timeline.SelectedAudioTrack, Timeline.SelectedAudioSeconds, a => a with { Removed = true });
             return;
         }

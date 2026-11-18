@@ -213,6 +213,7 @@ public static class Mp4Trim
             var videoEdits = new List<Mp4Defragment.Edit>();
             var audioEdits = new List<Mp4Defragment.Edit>();
             long dataLength = 0;
+            bool prevVideoAtEnd = false, prevAudioAtEnd = false;
             for (int i = 0; i < opened.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -223,8 +224,16 @@ public static class Mp4Trim
                 long videoStart = Math.Clamp(video.MediaStart, 0, Math.Max(0, TrackDuration(video) - 1));
                 long videoAvailable = (long)Mp4Boxes.ToMovie(TrackDuration(video) - videoStart, video.Timescale);
                 long videoEdit = Math.Min(durationMovie, videoAvailable);
-                videoEdits.Add(new(0, videoIndex.MediaDuration + videoStart, (ulong)Math.Max(0, videoEdit)));
-                if (videoEdit < durationMovie) videoEdits.Add(new(durationMovie - videoEdit, 0, 0));
+                ulong videoDur = (ulong)Math.Max(0, videoEdit);
+                if (prevVideoAtEnd && videoStart == 0 && videoEdits.Count > 0 && videoEdits[^1].EmptyMovie == 0)
+                    videoEdits[^1] = videoEdits[^1] with { Duration = videoEdits[^1].Duration + videoDur };
+                else videoEdits.Add(new(0, videoIndex.MediaDuration + videoStart, videoDur));
+                if (videoEdit < durationMovie)
+                {
+                    videoEdits.Add(new(durationMovie - videoEdit, 0, 0));
+                    prevVideoAtEnd = false;
+                }
+                else prevVideoAtEnd = Math.Abs(videoAvailable - durationMovie) <= 2;
                 videoIndex.Chunks.Add((dataLength, video.Sizes.Length));
                 for (int sample = 0; sample < video.Sizes.Length; sample++)
                     videoIndex.Add(video.Sizes[sample], video.Duration(sample), video.Cts[sample], video.Key[sample]);
@@ -238,17 +247,27 @@ public static class Mp4Trim
                     long audioAvailable = (long)Mp4Boxes.ToMovie(TrackDuration(audio) - audioStart, audio.Timescale);
                     audioEmpty = Math.Clamp((long)Math.Round(audio.EmptySeconds * 1000), 0, durationMovie);
                     audioEdit = Math.Min(Math.Max(0, durationMovie - audioEmpty), audioAvailable);
-                    if (audioEmpty > 0) audioEdits.Add(new(audioEmpty, 0, 0));
-                    audioEdits.Add(new(0, audioIndex.MediaDuration + audioStart, (ulong)Math.Max(0, audioEdit)));
+                    if (audioEmpty > 0) { audioEdits.Add(new(audioEmpty, 0, 0)); prevAudioAtEnd = false; }
+                    ulong audioDur = (ulong)Math.Max(0, audioEdit);
+                    if (prevAudioAtEnd && audioStart == 0 && audioEmpty == 0 && audioEdits.Count > 0 && audioEdits[^1].EmptyMovie == 0)
+                        audioEdits[^1] = audioEdits[^1] with { Duration = audioEdits[^1].Duration + audioDur };
+                    else audioEdits.Add(new(0, audioIndex.MediaDuration + audioStart, audioDur));
                     if (audioEmpty + audioEdit < durationMovie)
+                    {
                         audioEdits.Add(new(durationMovie - audioEmpty - audioEdit, 0, 0));
+                        prevAudioAtEnd = false;
+                    }
+                    else prevAudioAtEnd = Math.Abs(audioAvailable - audioEdit) <= 25;
                     audioIndex.Chunks.Add((dataLength, audio.Sizes.Length));
                     for (int sample = 0; sample < audio.Sizes.Length; sample++)
                         audioIndex.Add(audio.Sizes[sample], audio.Duration(sample), audio.Cts[sample], true);
                     dataLength += audio.Sizes.Sum(s => (long)s);
                 }
                 else if (audioTemplate is not null)
+                {
                     audioEdits.Add(new(durationMovie, 0, 0));
+                    prevAudioAtEnd = false;
+                }
             }
 
             var outTracks = new List<Mp4Defragment.Track>

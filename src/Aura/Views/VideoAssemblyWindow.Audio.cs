@@ -123,7 +123,7 @@ public partial class VideoAssemblyWindow
         if (_export is not null || track < 0 || track >= Timeline.AudioTracks || state == AudioTrackState(track)) return;
         RememberAudioEdit(-1, track, -1, coalesce);
         _activeAudioTrack = track; _audioTracks[track] = state;
-        RefreshAudioHeaders(); SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
+        RefreshAudioHeaders(); SyncPreviewAudio(CurrentSourceSeconds);
     }
     private void ToggleAudioTrackMute(int track) => SetAudioTrack(track, AudioTrackState(track) with { Muted = !AudioTrackState(track).Muted });
     private void ToggleAudioTrackSolo(int track) => SetAudioTrack(track, AudioTrackState(track) with { Solo = !AudioTrackState(track).Solo });
@@ -138,7 +138,7 @@ public partial class VideoAssemblyWindow
             if (_export is not null || change(detached) == detached) return;
             RememberAudioEdit(index, track, selected, coalesce);
             ReplaceDetachedAudio(index, selected, change(detached));
-            SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0); return;
+            SyncPreviewAudio(CurrentSourceSeconds); return;
         }
         if (_export is not null || index < 0 || index >= _segments.Count || track < 0 || track >= SourceAudioTracks(_segments[index].Path)) return;
         var part = _segments[index];
@@ -148,17 +148,17 @@ public partial class VideoAssemblyWindow
         _changingAssembly = true;
         _segments[index] = AssemblyAudio.Change(part, track, TimeSpan.FromSeconds(source), change);
         Segments.SelectedIndex = index; _changingAssembly = false;
-        RefreshTimeline(); SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? source);
+        RefreshTimeline(); SyncPreviewAudio(CurrentSourceSeconds);
     }
     private void AdjustAudioEvent(int index, int track, double source, int delta)
     {
         if (index >= 0 && index < _segments.Count && _segments[index].AudioLinked && Timeline.SelectedAudioEvent < 0)
         {
-            SetAudioTrack(track, AudioTrackState(track) with { Volume = Math.Clamp(AudioTrackState(track).Volume + delta * .05, 0, 1), Muted = false }, coalesce: true);
+            SetAudioTrack(track, AudioTrackState(track) with { Volume = Math.Clamp(AudioTrackState(track).Volume + delta * .05, 0, 1) }, coalesce: true);
             return;
         }
         ChangeAudioEvent(index, track, source,
-            e => e with { Volume = Math.Clamp(e.Volume + delta * .05, 0, 1), Muted = false, Removed = false }, coalesce: true);
+            e => e with { Volume = Math.Clamp(e.Volume + delta * .05, 0, 1), Removed = false }, coalesce: true);
     }
     private void MuteAudioEvent_Click(object sender, RoutedEventArgs e) => ChangeAudioEvent(Segments.SelectedIndex,
         Timeline.SelectedAudioTrack, Timeline.SelectedAudioSeconds, a => a with { Muted = !a.Muted, Removed = false });
@@ -167,6 +167,7 @@ public partial class VideoAssemblyWindow
     {
         if (_export is not null || Segments.SelectedItem is not VideoSegment part || part.AudioLinked == linked) return;
         RememberAssembly();
+        InvalidatePlacedAudio();
         int index = Segments.SelectedIndex;
         _changingAssembly = true;
         _segments[index] = linked ? part with { AudioLinked = true } : AssemblyAudio.Unlink(part, VideoTimeline.Offset(_segments, index), SourceAudioTracks(part.Path));
@@ -190,7 +191,7 @@ public partial class VideoAssemblyWindow
     private void EditDetachedAudio(int owner, int index, AudioEvent audio)
     {
         if (_export is not null) return;
-        RememberAssembly(); ReplaceDetachedAudio(owner, index, audio);
+        RememberAssembly(); InvalidatePlacedAudio(); ReplaceDetachedAudio(owner, index, audio);
         SeekAssembly(Timeline.Position);
     }
     private void LinkAudio_Click(object sender, RoutedEventArgs e) => SetAudioLink(Segments.SelectedItem is VideoSegment { AudioLinked: false });

@@ -28,6 +28,7 @@ public partial class VideoAssemblyWindow
         {
             if (track >= 0) _activeAudioTrack = track;
             _changingAssembly = true; Segments.SelectedIndex = index; _changingAssembly = false;
+            Timeline.SelectedIndex = index;
             RefreshAudioHeaders();
         };
         Timeline.AdjustAudio += AdjustAudioEvent;
@@ -57,7 +58,8 @@ public partial class VideoAssemblyWindow
         {
             if (!_assemblyScrubbing) _assemblyPlayer?.SetPause(true);
             _assemblyScrubbing = true;
-            SyncPreviewAudio(_assemblyPlayer?.Time / 1000.0 ?? 0);
+            _changingAssembly = true; AssemblyPosition.Value = Math.Clamp(seconds, 0, AssemblyPosition.Maximum); _changingAssembly = false;
+            SyncPreviewAudio(CurrentSourceSeconds);
             PreviewTime.Text = $"{Clock(seconds)} / {Clock(AssemblyPosition.Maximum)}";
             FollowTimelinePosition(seconds);
             if (seconds < LeadingGapEnd) { AssemblyPreview.Visibility = Visibility.Hidden; return; }
@@ -65,18 +67,21 @@ public partial class VideoAssemblyWindow
             var (index, source) = VideoTimeline.Locate(_segments, seconds);
             long now = Environment.TickCount64;
             if (index == _previewIndex && !_assemblyOpening && now - _lastTimelineScrub >= 100 && _assemblyPlayer is not null)
-            { _lastTimelineScrub = now; _assemblyPlayer.Time = (long)(source * 1000); _assemblyFrameRefresh.Stop(); _assemblyFrameRefresh.Start(); }
+            { _lastTimelineScrub = now; _assemblyPlayer.Time = (long)(source * 1000); if (!_assemblyFrameRefresh.IsEnabled) _assemblyFrameRefresh.Start(); }
         };
         Timeline.InteractionEnded += committed =>
         {
-            _assemblyScrubbing = false; Timeline.Position = AssemblyPosition.Value;
-            if (!committed) SeekAssembly(AssemblyPosition.Value);
+            _assemblyScrubbing = false;
+            if (!committed)
+            {
+                Timeline.Position = AssemblyPosition.Value;
+                SeekAssembly(AssemblyPosition.Value);
+            }
             else if (_gapPosition is null) _assemblyPlayer?.SetPause(!_wantAssemblyPlaying);
         };
         Timeline.Reorder += MoveTimelineClip;
         Timeline.PlaceClip += PlaceVideoClip;
         Timeline.TrimClip += ApplyTimelineTrim;
-        Timeline.Zoom += ZoomTimeline;
         Loaded += (_, _) => FitTimeline();
     }
 
@@ -141,14 +146,24 @@ public partial class VideoAssemblyWindow
     private void TimelineScroll_Wheel(object sender, MouseWheelEventArgs e)
     {
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) ZoomTimeline(e.Delta > 0 ? 1.25 : .8, e.GetPosition(Timeline).X);
+        else if (Keyboard.Modifiers == ModifierKeys.Shift)
+        {
+            if (TimelineScroll.ScrollableWidth > 1) TimelineScroll.ScrollToHorizontalOffset(TimelineScroll.HorizontalOffset - e.Delta);
+            else
+            {
+                _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
+                SeekAssembly(Math.Clamp(Timeline.Position - Math.Sign(e.Delta) * 1.0, 0, AssemblyPosition.Maximum));
+                FollowTimelinePosition(Timeline.Position);
+            }
+        }
         else if (Keyboard.Modifiers == ModifierKeys.None && Timeline.AdjustAudioAt(e.GetPosition(Timeline), e.Delta)) { }
-        else if (TimelineScroll.ScrollableWidth <= 1)
+        else if (Keyboard.Modifiers == ModifierKeys.None)
         {
             _wantAssemblyPlaying = false; _assemblyPlayer?.SetPause(true);
-            double step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 1.0 : 0.2;
-            SeekAssembly(Math.Clamp(Timeline.Position - Math.Sign(e.Delta) * step, 0, AssemblyPosition.Maximum));
+            SeekAssembly(Math.Clamp(Timeline.Position - Math.Sign(e.Delta) * 0.2, 0, AssemblyPosition.Maximum));
+            FollowTimelinePosition(Timeline.Position);
         }
-        else TimelineScroll.ScrollToHorizontalOffset(TimelineScroll.HorizontalOffset - e.Delta);
+        else if (TimelineScroll.ScrollableWidth > 1) TimelineScroll.ScrollToHorizontalOffset(TimelineScroll.HorizontalOffset - e.Delta);
         e.Handled = true;
     }
     private void FollowTimelinePosition(double seconds)
@@ -207,6 +222,12 @@ public partial class VideoAssemblyWindow
     }
     private void Montage_KeyDown(object sender, KeyEventArgs e)
     {
+        if (Keyboard.FocusedElement == SizeLimit && e.Key is Key.Enter or Key.Escape)
+        {
+            Timeline.Focus();
+            e.Handled = true;
+            return;
+        }
         if (_export is not null || IsAssemblyTextInput(e.OriginalSource as DependencyObject) ||
             IsAssemblyTextInput(Keyboard.FocusedElement as DependencyObject)) return;
         Key key = e.Key == Key.System ? e.SystemKey : e.Key;
@@ -274,7 +295,9 @@ public partial class VideoAssemblyWindow
     {
         for (var current = source; current is not null; current = current is System.Windows.Media.Visual
                  ? System.Windows.Media.VisualTreeHelper.GetParent(current) : LogicalTreeHelper.GetParent(current))
-            if (current is System.Windows.Controls.Primitives.TextBoxBase or ComboBox or ComboBoxItem or PasswordBox) return true;
+            if (current is System.Windows.Controls.Primitives.TextBoxBase or PasswordBox ||
+                current is ComboBox { IsDropDownOpen: true } ||
+                current is ComboBoxItem item && ItemsControl.ItemsControlFromItemContainer(item) is ComboBox { IsDropDownOpen: true }) return true;
         return false;
     }
 
@@ -287,19 +310,20 @@ public partial class VideoAssemblyWindow
         bool wasReversed = false;
         if (key == Key.J)
         {
+            _reverseSourceTime ??= CurrentSourceSeconds;
             _reversePreviewRate = _reversePreviewRate > 0 ? Math.Min(8, _reversePreviewRate * 2) : 1;
             _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true);
         }
         else if (key == Key.K)
         {
-            _reversePreviewRate = 0; _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true);
+            _reversePreviewRate = 0; _reverseSourceTime = null; _wantAssemblyPlaying = false; _assemblyPlayer.SetPause(true);
         }
         else
         {
             wasReversed = _reversePreviewRate > 0;
             if (wasReversed) _audioRestartPositions.Clear();
             _forwardPreviewRate = _wantAssemblyPlaying && !wasReversed ? Math.Min(8, _forwardPreviewRate * 2) : 1;
-            _reversePreviewRate = 0; _wantAssemblyPlaying = true;
+            _reversePreviewRate = 0; _reverseSourceTime = null; _wantAssemblyPlaying = true;
             if (_gapPosition is null && AssemblyPosition.Value < LeadingGapEnd - .001) SeekAssembly(AssemblyPosition.Value);
             _assemblyPlayer.SetRate((float)_forwardPreviewRate);
             foreach (var audio in _audioPlayers) audio.Player.SetRate((float)_forwardPreviewRate);
@@ -307,7 +331,7 @@ public partial class VideoAssemblyWindow
             else if (_tailPosition is null && _assemblyPlayer.State == LibVLCSharp.Shared.VLCState.Ended) SeekAssembly(0);
             else if (_tailPosition is null) _assemblyPlayer.SetPause(false);
         }
-        SyncPreviewAudio(_assemblyPlayer.Time / 1000.0, seek: wasReversed);
+        SyncPreviewAudio(_reverseSourceTime ?? CurrentSourceSeconds, seek: wasReversed);
     }
 
     private void ProjectMedia_MouseDown(object sender, MouseButtonEventArgs e)

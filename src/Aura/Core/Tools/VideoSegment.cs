@@ -2,6 +2,7 @@ namespace Aura.Core.Tools;
 
 public sealed record VideoSegment(string Path, TimeSpan Start, TimeSpan End, int AudioTrack = -1)
 {
+    public Guid Id { get; init; } = Guid.NewGuid();
     public IReadOnlyList<AudioEvent> AudioEvents { get; init; } = [];
     public bool AudioLinked { get; init; } = true;
     public bool AudioDetached { get; init; }
@@ -42,8 +43,10 @@ public sealed record VideoSegment(string Path, TimeSpan Start, TimeSpan End, int
         foreach (var segment in segments)
         {
             if (end <= segment.Start || start >= segment.End) { kept.Add(segment); continue; }
-            if (start - segment.Start >= TimeSpan.FromMilliseconds(50)) kept.Add(segment with { End = start });
-            if (segment.End - end >= TimeSpan.FromMilliseconds(50)) kept.Add(segment with { Start = end });
+            bool keptLeft = start - segment.Start >= TimeSpan.FromMilliseconds(50);
+            if (keptLeft) kept.Add(segment with { End = start });
+            if (segment.End - end >= TimeSpan.FromMilliseconds(50))
+                kept.Add(keptLeft ? segment with { Id = Guid.NewGuid(), Start = end, Gap = TimeSpan.Zero } : segment with { Start = end });
         }
         if (kept.Count == 0) throw new InvalidOperationException("Нельзя удалить весь ролик. Оставьте хотя бы один фрагмент.");
         return kept;

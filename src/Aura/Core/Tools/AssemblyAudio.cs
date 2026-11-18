@@ -110,7 +110,7 @@ public static class AssemblyAudio
                 left.Add(audio with { End = source }); right.Add(audio with { Start = source, Position = cut });
             }
         }
-        return (part with { End = at, AudioEvents = left.ToArray() }, part with { Start = at, Gap = TimeSpan.Zero, AudioEvents = right.ToArray() });
+        return (part with { End = at, AudioEvents = left.ToArray() }, part with { Id = Guid.NewGuid(), Start = at, Gap = TimeSpan.Zero, AudioEvents = right.ToArray() });
     }
 
     public static IReadOnlyList<AssemblySound> Sounds(IReadOnlyList<VideoSegment> parts, Func<string, int> trackCount)
