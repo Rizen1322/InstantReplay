@@ -5,13 +5,14 @@ namespace InstantReplay.Tests;
 
 public sealed class VideoSegmentTests
 {
-    private static VideoSegment Part(double start, double end) => new("clip.mp4", TimeSpan.FromSeconds(start), TimeSpan.FromSeconds(end));
+    private static VideoSegment Part(double start, double end) => new("clip.mp4", TimeSpan.FromSeconds(start), TimeSpan.FromSeconds(end)) { Id = Guid.Empty };
+    private static VideoSegment[] WithoutIds(IEnumerable<VideoSegment> parts) => parts.Select(p => p with { Id = Guid.Empty }).ToArray();
 
     [Fact]
     public void Removing_middle_keeps_ordered_parts_with_original_timestamps()
     {
         var parts = VideoSegment.Remove([Part(0, 10)], TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(7));
-        Assert.Equal([Part(0, 3), Part(7, 10)], parts);
+        Assert.Equal([Part(0, 3), Part(7, 10)], WithoutIds(parts));
         Assert.Equal(TimeSpan.FromSeconds(6), TimeSpan.FromTicks(parts.Sum(p => p.Duration.Ticks)));
     }
 
@@ -19,7 +20,7 @@ public sealed class VideoSegmentTests
     public void Further_cut_can_cross_an_existing_gap_without_resurrecting_removed_video()
     {
         var parts = VideoSegment.Remove([Part(0, 3), Part(7, 10)], TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(8));
-        Assert.Equal([Part(0, 2), Part(8, 10)], parts);
+        Assert.Equal([Part(0, 2), Part(8, 10)], WithoutIds(parts));
     }
 
     [Theory]
@@ -29,7 +30,7 @@ public sealed class VideoSegmentTests
     [InlineData(0, 0.02, 0.02, 10)]
     public void Edge_cuts_do_not_create_empty_fragments(double start, double end, double keptStart, double keptEnd)
     {
-        Assert.Equal([Part(keptStart, keptEnd)], VideoSegment.Remove([Part(0, 10)], TimeSpan.FromSeconds(start), TimeSpan.FromSeconds(end)));
+        Assert.Equal([Part(keptStart, keptEnd)], WithoutIds(VideoSegment.Remove([Part(0, 10)], TimeSpan.FromSeconds(start), TimeSpan.FromSeconds(end))));
     }
 
     [Fact]
@@ -37,7 +38,7 @@ public sealed class VideoSegmentTests
     {
         var original = new[] { Part(0, 10) };
         Assert.Throws<InvalidOperationException>(() => VideoSegment.Remove(original, TimeSpan.Zero, TimeSpan.FromSeconds(10)));
-        Assert.Equal([Part(0, 10)], original);
+        Assert.Equal([Part(0, 10)], WithoutIds(original));
     }
 
     [Theory]

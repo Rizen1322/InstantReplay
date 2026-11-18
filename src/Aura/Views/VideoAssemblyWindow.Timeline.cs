@@ -93,7 +93,11 @@ public partial class VideoAssemblyWindow
 
     private ClipItem ProjectItem(string path)
     {
-        if (_thumbs.TryGetValue(path, out var existing)) return existing;
+        if (_thumbs.TryGetValue(path, out var existing))
+        {
+            if (SourceAudioTracks(path) > 0) RequestWaveform(path);
+            return existing;
+        }
         var item = new ClipItem(path, Path.GetDirectoryName(path)!);
         if (_sourceInfo.TryGetValue(path, out var info)) item.Duration = info.Duration;
         _thumbs[path] = item;

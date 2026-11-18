@@ -217,8 +217,9 @@ public sealed class AssemblyTimeline : FrameworkElement
                         for (double px = Math.Max(ax + 4, VisibleLeft); px < Math.Min(ax + aw - 3, endX); px += 2)
                         {
                             double source = part.Start.TotalSeconds + (px - x) / _scale;
-                            double amplitude = Math.Min(1, wave.Peak(source, source + 2 / _scale) * Math.Max(.12, gain)) * 17;
-                            dc.DrawLine(wavePen, new Point(px, center - amplitude), new Point(px, center + amplitude));
+                            double peak = wave.Peak(source, source + 2 / _scale);
+                            double amplitude = peak > 0.0005 ? Math.Max(1.0, Math.Pow(Math.Min(1, peak * Math.Max(.12, gain)), 0.7) * 17) : 0;
+                            if (amplitude > 0) dc.DrawLine(wavePen, new Point(px, center - amplitude), new Point(px, center + amplitude));
                         }
                     }
                     bool silent = audio.Muted || state.Muted || AnySolo && !state.Solo || part.AudioTrack >= 0 && part.AudioTrack != track;
@@ -257,8 +258,9 @@ public sealed class AssemblyTimeline : FrameworkElement
                 for (double px = Math.Max(ax + 4, VisibleLeft); px < Math.Min(ax + aw - 3, endX); px += 2)
                 {
                     double source = audio.Start.TotalSeconds + (px - ax) / _scale;
-                    double amplitude = Math.Min(1, wave.Peak(source, source + 2 / _scale) * Math.Max(.12, gain)) * 17;
-                    dc.DrawLine(pen, new(px, center - amplitude), new(px, center + amplitude));
+                    double peak = wave.Peak(source, source + 2 / _scale);
+                    double amplitude = peak > 0.0005 ? Math.Max(1.0, Math.Pow(Math.Min(1, peak * Math.Max(.12, gain)), 0.7) * 17) : 0;
+                    if (amplitude > 0) dc.DrawLine(pen, new(px, center - amplitude), new(px, center + amplitude));
                 }
             }
             bool silent = audio.Muted || state.Muted || AnySolo && !state.Solo;

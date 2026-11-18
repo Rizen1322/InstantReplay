@@ -568,6 +568,16 @@ var uiThread = new Thread(() =>
                     $"Rapid seeking leaked media player resources: handle growth {handleGrowth}, elapsed={seekClock.ElapsedMilliseconds}ms");
                 Console.WriteLine($"PASS: 40 rapid cross-clip seeks settled in {seekClock.ElapsedMilliseconds}ms; native handle growth bounded");
                 assembly.Close();
+                var preloaded = (System.Windows.Window)Activator.CreateInstance(assemblyType, nonPublic: true)!;
+                var preloadedSegments = (System.Collections.ObjectModel.ObservableCollection<VideoSegment>)assemblyType.GetField("_segments", flags)!.GetValue(preloaded)!;
+                preloadedSegments.Add(new VideoSegment(red, TimeSpan.Zero, TimeSpan.FromSeconds(3)));
+                var preloadedList = (System.Windows.Controls.ListBox)preloaded.FindName("Segments");
+                preloadedList.SelectedIndex = 0;
+                await (Task)assemblyType.GetMethod("SelectAssemblyClipAsync", flags)!.Invoke(preloaded, [null])!;
+                var waveforms = (System.Collections.IDictionary)assemblyType.GetField("_waveforms", flags)!.GetValue(preloaded)!;
+                for (int i = 0; i < 60 && !waveforms.Contains(red); i++) await Task.Delay(50);
+                Require(waveforms.Contains(red), "Preloaded segment (ShowSegments flow) did not request/load its audio waveform");
+                preloaded.Close();
                 var dropWindow = new System.Windows.Window();
                 var dropped = new TaskCompletionSource<string[]>(TaskCreationOptions.RunContinuationsAsynchronously);
                 typeof(Aura.Views.ClipEditorWindow).Assembly.GetType("Aura.Views.VideoFileDrop")!.GetMethod("Attach")!

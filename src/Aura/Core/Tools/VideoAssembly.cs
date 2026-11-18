@@ -485,7 +485,7 @@ public static partial class VideoAssembly
                 Args("-hwaccel", "cuda");
             else if (string.Equals(infos[segment.Path].VideoCodec, "av01", StringComparison.OrdinalIgnoreCase))
                 Args("-hwaccel", "d3d11va");
-            Args("-ss", Number(segment.Start.TotalSeconds), "-t", Number(segment.Duration.TotalSeconds), "-i", System.IO.Path.GetFullPath(segment.Path));
+            Args("-thread_queue_size", "512", "-ss", Number(segment.Start.TotalSeconds), "-t", Number(segment.Duration.TotalSeconds), "-i", System.IO.Path.GetFullPath(segment.Path));
         }
         var graph = new StringBuilder();
         var audioSources = new string[audible.Length];
@@ -506,7 +506,7 @@ public static partial class VideoAssembly
             else
             {
                 int extraIdx = segments.Count + extraAudioCount++;
-                Args("-ss", Number(sound.Start.TotalSeconds), "-t", Number(sound.Duration.TotalSeconds), "-i", Path.GetFullPath(sound.Path));
+                Args("-thread_queue_size", "512", "-ss", Number(sound.Start.TotalSeconds), "-t", Number(sound.Duration.TotalSeconds), "-i", Path.GetFullPath(sound.Path));
                 audioSources[i] = $"[{extraIdx}:a:{sound.Track}]atrim=duration={Number(sound.Duration.TotalSeconds)},asetpts=PTS-STARTPTS";
             }
         }
@@ -518,10 +518,9 @@ public static partial class VideoAssembly
             if (segment.AudioEvents.Any(e => e.Track >= infos[e.SourcePath ?? segment.Path].AudioTracks)) throw new InvalidDataException("Звуковой фрагмент ссылается на отсутствующую дорожку.");
             if (segment.AudioTrack >= tracks && segment.AudioTrack >= 0) throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
             bool samePicture = !source.Anamorphic && source.Width == width && source.Height == height && Math.Abs(source.Fps - first.Fps) < .01;
-            string trimDur = $"trim=duration={Number(segment.Duration.TotalSeconds)},";
             string prepare = samePicture
-                ? $"setsar=1,format=yuv420p,{trimDur}setpts=PTS-STARTPTS"
-                : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,{trimDur}setpts=PTS-STARTPTS";
+                ? "setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
+                : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS";
             graph.Append($"[{i}:v:0]{prepare}[v{i}];");
         }
         int pieces = 0;
@@ -536,10 +535,9 @@ public static partial class VideoAssembly
             videoParts.Append($"[v{i}]");
             pieces++;
         }
-        graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[vbase];");
         if (duration > videoDuration + .001)
-            graph.Append($"color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(duration - videoDuration)}[tail];[vbase][tail]concat=n=2:v=1:a=0[v];");
-        else graph.Append("[vbase]null[v];");
+            graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[vbase];color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(duration - videoDuration)}[tail];[vbase][tail]concat=n=2:v=1:a=0[v];");
+        else graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[v];");
         for (int i = 0; i < audible.Length; i++)
         {
             var sound = audible[i];

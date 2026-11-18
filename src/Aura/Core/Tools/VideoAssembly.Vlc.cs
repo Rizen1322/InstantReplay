@@ -28,76 +28,117 @@ public static partial class VideoAssembly
         var files = new List<string>();
         try
         {
+            var nativeCompatible = new bool[segments.Count];
             for (int i = 0; i < segments.Count; i++)
             {
-                ct.ThrowIfCancellationRequested();
-                var segment = segments[i];
-                string source = segment.Path;
-                TimeSpan? stop = segment.End;
-                TimeSpan progressSpan = segment.End;
-                double? prePrefix = null;
-                TimeSpan? nonMp4Start = null;
-                // Вырезаем нужный кусок по ключевым кадрам до VLC: иначе при монтаже
-                // конца двухминутной записи VLC перекодирует все две минуты с начала.
-                if (string.Equals(Path.GetExtension(source), ".mp4", StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(Path.GetExtension(segments[i].Path), ".mp4", StringComparison.OrdinalIgnoreCase)) continue;
+                var info = await ReadInfoAsync(segments[i].Path, ct);
+                nativeCompatible[i] = info.VideoCodec?.ToLowerInvariant() is "h264" or "avc1" or "avc3" or "mp4v";
+            }
+            bool skipCompatible = nativeCompatible.Any(c => !c);
+            int toNormalize = Enumerable.Range(0, segments.Count).Count(i => !(skipCompatible && nativeCompatible[i]));
+            int maxParallel = toNormalize > 1 ? Math.Clamp(Environment.ProcessorCount / 4, 1, 2) : 1;
+            int threadsPerJob = Math.Clamp(Environment.ProcessorCount / maxParallel, 2, 8);
+            var segmentProgress = new double[segments.Count];
+            object progressLock = new();
+            void ReportSegment(int idx, double value)
+            {
+                double total;
+                lock (progressLock)
                 {
-                    string cut = Path.Combine(work, i.ToString(CultureInfo.InvariantCulture) + ".cut.mp4");
-                    files.Add(cut);
+                    segmentProgress[idx] = Math.Clamp(value, 0, 1);
+                    total = segmentProgress.Sum() / segments.Count * 0.5;
+                }
+                progress?.Report(total);
+            }
+            using var gate = new SemaphoreSlim(maxParallel, maxParallel);
+            var normalizeTasks = new Task[segments.Count];
+            for (int i = 0; i < segments.Count; i++)
+            {
+                int index = i;
+                normalizeTasks[index] = Task.Run(async () =>
+                {
+                    var segment = segments[index];
+                    if (skipCompatible && nativeCompatible[index])
+                    {
+                        parts[index] = segment;
+                        ReportSegment(index, 1);
+                        return;
+                    }
+                    await gate.WaitAsync(ct).ConfigureAwait(false);
                     try
                     {
-                        double anchor = await Task.Run(() => Mp4Trim.CutWithAnchor(source, cut, segment.Start.TotalSeconds,
-                            segment.End.TotalSeconds, audioTrack: -2, ct), ct);
-                        var cutInfo = await ReadInfoAsync(cut, ct);
-                        source = cut;
-                        stop = null;
-                        progressSpan = cutInfo.Duration > TimeSpan.Zero ? cutInfo.Duration : segment.Duration;
-                        prePrefix = Math.Max(0, segment.Start.TotalSeconds - anchor);
+                        ct.ThrowIfCancellationRequested();
+                        string source = segment.Path;
+                        TimeSpan? stop = segment.End;
+                        TimeSpan progressSpan = segment.End;
+                        double? prePrefix = null;
+                        TimeSpan? nonMp4Start = null;
+                        // Вырезаем нужный кусок по ключевым кадрам до VLC: иначе при монтаже
+                        // конца двухминутной записи VLC перекодирует все две минуты с начала.
+                        if (string.Equals(Path.GetExtension(source), ".mp4", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string cut = Path.Combine(work, index.ToString(CultureInfo.InvariantCulture) + ".cut.mp4");
+                            lock (files) files.Add(cut);
+                            try
+                            {
+                                double anchor = await Task.Run(() => Mp4Trim.CutWithAnchor(source, cut, segment.Start.TotalSeconds,
+                                    segment.End.TotalSeconds, audioTrack: -2, ct), ct).ConfigureAwait(false);
+                                var cutInfo = await ReadInfoAsync(cut, ct).ConfigureAwait(false);
+                                source = cut;
+                                stop = null;
+                                progressSpan = cutInfo.Duration > TimeSpan.Zero ? cutInfo.Duration : segment.Duration;
+                                prePrefix = Math.Max(0, segment.Start.TotalSeconds - anchor);
+                            }
+                            catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or ArgumentException)
+                            {
+                                try { File.Delete(cut); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                            }
+                        }
+                        else if (segment.Start >= TimeSpan.FromSeconds(2))
+                        {
+                            nonMp4Start = segment.Start;
+                            progressSpan = segment.Duration;
+                        }
+                        string converted = Path.Combine(work, index.ToString(CultureInfo.InvariantCulture) + ".mp4");
+                        lock (files) files.Add(converted);
+                        await NormalizeWithVlcAsync(source, converted, nonMp4Start, stop, progressSpan, threadsPerJob,
+                            new Progress<double>(p => ReportSegment(index, p)), ct).ConfigureAwait(false);
+                        if (prePrefix is not null)
+                            try { File.Delete(source); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        var result = await ReadInfoAsync(converted, ct).ConfigureAwait(false);
+                        TimeSpan expected = prePrefix is not null || nonMp4Start is not null ? segment.Duration : segment.End;
+                        if (result.Duration + TimeSpan.FromMilliseconds(100) < expected)
+                            throw new InvalidDataException($"Не удалось подготовить видео для монтажа: длительность {result.Duration.TotalSeconds:F3} из {expected.TotalSeconds:F3} с.");
+                        TimeSpan start, end = segment.End;
+                        if (prePrefix is double prefix)
+                        {
+                            // Если VLC при transcode проигнорировал elst, видео начинается с ключевого кадра anchor,
+                            // а в хвосте могут быть лишние B-кадры: берём точный сдвиг от anchor, не от result.Duration.
+                            double withElst = segment.Duration.TotalSeconds;
+                            double withoutElst = withElst + prefix;
+                            bool ignoredElst = prefix > 0.05 &&
+                                Math.Abs(result.Duration.TotalSeconds - withoutElst) < Math.Abs(result.Duration.TotalSeconds - withElst);
+                            start = ignoredElst ? TimeSpan.FromSeconds(prefix) : TimeSpan.Zero;
+                            end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, start.TotalSeconds + withElst));
+                        }
+                        else if (nonMp4Start is not null)
+                        {
+                            start = TimeSpan.Zero;
+                            end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, segment.Duration.TotalSeconds));
+                        }
+                        else
+                        {
+                            end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, segment.End.TotalSeconds));
+                            start = TimeSpan.FromSeconds(Math.Min(segment.Start.TotalSeconds, Math.Max(0, end.TotalSeconds - 0.05)));
+                        }
+                        parts[index] = segment with { Path = converted, Start = start, End = end };
+                        ReportSegment(index, 1);
                     }
-                    catch (Exception ex) when (ex is NotSupportedException or InvalidDataException or ArgumentException)
-                    {
-                        try { File.Delete(cut); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                    }
-                }
-                else if (segment.Start >= TimeSpan.FromSeconds(2))
-                {
-                    nonMp4Start = segment.Start;
-                    progressSpan = segment.Duration;
-                }
-                string converted = Path.Combine(work, i.ToString(CultureInfo.InvariantCulture) + ".mp4");
-                files.Add(converted);
-                int index = i;
-                await NormalizeWithVlcAsync(source, converted, nonMp4Start, stop, progressSpan,
-                    new Progress<double>(p => progress?.Report((index + p) / segments.Count * 0.5)), ct);
-                if (prePrefix is not null)
-                    try { File.Delete(source); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                var result = await ReadInfoAsync(converted, ct);
-                TimeSpan expected = prePrefix is not null || nonMp4Start is not null ? segment.Duration : segment.End;
-                if (result.Duration + TimeSpan.FromMilliseconds(100) < expected)
-                    throw new InvalidDataException($"Не удалось подготовить видео для монтажа: длительность {result.Duration.TotalSeconds:F3} из {expected.TotalSeconds:F3} с.");
-                TimeSpan start, end = segment.End;
-                if (prePrefix is double prefix)
-                {
-                    // Если VLC при transcode проигнорировал elst, видео начинается с ключевого кадра anchor,
-                    // а в хвосте могут быть лишние B-кадры: берём точный сдвиг от anchor, не от result.Duration.
-                    double withElst = segment.Duration.TotalSeconds;
-                    double withoutElst = withElst + prefix;
-                    bool ignoredElst = prefix > 0.05 &&
-                        Math.Abs(result.Duration.TotalSeconds - withoutElst) < Math.Abs(result.Duration.TotalSeconds - withElst);
-                    start = ignoredElst ? TimeSpan.FromSeconds(prefix) : TimeSpan.Zero;
-                    end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, start.TotalSeconds + withElst));
-                }
-                else if (nonMp4Start is not null)
-                {
-                    start = TimeSpan.Zero;
-                    end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, segment.Duration.TotalSeconds));
-                }
-                else
-                {
-                    end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, segment.End.TotalSeconds));
-                    start = TimeSpan.FromSeconds(Math.Min(segment.Start.TotalSeconds, Math.Max(0, end.TotalSeconds - 0.05)));
-                }
-                parts[i] = segment with { Path = converted, Start = start, End = end };
+                    finally { gate.Release(); }
+                }, ct);
             }
+            await Task.WhenAll(normalizeTasks).ConfigureAwait(false);
             try
             {
                 await RenderWindowsAsync(parts, temp, targetMegabytes,
@@ -141,7 +182,7 @@ public static partial class VideoAssembly
     }
 
     private static Task NormalizeWithVlcAsync(string input, string output, TimeSpan? startTime, TimeSpan? stopTime, TimeSpan progressSpan,
-        IProgress<double>? progress, CancellationToken ct) => Task.Run(async () =>
+        int threads, IProgress<double>? progress, CancellationToken ct) => Task.Run(async () =>
     {
         ct.ThrowIfCancellationRequested();
         var vlc = TranscodeEngine.Value;
@@ -149,6 +190,7 @@ public static partial class VideoAssembly
         // shortcut: VLC 3 seek breaks MP4 muxing; normalize each input prefix,
         // replace with seek-safe transcoding if long source videos make this too slow.
         media.AddOption(":avcodec-hw=none");
+        media.AddOption(":avcodec-threads=0");
         media.AddOption(":no-sout-audio");
         if (startTime is TimeSpan start)
             media.AddOption(":start-time=" + start.TotalSeconds.ToString("0.######", CultureInfo.InvariantCulture));
@@ -156,7 +198,7 @@ public static partial class VideoAssembly
             media.AddOption(":stop-time=" + stop.TotalSeconds.ToString("0.######", CultureInfo.InvariantCulture));
         // The bundled VLC has MPEG-4 Part 2, but no 8-bit x264 encoder. Windows can
         // decode this intermediate even without the optional HEVC extension.
-        media.AddOption(":sout=#transcode{vcodec=mp4v,venc=avcodec{codec=mpeg4,qmin=2,qmax=3,mbd=2},vb=35000}:std{access=file,mux=mp4,dst=" + ChainValue(output) + "}");
+        media.AddOption($":sout=#transcode{{vcodec=mp4v,venc=avcodec{{codec=mpeg4,qmin=2,qmax=4}},vb=35000,threads={threads}}}:std{{access=file,mux=mp4,dst=" + ChainValue(output) + "}");
         using var player = new MediaPlayer(vlc);
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         player.EndReached += (_, _) => completed.TrySetResult();

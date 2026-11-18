@@ -102,6 +102,16 @@ public partial class VideoAssemblyWindow
                 _assemblyTimer.Start();
                 if (Segments.SelectedIndex < 0 && _segments.Count > 0) Segments.SelectedIndex = 0;
                 else await SelectAssemblyClipAsync();
+                foreach (string path in _segments.Select(s => s.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToArray())
+                {
+                    if (_lifetime.IsCancellationRequested) break;
+                    if (_sourceInfo.ContainsKey(path)) continue;
+                    var info = await VideoAssembly.ReadInfoAsync(path, _lifetime.Token);
+                    if (_lifetime.IsCancellationRequested) break;
+                    _sourceInfo[path] = info;
+                    ProjectItem(path).Duration = info.Duration;
+                    RefreshTimeline();
+                }
             }
             catch (Exception ex) { Status.Text = ex.Message; Log.Error("Editor", ex); }
         };
