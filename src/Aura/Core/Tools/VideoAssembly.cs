@@ -313,9 +313,13 @@ public static partial class VideoAssembly
             composition.Clips.Add(MediaClip.CreateFromColor(Windows.UI.Color.FromArgb(255, 0, 0, 0), audioFinish - offset));
             offset = audioFinish;
         }
-        profile.Video.Width = original.Video.Width;
-        profile.Video.Height = original.Video.Height;
-        profile.Video.FrameRate.Numerator = (uint)Math.Clamp(Math.Round((double)original.Video.FrameRate.Numerator / Math.Max(1u, original.Video.FrameRate.Denominator)), 1, 240);
+        var firstProps = sources[segments[0].Path].GetVideoEncodingProperties();
+        uint srcWidth = firstProps.Width > 0 && firstProps.Height > 0 ? firstProps.Width : original.Video.Width;
+        uint srcHeight = firstProps.Width > 0 && firstProps.Height > 0 ? firstProps.Height : original.Video.Height;
+        var srcRate = firstProps.Width > 0 && firstProps.Height > 0 && firstProps.FrameRate.Numerator > 0 ? firstProps.FrameRate : original.Video.FrameRate;
+        profile.Video.Width = srcWidth;
+        profile.Video.Height = srcHeight;
+        profile.Video.FrameRate.Numerator = (uint)Math.Clamp(Math.Round((double)srcRate.Numerator / Math.Max(1u, srcRate.Denominator)), 1, 240);
         profile.Video.FrameRate.Denominator = 1;
         profile.Video.Bitrate = targetMegabytes is int limit
             ? TargetBitrate(limit, offset.TotalSeconds) : Math.Max(8_000_000u, original.Video.Bitrate);
@@ -383,9 +387,11 @@ public static partial class VideoAssembly
                 throw new InvalidDataException("Границы фрагмента выходят за конец видео.");
             // CUDA-декодер на нескольких входах/MKV иногда встаёт намертво; MP4-входы
             // проверены, а MKV надёжнее отдать программному декодеру.
-            if ((encoder is "h264_nvenc" or "hevc_nvenc") &&
-                string.Equals(System.IO.Path.GetExtension(segment.Path), ".mp4", StringComparison.OrdinalIgnoreCase))
+            bool isMp4 = string.Equals(System.IO.Path.GetExtension(segment.Path), ".mp4", StringComparison.OrdinalIgnoreCase);
+            if ((encoder is "h264_nvenc" or "hevc_nvenc") && isMp4)
                 Args("-hwaccel", "cuda");
+            else if (string.Equals(infos[segment.Path].VideoCodec, "av01", StringComparison.OrdinalIgnoreCase))
+                Args("-hwaccel", "d3d11va");
             Args("-ss", Number(segment.Start.TotalSeconds), "-t", Number(segment.Duration.TotalSeconds), "-i", System.IO.Path.GetFullPath(segment.Path));
         }
         var graph = new StringBuilder();
@@ -442,30 +448,30 @@ public static partial class VideoAssembly
             if (encoder == "h264_nvenc")
             {
                 Args("-preset", "p4", "-tune", "hq", "-rc", "vbr");
-                if (bitrate is uint nvencBitrate) Args("-b:v", nvencBitrate.ToString(CultureInfo.InvariantCulture));
+                if (bitrate is uint nvencBitrate) Args("-b:v", nvencBitrate.ToString(CultureInfo.InvariantCulture), "-maxrate", ((uint)(nvencBitrate * 1.15)).ToString(CultureInfo.InvariantCulture), "-bufsize", (nvencBitrate * 2).ToString(CultureInfo.InvariantCulture));
                 else Args("-cq", "19", "-b:v", "0");
             }
             else if (encoder == "h264_qsv")
             {
                 Args("-preset", "veryfast");
-                if (bitrate is uint qsvBitrate) Args("-b:v", qsvBitrate.ToString(CultureInfo.InvariantCulture));
+                if (bitrate is uint qsvBitrate) Args("-b:v", qsvBitrate.ToString(CultureInfo.InvariantCulture), "-maxrate", ((uint)(qsvBitrate * 1.15)).ToString(CultureInfo.InvariantCulture), "-bufsize", (qsvBitrate * 2).ToString(CultureInfo.InvariantCulture));
                 else Args("-global_quality", "20");
             }
             else if (encoder == "h264_amf")
             {
                 Args("-quality", "balanced");
-                if (bitrate is uint amfBitrate) Args("-rc", "vbr_peak", "-b:v", amfBitrate.ToString(CultureInfo.InvariantCulture));
+                if (bitrate is uint amfBitrate) Args("-rc", "vbr_peak", "-b:v", amfBitrate.ToString(CultureInfo.InvariantCulture), "-maxrate", ((uint)(amfBitrate * 1.15)).ToString(CultureInfo.InvariantCulture), "-bufsize", (amfBitrate * 2).ToString(CultureInfo.InvariantCulture));
                 else Args("-rc", "cqp", "-qp_i", "20", "-qp_p", "22");
             }
             else if (encoder == "mpeg4")
             {
-                if (bitrate is uint mpeg4Bitrate) Args("-b:v", mpeg4Bitrate.ToString(CultureInfo.InvariantCulture));
+                if (bitrate is uint mpeg4Bitrate) Args("-b:v", mpeg4Bitrate.ToString(CultureInfo.InvariantCulture), "-maxrate", ((uint)(mpeg4Bitrate * 1.15)).ToString(CultureInfo.InvariantCulture), "-bufsize", (mpeg4Bitrate * 2).ToString(CultureInfo.InvariantCulture));
                 else Args("-q:v", "3");
             }
             else
             {
                 Args("-preset", "veryfast");
-                if (bitrate is uint videoBitrate) Args("-b:v", videoBitrate.ToString(CultureInfo.InvariantCulture));
+                if (bitrate is uint videoBitrate) Args("-b:v", videoBitrate.ToString(CultureInfo.InvariantCulture), "-maxrate", ((uint)(videoBitrate * 1.15)).ToString(CultureInfo.InvariantCulture), "-bufsize", (videoBitrate * 2).ToString(CultureInfo.InvariantCulture));
                 else Args("-crf", "18");
             }
             Args("-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4", temp);
@@ -493,10 +499,15 @@ public static partial class VideoAssembly
             if (process.ExitCode != 0)
             {
                 // Кодека/контейнера исходника в этой сборке нет — другой энкодер не поможет.
+                bool hasAv1 = infos.Values.Any(v => string.Equals(v.VideoCodec, "av01", StringComparison.OrdinalIgnoreCase));
                 if (errors.FirstOrDefault(e => e.Contains("no decoder found", StringComparison.OrdinalIgnoreCase) ||
                                                e.Contains("Decoder not found", StringComparison.OrdinalIgnoreCase) ||
                                                e.Contains("Demuxer not found", StringComparison.OrdinalIgnoreCase) ||
-                                               e.Contains("Cannot find a decoder", StringComparison.OrdinalIgnoreCase)) is string missing)
+                                               e.Contains("Cannot find a decoder", StringComparison.OrdinalIgnoreCase) ||
+                                               (softwareEncoder || hasAv1) && (
+                                                   e.Contains("Failed to get pixel format", StringComparison.OrdinalIgnoreCase) ||
+                                                   e.Contains("Hardware is lacking", StringComparison.OrdinalIgnoreCase) ||
+                                                   e.Contains("Error while decoding", StringComparison.OrdinalIgnoreCase))) is string missing)
                     throw new FfmpegDecoderMissingException(missing.Trim());
                 if (!legacyScript && errors.Any(e => e.Contains("Unrecognized option", StringComparison.OrdinalIgnoreCase)))
                 {

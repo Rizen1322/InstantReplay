@@ -357,7 +357,9 @@ public sealed class AssemblyTimeline : FrameworkElement
             if (_gesture == Gesture.AudioMove) _audioTrim = original with { Position = TimeSpan.FromSeconds(Math.Max(0, sound.Position.TotalSeconds + delta)) };
             else if (_gesture == Gesture.AudioLeft)
             {
-                delta = Math.Clamp(delta, Math.Max(-sound.Position.TotalSeconds, -sound.Start.TotalSeconds), sound.Duration.TotalSeconds - .05);
+                double minDelta = Math.Max(-sound.Position.TotalSeconds, -sound.Start.TotalSeconds);
+                double maxDelta = Math.Max(minDelta, sound.Duration.TotalSeconds - .05);
+                delta = Math.Clamp(delta, minDelta, maxDelta);
                 _audioTrim = original with { Start = original.Start + TimeSpan.FromSeconds(delta), Position = original.Position + TimeSpan.FromSeconds(delta) };
             }
             else _audioTrim = original with { End = TimeSpan.FromSeconds(Math.Clamp(original.End.TotalSeconds + delta, original.Start.TotalSeconds + .05, info.Item1)) };
@@ -399,13 +401,12 @@ public sealed class AssemblyTimeline : FrameworkElement
         var audio = _audioTrim; var sound = _audioGesture; var gap = _gapTrim;
         _gesture = Gesture.None; _trim = null; _dragIndex = -1;
         _audioTrim = null; _audioGesture = null; _gapTrim = null;
-        InteractionEnded?.Invoke(true);
         if (sound is not null)
         {
             if (_moved && audio is not null && audio != _parts[sound.Owner].AudioEvents[sound.Event]) EditAudio?.Invoke(sound.Owner, sound.Event, audio);
             else if (!_moved) Seek?.Invoke(Math.Max(0, point.X / _scale));
         }
-        else if (gesture == Gesture.Cursor || gesture == Gesture.AudioSelect || (gesture is Gesture.Move or Gesture.VideoPlace) && !_moved) Seek?.Invoke(Math.Max(0, point.X / _scale));
+        else if (gesture == Gesture.Cursor || gesture == Gesture.AudioSelect || (gesture is Gesture.Move or Gesture.VideoPlace or Gesture.Left or Gesture.Right) && !_moved) Seek?.Invoke(Math.Max(0, point.X / _scale));
         else if (gesture == Gesture.VideoPlace && _moved && gap is TimeSpan placed && index >= 0 && placed != _parts[index].Gap)
             PlaceClip?.Invoke(index, placed);
         else if (gesture == Gesture.Move && _moved)
@@ -414,6 +415,7 @@ public sealed class AssemblyTimeline : FrameworkElement
             if (target != index) Reorder?.Invoke(index, target);
         }
         else if (_moved && trim is not null && trim != _parts[index]) TrimClip?.Invoke(index, trim);
+        InteractionEnded?.Invoke(true);
         Resize();
     }
     protected override void OnLostMouseCapture(MouseEventArgs e)
@@ -471,7 +473,10 @@ public sealed class AssemblyTimeline : FrameworkElement
     {
         int track = (int)Math.Floor((point.Y - AudioTop) / AudioLaneHeight);
         double time = point.X / _scale;
-        return track < 0 ? null : _sounds.LastOrDefault(s => s.Track == track && time >= s.Position.TotalSeconds && time < s.Finish.TotalSeconds);
+        return track < 0 ? null : _sounds
+            .Where(s => s.Track == track && time >= s.Position.TotalSeconds && time < s.Finish.TotalSeconds)
+            .OrderBy(s => s.Detached ? 1 : 0)
+            .LastOrDefault();
     }
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {

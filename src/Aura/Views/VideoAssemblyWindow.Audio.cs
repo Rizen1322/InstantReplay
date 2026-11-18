@@ -212,11 +212,27 @@ public partial class VideoAssemblyWindow
             _audioPlayers.Remove(audio); _placedAudioPlayers.Remove(audio.Player); _activePlacedAudio.Remove(audio.Player);
             _continuousPlacedAudio.Remove(audio.Player); _audioRestartPositions.Remove(audio.Player);
         }
-        if (keepPlaced) foreach (var player in _placedAudioPlayers.Keys) _continuousPlacedAudio.Add(player);
+        if (keepPlaced) foreach (var player in _placedAudioPlayers.Keys) if (_activePlacedAudio.Contains(player)) _continuousPlacedAudio.Add(player);
         await Task.Run(() =>
         {
             foreach (var audio in players) { audio.Player.Stop(); audio.Player.Dispose(); audio.Media.Dispose(); }
         });
+    }
+
+    private void InvalidatePlacedAudio()
+    {
+        var placed = _audioPlayers.Where(a => _placedAudioPlayers.ContainsKey(a.Player)).ToArray();
+        foreach (var audio in placed)
+        {
+            audio.Player.Mute = true;
+            _audioPlayers.Remove(audio);
+            _placedAudioPlayers.Remove(audio.Player);
+            _activePlacedAudio.Remove(audio.Player);
+            _continuousPlacedAudio.Remove(audio.Player);
+            _audioRestartPositions.Remove(audio.Player);
+        }
+        if (placed.Length > 0)
+            _ = Task.Run(() => { foreach (var a in placed) { a.Player.Stop(); a.Player.Dispose(); a.Media.Dispose(); } });
     }
     private async Task OpenPreviewAudioAsync(VideoSegment part, double start, int revision, int index)
     {
@@ -256,6 +272,12 @@ public partial class VideoAssemblyWindow
                 player.SetPause(true);
                 // Resolve the actual stream ID once after VLC has discovered the tracks.
                 var tracks = player.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
+                for (int wait = 0; wait < 10 && tracks.Length == 0; wait++)
+                {
+                    await Task.Delay(20, _lifetime.Token);
+                    if (revision != _assemblyLoadRevision) return;
+                    tracks = player.AudioTrackDescription.Where(t => t.Id >= 0).ToArray();
+                }
                 if (track >= tracks.Length) throw new InvalidOperationException("Звуковая дорожка недоступна для предпросмотра.");
                 if (player.AudioTrack != tracks[track].Id) player.SetAudioTrack(tracks[track].Id);
                 if (_lifetime.IsCancellationRequested || revision != _assemblyLoadRevision) return;

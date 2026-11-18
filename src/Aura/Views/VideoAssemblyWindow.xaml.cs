@@ -127,6 +127,7 @@ public partial class VideoAssemblyWindow : Window
         RememberAssembly();
         int index = Segments.SelectedIndex;
         _segments.RemoveAt(index);
+        InvalidatePlacedAudio();
         if (keepAudio.Length > 0)
         {
             int owner = Math.Min(index, _segments.Count - 1);

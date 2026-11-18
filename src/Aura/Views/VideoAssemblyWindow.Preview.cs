@@ -31,6 +31,8 @@ public partial class VideoAssemblyWindow
     private int _assemblyLoadRevision;
     private bool _assemblyOpening;
     private long _assemblyLoadStarted;
+    private double? _pausedSeekTarget;
+    private long _pausedSeekTick;
 
     private double _reversePreviewRate;
     private double _forwardPreviewRate = 1;
@@ -144,7 +146,9 @@ public partial class VideoAssemblyWindow
         double start = Math.Clamp(sourceTime, part.Start.TotalSeconds, Math.Max(part.Start.TotalSeconds, part.End.TotalSeconds - 0.05));
         _waitingAssemblyFrame = true;
         _assemblyOpening = true;
-        foreach (var audio in _audioPlayers) if (!continuous || !_placedAudioPlayers.ContainsKey(audio.Player)) audio.Player.Mute = true;
+        foreach (var audio in _audioPlayers.ToArray())
+            try { if (!continuous || !_placedAudioPlayers.ContainsKey(audio.Player)) audio.Player.Mute = true; }
+            catch (ObjectDisposedException) { }
         bool acquired = false;
         try
         {
@@ -247,8 +251,12 @@ public partial class VideoAssemblyWindow
             _assemblyPlayer.NextFrame();
             if (time <= _segments[_previewIndex].Start.TotalSeconds)
             {
-                double boundary = VideoTimeline.Offset(_segments, _previewIndex);
-                if (_previewIndex > 0) { SeekAssembly(Math.Max(0, boundary - .08)); return; }
+                if (_previewIndex > 0)
+                {
+                    double prevEnd = VideoTimeline.Offset(_segments, _previewIndex - 1) + _segments[_previewIndex - 1].Duration.TotalSeconds;
+                    SeekAssembly(Math.Max(0, prevEnd - .08));
+                    return;
+                }
                 _reversePreviewRate = 0;
             }
         }
@@ -269,6 +277,9 @@ public partial class VideoAssemblyWindow
         if (!_assemblyScrubbing && _wantAssemblyPlaying && time >= _segments[_previewIndex].End.TotalSeconds - 0.08) { AdvanceAssembly(); return; }
         double global = VideoTimeline.Offset(_segments, _previewIndex) +
             Math.Clamp(time - _segments[_previewIndex].Start.TotalSeconds, 0, _segments[_previewIndex].Duration.TotalSeconds);
+        if (!_wantAssemblyPlaying && !_assemblyScrubbing && _pausedSeekTarget is double seekTarget &&
+            Environment.TickCount64 - _pausedSeekTick < 500)
+            global = seekTarget;
         UpdateAssemblyPlayhead(global);
     }
     private static string Clock(double seconds) =>
@@ -316,6 +327,7 @@ public partial class VideoAssemblyWindow
 
     private void SeekAssembly(double time)
     {
+        _audioRestartPositions.Clear();
         if (time < LeadingGapEnd - .001) { EnterLeadingGap(time); return; }
         _gapPosition = null;
         _tailPosition = time >= VideoDuration && ProjectDuration > VideoDuration + .02 ? Math.Clamp(time, VideoDuration, ProjectDuration) : null;
@@ -324,6 +336,8 @@ public partial class VideoAssemblyWindow
         var (index, source) = VideoTimeline.Locate(_segments, time);
         if (index < 0) return;
         Timeline.Position = Math.Clamp(time, 0, AssemblyPosition.Maximum);
+        _pausedSeekTarget = Timeline.Position;
+        _pausedSeekTick = Environment.TickCount64;
         bool keepAudioSelection = IndependentAudioSelected && Timeline.SelectedAudioEvent >= 0;
         _changingAssembly = true; AssemblyPosition.Value = Timeline.Position;
         if (!keepAudioSelection) Segments.SelectedIndex = index;
@@ -366,6 +380,7 @@ public partial class VideoAssemblyWindow
         if (_segments.Count == 0 || _assemblyPlayer is null) return;
         FreezeTail();
         FreezeGap();
+        _pausedSeekTarget = null;
         _reversePreviewRate = 0; _forwardPreviewRate = 1;
         _audioRestartPositions.Clear();
         _assemblyPlayer.SetRate(1);
@@ -409,6 +424,7 @@ public partial class VideoAssemblyWindow
             events.Insert(eventIndex + 1, audio with { Start = at, Position = audio.Position + at - audio.Start });
             int owner = Segments.SelectedIndex;
             _changingAssembly = true; _segments[owner] = detached with { AudioEvents = events.ToArray() }; Segments.SelectedIndex = owner; _changingAssembly = false;
+            InvalidatePlacedAudio();
             RefreshTimeline(); SeekAssembly(Timeline.Position); return;
         }
         var (index, source) = VideoTimeline.Locate(_segments, Timeline.Position);

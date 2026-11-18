@@ -76,44 +76,46 @@ public static class Ffmpeg
     private static string[] CodecsOf(string ffmpeg, string option, System.Collections.Concurrent.ConcurrentDictionary<string, string[]> cache)
     {
         ffmpeg = Path.GetFullPath(ffmpeg);
-        return cache.GetOrAdd(ffmpeg, path =>
+        if (cache.TryGetValue(ffmpeg, out var cached) && cached.Length > 0) return cached;
+        try
         {
-            try
+            var psi = new ProcessStartInfo(ExecutableTrust.RequireProtected(ffmpeg))
             {
-                var psi = new ProcessStartInfo(ExecutableTrust.RequireProtected(path))
-                {
-                    UseShellExecute = false, CreateNoWindow = true,
-                    RedirectStandardOutput = true, RedirectStandardError = true
-                };
-                psi.ArgumentList.Add("-hide_banner");
-                psi.ArgumentList.Add(option);
-                using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
-                // Читаем оба потока сразу и параллельно. Синхронный ReadToEnd до
-                // WaitForExit встаёт намертво, если ffmpeg заполнил буфер трубы и
-                // ждёт, пока мы его вычитаем, — классическая взаимная блокировка.
-                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-                Task<string> stderr = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(5000))
-                {
-                    try { process.Kill(entireProcessTree: true); } catch { }
-                    try { process.WaitForExit(2000); } catch { }
-                    // Дочитываем ограниченно: после Kill трубы закрываются, но если
-                    // процесс так и не умер, ждать чтения бесконечно нельзя.
-                    try { Task.WaitAll(new[] { stdout, stderr }, 2000); } catch { }
-                    // Половина списка энкодеров хуже, чем никакого: пусть сработает
-                    // общий catch с логом, а не выбор энкодера по обрывку ответа.
-                    throw new TimeoutException("ffmpeg не ответил за 5 секунд");
-                }
-                // WaitForExit(int) не ждёт асинхронных чтений — строки берём из задач.
-                string output = stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult();
-                return output.Split('\n');
-            }
-            catch (Exception ex)
+                WorkingDirectory = Path.GetDirectoryName(ffmpeg),
+                Environment = { ["PATH"] = Path.GetDirectoryName(ffmpeg) + Path.PathSeparator + System.Environment.SystemDirectory },
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            psi.ArgumentList.Add("-hide_banner");
+            psi.ArgumentList.Add(option);
+            using var process = Process.Start(psi) ?? throw new InvalidOperationException("не удалось запустить ffmpeg");
+            // Читаем оба потока сразу и параллельно. Синхронный ReadToEnd до
+            // WaitForExit встаёт намертво, если ffmpeg заполнил буфер трубы и
+            // ждёт, пока мы его вычитаем, — классическая взаимная блокировка.
+            Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+            Task<string> stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(5000))
             {
-                Log.Info("Ffmpeg", $"Не удалось прочитать список ({option}): " + ex.Message);
-                return [];
+                try { process.Kill(entireProcessTree: true); } catch { }
+                try { process.WaitForExit(2000); } catch { }
+                // Дочитываем ограниченно: после Kill трубы закрываются, но если
+                // процесс так и не умер, ждать чтения бесконечно нельзя.
+                try { Task.WaitAll(new[] { stdout, stderr }, 2000); } catch { }
+                // Половина списка энкодеров хуже, чем никакого: пусть сработает
+                // общий catch с логом, а не выбор энкодера по обрывку ответа.
+                throw new TimeoutException("ffmpeg не ответил за 5 секунд");
             }
-        });
+            // WaitForExit(int) не ждёт асинхронных чтений — строки берём из задач.
+            string output = stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult();
+            string[] lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length > 0) cache[ffmpeg] = lines;
+            return lines;
+        }
+        catch (Exception ex)
+        {
+            Log.Info("Ffmpeg", $"Не удалось прочитать список ({option}): " + ex.Message);
+            return [];
+        }
     }
 
     private static bool Has(string ffmpeg, string encoder) =>

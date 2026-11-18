@@ -21,7 +21,8 @@ namespace Aura.Views;
 public partial class ClipEditorWindow : Window
 {
     private const double MinimumSelectionSeconds = 0.05;
-    private static readonly TimeSpan FrameStep = TimeSpan.FromSeconds(1.0 / 60);
+    private double _fps = 60;
+    private TimeSpan CurrentFrameStep => TimeSpan.FromSeconds(1.0 / _fps);
 
     private readonly ClipItem _item;
     private readonly DispatcherTimer _timer;
@@ -90,7 +91,7 @@ public partial class ClipEditorWindow : Window
         InitializeComponent();
         VideoFileDrop.Attach(this, paths =>
         {
-            if (_exportCancellation is not null) return;
+            if (_exportCancellation is not null || _selectForAssembly) return;
             var segments = SelectedSegments();
             _player?.SetPause(true);
             Close();
@@ -256,6 +257,17 @@ public partial class ClipEditorWindow : Window
             return;
         }
         ConfigureAudioChoices();
+        if (_media?.Tracks is { } mediaTracks)
+        {
+            foreach (var t in mediaTracks)
+            {
+                if (t.TrackType == TrackType.Video && t.Data.Video.FrameRateDen > 0 && t.Data.Video.FrameRateNum > 0)
+                {
+                    _fps = Math.Clamp((double)t.Data.Video.FrameRateNum / t.Data.Video.FrameRateDen, 1, 240);
+                    break;
+                }
+            }
+        }
         if (_pauseOnFirstFrame)
         {
             _pauseOnFirstFrame = false;
@@ -408,6 +420,11 @@ public partial class ClipEditorWindow : Window
             {
                 bool fresh = Environment.TickCount64 - _seekTick < 600;
                 bool arrived = Math.Abs(CurrentSeconds - target) < 0.12;
+                if (!_player.IsPlaying && arrived && Environment.TickCount64 - _seekTick >= 250)
+                {
+                    _seekTarget = null;
+                    return CurrentSeconds;
+                }
                 if (!_player.IsPlaying || fresh)
                 {
                     if (!arrived || !_player.IsPlaying) return target;
@@ -434,7 +451,10 @@ public partial class ClipEditorWindow : Window
             return;
         }
         double position = LogicalSeconds;
-        if (position < _startSeconds || position >= PlaybackStopSeconds - 0.02) Seek(_startSeconds);
+        double cutEnd = _cutHistory.Count > 0 && _keptSegments.Count > 0
+            ? _keptSegments[_keptSegments.Count - 1].End.TotalSeconds
+            : PlaybackStopSeconds;
+        if (position < _startSeconds || position >= Math.Min(PlaybackStopSeconds, cutEnd) - 0.02) Seek(_startSeconds);
         _player.Play();
     }
 
@@ -528,8 +548,8 @@ public partial class ClipEditorWindow : Window
         });
     }
 
-    private void PreviousFrame_Click(object sender, RoutedEventArgs e) => Step(-FrameStep);
-    private void NextFrame_Click(object sender, RoutedEventArgs e) => Step(FrameStep);
+    private void PreviousFrame_Click(object sender, RoutedEventArgs e) => Step(-CurrentFrameStep);
+    private void NextFrame_Click(object sender, RoutedEventArgs e) => Step(CurrentFrameStep);
     private void ToStart_Click(object sender, RoutedEventArgs e) => Seek(_startSeconds);
     private void ToEnd_Click(object sender, RoutedEventArgs e) => Seek(_endSeconds);
 
@@ -632,7 +652,7 @@ public partial class ClipEditorWindow : Window
     {
         if (_player is null || _disposed || _ended || _pauseOnFirstFrame || _scrubbing ||
             _player.IsPlaying || _durationSeconds <= 0 || _pendingSeek is not null) return;
-        _pendingSeek = Math.Max(0, LogicalSeconds - FrameStep.TotalSeconds);
+        _pendingSeek = Math.Max(0, LogicalSeconds - CurrentFrameStep.TotalSeconds);
         ApplyPendingSeek();
     }
 
@@ -1265,13 +1285,13 @@ public partial class ClipEditorWindow : Window
         else if (e.Key == Key.Left)
         {
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(LogicalSeconds - 1);
-            else Step(-FrameStep);
+            else Step(-CurrentFrameStep);
             e.Handled = true;
         }
         else if (e.Key == Key.Right)
         {
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) Seek(LogicalSeconds + 1);
-            else Step(FrameStep);
+            else Step(CurrentFrameStep);
             e.Handled = true;
         }
         else if (e.Key == Key.E && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))

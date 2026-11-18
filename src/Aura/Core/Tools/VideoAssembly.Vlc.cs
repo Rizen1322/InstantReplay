@@ -70,12 +70,44 @@ public static partial class VideoAssembly
                 }
                 else
                 {
-                    start = segment.Start;
+                    end = TimeSpan.FromSeconds(Math.Min(result.Duration.TotalSeconds, segment.End.TotalSeconds));
+                    start = TimeSpan.FromSeconds(Math.Min(segment.Start.TotalSeconds, Math.Max(0, end.TotalSeconds - 0.05)));
                 }
                 parts[i] = segment with { Path = converted, Start = start, End = end };
             }
-            await RenderWindowsAsync(parts, temp, targetMegabytes,
-                new Progress<double>(p => progress?.Report(0.5 + p * 0.5)), ct, audioSegments: segments);
+            try
+            {
+                await RenderWindowsAsync(parts, temp, targetMegabytes,
+                    new Progress<double>(p => progress?.Report(0.5 + p * 0.5)), ct, audioSegments: segments);
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or WindowsTranscodeException)
+            {
+                ct.ThrowIfCancellationRequested();
+                Logging.Log.Warn("Editor", $"Windows не смогла открыть исходный звук ({ex.Message}); извлекаю дорожки через VLC");
+                try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                var trackCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (string path in segments.Select(s => s.Path).Concat(segments.SelectMany(s => s.AudioEvents).Select(e => e.SourcePath).OfType<string>()).Distinct(StringComparer.OrdinalIgnoreCase))
+                    trackCounts[path] = (await ReadInfoAsync(path, ct)).AudioTracks;
+                var sounds = AssemblyAudio.Sounds(segments, path => trackCounts[path]).Where(s => !s.Removed && s.Gain > 0).ToArray();
+                var audioCache = new Dictionary<(string Path, int Track), string>();
+                var keys = sounds.Select(s => (Path: Path.GetFullPath(s.Path), s.Track)).Distinct().ToArray();
+                for (int k = 0; k < keys.Length; k++)
+                {
+                    var key = keys[k];
+                    string audioFile = Path.Combine(work, $"audio-{k}.m4a");
+                    files.Add(audioFile);
+                    await NormalizeAudioWithVlcAsync(key.Path, audioFile, key.Track, ct);
+                    audioCache[key] = audioFile;
+                }
+                var normalizedAudio = parts.Select((p, idx) =>
+                {
+                    var events = sounds.Where(s => s.Owner == idx).Select(s =>
+                        new AudioEvent(0, s.Start, s.End, s.Gain) { SourcePath = audioCache[(Path.GetFullPath(s.Path), s.Track)], Position = s.Position }).ToArray();
+                    return p with { AudioTrack = -1, AudioLinked = false, AudioDetached = true, AudioEvents = events };
+                }).ToArray();
+                await RenderWindowsAsync(parts, temp, targetMegabytes,
+                    new Progress<double>(p => progress?.Report(0.5 + p * 0.5)), ct, audioSegments: normalizedAudio);
+            }
         }
         finally
         {
@@ -111,6 +143,30 @@ public static partial class VideoAssembly
         try
         {
             if (!player.Play(media)) throw new InvalidOperationException("Не удалось подготовить видео для монтажа.");
+            await completed.Task.ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+        }
+        finally { player.Stop(); }
+    }, ct);
+
+    private static Task NormalizeAudioWithVlcAsync(string input, string output, int track, CancellationToken ct) => Task.Run(async () =>
+    {
+        ct.ThrowIfCancellationRequested();
+        LibVLCSharp.Shared.Core.Initialize();
+        using var vlc = new LibVLC("--quiet", "--no-lua", "--no-sout-display");
+        using var media = new Media(vlc, new Uri(input));
+        media.AddOption(":no-video");
+        media.AddOption(":no-sout-video");
+        media.AddOption($":audio-track={track}");
+        media.AddOption(":sout=#transcode{acodec=mp4a,ab=192,channels=2,samplerate=48000}:std{access=file,mux=mp4,dst=" + ChainValue(output) + "}");
+        using var player = new MediaPlayer(vlc);
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        player.EndReached += (_, _) => completed.TrySetResult();
+        player.EncounteredError += (_, _) => completed.TrySetException(new InvalidOperationException("Не удалось извлечь звук встроенными кодеками."));
+        using var cancellation = ct.Register(() => completed.TrySetCanceled(ct));
+        try
+        {
+            if (!player.Play(media)) throw new InvalidOperationException("Не удалось извлечь звук для монтажа.");
             await completed.Task.ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
         }

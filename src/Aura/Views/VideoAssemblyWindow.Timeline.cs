@@ -168,6 +168,7 @@ public partial class VideoAssemblyWindow
         double before = VideoTimeline.Offset(_segments, index);
         var moving = _segments[index];
         _changingAssembly = true; _segments.Move(index, target); Segments.SelectedIndex = target; _changingAssembly = false;
+        InvalidatePlacedAudio();
         if (moving.AudioLinked && moving.AudioDetached)
         {
             double delta = VideoTimeline.Offset(_segments, target) - before;
@@ -270,6 +271,7 @@ public partial class VideoAssemblyWindow
         if (_assemblyPlayer is null || _segments.Count == 0) return;
         FreezeTail();
         FreezeGap();
+        _pausedSeekTarget = null;
         bool wasReversed = false;
         if (key == Key.J)
         {

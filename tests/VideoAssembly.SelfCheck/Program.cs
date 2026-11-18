@@ -538,7 +538,7 @@ var uiThread = new Thread(() =>
                     "Ruler click did not position the playhead in the second source");
                 int beforeCursorSplit = list.Items.Count;
                 assemblyType.GetMethod("SplitAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
-                Require(list.Items.Count == beforeCursorSplit + 1 && ((VideoSegment)list.Items[1]).End == TimeSpan.FromSeconds(0.25),
+                Require(list.Items.Count == beforeCursorSplit + 1 && Math.Abs(((VideoSegment)list.Items[1]).End.TotalSeconds - 0.25) < 0.02,
                     "Split ignored the logical playhead while native preview was still seeking");
                 assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
                 assemblyType.GetMethod("InsertProjectVideo", flags)!.Invoke(assembly, [red, 0]);
