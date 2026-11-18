@@ -99,7 +99,6 @@ public partial class ClipEditorWindow : Window
         });
         _volume = Services.Settings.Current.EditorVolumePercent;
         VolumeSlider.Value = _volume;
-        ExportSizeLimit.Text = Services.Settings.Current.AttachmentSizeMb.ToString();
         ShowVolume();
         FileNameText.Text = item.FileName;
 
@@ -871,7 +870,7 @@ public partial class ClipEditorWindow : Window
         _mixTrackSearch.TrySetResult();
     }
 
-    private string DefaultHint() => _externalVideo || _cutHistory.Count > 0 || LimitExportSize.IsChecked == true
+    private string DefaultHint() => _externalVideo || _cutHistory.Count > 0
         ? "Результат — MP4 (H.264 и AAC). Монтаж перекодирует видео; исходник сохраняется."
         : !MixAudio
         ? "Видео и звук копируются кадр в кадр без потери качества, это быстро."
@@ -1055,7 +1054,6 @@ public partial class ClipEditorWindow : Window
     /// </summary>
     private void UpdateSizeEstimate()
     {
-        if (LimitExportSize.IsChecked == true) { SizeEstimateText.Text = "Результат проверяется по выбранному лимиту."; return; }
         if (_fileBytes <= 0 || _durationSeconds <= 0) { SizeEstimateText.Text = ""; return; }
         if (_externalVideo || _cutHistory.Count > 0) { SizeEstimateText.Text = "Размер зависит от перекодирования."; return; }
         double share = (_endSeconds - _startSeconds) / _durationSeconds;
@@ -1078,7 +1076,7 @@ public partial class ClipEditorWindow : Window
             Close();
             return;
         }
-        if (_externalVideo || _cutHistory.Count > 0 || LimitExportSize.IsChecked == true) { await ExportAssemblyAsync(); return; }
+        if (_externalVideo || _cutHistory.Count > 0) { await ExportAssemblyAsync(); return; }
         await ExportAsync(SmartExportAsync, fast: false);
     }
 
@@ -1182,7 +1180,7 @@ public partial class ClipEditorWindow : Window
         ExportButton.IsEnabled = !value;
         AudioSegment.IsEnabled = !value;
         RemoveRangeButton.IsEnabled = AssemblyButton.IsEnabled = !value;
-        EditorExportOptions.IsEnabled = EditorFormatsButton.IsEnabled = !value;
+        EditorFormatsButton.IsEnabled = !value;
         UndoCutButton.IsEnabled = !value && _cutHistory.Count > 0;
         CancelExportButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;

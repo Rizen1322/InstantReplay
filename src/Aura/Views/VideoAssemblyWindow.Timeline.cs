@@ -222,12 +222,6 @@ public partial class VideoAssemblyWindow
     }
     private void Montage_KeyDown(object sender, KeyEventArgs e)
     {
-        if (Keyboard.FocusedElement == SizeLimit && e.Key is Key.Enter or Key.Escape)
-        {
-            Timeline.Focus();
-            e.Handled = true;
-            return;
-        }
         if (_export is not null || IsAssemblyTextInput(e.OriginalSource as DependencyObject) ||
             IsAssemblyTextInput(Keyboard.FocusedElement as DependencyObject)) return;
         Key key = e.Key == Key.System ? e.SystemKey : e.Key;

@@ -140,13 +140,12 @@
    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
    <StackPanel>
     <WrapPanel x:Name="ExportOptions">
-     <CheckBox x:Name="LimitSize" Style="{StaticResource MontageCheck}" Content="Уместить в" VerticalAlignment="Center"/><TextBox x:Name="SizeLimit" Width="58" Height="32" MaxLength="4" Margin="4,0,8,0" VerticalContentAlignment="Center" IsEnabled="{Binding IsChecked, ElementName=LimitSize}"/><TextBlock Text="МБ" VerticalAlignment="Center" Margin="0,0,16,0"/>
      <Button Content="Форматы…" Click="ChooseFfmpeg_Click" ToolTip="Подключить FFmpeg для дополнительных форматов видео"/>
     </WrapPanel>
     <TextBlock x:Name="Status" Text="Исходные файлы сохраняются." TextWrapping="Wrap" FontSize="12" MinHeight="22" Foreground="{DynamicResource Tx3Brush}" Margin="0,6,12,0"/>
     <ProgressBar x:Name="Progress" Height="5" Minimum="0" Maximum="1" Margin="0,6,12,0" Visibility="Collapsed"/>
    </StackPanel>
-   <StackPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click" ToolTip="Без лимита размера целый MP4 по возможности сохраняется в исходном формате без потери качества."/><Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,6,0,0"/></StackPanel>
+   <StackPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click" ToolTip="Целый MP4 по возможности сохраняется в исходном формате без потери качества."/><Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,6,0,0"/></StackPanel>
   </Grid>
   <ListBox x:Name="Segments" Visibility="Collapsed" SelectionChanged="Segments_SelectionChanged"/>
   <Slider x:Name="AssemblyPosition" Visibility="Collapsed" Minimum="0" Maximum="1" ValueChanged="AssemblyPosition_Changed"/>

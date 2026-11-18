@@ -31,7 +31,7 @@ public partial class ClipEditorWindow
         { Owner = owner, _initialSegment = segment, _selectForAssembly = true, _externalVideo = true, _audioSelection = segment.AudioTrack };
         window.ExportButton.Content = "Готово — вернуть в сборку";
         window.AssemblyButton.Visibility = Visibility.Collapsed;
-        window.EditorExportOptions.Visibility = window.EditorFormatsButton.Visibility = Visibility.Collapsed;
+        window.EditorFormatsButton.Visibility = Visibility.Collapsed;
         window.ShowDialog();
         return window._pickedSegments;
     }
@@ -143,28 +143,14 @@ public partial class ClipEditorWindow
     {
         var segments = SelectedSegments();
         if (segments.Count == 0) { Dialogs.Say("Нет фрагментов", "Выделите оставшуюся часть видео."); return; }
-        int? limit = null;
-        if (LimitExportSize.IsChecked == true)
-        {
-            if (!int.TryParse(ExportSizeLimit.Text, out int megabytes) || megabytes is < 1 or > 4096)
-            { Dialogs.Say("Лимит размера", "Укажите размер от 1 до 4096 МБ."); return; }
-            limit = megabytes;
-        }
         var picker = new SaveFileDialog
         {
             Title = "Сохранить результат монтажа", Filter = "Видео MP4|*.mp4", DefaultExt = ".mp4", OverwritePrompt = false,
             FileName = Path.GetFileNameWithoutExtension(_item.FullPath) + " (монтаж).mp4", InitialDirectory = Path.GetDirectoryName(_item.FullPath)
         };
         if (picker.ShowDialog(this) != true) return;
-        await ExportAsync((_, _, progress, ct) => VideoAssembly.RenderAsync(segments, picker.FileName, _ffmpeg, limit,
+        await ExportAsync((_, _, progress, ct) => VideoAssembly.RenderAsync(segments, picker.FileName, _ffmpeg,
             progress: progress, ct: ct), fast: false);
-    }
-
-    private void ExportLimit_Changed(object sender, RoutedEventArgs e)
-    {
-        if (!IsInitialized) return;
-        ExportHint.Text = DefaultHint();
-        UpdateSizeEstimate();
     }
 
     private void EditorFormats_Click(object sender, RoutedEventArgs e)

@@ -280,20 +280,8 @@ var uiThread = new Thread(() =>
                 object? Call(string method, params object?[] values) => editorType.GetMethod(method, flags)!.Invoke(editor, values);
                 Call("ConfigureTimeline", 3.0);
                 Set("_startSeconds", 0.5); Set("_endSeconds", 1.5);
-                using var keySource = new System.Windows.Interop.HwndSource(
-                    new System.Windows.Interop.HwndSourceParameters("Aura key selfcheck")
-                        { Width = 1, Height = 1, WindowStyle = 0 });
-                foreach (var key in new[] { System.Windows.Input.Key.Delete, System.Windows.Input.Key.Left,
-                    System.Windows.Input.Key.Right, System.Windows.Input.Key.Home, System.Windows.Input.Key.End,
-                    System.Windows.Input.Key.Z, System.Windows.Input.Key.Space })
-                {
-                    var input = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,
-                        keySource, 0, key)
-                        { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent,
-                            Source = editor.FindName("ExportSizeLimit") };
-                    Call("Window_KeyDown", editor, input);
-                    Require(!input.Handled, "Editor intercepted a key inside the size textbox: " + key);
-                }
+                Require(editor.FindName("LimitExportSize") is null && editor.FindName("ExportSizeLimit") is null,
+                    "Size limit UI must not exist in ClipEditorWindow");
                 Call("RemoveRange_Click", null, new System.Windows.RoutedEventArgs());
                 var kept = (IReadOnlyList<VideoSegment>)Call("SelectedSegments")!;
                 Require(kept.Count == 2 && kept.Sum(s => s.Duration.TotalSeconds) == 2, "Editor deletion wiring failed");
@@ -494,13 +482,8 @@ var uiThread = new Thread(() =>
                     AudioCall("ShuttleAssembly", System.Windows.Input.Key.L);
                     Require((double)assemblyType.GetField("_forwardPreviewRate", flags)!.GetValue(assembly)! == 2, "Repeated L did not increase playback speed");
                     AudioCall("ShuttleAssembly", System.Windows.Input.Key.K);
-                    foreach (var key in new[] { System.Windows.Input.Key.Delete, System.Windows.Input.Key.S, System.Windows.Input.Key.Z, System.Windows.Input.Key.X, System.Windows.Input.Key.Space })
-                    {
-                        var input = new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, keySource, 0, key)
-                        { RoutedEvent = System.Windows.Input.Keyboard.PreviewKeyDownEvent, Source = assembly.FindName("SizeLimit") };
-                        AudioCall("Montage_KeyDown", assembly, input);
-                        Require(!input.Handled, "Montage shortcut intercepted text input: " + key);
-                    }
+                    Require(assembly.FindName("LimitSize") is null && assembly.FindName("SizeLimit") is null,
+                        "Size limit UI must not exist in VideoAssemblyWindow");
                     Console.WriteLine("PASS: separate audio rows, independent split/delete, undo/redo, preview mute/solo and volume wheel without reloading playback");
                     await IndependentAudioCheck.Run(assembly);
                 }

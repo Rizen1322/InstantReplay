@@ -19,7 +19,6 @@ public partial class VideoAssemblyWindow : Window
         InitializeComponent();
         Segments.ItemsSource = _segments;
         _segments.CollectionChanged += (_, _) => UpdateSummary();
-        SizeLimit.Text = Services.Settings.Current.AttachmentSizeMb.ToString();
         _ffmpeg = Ffmpeg.Find(Services.Settings.Current.FfmpegPath, Services.Settings.Current.LosslessCutPath);
         VideoFileDrop.Attach(this, paths => _ = AddFilesAsync(paths));
         InitializeAssemblyPreview();
@@ -197,13 +196,6 @@ public partial class VideoAssemblyWindow : Window
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || _adding || _segments.Count == 0) return;
-        int? limit = null;
-        if (LimitSize.IsChecked == true)
-        {
-            if (!int.TryParse(SizeLimit.Text, out int megabytes) || megabytes is < 1 or > 4096)
-            { Status.Text = "Укажите лимит от 1 до 4096 МБ."; return; }
-            limit = megabytes;
-        }
         var picker = new SaveFileDialog
         {
             Title = "Сохранить собранный ролик", Filter = "Видео MP4|*.mp4", DefaultExt = ".mp4",
@@ -227,8 +219,8 @@ public partial class VideoAssemblyWindow : Window
         Status.Text = "Собираю ролик…";
         try
         {
-            string output = await VideoAssembly.RenderAsync(parts, picker.FileName, _ffmpeg, limit,
-                new Progress<double>(p => { if (_export is not null) { Progress.Value = p; Status.Text = $"Сохраняю ролик… {p:P0}"; } }), cancellation.Token);
+            string output = await VideoAssembly.RenderAsync(parts, picker.FileName, _ffmpeg,
+                progress: new Progress<double>(p => { if (_export is not null) { Progress.Value = p; Status.Text = $"Сохраняю ролик… {p:P0}"; } }), ct: cancellation.Token);
             ClipCommands.RegisterSavedVideo(output);
             Status.Text = "Сохранено: " + output;
         }

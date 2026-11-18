@@ -253,12 +253,6 @@
                                    TextTrimming="CharacterEllipsis" TextWrapping="Wrap" MaxHeight="54"/>
                         <TextBlock x:Name="SizeEstimateText" Style="{StaticResource AsideNote}" Margin="0,2,0,0"
                                    Foreground="{DynamicResource Tx2Brush}"/>
-                        <WrapPanel x:Name="EditorExportOptions" Margin="0,10,0,0">
-                            <CheckBox x:Name="LimitExportSize" Content="Уместить в" VerticalAlignment="Center"
-                                      Checked="ExportLimit_Changed" Unchecked="ExportLimit_Changed"/>
-                            <TextBox x:Name="ExportSizeLimit" Width="52" MaxLength="4" Margin="6,0" VerticalContentAlignment="Center"/>
-                            <TextBlock Text="МБ" VerticalAlignment="Center"/>
-                        </WrapPanel>
                         <Button x:Name="EditorFormatsButton" Content="Дополнительные форматы…" Style="{StaticResource BtnPlain}"
                                 HorizontalAlignment="Left" Click="EditorFormats_Click" Height="28" Margin="-8,4,0,0"/>
                         <ProgressBar x:Name="ExportProgress" Height="4" Margin="0,10,0,0" Minimum="0" Maximum="1" Visibility="Collapsed"/>
