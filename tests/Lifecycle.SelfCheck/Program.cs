@@ -21,6 +21,11 @@ if (args.Contains("--dda-phase-hang"))
     DdaPhaseHangCheck.Check();
     return;
 }
+if (args.Contains("--desktop-session"))
+{
+    await DesktopSessionCheck.CheckAsync();
+    return;
+}
 var encoderType = typeof(VideoEncoder);
 var engine = (ReplayEngine)RuntimeHelpers.GetUninitializedObject(engineType);
 

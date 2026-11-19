@@ -1,8 +1,10 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Shapes;
 
 namespace Aura.Views;
 
@@ -38,72 +40,140 @@ public static class Dialogs
     }
 
     /// <summary>
-    /// Окно «Что нового»: знак и номер версии крупно, дальше разделы с короткими
-    /// строчками. Строка «## …» внутри версии становится заголовком раздела.
+    /// Окно «Что нового»: шапка с версией и кнопкой закрытия, дальше сгруппированные
+    /// по разделам и версиям карточки. Строка «## …» внутри версии становится заголовком раздела.
     /// </summary>
     internal static Window CreateChangelogWindow(IReadOnlyList<Core.SystemIntegration.ChangelogEntry> entries)
     {
         var app = Application.Current!;
-        var window = NewDialogWindow(width: 600);
+        var window = NewDialogWindow(width: 620);
 
         // --- шапка ---
-        var head = new Grid { Margin = new Thickness(28, 26, 28, 0) };
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.ColumnDefinitions.Add(new ColumnDefinition());
+        var headGrid = new Grid();
+        headGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headGrid.ColumnDefinitions.Add(new ColumnDefinition());
+        headGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
         var logo = new System.Windows.Controls.Image
         {
             Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://siteoforigin:,,,/Assets/logo.png")),
-            Width = 52,
-            Height = 52,
-            VerticalAlignment = VerticalAlignment.Center
+            Width = 50,
+            Height = 50,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 2, 0, 0)
         };
         RenderOptions.SetBitmapScalingMode(logo, BitmapScalingMode.HighQuality);
-        head.Children.Add(logo);
+        headGrid.Children.Add(logo);
 
         var titles = new StackPanel { Margin = new Thickness(16, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        titles.Children.Add(new TextBlock
+        var metaRow = new StackPanel { Orientation = Orientation.Horizontal };
+        metaRow.Children.Add(new Border
         {
-            Text = "Что нового",
-            FontSize = 12.5,
-            Foreground = (Brush)app.FindResource("AccentTxBrush"),
-            FontWeight = FontWeights.SemiBold
+            Background = (Brush)app.FindResource("AccentSoftBrush"),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 2.5, 8, 3),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = entries.Count == 1
+                    ? $"v{entries[0].Version}"
+                    : $"v{entries[^1].Version} – {entries[0].Version}",
+                FontFamily = (FontFamily)app.FindResource("DispFont"),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)app.FindResource("AccentTxBrush")
+            }
         });
+        metaRow.Children.Add(new TextBlock
+        {
+            Text = entries.Count > 5 ? "История обновлений" : "Что нового",
+            FontSize = 12,
+            FontWeight = FontWeights.Medium,
+            Foreground = (Brush)app.FindResource("Tx3Brush"),
+            Margin = new Thickness(9, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        titles.Children.Add(metaRow);
         titles.Children.Add(new TextBlock
         {
             Text = entries[0].Headline,
             FontFamily = (FontFamily)app.FindResource("DispFont"),
-            FontSize = 21,
+            FontSize = 20,
             FontWeight = FontWeights.Bold,
+            Foreground = (Brush)app.FindResource("TxBrush"),
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 2, 0, 0)
-        });
-        titles.Children.Add(new TextBlock
-        {
-            Text = entries.Count == 1
-                ? $"Версия {entries[0].Version}"
-                : $"Версии {entries[^1].Version}-{entries[0].Version}",
-            Style = (Style)app.FindResource("RowSub"),
-            Margin = new Thickness(0, 3, 0, 0)
+            LineHeight = 26,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            Margin = new Thickness(0, 8, 0, 0)
         });
         Grid.SetColumn(titles, 1);
-        head.Children.Add(titles);
+        headGrid.Children.Add(titles);
+
+        var closeButton = new Button
+        {
+            Style = (Style)app.FindResource("BtnPlain"),
+            Width = 30,
+            Height = 30,
+            Padding = new Thickness(0),
+            ToolTip = "Закрыть (Esc)",
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(10, -4, -4, 0)
+        };
+        Aura.Controls.Deco.SetIcon(closeButton, (Geometry)app.FindResource("Ico.X"));
+        closeButton.Click += (_, _) => window.Close();
+        Grid.SetColumn(closeButton, 2);
+        headGrid.Children.Add(closeButton);
+
+        var head = new Border
+        {
+            CornerRadius = new CornerRadius(15, 15, 0, 0),
+            Background = (Brush)app.FindResource("AmbientBrush"),
+            BorderBrush = (Brush)app.FindResource("SepBrush"),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(26, 22, 24, 20),
+            Child = headGrid
+        };
 
         // --- содержимое ---
-        var content = new StackPanel { Margin = new Thickness(28, 6, 24, 8) };
+        var content = new StackPanel { Margin = new Thickness(26, 18, 22, 18) };
         for (int n = 0; n < entries.Count; n++)
         {
             var entry = entries[n];
             // Заголовок второй и следующих версий: у первой он уже в шапке
             if (n > 0)
-                content.Children.Add(new TextBlock
+            {
+                var versionHeader = new Grid { Margin = new Thickness(2, 22, 0, 10) };
+                versionHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                versionHeader.ColumnDefinitions.Add(new ColumnDefinition());
+                var versionPill = new Border
                 {
-                    Text = $"{entry.Headline}, {entry.Version}",
+                    Style = (Style)app.FindResource("Pill"),
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, 2, 10, 0),
+                    Child = new TextBlock
+                    {
+                        Text = $"v{entry.Version}",
+                        FontFamily = (FontFamily)app.FindResource("DispFont"),
+                        FontSize = 11.5,
+                        FontWeight = FontWeights.SemiBold,
+                        Foreground = (Brush)app.FindResource("Tx2Brush")
+                    }
+                };
+                var versionTitle = new TextBlock
+                {
+                    Text = entry.Headline,
                     FontFamily = (FontFamily)app.FindResource("DispFont"),
-                    FontSize = 15,
+                    FontSize = 14.5,
                     FontWeight = FontWeights.SemiBold,
+                    Foreground = (Brush)app.FindResource("TxBrush"),
                     TextWrapping = TextWrapping.Wrap,
-                    Margin = new Thickness(0, 22, 0, 0)
-                });
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetColumn(versionTitle, 1);
+                versionHeader.Children.Add(versionPill);
+                versionHeader.Children.Add(versionTitle);
+                content.Children.Add(versionHeader);
+            }
 
             StackPanel? card = null;
             foreach (string item in entry.Items)
@@ -114,19 +184,29 @@ public static class Dialogs
                     {
                         Text = item[3..],
                         Style = (Style)app.FindResource("GroupLabel"),
-                        Margin = new Thickness(2, 18, 0, 8)
+                        Margin = new Thickness(2, content.Children.Count == 0 ? 0 : 16, 0, 8)
                     });
                     card = null;
                     continue;
                 }
                 if (card is null)
                 {
-                    card = new StackPanel { Margin = new Thickness(14, 6, 14, 12) };
+                    card = new StackPanel();
                     content.Children.Add(new Border
                     {
                         Style = (Style)app.FindResource("Card"),
-                        Margin = new Thickness(0, n == 0 && content.Children.Count == 0 ? 16 : 0, 0, 0),
+                        Padding = new Thickness(18, 14, 18, 16),
                         Child = card
+                    });
+                }
+                if (card.Children.Count > 0)
+                {
+                    card.Children.Add(new Border
+                    {
+                        Height = 1,
+                        Background = (Brush)app.FindResource("SepBrush"),
+                        Margin = new Thickness(26, 11, 0, 11),
+                        SnapsToDevicePixels = true
                     });
                 }
                 card.Children.Add(Bullet(item, app));
@@ -138,26 +218,40 @@ public static class Dialogs
         {
             Content = content,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = Math.Min(560, SystemParameters.WorkArea.Height - 240),
-            Margin = new Thickness(0, 10, 4, 0)
+            MaxHeight = Math.Min(540, SystemParameters.WorkArea.Height - 250),
+            Margin = new Thickness(0, 0, 4, 0)
         };
 
+        var hintText = new TextBlock
+        {
+            Text = entries.Count == 1 ? "Esc — закрыть" : $"Версий в списке: {entries.Count} · Esc — закрыть",
+            FontSize = 12,
+            Foreground = (Brush)app.FindResource("Tx3Brush"),
+            VerticalAlignment = VerticalAlignment.Center
+        };
         var okButton = new Button
         {
             Content = "Отлично",
             Style = (Style)app.FindResource("BtnPri"),
-            MinWidth = 140,
-            Height = 38,
-            IsDefault = true,
-            HorizontalAlignment = HorizontalAlignment.Right
+            MinWidth = 132,
+            Height = 36,
+            IsDefault = true
         };
         okButton.Click += (_, _) => window.Close();
+
+        var footGrid = new Grid();
+        footGrid.ColumnDefinitions.Add(new ColumnDefinition());
+        footGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footGrid.Children.Add(hintText);
+        Grid.SetColumn(okButton, 1);
+        footGrid.Children.Add(okButton);
+
         var foot = new Border
         {
             BorderBrush = (Brush)app.FindResource("SepBrush"),
             BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(28, 14, 28, 18),
-            Child = okButton
+            Padding = new Thickness(26, 14, 26, 18),
+            Child = footGrid
         };
 
         var panel = new StackPanel();
@@ -169,30 +263,53 @@ public static class Dialogs
         return window;
     }
 
-    /// <summary>Строчка списка: зелёная точка слева держит край ровным.</summary>
+    /// <summary>Строчка списка: точка с мягким ореолом слева и выделенным префиксом до «: ».</summary>
     private static Grid Bullet(string text, Application app)
     {
-        var row = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        var row = new Grid();
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition());
-        row.Children.Add(new Border
+
+        var marker = new Grid
+        {
+            Width = 14,
+            Height = 14,
+            Margin = new Thickness(0, 4, 12, 0),
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        marker.Children.Add(new Ellipse { Fill = (Brush)app.FindResource("AccentSoftBrush") });
+        marker.Children.Add(new Ellipse
         {
             Width = 6,
             Height = 6,
-            CornerRadius = new CornerRadius(3),
-            Background = (Brush)app.FindResource("AccentBrush"),
-            Margin = new Thickness(0, 7, 12, 0),
-            VerticalAlignment = VerticalAlignment.Top
+            Fill = (Brush)app.FindResource("AccentBrush"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
         });
+        row.Children.Add(marker);
+
         var body = new TextBlock
         {
-            Text = text,
-            FontSize = 13,
+            FontSize = 13.5,
             Foreground = (Brush)app.FindResource("Tx2Brush"),
             TextWrapping = TextWrapping.Wrap,
-            LineHeight = 20,
+            LineHeight = 21,
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight
         };
+        int colon = text.IndexOf(": ", StringComparison.Ordinal);
+        if (colon is >= 3 and <= 36 && text.AsSpan(0, colon).IndexOfAny(".!?()".AsSpan()) < 0)
+        {
+            body.Inlines.Add(new Run(text[..(colon + 1)])
+            {
+                FontWeight = FontWeights.SemiBold,
+                Foreground = (Brush)app.FindResource("TxBrush")
+            });
+            body.Inlines.Add(new Run(text[(colon + 1)..]));
+        }
+        else
+        {
+            body.Text = text;
+        }
         Grid.SetColumn(body, 1);
         row.Children.Add(body);
         return row;

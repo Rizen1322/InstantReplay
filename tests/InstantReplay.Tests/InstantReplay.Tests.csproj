@@ -110,6 +110,7 @@
     <Compile Include="..\..\src\Aura\Core\GameDetection\GameDetector.cs" Link="App\GameDetector.cs" />
     <Compile Include="..\..\src\Aura\Core\Settings\SettingsManager.cs" Link="App\SettingsManager.cs" />
     <Compile Include="..\..\src\Aura\Core\System\AppSignals.cs" Link="App\AppSignals.cs" />
+    <Compile Include="..\..\src\Aura\Core\System\DesktopSession.cs" Link="App\DesktopSession.cs" />
     <Compile Include="..\..\src\Aura\Core\System\StartupManager.cs" Link="App\StartupManager.cs" />
     <Compile Include="..\..\src\Aura\Core\Tools\ExecutableTrust.cs" Link="App\ExecutableTrust.cs" />
     <Compile Include="..\..\src\InstantReplaySetup\InstallTransaction.cs" Link="App\InstallTransaction.cs" />

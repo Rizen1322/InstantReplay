@@ -477,7 +477,8 @@ public sealed partial class ReplayEngine
             long fpsDrop = PerSecond(dDrop, sampleSeconds);
             long fpsDup = PerSecond(dDup, sampleSeconds);
 
-            bool gameForeground = _gameCaptureRecovery.Target is not null && IsDefaultInputDesktop();
+            bool gameForeground = _gameCaptureRecovery.Target is not null &&
+                                  SystemIntegration.DesktopSession.IsDefaultInputDesktop();
             var health = _captureHealth.Observe(new CaptureHealthSample(
                     backend,
                     _settings.Current.Fps,
@@ -708,32 +709,6 @@ public sealed partial class ReplayEngine
 
     /// <summary>Сколько секунд сверх обычного порога ждать, если поломку выдаёт только клавиатура.</summary>
     private const double KeyboardEvidenceGrace = 7;
-
-    /// <summary>
-    /// Ввод идёт на обычный рабочий стол, а не на защищённый (экран блокировки,
-    /// UAC). Если определить не удалось, считаем обычным: так ведёт себя код до проверки.
-    /// </summary>
-    private static bool IsDefaultInputDesktop()
-    {
-        IntPtr desktop = OpenInputDesktop(0, false, 0x0001 /* DESKTOP_READOBJECTS */);
-        if (desktop == IntPtr.Zero) return false;   // нет доступа — это как раз защищённый стол
-        try
-        {
-            var name = new char[64];
-            if (!GetUserObjectInformationW(desktop, 2 /* UOI_NAME */, name, name.Length * 2, out _)) return true;
-            return new string(name).TrimEnd((char)0).Equals("Default", StringComparison.OrdinalIgnoreCase);
-        }
-        finally { CloseDesktop(desktop); }
-    }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    private static extern bool GetUserObjectInformationW(IntPtr handle, int index, [System.Runtime.InteropServices.Out] char[] info, int length, out int needed);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool CloseDesktop(IntPtr desktop);
 
     private static bool OnScreen((int X, int Y, int Width, int Height, double Scale)? screen, (int X, int Y) point) =>
         screen is not { } r ||
@@ -1040,7 +1015,7 @@ public sealed partial class ReplayEngine
                     // Экран блокировки, UAC и Ctrl+Alt+Del живут на отдельном защищённом
                     // рабочем столе, и WGC его не отдаёт. Ввод PIN там выглядел как
                     // «клавиши жмут, а кадров нет» и пересобирал захват на ровном месте.
-                    bool secureDesktop = !IsDefaultInputDesktop();
+                    bool secureDesktop = !SystemIntegration.DesktopSession.IsDefaultInputDesktop();
                     bool evidence = !secureDesktop &&
                                     (cursorComposed ? cursorMoved : inputHappened && !cursorMoved);
                     if (!evidence)

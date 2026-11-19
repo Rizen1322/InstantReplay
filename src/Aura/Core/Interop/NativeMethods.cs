@@ -451,4 +451,39 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool UnregisterPowerSettingNotification(IntPtr handle);
 
+    // ---------------- Состояние сеанса Windows (WTS) ----------------
+    //
+    // При автозапуске через ARSO (Automatic Restart Sign-On) Windows заранее
+    // поднимает сеанс пользователя и сразу запирает его. OpenInputDesktop при этом
+    // не всегда достаточен сам по себе, поэтому дополнительно спрашиваем WTS:
+    // WTSSessionInfoEx отдаёт SessionFlags (WTS_SESSIONSTATE_LOCK / UNLOCK).
+    // В 64-битном WTSINFOEXW между Level (4 байта) и Data (WTSINFOEX_LEVEL1_W,
+    // содержащим LARGE_INTEGER) компилятор вставляет 4 байта выравнивания, поэтому
+    // поля заголовка заданы явными смещениями (проверено по wtsapi32.h и на живой ОС).
+
+    internal static readonly IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
+    internal const int WTS_CURRENT_SESSION = -1;
+    internal const int WTSSessionInfoEx = 25;
+    internal const int WTS_ACTIVE = 0;
+    internal const int WTS_SESSIONSTATE_LOCK = 0;
+    internal const int WTS_SESSIONSTATE_UNLOCK = 1;
+    internal const int WTS_SESSIONSTATE_UNKNOWN = -1;
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct WTSINFOEX_HEADER
+    {
+        [FieldOffset(0)] public uint Level;
+        [FieldOffset(8)] public uint SessionId;
+        [FieldOffset(12)] public int SessionState;
+        [FieldOffset(16)] public int SessionFlags;
+    }
+
+    [LibraryImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool WTSQuerySessionInformationW(
+        IntPtr hServer, int sessionId, int wtsInfoClass, out IntPtr ppBuffer, out uint pBytesReturned);
+
+    [LibraryImport("wtsapi32.dll")]
+    internal static partial void WTSFreeMemory(IntPtr pMemory);
+
 }

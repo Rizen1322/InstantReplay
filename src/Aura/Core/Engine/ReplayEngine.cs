@@ -8,6 +8,7 @@ using Aura.Core.Logging;
 using Aura.Core.Saving;
 using Aura.Core.Settings;
 using Aura.Core.Storage;
+using Aura.Core.SystemIntegration;
 
 namespace Aura.Core.Engine;
 
@@ -345,6 +346,60 @@ public sealed partial class ReplayEngine : IDisposable
                 StateChanged?.Invoke(_state);
             }
             StartWithFallbackLocked(preserveBuffers: false);
+        }
+    }
+
+    /// <summary>
+    /// Старт по автозапуску: дополнительно проверяет, что интерактивный рабочий
+    /// стол активен и не заперт. Если сеанс ещё на экране блокировки (ARSO) или
+    /// сработала системная пауза, запуск откладывается до разблокировки/возобновления.
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/>, если конвейер уже работал или запущен;
+    /// <see langword="false"/>, если запуск отложен до готовности рабочего стола.
+    /// </returns>
+    public bool StartFromAutostart()
+    {
+        lock (_lifecycle)
+        {
+            if (_state == EngineState.CaptureBlocked) throw CaptureBlockedStartException();
+            if (_state != EngineState.Stopped) return true;
+
+            DesktopSessionSnapshot snapshot = ProbeDesktop();
+            if (!snapshot.InteractiveDesktopActive)
+            {
+                _stopRequested = false;
+                _suspendedBySystem = true;
+                _resumeNeedsDesktopSettle = true;
+                if (snapshot.SessionLocked == true)
+                {
+                    _systemSuspendReasons.Add(SystemActivityWatcher.ReasonLocked);
+                    _hasSystemSuspendReasons = true;
+                    Log.Info("Engine", "Автозапуск при запертом сеансе — откладываю включение повтора до разблокировки");
+                }
+                else
+                {
+                    Log.Info("Engine", "Автозапуск на защищённом рабочем столе — откладываю включение повтора до возврата рабочего стола");
+                    if (_systemSuspendReasons.Count == 0)
+                        StartDeferredResumeLocked("Защищённый рабочий стол", requireSettle: true);
+                }
+                return false;
+            }
+
+            _systemSuspendReasons.Remove(SystemActivityWatcher.ReasonLocked);
+            _hasSystemSuspendReasons = _systemSuspendReasons.Count > 0;
+            if (_systemSuspendReasons.Count > 0)
+            {
+                _stopRequested = false;
+                _suspendedBySystem = true;
+                Log.Info("Engine", $"Автозапуск при активной системной паузе ({string.Join(", ", _systemSuspendReasons)}) — откладываю включение повтора");
+                return false;
+            }
+
+            ForgetSystemSuspend();
+            _replayNvencStats = NvencStats.Take();
+            StartWithFallbackLocked(preserveBuffers: false);
+            return true;
         }
     }
 
@@ -1135,7 +1190,10 @@ public sealed partial class ReplayEngine : IDisposable
     private void ForgetSystemSuspend()
     {
         _systemSuspendReasons.Clear();
+        _hasSystemSuspendReasons = false;
         _suspendedBySystem = false;
+        _resumeNeedsDesktopSettle = false;
+        CancelDesktopWaitLocked();
     }
 
     /// <summary>
@@ -1226,9 +1284,32 @@ public sealed partial class ReplayEngine : IDisposable
     /// включился» не снимет паузу, которую держит блокировка.
     /// </summary>
     private readonly HashSet<string> _systemSuspendReasons = new(StringComparer.Ordinal);
+    private volatile bool _hasSystemSuspendReasons;
 
     /// <summary>Мы ли остановили конвейер. Чужую остановку возобновлять не наше дело.</summary>
-    private bool _suspendedBySystem;
+    private volatile bool _suspendedBySystem;
+
+    internal Func<DesktopSessionSnapshot>? DesktopProbeOverride { get; set; }
+    internal TimeSpan? DesktopSettleOverride { get; set; }
+    internal TimeSpan? DesktopPollOverride { get; set; }
+    private readonly DesktopWakeSignal _desktopWake = new();
+    private CancellationTokenSource? _desktopWaitCts;
+    private bool _resumeNeedsDesktopSettle;
+
+    private DesktopSessionSnapshot ProbeDesktop() =>
+        (DesktopProbeOverride ?? DesktopSession.Probe)();
+
+    private TimeSpan DesktopSettleDelay => DesktopSettleOverride ?? TimeSpan.FromMilliseconds(500);
+    private TimeSpan DesktopPollInterval => DesktopPollOverride ?? TimeSpan.FromMilliseconds(500);
+
+    public void NotifySessionUnlocked() => _desktopWake?.Pulse();
+
+    private void CancelDesktopWaitLocked()
+    {
+        // Только отменяем: освобождает сам ожидающий поток в finally, чтобы не
+        // получить гонку Cancel() и Dispose() между потоками.
+        _desktopWaitCts?.Cancel();
+    }
 
     /// <summary>Идёт ли сейчас системная пауза — для интерфейса и диагностики.</summary>
     public bool SuspendedBySystem { get { lock (_lifecycle) return _suspendedBySystem; } }
@@ -1257,6 +1338,11 @@ public sealed partial class ReplayEngine : IDisposable
             // возобновлять тоже нечего, конвейер сам не поднимется.
             if (_state == EngineState.CaptureBlocked) return;
             bool added = _systemSuspendReasons.Add(reason);
+            _hasSystemSuspendReasons = _systemSuspendReasons.Count > 0;
+            if (string.Equals(reason, SystemActivityWatcher.ReasonLocked, StringComparison.Ordinal))
+                _resumeNeedsDesktopSettle = true;
+            if (added) CancelDesktopWaitLocked();
+
             if (_continuousRecordingRequested || _recorder is not null)
             {
                 if (added) Log.Info("Engine", $"{reason}: идёт запись в файл, пауза отложена");
@@ -1292,17 +1378,49 @@ public sealed partial class ReplayEngine : IDisposable
     ///
     /// Поднимаем только то, что сами и остановили: если пользователь выключил повтор
     /// до блокировки экрана, разблокировка не должна включать его обратно.
+    /// Если сеанс ещё заперт или рабочий стол только переключается после Winlogon,
+    /// запуск откладывается до стабилизации интерактивного рабочего стола.
     /// </summary>
     public void ResumeAfterSystem(string reason)
     {
+        bool isUnlock = string.Equals(reason, SystemActivityWatcher.ReasonLocked, StringComparison.Ordinal);
         lock (_lifecycle)
         {
             _systemSuspendReasons.Remove(reason);
-            if (_systemSuspendReasons.Count > 0 || !_suspendedBySystem) return;
+            _hasSystemSuspendReasons = _systemSuspendReasons.Count > 0;
+            if (isUnlock) _resumeNeedsDesktopSettle = true;
 
+            if (!_suspendedBySystem)
+            {
+                if (isUnlock && !_stopRequested && _pipelineOpen &&
+                    _state == EngineState.Running && _captureBackend == CaptureBackend.Wgc &&
+                    _systemSuspendReasons.Count == 0)
+                {
+                    StartUnlockWgcRebuildLocked(Interlocked.Read(ref _captureGeneration));
+                }
+                return;
+            }
+
+            if (_systemSuspendReasons.Count > 0) return;
+
+            if (_stopRequested)
+            {
+                _suspendedBySystem = false;
+                _resumeNeedsDesktopSettle = false;
+                CancelDesktopWaitLocked();
+                return;   // приложение закрывается — поднимать нечего
+            }
+
+            DesktopSessionSnapshot snapshot = ProbeDesktop();
+            if (_resumeNeedsDesktopSettle || !snapshot.InteractiveDesktopActive)
+            {
+                StartDeferredResumeLocked(reason, requireSettle: true);
+                return;
+            }
+
+            CancelDesktopWaitLocked();
             _suspendedBySystem = false;
-            if (_stopRequested) return;   // приложение закрывается — поднимать нечего
-
+            _resumeNeedsDesktopSettle = false;
             Log.Info("Engine", $"{reason}: конвейер возобновлён");
             try { StartWithFallbackLocked(preserveBuffers: false); }
             catch (Exception ex)
@@ -1313,11 +1431,162 @@ public sealed partial class ReplayEngine : IDisposable
         }
     }
 
+    private void StartDeferredResumeLocked(string reason, bool requireSettle)
+    {
+        if (_desktopWaitCts is { IsCancellationRequested: false })
+        {
+            _desktopWake?.Pulse();
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _desktopWaitCts = cts;
+        bool loggedWait = false;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    DesktopWaitResult wait = await DesktopReadinessWaiter.WaitAsync(
+                        ProbeDesktop,
+                        requireShell: false,
+                        shellTimeout: TimeSpan.Zero,
+                        settleDuration: DesktopSettleDelay,
+                        pollInterval: DesktopPollInterval,
+                        settleIfInitiallyReady: requireSettle,
+                        onFirstWait: outcome =>
+                        {
+                            if (loggedWait) return;
+                            loggedWait = true;
+                            Log.Info("Engine", outcome == DesktopReadinessOutcome.Settling
+                                ? $"{reason}: рабочий стол возвращается — жду стабилизации перед запуском захвата"
+                                : $"{reason}: жду активный рабочий стол перед возобновлением повтора");
+                        },
+                        shouldAbort: () => cts.IsCancellationRequested || _stopRequested ||
+                                           !_suspendedBySystem || _hasSystemSuspendReasons ||
+                                           _state != EngineState.Stopped,
+                        wake: _desktopWake,
+                        ct: cts.Token).ConfigureAwait(false);
+
+                    if (wait.Aborted) return;
+
+                    lock (_lifecycle)
+                    {
+                        if (cts.IsCancellationRequested || _stopRequested ||
+                            !_suspendedBySystem || _hasSystemSuspendReasons ||
+                            _state != EngineState.Stopped)
+                            return;
+
+                        if (!ProbeDesktop().InteractiveDesktopActive)
+                        {
+                            requireSettle = true;
+                            continue;
+                        }
+
+                        _suspendedBySystem = false;
+                        _resumeNeedsDesktopSettle = false;
+                        if (ReferenceEquals(_desktopWaitCts, cts))
+                            _desktopWaitCts = null;
+
+                        Log.Info("Engine", $"{reason}: конвейер возобновлён");
+                        try { StartWithFallbackLocked(preserveBuffers: false); }
+                        catch (Exception ex)
+                        {
+                            Log.Error("Engine", ex);
+                            Warning?.Invoke($"Не удалось возобновить запись после события «{reason}»: {ex.Message}");
+                        }
+                        return;
+                    }
+                }
+            }
+            finally
+            {
+                lock (_lifecycle)
+                {
+                    if (ReferenceEquals(_desktopWaitCts, cts))
+                        _desktopWaitCts = null;
+                }
+                cts.Dispose();
+            }
+        });
+    }
+
+    private void StartUnlockWgcRebuildLocked(long observedGeneration)
+    {
+        CancelDesktopWaitLocked();
+        var cts = new CancellationTokenSource();
+        _desktopWaitCts = cts;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    DesktopWaitResult wait = await DesktopReadinessWaiter.WaitAsync(
+                        ProbeDesktop,
+                        requireShell: false,
+                        shellTimeout: TimeSpan.Zero,
+                        settleDuration: DesktopSettleDelay,
+                        pollInterval: DesktopPollInterval,
+                        settleIfInitiallyReady: true,
+                        shouldAbort: () => cts.IsCancellationRequested || _stopRequested ||
+                                           _hasSystemSuspendReasons || !_pipelineOpen ||
+                                           _state != EngineState.Running ||
+                                           _captureBackend != CaptureBackend.Wgc ||
+                                           observedGeneration != Interlocked.Read(ref _captureGeneration),
+                        wake: _desktopWake,
+                        ct: cts.Token).ConfigureAwait(false);
+
+                    if (wait.Aborted) return;
+
+                    lock (_lifecycle)
+                    {
+                        if (cts.IsCancellationRequested || _stopRequested ||
+                            _hasSystemSuspendReasons || !_pipelineOpen ||
+                            _state != EngineState.Running ||
+                            _captureBackend != CaptureBackend.Wgc ||
+                            observedGeneration != Interlocked.Read(ref _captureGeneration))
+                            return;
+
+                        if (!ProbeDesktop().InteractiveDesktopActive)
+                            continue;
+
+                        _resumeNeedsDesktopSettle = false;
+                        if (ReferenceEquals(_desktopWaitCts, cts))
+                            _desktopWaitCts = null;
+                    }
+
+                    Log.Info("Engine", "Сеанс разблокирован при работающем WGC — пересобираю захват на активном рабочем столе");
+                    OnCaptureFailed(new CaptureFailure(
+                        CaptureFailureKind.CaptureFormatChanged,
+                        new InvalidOperationException("Сеанс разблокирован"),
+                        "разблокировка сеанса",
+                        observedGeneration,
+                        ActiveCaptureTarget()?.Revision ?? 0), observedGeneration);
+                    return;
+                }
+            }
+            finally
+            {
+                lock (_lifecycle)
+                {
+                    if (ReferenceEquals(_desktopWaitCts, cts))
+                        _desktopWaitCts = null;
+                }
+                cts.Dispose();
+            }
+        });
+    }
+
     private void StopLocked(PipelineStopIntent intent = PipelineStopIntent.UserStop)
     {
         if (intent is PipelineStopIntent.UserStop or PipelineStopIntent.CaptureBlocked)
         {
             _continuousRecordingRequested = false;
+            CancelDesktopWaitLocked();
             CancelCaptureRecovery();
             _gameCaptureRecovery.Stop();
             Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);

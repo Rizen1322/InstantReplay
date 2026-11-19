@@ -231,10 +231,9 @@
                              и кнопка выглядит ровно как раньше. -->
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <c:Icon x:Name="Lead" Size="15" Margin="0,0,7,0"
-                                    Data="{Binding (c:Deco.Icon), RelativeSource={RelativeSource TemplatedParent}}"
-                                    Filled="{Binding (c:Deco.Filled), RelativeSource={RelativeSource TemplatedParent}}"
-                                    Foreground="{TemplateBinding Foreground}"
-                                    Visibility="{Binding (c:Deco.Icon), RelativeSource={RelativeSource TemplatedParent}, Converter={StaticResource HasIcon}}"/>
+                                    Data="{TemplateBinding c:Deco.Icon}"
+                                    Filled="{TemplateBinding c:Deco.Filled}"
+                                    Foreground="{TemplateBinding Foreground}"/>
                             <ContentPresenter x:Name="Body" VerticalAlignment="Center">
                                 <!-- Подпись обязана красться цветом КНОПКИ.
                                      ContentPresenter из строки делает TextBlock, а на
@@ -257,6 +256,9 @@
                     </Border>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <Trigger Property="c:Deco.Icon" Value="{x:Null}">
+                            <Setter TargetName="Lead" Property="Visibility" Value="Collapsed"/>
+                        </Trigger>
                         <!-- Кнопка без подписи (только иконка) — отступ справа не нужен -->
                         <Trigger Property="Content" Value="{x:Null}">
                             <Setter TargetName="Lead" Property="Margin" Value="0"/>

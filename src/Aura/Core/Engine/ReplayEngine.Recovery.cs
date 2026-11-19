@@ -8,6 +8,7 @@ using Aura.Core.Logging;
 using Aura.Core.Saving;
 using Aura.Core.Settings;
 using Aura.Core.Storage;
+using Aura.Core.SystemIntegration;
 
 namespace Aura.Core.Engine;
 
@@ -161,6 +162,23 @@ public sealed partial class ReplayEngine
 
                     try
                     {
+                        if (candidate == CaptureBackend.Wgc && !ProbeDesktop().InteractiveDesktopActive)
+                        {
+                            Log.Info("Engine", "Пересборка WGC ждёт возврата пользовательского рабочего стола");
+                            DesktopWaitResult wait = DesktopReadinessWaiter.WaitAsync(
+                                ProbeDesktop,
+                                requireShell: false,
+                                shellTimeout: TimeSpan.Zero,
+                                settleDuration: DesktopSettleDelay,
+                                pollInterval: DesktopPollInterval,
+                                settleIfInitiallyReady: false,
+                                shouldAbort: () => _stopRequested ||
+                                                   restartGeneration != Interlocked.Read(ref _captureGeneration),
+                                wake: _desktopWake,
+                                ct: cancellation.Token).GetAwaiter().GetResult();
+                            if (wait.Aborted) return;
+                        }
+
                         GameCaptureTarget? candidateTarget = candidate is
                             CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
                             ? _gameCaptureRecovery.Target

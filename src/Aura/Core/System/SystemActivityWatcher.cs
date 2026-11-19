@@ -32,13 +32,16 @@ namespace Aura.Core.SystemIntegration;
 /// </summary>
 public sealed class SystemActivityWatcher : IDisposable
 {
-    private const string ReasonLocked = "Сеанс заперт";
-    private const string ReasonDisplayOff = "Экран погашен";
-    private const string ReasonSleep = "Машина уходит в сон";
+    internal const string ReasonLocked = "Сеанс заперт";
+    internal const string ReasonDisplayOff = "Экран погашен";
+    internal const string ReasonSleep = "Машина уходит в сон";
 
     private readonly Action<string> _suspend;
     private readonly Action<string> _resume;
     private readonly Action<string> _displayChanged;
+
+    /// <summary>Срабатывает сразу при получении события разблокировки сеанса или подключения консоли.</summary>
+    public event Action? SessionUnlocked;
 
     /// <summary>
     /// Смена набора дисплеев приходит пачкой: система шлёт несколько уведомлений
@@ -100,6 +103,15 @@ public sealed class SystemActivityWatcher : IDisposable
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         Log.Info("System", "Слежение за блокировкой, экраном, сном и дисплеями включено");
+
+        // Подписка идёт ДО проверки начального состояния: при запуске через ARSO
+        // событие SessionLock уже прошло до старта процесса, а разблокировка может
+        // прийти сразу после подписки.
+        if (DesktopSession.QuerySessionLocked() == true)
+        {
+            Log.Info("System", "Сеанс уже заперт при запуске приложения — фиксирую блокировку до разблокировки");
+            Suspend(ReasonLocked);
+        }
     }
 
     private IntPtr WndProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -141,12 +153,12 @@ public sealed class SystemActivityWatcher : IDisposable
             case SessionSwitchReason.SessionUnlock:
             case SessionSwitchReason.ConsoleConnect:
             case SessionSwitchReason.RemoteConnect:
-                Resume(ReasonLocked);
                 // Разблокировать сеанс с погашенным экраном нельзя: человек видит
-                // поле ввода пароля. Снимаем и причину «экран погашен» — иначе
-                // драйвер, который не прислал событие включения, оставил бы повтор
-                // выключенным до перезапуска приложения.
+                // поле ввода пароля. Снимаем «экран погашен» ДО «сеанс заперт»,
+                // чтобы финальное снятие причины несло признак разблокировки.
                 Resume(ReasonDisplayOff);
+                Resume(ReasonLocked);
+                SessionUnlocked?.Invoke();
                 break;
         }
     }

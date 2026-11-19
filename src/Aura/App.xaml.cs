@@ -45,6 +45,7 @@ public static class Services
             Engine.SuspendForSystem,
             Engine.ResumeAfterSystem,
             Engine.RebuildAfterDisplayChange);
+        Activity.SessionUnlocked += Engine.NotifySessionUnlocked;
     }
 }
 
@@ -57,6 +58,8 @@ public partial class App : Application
     private static Mutex? _singleInstance;
     private static EventWaitHandle? _showWindowSignal;
     private static bool _devInstance;
+    private static readonly CancellationTokenSource _autostartCts = new();
+    private static readonly DesktopWakeSignal _autostartWake = new();
     private MainWindow? _main;
     private TaskbarIcon? _tray;
     private MenuItem? _trayToggle, _traySave;
@@ -477,13 +480,16 @@ public partial class App : Application
         bool windows = !(dev && headless);
         if (windows && !minimized) _main.Show();
 
-        if (Services.Settings.Current.AutoStartReplayBuffer) _ = StartEngineWhenDesktopReadyAsync();
-        if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
-
         Services.DriverWatch.UpdateFound += version => Services.Notifications.Show(
             NotificationKind.Warning, Loc.T("driver_found", version));
         Services.DriverWatch.Start();
+        // Наблюдатель обязан стартовать ДО отложенного автозапуска: при старте в
+        // запертом сеансе (ARSO) он фиксирует блокировку и сразу подписывается на
+        // SessionUnlock, чтобы вовремя разбудить ожидание.
         Services.Activity.Start();
+
+        if (Services.Settings.Current.AutoStartReplayBuffer) _ = StartEngineWhenDesktopReadyAsync();
+        if (Services.Settings.Current.CheckForUpdates) _ = CheckUpdatesAsync();
 
         CleanLeftovers();
 
@@ -971,69 +977,101 @@ public partial class App : Application
     // ---------------- Действия ----------------
 
     /// <summary>
-    /// Автозапуск при входе: сразу после ввода пароля Winlogon ещё держит на экране
-    /// свой рабочий стол с приветствием и переключается на пользовательский, только
-    /// когда Explorer готов. Захват монитора, начатый до этого, остаётся чёрным
-    /// навсегда — обновляется только курсор, а кадры идут, так что сторож тишины
-    /// молчит. Поэтому ждём, пока на экране окажется наш рабочий стол с оболочкой.
+    /// Автозапуск при входе: сразу после ввода пароля (или при фоновом входе ARSO)
+    /// Winlogon держит свой защищённый рабочий стол и переключается на
+    /// пользовательский только после разблокировки. Захват монитора, начатый до
+    /// этого, остаётся чёрным навсегда — обновляется только курсор, а кадры идут,
+    /// так что сторож тишины молчит. Поэтому ждём активного интерактивного рабочего
+    /// стола без ограничения по времени, окно оболочки — до 20 с после входа, и
+    /// короткую паузу стабилизации DWM.
     /// </summary>
     private static async Task StartEngineWhenDesktopReadyAsync()
     {
-        if (!UserDesktopReady())
-        {
-            Log.Info("App", "Рабочий стол после входа ещё не готов — повтор включится, когда он появится");
-            var waited = System.Diagnostics.Stopwatch.StartNew();
-            // Без оболочки (другой shell, Explorer упал) не ждём вечно
-            while (!UserDesktopReady() && waited.Elapsed < TimeSpan.FromMinutes(2))
-                await Task.Delay(500);
-            Log.Info("App", $"Рабочий стол готов через {waited.Elapsed.TotalSeconds:F1} с");
-            // Человек мог включить повтор сам, пока ждали
-            if (Services.Engine.State != EngineState.Stopped) return;
-        }
-
-        // Даже на готовом рабочем столе DuplicateOutput какое-то время отвечает
-        // E_ACCESSDENIED: ввод ещё у secure desktop (UAC, экран входа). Microsoft
-        // советует повторять после смены рабочего стола, OBS и WebRTC просто
-        // пересоздают дупликацию по таймеру. Раньше была одна попытка, и повтор
-        // оставался выключенным до ручного включения.
-        var retrying = System.Diagnostics.Stopwatch.StartNew();
-        for (int attempt = 1; ; attempt++)
-        {
-            try
-            {
-                await Task.Run(() => SafeStartEngine(ex => retrying.Elapsed < TimeSpan.FromMinutes(2) &&
-                                      Core.Capture.DesktopDuplicationSource.IsTemporaryDuplicationFailure(ex), allowPermissionPrompt: false));
-                if (attempt > 1 && Services.Engine.ReplayActive)
-                    Log.Info("App", $"Захват экрана стал доступен через {retrying.Elapsed.TotalSeconds:F0} с, попытка {attempt}");
-                return;
-            }
-            catch (Exception ex)
-            {
-                if (attempt == 1)
-                    Log.Warn("App", $"Захват экрана пока недоступен ({ex.Message.Trim()}) — повторяю каждые 2 с до 2 минут");
-            }
-            await Task.Delay(2000);
-            // Человек мог включить повтор сам, пока ждали
-            if (Services.Engine.State != EngineState.Stopped) return;
-        }
-    }
-
-    /// <summary>
-    /// На экране пользовательский рабочий стол (не Winlogon), и Explorer создал своё окно.
-    /// Пока ввод у Winlogon, OpenInputDesktop отвечает отказом в доступе.
-    /// </summary>
-    private static unsafe bool UserDesktopReady()
-    {
-        if (NativeMethods.GetShellWindow() == IntPtr.Zero) return false;
-        IntPtr desktop = NativeMethods.OpenInputDesktop(0, false, NativeMethods.DESKTOP_READOBJECTS);
-        if (desktop == IntPtr.Zero) return false;
+        Action wake = _autostartWake.Pulse;
+        Services.Activity.SessionUnlocked += wake;
         try
         {
-            char* name = stackalloc char[64];
-            return NativeMethods.GetUserObjectInformation(desktop, NativeMethods.UOI_NAME, name, 64 * sizeof(char), out _) &&
-                   new string(name).Equals("Default", StringComparison.OrdinalIgnoreCase);
+            DesktopWaitResult initialWait = await DesktopReadinessWaiter.WaitAsync(
+                DesktopSession.Probe,
+                requireShell: true,
+                shellTimeout: TimeSpan.FromSeconds(20),
+                settleDuration: TimeSpan.FromMilliseconds(500),
+                pollInterval: TimeSpan.FromMilliseconds(500),
+                settleIfInitiallyReady: false,
+                onFirstWait: outcome => Log.Info("App", outcome switch
+                {
+                    DesktopReadinessOutcome.WaitingForInteractiveDesktop =>
+                        "Сеанс заперт или открыт защищённый рабочий стол — повтор включится после разблокировки",
+                    DesktopReadinessOutcome.WaitingForShell =>
+                        "Рабочий стол после входа ещё не готов — повтор включится, когда загрузится оболочка",
+                    _ => "Рабочий стол переходит в активное состояние — жду стабилизации"
+                }),
+                shouldAbort: () => Services.Engine.State != EngineState.Stopped,
+                wake: _autostartWake,
+                ct: _autostartCts.Token);
+
+            if (initialWait.Aborted || Services.Engine.State != EngineState.Stopped) return;
+            if (initialWait.Waited)
+            {
+                Log.Info("App", initialWait.Outcome == DesktopReadinessOutcome.ReadyWithoutShell
+                    ? $"Рабочий стол активен через {initialWait.Elapsed.TotalSeconds:F1} с (окно оболочки не появилось) — запускаю повтор"
+                    : $"Рабочий стол готов через {initialWait.Elapsed.TotalSeconds:F1} с");
+            }
+
+            // Даже на готовом рабочем столе DuplicateOutput какое-то время отвечает
+            // E_ACCESSDENIED: ввод ещё у secure desktop (UAC, экран входа). Microsoft
+            // советует повторять после смены рабочего стола, OBS и WebRTC просто
+            // пересоздают дупликацию по таймеру. Раньше была одна попытка, и повтор
+            // оставался выключенным до ручного включения.
+            var retrying = Stopwatch.StartNew();
+            for (int attempt = 1; ; attempt++)
+            {
+                if (_autostartCts.IsCancellationRequested || Services.Engine.State != EngineState.Stopped) return;
+
+                if (attempt > 1 && !DesktopSession.IsInteractiveDesktopActive())
+                {
+                    DesktopWaitResult rewait = await DesktopReadinessWaiter.WaitAsync(
+                        DesktopSession.Probe,
+                        requireShell: false,
+                        shellTimeout: TimeSpan.Zero,
+                        settleDuration: TimeSpan.FromMilliseconds(500),
+                        pollInterval: TimeSpan.FromMilliseconds(500),
+                        settleIfInitiallyReady: false,
+                        shouldAbort: () => Services.Engine.State != EngineState.Stopped,
+                        wake: _autostartWake,
+                        ct: _autostartCts.Token);
+                    if (rewait.Aborted || Services.Engine.State != EngineState.Stopped) return;
+                    retrying.Restart();
+                }
+
+                try
+                {
+                    await Task.Run(() => SafeStartEngine(
+                        ex => retrying.Elapsed < TimeSpan.FromMinutes(2) &&
+                              Core.Capture.DesktopDuplicationSource.IsTemporaryDuplicationFailure(ex),
+                        allowPermissionPrompt: false,
+                        fromAutostart: true));
+                    if (attempt > 1 && Services.Engine.ReplayActive)
+                        Log.Info("App", $"Захват экрана стал доступен через {retrying.Elapsed.TotalSeconds:F0} с, попытка {attempt}");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt == 1)
+                        Log.Warn("App", $"Захват экрана пока недоступен ({ex.Message.Trim()}) — повторяю каждые 2 с до 2 минут");
+                }
+
+                try { await Task.Delay(2000, _autostartCts.Token); }
+                catch (OperationCanceledException) { return; }
+
+                // Человек мог включить повтор сам, пока ждали
+                if (Services.Engine.State != EngineState.Stopped) return;
+            }
         }
-        finally { NativeMethods.CloseDesktop(desktop); }
+        finally
+        {
+            Services.Activity.SessionUnlocked -= wake;
+        }
     }
 
     // Отдельная перегрузка, а не необязательный параметр: Dispatcher.Invoke(SafeStartEngine)
@@ -1041,11 +1079,22 @@ public partial class App : Application
     public static void SafeStartEngine() => SafeStartEngine(null);
 
     /// <param name="rethrowIf">Ошибки, которые вызывающий повторит сам: их не показываем.</param>
-    public static void SafeStartEngine(Func<Exception, bool>? rethrowIf, bool allowPermissionPrompt = true)
+    public static void SafeStartEngine(
+        Func<Exception, bool>? rethrowIf,
+        bool allowPermissionPrompt = true,
+        bool fromAutostart = false)
     {
         try
         {
-            Services.Engine.Start();
+            if (fromAutostart)
+            {
+                if (!Services.Engine.StartFromAutostart()) return;
+            }
+            else
+            {
+                _autostartCts.Cancel();
+                Services.Engine.Start();
+            }
             Services.Ui.Enqueue(() =>
             {
                 try { AskBorderlessPermission(allowPermissionPrompt); }
@@ -1527,6 +1576,7 @@ public partial class App : Application
     /// </summary>
     public void ExitApp()
     {
+        Step("автозапуск", () => _autostartCts.Cancel());
         Step("настройки", () => Services.Settings.FlushDeferred());
         Step("события системы", () => Services.Activity.Dispose());
         Step("слежение за папкой", () => Services.Storage.Dispose());
