@@ -71,7 +71,7 @@
                     <c:AdaptiveRow Margin="16,12,16,12">
                         <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
                             <TextBlock Text="Сжимать для отправки до" Style="{StaticResource RowLabel}"/>
-                            <TextBlock Text="Пункт «Сжать для Discord» в меню клипа подгонит файл под этот размер. Без Nitro в Discord можно до 10 МБ."
+                            <TextBlock Text="Пункт «Сжать для Discord» в меню клипа подгонит файл под этот размер."
                                        Style="{StaticResource RowSub}"/>
                         </StackPanel>
                         <Grid Width="112" Height="34">

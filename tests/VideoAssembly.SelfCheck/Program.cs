@@ -70,7 +70,11 @@ double Amplitude(double hz, double at)
 }
 Require(Amplitude(440, 0.2) > 0.05 && Amplitude(880, 1.2) > 0.05 && Amplitude(440, 2.7) > 0.05, "Audio ordering or joins are wrong");
 Require(redHash == Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(red))) && blueHash == Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(blue))), "Source changed");
-Console.WriteLine("PASS: native composition, multiple ranges, mixed dimensions, duration, audio ordering, sources unchanged");
+VideoSegment[] midGapParts = [new(red, TimeSpan.Zero, TimeSpan.FromSeconds(1)), new(blue, TimeSpan.Zero, TimeSpan.FromSeconds(1)) { Gap = TimeSpan.FromSeconds(1) }];
+string midGapped = await VideoAssembly.RenderAsync(midGapParts, Path.Combine(root, "mid-gap.mp4"));
+var midGapInfo = await VideoAssembly.ReadInfoAsync(midGapped);
+Require(Math.Abs(midGapInfo.Duration.TotalSeconds - 3) < 0.2, "Mid-timeline gap export duration wrong: " + midGapInfo.Duration);
+Console.WriteLine("PASS: native composition, mid-timeline gap, multiple ranges, mixed dimensions, duration, audio ordering, sources unchanged");
 try { await VideoAssembly.RenderAsync(parts, red); throw new Exception("Source overwrite allowed"); }
 catch (InvalidOperationException) { }
 try { await VideoAssembly.RenderAsync(parts, rendered); throw new Exception("Existing output overwrite allowed"); }
@@ -98,6 +102,9 @@ if (args.Length > 0)
     var encodedInfo = await VideoAssembly.ReadInfoAsync(encoded);
     Require(Math.Abs(encodedInfo.Duration.TotalSeconds - 3) < 0.15 && encodedInfo.AudioTracks == 1, "FFmpeg output duration/audio incorrect");
     Require(new FileInfo(encoded).Length <= 1024 * 1024, "FFmpeg size limit ignored");
+    string ffmpegMidGapped = await VideoAssembly.RenderAsync(midGapParts, Path.Combine(root, "ffmpeg-mid-gap.mp4"), ffmpeg);
+    var ffmpegMidGapInfo = await VideoAssembly.ReadInfoAsync(ffmpegMidGapped);
+    Require(Math.Abs(ffmpegMidGapInfo.Duration.TotalSeconds - 3) < 0.2, "FFmpeg mid-timeline gap export duration incorrect: " + ffmpegMidGapInfo.Duration);
     string foreign = Path.Combine(root, "сторонний.mkv"), silent = Path.Combine(root, "без звука.mkv");
     async Task Run(params string[] parameters)
     {
@@ -527,6 +534,7 @@ var uiThread = new Thread(() =>
                 assemblyType.GetMethod("InsertProjectVideo", flags)!.Invoke(assembly, [red, 0]);
                 Require(((VideoSegment)list.Items[0]).Path == red, "Dropping a project file did not insert at the requested boundary");
                 assemblyType.GetMethod("UndoAssembly_Click", flags)!.Invoke(assembly, [null, new System.Windows.RoutedEventArgs()]);
+                await IndependentAudioCheck.RunSplitAndMidGapCheck(red);
                 double beforeZoom = (double)timelineType.GetProperty("PixelsPerSecond")!.GetValue(timeline)!;
                 assemblyType.GetMethod("ZoomTimeline", flags)!.Invoke(assembly, [1.25, 100.0]);
                 Require((double)timelineType.GetProperty("PixelsPerSecond")!.GetValue(timeline)! > beforeZoom,

@@ -214,13 +214,82 @@ internal static class IndependentAudioCheck
             Require(singleShifted.AudioEvents.All(e => e.Position == TimeSpan.Zero), "Single-clip video drag moved detached audio");
         }
         finally { singleWindow.Close(); }
-        Console.WriteLine("PASS: independent U key, independent audio drag, video reorder, audio tail preview, undo and dark disabled media list");
+        await RunSplitAndMidGapCheck(original.Path);
+        Console.WriteLine("PASS: independent U key, split clip drag, magnetic snap, mid-timeline gap preview, audio tail preview and undo");
 
         async Task Ready()
         {
             for (int i = 0; i < 200 && ((bool)type.GetField("_assemblyOpening", flags)!.GetValue(window)! ||
                 (bool)type.GetField("_waitingAssemblyFrame", flags)!.GetValue(window)!); i++) await Task.Delay(20);
         }
+    }
+
+    public static async Task RunSplitAndMidGapCheck(string clipPath)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = typeof(Aura.Views.VideoAssemblyWindow);
+        var window = (Window)Activator.CreateInstance(type, nonPublic: true)!;
+        try
+        {
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Left = -30000; window.Top = -30000; window.ShowActivated = false; window.ShowInTaskbar = false;
+            ((CheckBox)window.FindName("MutePreview")).IsChecked = true;
+            window.Show();
+            for (int i = 0; i < 150 && type.GetField("_assemblyPlayer", flags)!.GetValue(window) is null; i++) await Task.Delay(50);
+            await (Task)type.GetMethod("AddFilesAsync", flags)!.Invoke(window, [new[] { clipPath }])!;
+            var list = (ListBox)window.FindName("Segments");
+            var timeline = (FrameworkElement)window.FindName("Timeline");
+            var tlType = timeline.GetType();
+            async Task WaitReady()
+            {
+                for (int i = 0; i < 200 && ((bool)type.GetField("_assemblyOpening", flags)!.GetValue(window)! ||
+                    (bool)type.GetField("_waitingAssemblyFrame", flags)!.GetValue(window)!); i++) await Task.Delay(20);
+            }
+            void Gesture(string name, Point at) => tlType.GetMethod(name, flags)!.Invoke(timeline, [at]);
+            list.SelectedIndex = 0;
+            await (Task)type.GetMethod("SelectAssemblyClipAsync", flags)!.Invoke(window, [null])!;
+            await WaitReady();
+            type.GetField("_fitTimeline", flags)!.SetValue(window, false);
+            tlType.GetProperty("PixelsPerSecond")!.SetValue(timeline, 100.0);
+            type.GetMethod("SeekAssembly", flags)!.Invoke(window, [1.0]);
+            await WaitReady();
+            type.GetMethod("SplitAssemblyAt", flags)!.Invoke(window, [1.0]);
+            await WaitReady();
+            Require(list.Items.Count == 2, "Split did not produce two clips");
+            double clip0End = VideoTimeline.Offset(list.Items.Cast<VideoSegment>().ToArray(), 1);
+            Gesture("BeginGesture", new Point((clip0End + .5) * 100, 60));
+            Gesture("UpdateGesture", new Point((clip0End + 1.5) * 100, 60));
+            Gesture("EndGesture", new Point((clip0End + 1.5) * 100, 60));
+            await WaitReady();
+            double gapSeconds = ((VideoSegment)list.Items[1]).Gap.TotalSeconds;
+            double clip1Start = VideoTimeline.Offset(list.Items.Cast<VideoSegment>().ToArray(), 1);
+            Require(list.Items.Count == 2 && Math.Abs(gapSeconds - 1.0) < .05,
+                $"Split second clip did not slide right freely: gap={gapSeconds}");
+            double midGapTime = (clip0End + clip1Start) * 0.5;
+            type.GetMethod("SeekAssembly", flags)!.Invoke(window, [midGapTime]);
+            await WaitReady();
+            var preview = (FrameworkElement)window.FindName("AssemblyPreview");
+            var playhead = (Slider)window.FindName("AssemblyPosition");
+            Require(preview.Visibility == Visibility.Hidden, "Preview did not hide inside mid-timeline gap");
+            Require(Math.Abs(playhead.Value - midGapTime) < .1, $"Playhead did not stay inside mid-timeline gap: {playhead.Value}");
+            type.GetMethod("PlayAssembly_Click", flags)!.Invoke(window, [null, new RoutedEventArgs()]);
+            for (int i = 0; i < 40 && (playhead.Value < clip1Start || preview.Visibility != Visibility.Visible); i++) await Task.Delay(50);
+            await WaitReady();
+            Require(playhead.Value >= clip1Start - .02 && preview.Visibility == Visibility.Visible,
+                $"Mid-timeline gap did not advance back into clip 1: pos={playhead.Value}, clip1Start={clip1Start}, vis={preview.Visibility}");
+            type.GetMethod("ShuttleAssembly", flags)!.Invoke(window, [Key.K]);
+            Gesture("BeginGesture", new Point((clip1Start + .5) * 100, 60));
+            Gesture("UpdateGesture", new Point((clip0End + .54) * 100, 60));
+            Gesture("EndGesture", new Point((clip0End + .54) * 100, 60));
+            await WaitReady();
+            Require(((VideoSegment)list.Items[1]).Gap == TimeSpan.Zero,
+                $"Dragging clip 1 near clip 0 end did not magnetically snap gap to zero: gap={((VideoSegment)list.Items[1]).Gap}");
+            type.GetMethod("UndoAssembly_Click", flags)!.Invoke(window, [null, new RoutedEventArgs()]);
+            await WaitReady();
+            Require(Math.Abs(((VideoSegment)list.Items[1]).Gap.TotalSeconds - 1.0) < .05, "Undo did not restore snapped gap");
+            Console.WriteLine("PASS: real WPF split video drag, magnetic snap, mid-timeline gap playback and undo");
+        }
+        finally { window.Close(); }
     }
     private static void Require(bool value, string message) { if (!value) throw new Exception(message); }
 }

@@ -47,7 +47,11 @@ public partial class MainWindow : Window
         InitializeComponent();
         VideoFileDrop.Attach(this, VideoFileDrop.Open);
 
-        SizeChanged += (_, _) => UpdateCompact();
+        SizeChanged += (_, _) =>
+        {
+            UpdateCompact();
+            UpdateApplyBarMargin();
+        };
         SourceInitialized += (_, _) => RoundCorners();
         StateChanged += (_, _) => UpdateMaximizedPadding();
 
@@ -193,6 +197,7 @@ public partial class MainWindow : Window
         double value = scale > 0 ? scale : AutoScale();
         UiScale.ScaleX = UiScale.ScaleY = value;
         UpdateCompact();
+        UpdateApplyBarMargin();
     }
 
     private static double AutoScale()
@@ -217,6 +222,7 @@ public partial class MainWindow : Window
         // из кода на ней бы просто не отразилось.
         Side.BeginAnimation(WidthProperty, null);
         Side.Width = Math.Clamp(Side.Width + e.HorizontalChange, MinSideWidth, MaxSideWidth);
+        UpdateApplyBarMargin();
         Dispatcher.BeginInvoke(MoveIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
@@ -352,8 +358,17 @@ public partial class MainWindow : Window
         UpdateApplyBar();
     }
 
+    private void UpdateApplyBarMargin()
+    {
+        double sideWidth = Side.ActualWidth > 0 ? Side.ActualWidth : double.IsNaN(Side.Width) ? 208 : Side.Width;
+        double pageWidth = Scroll.ActualWidth > 0 ? Scroll.ActualWidth : ActualWidth / Math.Max(0.1, UiScale.ScaleX) - sideWidth;
+        bool hasAside = _current is CapturePage or AudioPage or FilesPage && pageWidth >= 820;
+        ApplyBar.Margin = new Thickness(0, 0, hasAside ? 300 : 0, 18);
+    }
+
     private void UpdateApplyBar()
     {
+        UpdateApplyBarMargin();
         if (_pendingPages.Count == 0) { HideApplyBar(); return; }
 
         var names = _pendingPages.Select(p => $"«{p.Title}»").ToList();

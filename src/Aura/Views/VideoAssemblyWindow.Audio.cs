@@ -31,7 +31,6 @@ public partial class VideoAssemblyWindow
     private bool AnyAudioSolo => _audioTracks.Take(Timeline.AudioTracks).Any(t => t.Solo);
     private IReadOnlyList<AssemblySound> AssemblySounds => AssemblyAudio.Sounds(_segments, SourceAudioTracks);
     private double VideoDuration => _segments.Sum(p => p.Gap.TotalSeconds + p.Duration.TotalSeconds);
-    private double LeadingGapEnd => _segments.Count > 0 ? _segments[0].Gap.TotalSeconds : 0;
     private double ProjectDuration => Math.Max(VideoDuration, AssemblySounds.Where(s => !s.Removed).Select(s => s.Finish.TotalSeconds).DefaultIfEmpty(0).Max());
     private bool IndependentAudioSelected => Segments.SelectedItem is VideoSegment part && Timeline.SelectedAudioTrack >= 0 &&
         (!part.AudioLinked && (Timeline.SelectedAudioEvent < 0 || Timeline.SelectedAudioEvent < part.AudioEvents.Count &&
@@ -107,7 +106,7 @@ public partial class VideoAssemblyWindow
         LinkAudio.Content = Segments.SelectedItem is VideoSegment { AudioLinked: false } ? "Раздельно · G" : "Связаны · U";
         SelectionInfo.Text = Timeline.SelectedAudioTrack >= 0
             ? $"Звук {Timeline.SelectedAudioTrack + 1} · S — разрезать\n" + (Segments.SelectedItem is VideoSegment { AudioLinked: false } ? "Delete — убрать звук, сохранив видео" : "U — отделить звук от видео")
-            : "Края клипа — подрезать. U — отделить звук и двигать его независимо.";
+            : "Тяните клип для сдвига, края — для обрезки. U — отделить звук.";
     }
 
     private void RememberAudioEdit(int clip, int track, double eventStart, bool coalesce)
@@ -249,7 +248,7 @@ public partial class VideoAssemblyWindow
         {
             await OpenAudioPlayerAsync(part.Path, track, start, revision, null);
         }
-        double global = _tailPosition ?? VideoTimeline.Offset(_segments, index) + start - part.Start.TotalSeconds;
+        double global = _gapPosition ?? _tailPosition ?? VideoTimeline.Offset(_segments, index) + start - part.Start.TotalSeconds;
         foreach (var sound in PlacedSoundsNear(global))
             if (!_placedAudioPlayers.Values.Any(p => p.Owner == sound.Owner && p.Event == sound.Event))
                 await OpenAudioPlayerAsync(sound.Path, sound.Track, sound.Start.TotalSeconds + Math.Max(0, global - sound.Position.TotalSeconds), revision, sound);
@@ -331,7 +330,7 @@ public partial class VideoAssemblyWindow
     {
         if (_lifetime.IsCancellationRequested || _assemblyOpening || _previewIndex < 0 || _previewIndex >= _segments.Count) return;
         var part = _segments[_previewIndex];
-        double global = _gapPosition is not null ? Math.Clamp(GapTime, 0, LeadingGapEnd) :
+        double global = _gapPosition is not null ? Math.Clamp(GapTime, _gapStart, _gapEnd) :
             _tailPosition is not null ? TailTime : VideoTimeline.Offset(_segments, _previewIndex) + source - part.Start.TotalSeconds;
         if (_wantAssemblyPlaying) _ = EnsurePlacedAudioAsync(global);
         bool pause = !_wantAssemblyPlaying || _assemblyScrubbing || _waitingAssemblyFrame || _reversePreviewRate > 0;
@@ -405,5 +404,5 @@ public partial class VideoAssemblyWindow
     }
 
     private void Shortcuts_Click(object sender, RoutedEventArgs e) => Dialogs.Say("Клавиши монтажа",
-        "Space / Enter — воспроизведение и пауза\nS — разрезать в позиции курсора\nU / G — отделить / связать видео и звук\nПосле U тяните видео по шкале — звук останется на месте, пустой участок станет чёрным\nZ — mute дорожки, X — solo дорожки\nDelete — удалить выбранное; U отделяет звук для удаления без видео\nCtrl+Z — отменить; Ctrl+Y / Ctrl+Shift+Z — повторить\nJ / K / L — назад / пауза / вперёд\nAlt+← / → — на один кадр; Home / End — в начало / конец\n+ / −, Ctrl+колесо — масштаб; Shift+колесо — прокрутка\nКолесо над звуковым фрагментом — его громкость\nCtrl+O — добавить видео; Ctrl+S — сохранить ролик");
+        "Space / Enter — воспроизведение и пауза\nS — разрезать в позиции курсора\nТянуть клип — свободный сдвиг и магнит к краям (Shift — без магнита)\nU / G — отделить / связать видео и звук\nПосле U тяните видео или звук независимо — пустой участок станет чёрным\nZ — mute дорожки, X — solo дорожки\nDelete — удалить выбранное; U отделяет звук для удаления без видео\nCtrl+Z — отменить; Ctrl+Y / Ctrl+Shift+Z — повторить\nJ / K / L — назад / пауза / вперёд\nAlt+← / → — на один кадр; Home / End — в начало / конец\n+ / −, Ctrl+колесо — масштаб; Shift+колесо — прокрутка\nКолесо над звуковым фрагментом — его громкость\nCtrl+O — добавить видео; Ctrl+S — сохранить ролик");
 }

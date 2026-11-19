@@ -31,7 +31,6 @@ public partial class ClipEditorWindow
         { Owner = owner, _initialSegment = segment, _selectForAssembly = true, _externalVideo = true, _audioSelection = segment.AudioTrack };
         window.ExportButton.Content = "Готово — вернуть в сборку";
         window.AssemblyButton.Visibility = Visibility.Collapsed;
-        window.EditorFormatsButton.Visibility = Visibility.Collapsed;
         window.ShowDialog();
         return window._pickedSegments;
     }
@@ -151,12 +150,5 @@ public partial class ClipEditorWindow
         if (picker.ShowDialog(this) != true) return;
         await ExportAsync((_, _, progress, ct) => VideoAssembly.RenderAsync(segments, picker.FileName, _ffmpeg,
             progress: progress, ct: ct), fast: false);
-    }
-
-    private void EditorFormats_Click(object sender, RoutedEventArgs e)
-    {
-        _ffmpeg = VideoAssemblyWindow.SelectFfmpeg(this) ?? _ffmpeg;
-        if (_ffmpeg is not null && _mixGenerationTask is { IsFaulted: true } && !_mixAttached)
-        { _mixGenerationTask = null; _mixPreparation = PrepareMixAsync(); }
     }
 }

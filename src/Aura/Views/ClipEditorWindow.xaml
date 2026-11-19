@@ -253,8 +253,6 @@
                                    TextTrimming="CharacterEllipsis" TextWrapping="Wrap" MaxHeight="54"/>
                         <TextBlock x:Name="SizeEstimateText" Style="{StaticResource AsideNote}" Margin="0,2,0,0"
                                    Foreground="{DynamicResource Tx2Brush}"/>
-                        <Button x:Name="EditorFormatsButton" Content="Дополнительные форматы…" Style="{StaticResource BtnPlain}"
-                                HorizontalAlignment="Left" Click="EditorFormats_Click" Height="28" Margin="-8,4,0,0"/>
                         <ProgressBar x:Name="ExportProgress" Height="4" Margin="0,10,0,0" Minimum="0" Maximum="1" Visibility="Collapsed"/>
                         <Button x:Name="ExportButton" Content="Сохранить фрагмент" Height="40" Margin="0,8,0,0"
                                 HorizontalAlignment="Stretch" Style="{StaticResource BtnPri}" c:Deco.Icon="{DynamicResource Ico.Scissors}"

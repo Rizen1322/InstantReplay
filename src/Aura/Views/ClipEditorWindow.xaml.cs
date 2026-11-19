@@ -74,8 +74,10 @@ public partial class ClipEditorWindow : Window
     private double _startSeconds;
     private double _endSeconds;
     private bool _pauseOnFirstFrame = true;
+    private volatile bool _suppressAudioUntilPlay = true;
     private bool _isMuted;
     private bool _disposed;
+    private bool _audioConfigured;
     private bool _scrubbing;
     private string? _savedPath;
     private long _fileBytes;
@@ -208,7 +210,7 @@ public partial class ClipEditorWindow : Window
                 var player = new VlcMediaPlayer(engine) { EnableHardwareDecoding = !_preferSoftwareDecoding };
                 // Keep this window's mute/volume independent of the montage's audio players.
                 if (!player.SetAudioOutput("directsound")) { player.Dispose(); engine.Dispose(); throw new InvalidOperationException("Не удалось открыть независимый вывод звука."); }
-                var media = new VlcMedia(engine, new Uri(_item.FullPath));
+                var media = CreateMedia(engine, startPaused: true);
                 return (engine, player, media);
             });
 
@@ -226,6 +228,8 @@ public partial class ClipEditorWindow : Window
             _player.EndReached += Player_EndReached;
             Preview.MediaPlayer = _player;
 
+            _suppressAudioUntilPlay = true;
+            ApplyMuteState();
             if (!_player.Play(_media)) throw new InvalidOperationException("LibVLC не принял файл");
             _timer.Start();
             Log.Info("Editor", "LibVLC запущен, жду первый кадр");
@@ -243,11 +247,37 @@ public partial class ClipEditorWindow : Window
     private void Player_EncounteredError(object? sender, EventArgs e) =>
         Dispatcher.BeginInvoke(() => ShowPreviewError("LibVLC не смог декодировать этот файл."));
 
+    private VlcMedia CreateMedia(LibVLC engine, bool startPaused, double? startSeconds = null, bool attachMix = false)
+    {
+        var media = new VlcMedia(engine, new Uri(_item.FullPath));
+        if (attachMix && _mixedAudioPath is not null && File.Exists(_mixedAudioPath) &&
+            !media.AddSlave(MediaSlaveType.Audio, 4, new Uri(_mixedAudioPath).AbsoluteUri))
+        {
+            media.Dispose();
+            throw new InvalidOperationException("Не удалось подключить сведённую дорожку.");
+        }
+        if (startPaused) media.AddOption(":start-paused");
+        if (startSeconds is > 0.05)
+            media.AddOption($":start-time={startSeconds.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}");
+        return media;
+    }
+
+    private void ReadVideoFps()
+    {
+        if (_media?.Tracks is not { } mediaTracks) return;
+        foreach (var t in mediaTracks)
+        {
+            if (t.TrackType == TrackType.Video && t.Data.Video.FrameRateDen > 0 && t.Data.Video.FrameRateNum > 0)
+            {
+                _fps = Math.Clamp((double)t.Data.Video.FrameRateNum / t.Data.Video.FrameRateDen, 1, 240);
+                break;
+            }
+        }
+    }
+
     private void Player_Playing(object? sender, EventArgs e) => Dispatcher.BeginInvoke(() =>
     {
         PreviewLoading.Visibility = Visibility.Collapsed;
-        // Громкость, заданная до начала воспроизведения, LibVLC может не применить
-        ApplyMuteState();
         if (_seekWhenPlaying is { } restartAt && _player is not null)
         {
             _seekWhenPlaying = null;
@@ -259,24 +289,26 @@ public partial class ClipEditorWindow : Window
             // состояние. Перемотка на паузе у подключённой к файлу дорожки безопасна.
             _reopenRestore = null;
             if (_player is null) return;
-            _player.Time = restore.TimeMs;
-            if (!restore.Playing) _player.SetPause(true);
-            else SetPlayIcon(playing: true);
+            if (restore.Playing)
+            {
+                _suppressAudioUntilPlay = false;
+                ApplyMuteState();
+                if (Math.Abs(_player.Time - restore.TimeMs) > 80) _player.Time = restore.TimeMs;
+                SetPlayIcon(playing: true);
+            }
+            else
+            {
+                _suppressAudioUntilPlay = true;
+                ApplyMuteState();
+                if (Math.Abs(_player.Time - restore.TimeMs) > 80) _player.Time = restore.TimeMs;
+                _player.SetPause(true);
+                SetPlayIcon(playing: false);
+            }
             _ = FindMixTrackAsync();
             return;
         }
         ConfigureAudioChoices();
-        if (_media?.Tracks is { } mediaTracks)
-        {
-            foreach (var t in mediaTracks)
-            {
-                if (t.TrackType == TrackType.Video && t.Data.Video.FrameRateDen > 0 && t.Data.Video.FrameRateNum > 0)
-                {
-                    _fps = Math.Clamp((double)t.Data.Video.FrameRateNum / t.Data.Video.FrameRateDen, 1, 240);
-                    break;
-                }
-            }
-        }
+        ReadVideoFps();
         if (_pauseOnFirstFrame)
         {
             _pauseOnFirstFrame = false;
@@ -285,9 +317,14 @@ public partial class ClipEditorWindow : Window
             // перемотка сразу за ней иногда терялась: плеер оставался на нуле.
             _seekAfterFirstPause = _pendingSeek;
             _pendingSeek = null;
+            _suppressAudioUntilPlay = true;
+            ApplyMuteState();
             _player?.SetPause(true);
+            SetPlayIcon(playing: false);
             return;
         }
+        _suppressAudioUntilPlay = false;
+        ApplyMuteState();
         SetPlayIcon(playing: true);
     });
 
@@ -296,6 +333,25 @@ public partial class ClipEditorWindow : Window
     private void Player_Paused(object? sender, EventArgs e) =>
         Dispatcher.BeginInvoke(() =>
         {
+            PreviewLoading.Visibility = Visibility.Collapsed;
+            if (_reopenRestore is { Playing: false } restore)
+            {
+                _reopenRestore = null;
+                if (_player is not null && Math.Abs(_player.Time - restore.TimeMs) > 80)
+                    _player.Time = restore.TimeMs;
+                _ = FindMixTrackAsync();
+            }
+            if (!_audioConfigured)
+            {
+                ConfigureAudioChoices();
+                ReadVideoFps();
+            }
+            if (_pauseOnFirstFrame)
+            {
+                _pauseOnFirstFrame = false;
+                _seekAfterFirstPause ??= _pendingSeek;
+                _pendingSeek = null;
+            }
             SetPlayIcon(playing: false);
             if (_seekAfterFirstPause is { } early)
             {
@@ -326,16 +382,22 @@ public partial class ClipEditorWindow : Window
     /// <summary>Перезапустить закончившийся файл с позиции <paramref name="seconds"/>.</summary>
     private void RestartAfterEnd(double seconds, bool play)
     {
-        if (_player is null) return;
+        if (_player is null || _libVlc is null) return;
         _ended = false;
-        _seekWhenPlaying = seconds;
+        _seekWhenPlaying = play ? seconds : null;
         _pauseOnFirstFrame = !play;
+        _suppressAudioUntilPlay = !play;
         _seekTarget = seconds;
         _seekTick = Environment.TickCount64;
         UpdatePlayhead(seconds);
         UpdatePreviewTime(seconds);
         _player.Stop();
-        _player.Play();
+        var previous = _media;
+        _media = CreateMedia(_libVlc, startPaused: !play, startSeconds: seconds > 0.05 ? seconds : null, attachMix: _mixAttached);
+        previous?.Dispose();
+        if (_mixAttached) _reopenRestore = ((long)Math.Round(seconds * 1000), play);
+        ApplyMuteState();
+        _player.Play(_media);
     }
 
     private void SetPlayIcon(bool playing)
@@ -459,6 +521,10 @@ public partial class ClipEditorWindow : Window
             ? _keptSegments[_keptSegments.Count - 1].End.TotalSeconds
             : PlaybackStopSeconds;
         if (position < _startSeconds || position >= Math.Min(PlaybackStopSeconds, cutEnd) - 0.02) Seek(_startSeconds);
+        if (_reopenRestore is { Playing: false } pending)
+            _reopenRestore = (pending.TimeMs, Playing: true);
+        _suppressAudioUntilPlay = false;
+        ApplyMuteState();
         _player.Play();
     }
 
@@ -543,11 +609,26 @@ public partial class ClipEditorWindow : Window
         player.EnableHardwareDecoding = false;
         _seekWhenPlaying = at;
         _pauseOnFirstFrame = false;
-        var media = _media;
+        _suppressAudioUntilPlay = false;
+        ApplyMuteState();
+        var oldMedia = _media;
+        var media = _libVlc is not null
+            ? CreateMedia(_libVlc, startPaused: false, startSeconds: at > 0.05 ? at : null, attachMix: _mixAttached)
+            : _media;
+        if (_libVlc is not null)
+        {
+            _media = media;
+            if (_mixAttached) _reopenRestore = ((long)Math.Round(at * 1000), true);
+        }
         // Остановка ждёт потоки LibVLC: не на потоке окна (см. DisposePlayer)
         _ = Task.Run(() =>
         {
-            try { player.Stop(); player.Play(media); }
+            try
+            {
+                player.Stop();
+                if (!ReferenceEquals(oldMedia, media)) oldMedia?.Dispose();
+                if (media is not null) player.Play(media);
+            }
             catch (Exception ex) { Log.Warn("Editor", $"Не переоткрылся: {ex.Message}"); }
         });
     }
@@ -695,7 +776,8 @@ public partial class ClipEditorWindow : Window
 
     private void ConfigureAudioChoices()
     {
-        if (_player is null || _audioTrackIds.Length > 0) return;
+        if (_player is null || _audioConfigured) return;
+        _audioConfigured = true;
         var descriptions = _player.AudioTrackDescription?.Where(track => track.Id >= 0).ToArray() ?? [];
         if (descriptions.Length == 0)
         {
@@ -822,20 +904,30 @@ public partial class ClipEditorWindow : Window
             _mixedAudioPath is null || !File.Exists(_mixedAudioPath)) return;
 
         _mixAttached = true;
-        var media = new VlcMedia(_libVlc, new Uri(_item.FullPath));
-        if (!media.AddSlave(MediaSlaveType.Audio, 4, new Uri(_mixedAudioPath).AbsoluteUri))
-        {
-            media.Dispose();
-            throw new InvalidOperationException("Не удалось подключить сведённую дорожку.");
-        }
-        _reopenRestore = ((long)Math.Round(CurrentSeconds * 1000), _player.IsPlaying);
+        bool wasPlaying = _player.IsPlaying;
+        double restoreSeconds = LogicalSeconds;
+        var media = CreateMedia(
+            _libVlc,
+            startPaused: !wasPlaying,
+            startSeconds: !wasPlaying && restoreSeconds > 0.05 ? restoreSeconds : null,
+            attachMix: true);
+        _reopenRestore = ((long)Math.Round(restoreSeconds * 1000), wasPlaying);
+        if (!wasPlaying) _suppressAudioUntilPlay = true;
 
         // Смена файла синхронно останавливает текущий — в потоке окна это та самая
         // взаимная блокировка с видеовыводом, поэтому уходим в фон.
         var player = _player;
         var previous = _media;
         _media = media;
-        if (!await Task.Run(() => player.Play(media)))
+        if (!await Task.Run(() =>
+        {
+            if (!wasPlaying)
+            {
+                player.Mute = true;
+                player.Volume = 0;
+            }
+            return player.Play(media);
+        }))
             throw new InvalidOperationException("Не удалось переоткрыть предпросмотр с общим звуком.");
         previous?.Dispose();
         // Предел ожидания: если после переоткрытия плеер так и не начал играть
@@ -887,7 +979,12 @@ public partial class ClipEditorWindow : Window
     {
         // У LibVLC свойство Mute на части Windows-систем возвращает устаревшее
         // состояние. Громкость задаём явно и храним истину в окне редактора.
-        if (_player is not null) _player.Volume = _isMuted ? 0 : _volume;
+        bool silent = _isMuted || _suppressAudioUntilPlay;
+        if (_player is not null)
+        {
+            _player.Mute = silent;
+            _player.Volume = silent ? 0 : _volume;
+        }
         MuteIcon.Data = (Geometry)FindResource(_isMuted ? "Ico.SpeakerOff" : "Ico.Speaker");
         MuteButton.ToolTip = _isMuted ? "Звук выключен (M)" : "Звук (M)";
     }
@@ -1180,7 +1277,6 @@ public partial class ClipEditorWindow : Window
         ExportButton.IsEnabled = !value;
         AudioSegment.IsEnabled = !value;
         RemoveRangeButton.IsEnabled = AssemblyButton.IsEnabled = !value;
-        EditorFormatsButton.IsEnabled = !value;
         UndoCutButton.IsEnabled = !value && _cutHistory.Count > 0;
         CancelExportButton.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         ExportProgress.Visibility = value ? Visibility.Visible : Visibility.Collapsed;

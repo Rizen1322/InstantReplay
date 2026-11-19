@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Controls;
 using Aura.Core.Logging;
 using Aura.Core.Tools;
 using Microsoft.Win32;
@@ -127,8 +128,18 @@ public partial class VideoAssemblyWindow : Window
         Segments.SelectedIndex = index + built.Count - 1;
     }
 
+    private void Timeline_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        bool canReorder = _export is null && !IndependentAudioSelected && Segments.SelectedIndex >= 0 && _segments.Count > 1;
+        var visibility = canReorder ? Visibility.Visible : Visibility.Collapsed;
+        MoveLeftMenuItem.Visibility = MoveRightMenuItem.Visibility = visibility;
+        MoveLeftMenuItem.IsEnabled = canReorder && Segments.SelectedIndex > 0;
+        MoveRightMenuItem.IsEnabled = canReorder && Segments.SelectedIndex < _segments.Count - 1;
+    }
+
     private void Move(int direction)
     {
+        if (IndependentAudioSelected) return;
         int index = Segments.SelectedIndex, target = index + direction;
         if (_export is null && index >= 0 && target >= 0 && target < _segments.Count)
         { MoveTimelineClip(index, target); }
@@ -173,26 +184,6 @@ public partial class VideoAssemblyWindow : Window
         if (_segments.Count == 0) { _previewIndex = -1; _assemblyPlayer?.Stop(); _ = StopPreviewAudioAsync(); TrimPanel.IsEnabled = false; }
     }
 
-    private void ChooseFfmpeg_Click(object sender, RoutedEventArgs e)
-    {
-        _ffmpeg = SelectFfmpeg(this) ?? _ffmpeg;
-        if (_ffmpeg is not null) Status.Text = "Дополнительные форматы подключены.";
-    }
-
-    internal static string? SelectFfmpeg(Window owner)
-    {
-        var picker = new OpenFileDialog { Title = "Выбрать ffmpeg.exe", Filter = "ffmpeg|ffmpeg.exe" };
-        if (picker.ShowDialog(owner) != true) return null;
-        try
-        {
-            string ffmpeg = ExecutableTrust.RequireProtected(picker.FileName);
-            Services.Settings.Update(s => s.FfmpegPath = ffmpeg, "tools");
-            return ffmpeg;
-        }
-        catch (Exception ex) { Dialogs.Say("Не удалось подключить ffmpeg", ex.Message); }
-        return null;
-    }
-
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
         if (_export is not null || _adding || _segments.Count == 0) return;
@@ -213,7 +204,7 @@ public partial class VideoAssemblyWindow : Window
         Timeline.IsEnabled = ProjectMedia.IsEnabled = false;
         AudioTrackHeaders.IsEnabled = false;
         AddVideos.IsEnabled = false;
-        EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = TrimPanel.IsEnabled = Save.IsEnabled = false;
+        EditingButtons.IsEnabled = Segments.IsEnabled = TrimPanel.IsEnabled = Save.IsEnabled = false;
         CancelExport.Visibility = Progress.Visibility = Visibility.Visible;
         Progress.Value = 0;
         Status.Text = "Собираю ролик…";
@@ -231,7 +222,7 @@ public partial class VideoAssemblyWindow : Window
             _export = null;
             Timeline.IsEnabled = ProjectMedia.IsEnabled = true;
             AudioTrackHeaders.IsEnabled = true;
-            EditingButtons.IsEnabled = ExportOptions.IsEnabled = Segments.IsEnabled = true;
+            EditingButtons.IsEnabled = Segments.IsEnabled = true;
             TrimPanel.IsEnabled = Segments.SelectedItem is VideoSegment;
             CancelExport.Visibility = Progress.Visibility = Visibility.Collapsed;
             UpdateSummary();

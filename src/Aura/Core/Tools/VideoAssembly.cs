@@ -529,14 +529,15 @@ public static partial class VideoAssembly
         {
             if (segments[i].Gap > TimeSpan.Zero)
             {
-                videoParts.Append($"color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(segments[i].Gap.TotalSeconds)},setsar=1[g{i}];[g{i}]");
+                graph.Append($"color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(segments[i].Gap.TotalSeconds)},format=yuv420p,setsar=1[g{i}];");
+                videoParts.Append($"[g{i}]");
                 pieces++;
             }
             videoParts.Append($"[v{i}]");
             pieces++;
         }
         if (duration > videoDuration + .001)
-            graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[vbase];color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(duration - videoDuration)}[tail];[vbase][tail]concat=n=2:v=1:a=0[v];");
+            graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[vbase];color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(duration - videoDuration)},format=yuv420p,setsar=1[tail];[vbase][tail]concat=n=2:v=1:a=0[v];");
         else graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[v];");
         for (int i = 0; i < audible.Length; i++)
         {

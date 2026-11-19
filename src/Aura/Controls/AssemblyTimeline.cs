@@ -12,14 +12,17 @@ public sealed class AssemblyTimeline : FrameworkElement
 {
     private IReadOnlyList<VideoSegment> _parts = [];
     private double _scale = 40, _position;
-    private int _selected = -1, _dragIndex = -1, _insertion;
+    private int _selected = -1, _dragIndex = -1;
     private Point _pressed;
     private VideoSegment? _trim;
     private IReadOnlyList<AssemblySound> _sounds = [];
     private AssemblySound? _audioGesture;
     private AudioEvent? _audioTrim;
-    private TimeSpan? _gapTrim;
-    private enum Gesture { None, Cursor, Move, Left, Right, AudioSelect, AudioMove, AudioLeft, AudioRight, VideoPlace }
+    private VideoTimeline.MovePlan? _dragPlan;
+    private IReadOnlyList<AssemblySound>? _dragPlanSounds;
+    private double? _snapLine;
+    private const double SnapPixels = 8;
+    private enum Gesture { None, Cursor, VideoMove, Left, Right, AudioSelect, AudioMove, AudioLeft, AudioRight }
     private Gesture _gesture;
     private bool _moved;
     public const double VideoTop = 36, AudioTop = 130, AudioLaneHeight = 70;
@@ -42,6 +45,7 @@ public sealed class AssemblyTimeline : FrameworkElement
     public event Action<double>? Scrub;
     public event Action<int, int>? Reorder;
     public event Action<int, TimeSpan>? PlaceClip;
+    public event Action<VideoSegment[], int>? ArrangeClips;
     public event Action<int, VideoSegment>? TrimClip;
     public event Action<bool>? InteractionEnded;
     public double VisibleLeft { get; set; }
@@ -64,20 +68,20 @@ public sealed class AssemblyTimeline : FrameworkElement
         _parts = parts;
         _sounds = AssemblyAudio.Sounds(parts, path => AudioTrackCount?.Invoke(path) ?? 0).Where(s => !s.Removed).ToArray();
         AudioTracks = Math.Max(parts.Count == 0 ? 0 : parts.Max(p => AudioTrackCount?.Invoke(p.Path) ?? 0), _sounds.Count == 0 ? 0 : _sounds.Max(s => s.Track + 1));
-        Height = Math.Max(230, LaneBottom + 30);
+        Height = Math.Max(230, LaneBottom + 18);
         Resize();
     }
     private void Resize()
     {
+        var parts = _dragPlan?.Parts ?? _parts;
+        var sounds = _dragPlanSounds ?? _sounds;
         double length = 0;
-        for (int i = 0; i < _parts.Count; i++)
-        {
-            var gap = i == _dragIndex && _gapTrim is TimeSpan dragged ? dragged : _parts[i].Gap;
-            length += gap.TotalSeconds + _parts[i].Duration.TotalSeconds;
-        }
-        if (_sounds.Count > 0) length = Math.Max(length, _sounds.Max(s => s.Finish.TotalSeconds));
+        for (int i = 0; i < parts.Count; i++)
+            length += parts[i].Gap.TotalSeconds + parts[i].Duration.TotalSeconds;
+        if (sounds.Count > 0) length = Math.Max(length, sounds.Max(s => s.Finish.TotalSeconds));
         if (_audioTrim is { Position: TimeSpan at }) length = Math.Max(length, (at + _audioTrim.End - _audioTrim.Start).TotalSeconds);
-        if (_trim is not null && _dragIndex >= 0 && _gesture == Gesture.Right) length += _trim.Duration.TotalSeconds - _parts[_dragIndex].Duration.TotalSeconds;
+        if (_trim is not null && _dragIndex >= 0 && _gesture == Gesture.Right && _dragIndex < parts.Count)
+            length += _trim.Duration.TotalSeconds - parts[_dragIndex].Duration.TotalSeconds;
         Width = Math.Max(VisibleWidth, length * _scale + 40);
         InvalidateVisual();
     }
@@ -101,7 +105,7 @@ public sealed class AssemblyTimeline : FrameworkElement
     private static readonly Pen WavePenEven = FrozenPen(Color.FromRgb(134, 214, 180), 1);
     private static readonly Pen WavePenOdd = FrozenPen(Color.FromRgb(184, 163, 239), 1);
     private static readonly Pen DetachedWavePen = FrozenPen(Color.FromRgb(154, 213, 192), 1);
-    private static readonly Pen DropPen = FrozenPen(Color.FromRgb(86, 190, 255), 3);
+    private static readonly Pen SnapPen = FrozenPen(Color.FromRgb(255, 209, 102), 1.5);
     private static readonly Pen CursorPen = FrozenPen(Colors.White, 1.5);
     private static readonly Typeface Font = new("Segoe UI");
 
@@ -142,32 +146,35 @@ public sealed class AssemblyTimeline : FrameworkElement
         }
         for (int track = 0; track <= AudioTracks; track++)
             dc.DrawLine(GridPen, new Point(0, AudioTop + track * AudioLaneHeight - 4), new Point(ActualWidth, AudioTop + track * AudioLaneHeight - 4));
+        var parts = _dragPlan?.Parts ?? _parts;
+        var sounds = _dragPlanSounds ?? _sounds;
+        int selectedIndex = _dragPlan?.TargetIndex ?? _selected;
         double gapOffset = 0;
-        for (int i = 0; i < _parts.Count; i++)
+        for (int i = 0; i < parts.Count; i++)
         {
-            var gap = _parts[i].Gap;
+            var gap = parts[i].Gap;
             gapOffset += gap.TotalSeconds;
-            if (gap <= TimeSpan.Zero) { gapOffset += _parts[i].Duration.TotalSeconds; continue; }
+            if (gap <= TimeSpan.Zero) { gapOffset += parts[i].Duration.TotalSeconds; continue; }
             double gapLeft = (gapOffset - gap.TotalSeconds) * _scale;
             double gapWidth = gap.TotalSeconds * _scale;
-            gapOffset += _parts[i].Duration.TotalSeconds;
+            gapOffset += parts[i].Duration.TotalSeconds;
             if (gapLeft + gapWidth < VisibleLeft || gapLeft > endX) continue;
             dc.DrawRectangle(null, GapPen, new Rect(gapLeft + 1, VideoTop, Math.Max(1, gapWidth - 2), 84));
             Text(dc, "Пусто", gapLeft + 8, VideoTop + 34, Math.Max(1, gapWidth - 16), Muted, 10);
         }
         int lastDensePixel = int.MinValue;
         double offset = 0;
-        for (int i = 0; i < _parts.Count; i++)
+        for (int i = 0; i < parts.Count; i++)
         {
-            var part = i == _dragIndex && _trim is not null ? _trim : _parts[i];
-            double gap = (i == _dragIndex && _gapTrim is TimeSpan dragged ? dragged : _parts[i].Gap).TotalSeconds;
+            var part = i == _dragIndex && _trim is not null ? _trim : parts[i];
+            double gap = parts[i].Gap.TotalSeconds;
             offset += gap;
             double x = offset * _scale;
             double width = Math.Max(1, part.Duration.TotalSeconds * _scale);
             if (i == _dragIndex && _gesture == Gesture.Left && _trim is not null)
-                x += (part.Start - _parts[i].Start).TotalSeconds * _scale;
+                x += (part.Start - parts[i].Start).TotalSeconds * _scale;
             offset += i == _dragIndex && _gesture == Gesture.Left && _trim is not null
-                ? _parts[i].Duration.TotalSeconds : part.Duration.TotalSeconds;
+                ? parts[i].Duration.TotalSeconds : part.Duration.TotalSeconds;
             if (x + width < VisibleLeft || x > endX) continue;
             if (width < 2)
             {
@@ -179,10 +186,9 @@ public sealed class AssemblyTimeline : FrameworkElement
                     dc.DrawRectangle(Audio, null, new Rect(x, AudioTop + track * AudioLaneHeight, 1, AudioLaneHeight - 9));
                 continue;
             }
-            bool selected = i == _selected;
+            bool selected = i == selectedIndex;
             bool selectedVideo = selected && (SelectedAudioTrack < 0 || part.AudioLinked);
             var border = selectedVideo ? SelectedBorder : ClipBorder;
-            dc.PushOpacity(_gesture == Gesture.Move && _moved && i == _dragIndex ? .4 : 1);
             dc.DrawRoundedRectangle(Video, border, new Rect(x + 1, VideoTop, Math.Max(1, width - 2), 84), 3, 3);
             dc.PushClip(new RectangleGeometry(new Rect(x + 3, VideoTop + 2, Math.Max(1, width - 6), 80)));
             if (Thumbnail?.Invoke(part.Path) is { } image)
@@ -236,16 +242,15 @@ public sealed class AssemblyTimeline : FrameworkElement
                 dc.DrawRectangle(Highlight, null, new Rect(x + 1, VideoTop + 1, 4, 82));
                 dc.DrawRectangle(Highlight, null, new Rect(x + width - 5, VideoTop + 1, 4, 82));
             }
-            dc.Pop();
         }
-        foreach (var sound in _sounds.Where(s => s.Detached))
+        foreach (var sound in sounds.Where(s => s.Detached))
         {
-            var audio = _audioGesture == sound && _audioTrim is not null ? _audioTrim : _parts[sound.Owner].AudioEvents[sound.Event];
+            var audio = _audioGesture == sound && _audioTrim is not null ? _audioTrim : parts[sound.Owner].AudioEvents[sound.Event];
             double ax = audio.Position!.Value.TotalSeconds * _scale, aw = Math.Max(1, (audio.End - audio.Start).TotalSeconds * _scale);
             if (ax + aw < VisibleLeft || ax > endX) continue;
             var state = TrackState?.Invoke(sound.Track) ?? new AssemblyAudioTrack();
             double gain = audio.Gain * state.Gain(AnySolo), row = AudioTop + sound.Track * AudioLaneHeight;
-            bool active = sound.Owner == _selected && sound.Event == SelectedAudioEvent;
+            bool active = sound.Owner == selectedIndex && sound.Event == SelectedAudioEvent;
             dc.PushOpacity(gain <= 0 ? .4 : 1);
             dc.DrawRoundedRectangle(sound.Track % 2 == 0 ? Audio : AlternateAudio, active ? SelectedBorder : DetachedAudioBorder, new Rect(ax + 1, row, Math.Max(1, aw - 2), AudioLaneHeight - 9), 3, 3);
             dc.PushClip(new RectangleGeometry(new Rect(ax + 3, row + 2, Math.Max(1, aw - 6), AudioLaneHeight - 13)));
@@ -269,18 +274,14 @@ public sealed class AssemblyTimeline : FrameworkElement
             Text(dc, label, ax + 8, row + 5, aw - 16, size: 10);
             dc.Pop(); dc.Pop();
         }
-        if (_gesture == Gesture.Move && _moved)
-        {
-            double drop = VideoTimeline.Offset(_parts, _insertion) * _scale;
-            dc.DrawLine(DropPen, new Point(drop, 27), new Point(drop, LaneBottom));
-            Text(dc, "Вставить сюда", drop + 7, LaneBottom + 3, 130, Highlight);
-        }
+        if (_snapLine is double snapSec)
+            dc.DrawLine(SnapPen, new Point(snapSec * _scale, 24), new Point(snapSec * _scale, LaneBottom + 4));
         double cursor = _position * _scale;
         dc.DrawLine(CursorPen, new Point(cursor, 24), new Point(cursor, LaneBottom + 5));
         var marker = new StreamGeometry();
         using (var g = marker.Open()) { g.BeginFigure(new Point(cursor - 6, 22), true, true); g.LineTo(new Point(cursor + 6, 22), true, false); g.LineTo(new Point(cursor, 30), true, false); }
         dc.DrawGeometry(Brushes.White, null, marker);
-        if (_parts.Count == 0) Text(dc, "Перетащите сюда видео из медиатеки или Проводника", 24, 75, Math.Max(200, VisibleWidth - 48), Muted, 14);
+        if (parts.Count == 0) Text(dc, "Перетащите сюда видео из медиатеки или Проводника", 24, 75, Math.Max(200, VisibleWidth - 48), Muted, 14);
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -293,7 +294,7 @@ public sealed class AssemblyTimeline : FrameworkElement
     }
     internal void BeginGesture(Point point)
     {
-        _audioGesture = null; _audioTrim = null; _gapTrim = null;
+        _audioGesture = null; _audioTrim = null; _dragPlan = null; _dragPlanSounds = null; _snapLine = null;
         _pressed = point; _moved = false; _trim = null;
         double total = Math.Max(_parts.Sum(p => p.Gap.TotalSeconds + p.Duration.TotalSeconds), _sounds.Select(s => s.Finish.TotalSeconds).DefaultIfEmpty(0).Max());
         if (HitAudio(point) is { Detached: true } sound)
@@ -334,7 +335,6 @@ public sealed class AssemblyTimeline : FrameworkElement
         int audioTrack = (int)Math.Floor((point.Y - AudioTop) / AudioLaneHeight);
         SelectedAudioTrack = point.Y >= AudioTop && audioTrack < (AudioTrackCount?.Invoke(_parts[_dragIndex].Path) ?? 0) ? audioTrack : -1;
         double clickedTime = Math.Clamp(point.X / _scale, 0, total);
-        Position = clickedTime;
         SelectedAudioSeconds = Math.Clamp(_parts[_dragIndex].Start.TotalSeconds + clickedTime - VideoTimeline.Offset(_parts, _dragIndex),
             _parts[_dragIndex].Start.TotalSeconds, _parts[_dragIndex].End.TotalSeconds);
         SelectClip?.Invoke(_dragIndex);
@@ -343,13 +343,13 @@ public sealed class AssemblyTimeline : FrameworkElement
         double right = left + _parts[_dragIndex].Duration.TotalSeconds * _scale;
         double width = right - left;
         double grip = width < 18 ? 0 : Math.Min(6, width / 4);
-        _gesture = point.X - left <= grip ? Gesture.Left : right - point.X <= grip ? Gesture.Right : Gesture.Move;
-        if (SelectedAudioTrack >= 0) _gesture = Gesture.AudioSelect;
-        else if (_gesture == Gesture.Move && _parts.Count == 1 && _parts[_dragIndex] is { AudioLinked: false, AudioDetached: true })
+        if (SelectedAudioTrack >= 0)
         {
-            _gesture = Gesture.VideoPlace;
-            _gapTrim = _parts[_dragIndex].Gap;
+            Position = clickedTime;
+            _gesture = Gesture.AudioSelect;
         }
+        else
+            _gesture = point.X - left <= grip ? Gesture.Left : right - point.X <= grip ? Gesture.Right : Gesture.VideoMove;
         InvalidateVisual();
     }
     protected override void OnMouseMove(MouseEventArgs e)
@@ -362,7 +362,7 @@ public sealed class AssemblyTimeline : FrameworkElement
             double audioLeft = sound.Position.TotalSeconds * _scale, audioRight = sound.Finish.TotalSeconds * _scale;
             double audioWidth = audioRight - audioLeft;
             double audioGrip = audioWidth < 18 ? 0 : Math.Min(6, audioWidth / 4);
-            Cursor = point.X - audioLeft < audioGrip || audioRight - point.X < audioGrip ? Cursors.SizeWE : Cursors.Hand;
+            Cursor = point.X - audioLeft < audioGrip || audioRight - point.X < audioGrip ? Cursors.SizeWE : Cursors.SizeAll;
             return;
         }
         int index = VideoTimeline.ClipAt(_parts, point.X / _scale);
@@ -370,27 +370,91 @@ public sealed class AssemblyTimeline : FrameworkElement
         double left = VideoTimeline.Offset(_parts, index) * _scale, right = left + _parts[index].Duration.TotalSeconds * _scale;
         double width = right - left;
         double grip = width < 18 ? 0 : Math.Min(6, width / 4);
-        Cursor = point.Y < AudioTop && grip > 0 && point.X < right && (point.X - left < grip || right - point.X < grip) ? Cursors.SizeWE :
-            _parts.Count == 1 && !_parts[index].AudioLinked && _parts[index].AudioDetached ? Cursors.SizeAll : Cursors.Hand;
+        Cursor = point.Y < AudioTop
+            ? grip > 0 && point.X < right && (point.X - left < grip || right - point.X < grip) ? Cursors.SizeWE : Cursors.SizeAll
+            : Cursors.Hand;
+    }
+    private List<double> CollectSnapTargets(int excludeClip = -1, AssemblySound? excludeSound = null, bool excludeRelinkedOfClip = false)
+    {
+        var targets = new List<double>(2 + _parts.Count * 2 + _sounds.Count * 2) { 0, _position };
+        double offset = 0;
+        for (int i = 0; i < _parts.Count; i++)
+        {
+            offset += _parts[i].Gap.TotalSeconds;
+            double end = offset + _parts[i].Duration.TotalSeconds;
+            if (i != excludeClip)
+            {
+                targets.Add(offset);
+                targets.Add(end);
+            }
+            offset = end;
+        }
+        for (int i = 0; i < _sounds.Count; i++)
+        {
+            var s = _sounds[i];
+            if (!s.Detached || s == excludeSound) continue;
+            if (excludeRelinkedOfClip && excludeClip >= 0 && s.Owner == excludeClip && _parts[excludeClip].AudioLinked &&
+                string.Equals(s.Path, _parts[excludeClip].Path, StringComparison.OrdinalIgnoreCase)) continue;
+            targets.Add(s.Position.TotalSeconds);
+            targets.Add(s.Finish.TotalSeconds);
+        }
+        return targets;
     }
     internal void UpdateGesture(Point point)
     {
         _moved |= Math.Abs(point.X - _pressed.X) >= 5;
+        double snapTol = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0 : SnapPixels / _scale;
         if (_audioGesture is { } sound && _gesture is Gesture.AudioMove or Gesture.AudioLeft or Gesture.AudioRight)
         {
             var original = _parts[sound.Owner].AudioEvents[sound.Event];
             double delta = (point.X - _pressed.X) / _scale;
             var info = SourceInfo?.Invoke(sound.Path) ?? (sound.End.TotalSeconds, 30.0);
-            if (SnapToFrames) delta = Math.Round(delta * info.Item2) / info.Item2;
-            if (_gesture == Gesture.AudioMove) _audioTrim = original with { Position = TimeSpan.FromSeconds(Math.Max(0, sound.Position.TotalSeconds + delta)) };
+            var targets = CollectSnapTargets(excludeSound: sound);
+            if (_gesture == Gesture.AudioMove)
+            {
+                double rawPos = Math.Max(0, sound.Position.TotalSeconds + delta);
+                var (snappedPos, guide) = VideoTimeline.SnapRange(rawPos, sound.Duration.TotalSeconds, targets, snapTol, minStart: 0);
+                double newPos;
+                if (guide is not null) { _snapLine = guide; newPos = snappedPos; }
+                else
+                {
+                    _snapLine = null;
+                    double snappedDelta = SnapToFrames ? Math.Round(delta * info.Item2) / info.Item2 : delta;
+                    newPos = Math.Max(0, sound.Position.TotalSeconds + snappedDelta);
+                }
+                _audioTrim = original with { Position = TimeSpan.FromSeconds(newPos) };
+            }
             else if (_gesture == Gesture.AudioLeft)
             {
                 double minDelta = Math.Max(-sound.Position.TotalSeconds, -sound.Start.TotalSeconds);
                 double maxDelta = Math.Max(minDelta, sound.Duration.TotalSeconds - .05);
-                delta = Math.Clamp(delta, minDelta, maxDelta);
+                double rawEdge = sound.Position.TotalSeconds + delta;
+                var (snappedEdge, guide) = VideoTimeline.SnapEdge(rawEdge, targets, snapTol, sound.Position.TotalSeconds + minDelta, sound.Position.TotalSeconds + maxDelta);
+                if (guide is not null) { _snapLine = guide; delta = snappedEdge - sound.Position.TotalSeconds; }
+                else
+                {
+                    _snapLine = null;
+                    double snappedDelta = SnapToFrames ? Math.Round(delta * info.Item2) / info.Item2 : delta;
+                    delta = Math.Clamp(snappedDelta, minDelta, maxDelta);
+                }
                 _audioTrim = original with { Start = original.Start + TimeSpan.FromSeconds(delta), Position = original.Position + TimeSpan.FromSeconds(delta) };
             }
-            else _audioTrim = original with { End = TimeSpan.FromSeconds(Math.Clamp(original.End.TotalSeconds + delta, original.Start.TotalSeconds + .05, info.Item1)) };
+            else
+            {
+                double minRight = sound.Position.TotalSeconds + .05;
+                double maxRight = Math.Max(minRight, sound.Position.TotalSeconds + (info.Item1 - original.Start.TotalSeconds));
+                double rawRight = sound.Position.TotalSeconds + sound.Duration.TotalSeconds + delta;
+                var (snappedRight, guide) = VideoTimeline.SnapEdge(rawRight, targets, snapTol, minRight, maxRight);
+                double newEnd;
+                if (guide is not null) { _snapLine = guide; newEnd = original.Start.TotalSeconds + (snappedRight - sound.Position.TotalSeconds); }
+                else
+                {
+                    _snapLine = null;
+                    double snappedDelta = SnapToFrames ? Math.Round(delta * info.Item2) / info.Item2 : delta;
+                    newEnd = Math.Clamp(original.End.TotalSeconds + snappedDelta, original.Start.TotalSeconds + .05, info.Item1);
+                }
+                _audioTrim = original with { End = TimeSpan.FromSeconds(newEnd) };
+            }
             Resize();
         }
         else if (_gesture == Gesture.Cursor || _gesture == Gesture.AudioSelect && _moved)
@@ -401,22 +465,44 @@ public sealed class AssemblyTimeline : FrameworkElement
                     _parts[_dragIndex].Start.TotalSeconds, _parts[_dragIndex].End.TotalSeconds);
             Scrub?.Invoke(Position);
         }
-        else if (_gesture == Gesture.VideoPlace && _dragIndex >= 0)
+        else if (_gesture == Gesture.VideoMove && _dragIndex >= 0 && _moved)
         {
             var original = _parts[_dragIndex];
             var info = SourceInfo?.Invoke(original.Path) ?? (original.End.TotalSeconds, 30.0);
-            double delta = (point.X - _pressed.X) / _scale;
-            if (SnapToFrames) delta = Math.Round(delta * info.Item2) / info.Item2;
-            _gapTrim = TimeSpan.FromSeconds(Math.Max(0, original.Gap.TotalSeconds + delta));
+            var targets = CollectSnapTargets(excludeClip: _dragIndex, excludeRelinkedOfClip: true);
+            _dragPlan = VideoTimeline.PlanMove(_parts, _dragIndex, (point.X - _pressed.X) / _scale, Math.Max(0, point.X / _scale),
+                info.Item2, SnapToFrames, targets, snapTol);
+            _snapLine = _dragPlan.SnapGuide;
+            _dragPlanSounds = AssemblyAudio.Sounds(_dragPlan.Parts, path => AudioTrackCount?.Invoke(path) ?? 0).Where(s => !s.Removed).ToArray();
             Resize();
         }
-        else if (_gesture == Gesture.Move)
-            _insertion = VideoTimeline.Insertion(_parts, point.X / _scale);
         else if (_dragIndex >= 0 && _gesture is Gesture.Left or Gesture.Right && _moved)
         {
             var original = _parts[_dragIndex];
             var info = SourceInfo?.Invoke(original.Path) ?? (original.End.TotalSeconds, 30.0);
-            _trim = VideoTimeline.Trim(original, _gesture == Gesture.Left, (point.X - _pressed.X) / _scale, info.Item1, info.Item2, SnapToFrames);
+            double fps = double.IsFinite(info.Item2) && info.Item2 > 0 ? info.Item2 : 30.0;
+            double minimum = Math.Max(0.05, 1 / fps);
+            double clipOffset = VideoTimeline.Offset(_parts, _dragIndex);
+            double rawDelta = (point.X - _pressed.X) / _scale;
+            var targets = CollectSnapTargets(excludeClip: _dragIndex);
+            if (_gesture == Gesture.Left)
+            {
+                double minVisual = clipOffset - original.Start.TotalSeconds;
+                double maxVisual = clipOffset + (original.End.TotalSeconds - original.Start.TotalSeconds - minimum);
+                var (snappedEdge, guide) = VideoTimeline.SnapEdge(clipOffset + rawDelta, targets, snapTol, minVisual, maxVisual);
+                if (guide is not null) { _snapLine = guide; _trim = VideoTimeline.Trim(original, true, snappedEdge - clipOffset, info.Item1, fps, snap: false); }
+                else { _snapLine = null; _trim = VideoTimeline.Trim(original, true, rawDelta, info.Item1, fps, SnapToFrames); }
+            }
+            else
+            {
+                double maxRightSource = Math.Max(original.Start.TotalSeconds + minimum, Math.Max(info.Item1, original.End.TotalSeconds));
+                double minVisual = clipOffset + minimum;
+                double maxVisual = clipOffset + (maxRightSource - original.Start.TotalSeconds);
+                double origRight = clipOffset + original.Duration.TotalSeconds;
+                var (snappedEdge, guide) = VideoTimeline.SnapEdge(origRight + rawDelta, targets, snapTol, minVisual, maxVisual);
+                if (guide is not null) { _snapLine = guide; _trim = VideoTimeline.Trim(original, false, snappedEdge - origRight, info.Item1, fps, snap: false); }
+                else { _snapLine = null; _trim = VideoTimeline.Trim(original, false, rawDelta, info.Item1, fps, SnapToFrames); }
+            }
             Resize();
             Scrub?.Invoke(Math.Max(0, point.X / _scale));
         }
@@ -428,23 +514,30 @@ public sealed class AssemblyTimeline : FrameworkElement
     {
         if (_gesture == Gesture.None) return;
         UpdateGesture(point);
-        var gesture = _gesture; var trim = _trim; int index = _dragIndex, insertion = _insertion;
-        var audio = _audioTrim; var sound = _audioGesture; var gap = _gapTrim;
+        var gesture = _gesture; var trim = _trim; int index = _dragIndex;
+        var audio = _audioTrim; var sound = _audioGesture; var plan = _dragPlan;
         _gesture = Gesture.None; _trim = null; _dragIndex = -1;
-        _audioTrim = null; _audioGesture = null; _gapTrim = null;
+        _audioTrim = null; _audioGesture = null; _dragPlan = null; _dragPlanSounds = null; _snapLine = null;
         if (sound is not null)
         {
             if (_moved && audio is not null && audio != _parts[sound.Owner].AudioEvents[sound.Event]) EditAudio?.Invoke(sound.Owner, sound.Event, audio);
             else if (!_moved) Seek?.Invoke(Math.Max(0, point.X / _scale));
         }
-        else if (gesture == Gesture.Cursor || gesture == Gesture.AudioSelect || (gesture is Gesture.Move or Gesture.VideoPlace or Gesture.Left or Gesture.Right) && !_moved) Seek?.Invoke(Math.Max(0, point.X / _scale));
-        else if (gesture == Gesture.VideoPlace && _moved && gap is TimeSpan placed && index >= 0 && placed != _parts[index].Gap)
-            PlaceClip?.Invoke(index, placed);
-        else if (gesture == Gesture.Move && _moved)
+        else if (gesture == Gesture.Cursor || gesture == Gesture.AudioSelect || (gesture is Gesture.VideoMove or Gesture.Left or Gesture.Right) && !_moved)
+            Seek?.Invoke(Math.Max(0, point.X / _scale));
+        else if (gesture == Gesture.VideoMove && _moved && plan is not null)
         {
-            int target = Math.Clamp(insertion > index ? insertion - 1 : insertion, 0, _parts.Count - 1);
-            if (target != index) Reorder?.Invoke(index, target);
-            else Seek?.Invoke(Math.Max(0, point.X / _scale));
+            if (_parts.Count == 1)
+            {
+                if (plan.Parts[0].Gap != _parts[0].Gap) PlaceClip?.Invoke(0, plan.Parts[0].Gap);
+            }
+            else if (ArrangeClips is not null)
+            {
+                bool changed = plan.Parts.Length != _parts.Count || Enumerable.Range(0, _parts.Count).Any(i => plan.Parts[i] != _parts[i]);
+                if (changed) ArrangeClips.Invoke(plan.Parts, plan.TargetIndex);
+            }
+            else if (plan.TargetIndex != index) Reorder?.Invoke(index, plan.TargetIndex);
+            else if (plan.Parts[index].Gap != _parts[index].Gap) PlaceClip?.Invoke(index, plan.Parts[index].Gap);
         }
         else if (_moved && gesture is Gesture.Left or Gesture.Right)
         {
@@ -465,7 +558,7 @@ public sealed class AssemblyTimeline : FrameworkElement
     {
         bool active = _gesture != Gesture.None;
         _gesture = Gesture.None; _trim = null; _dragIndex = -1;
-        _audioGesture = null; _audioTrim = null; _gapTrim = null;
+        _audioGesture = null; _audioTrim = null; _dragPlan = null; _dragPlanSounds = null; _snapLine = null;
         if (active) InteractionEnded?.Invoke(false);
         ReleaseMouseCapture(); Resize();
     }

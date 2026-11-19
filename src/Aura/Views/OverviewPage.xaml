@@ -169,13 +169,6 @@
                         </Grid>
                     </StackPanel>
 
-                    <!-- Совет в свободном месте панели: на высоком окне здесь пусто -->
-                    <Border Grid.Row="3" Margin="16,14,16,0" VerticalAlignment="Bottom" Padding="12,10,12,11"
-                            CornerRadius="10" Background="{DynamicResource WellBrush}" ClipToBounds="True">
-                        <TextBlock x:Name="TipText" FontSize="12" LineHeight="17" TextWrapping="Wrap"
-                                   Foreground="{DynamicResource Tx2Brush}" TextTrimming="CharacterEllipsis"/>
-                    </Border>
-
                     <StackPanel Grid.Row="4" Margin="16,12,16,16">
                         <Button x:Name="SaveButton" Style="{StaticResource BtnPri}" Height="40" Click="SaveReplay_Click"
                                 HorizontalAlignment="Stretch">

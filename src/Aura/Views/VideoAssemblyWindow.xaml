@@ -101,7 +101,7 @@
      <Button x:Name="RedoAssembly" Content="↷" Click="RedoAssembly_Click" ToolTip="Повторить · Ctrl+Y / Ctrl+Shift+Z" IsEnabled="False" Margin="0,0,10,0"/>
      <Button Content="✂" Click="SplitAssembly_Click" ToolTip="Разрезать выбранное в позиции курсора · S" Margin="0,0,6,0"/>
      <Button x:Name="LinkAudio" Content="Связаны" Click="LinkAudio_Click" ToolTip="U — отделить звук от видео · G — связать" Margin="0,0,10,0"/>
-     <CheckBox x:Name="SnapEdits" Style="{StaticResource MontageCheck}" Content="По кадрам" IsChecked="True" VerticalAlignment="Center" ToolTip="Привязка к кадрам · F8"/>
+     <CheckBox x:Name="SnapEdits" Style="{StaticResource MontageCheck}" Content="По кадрам" IsChecked="True" VerticalAlignment="Center" ToolTip="Привязывать обрезку, разрез и сдвиг к границам кадров видео · F8"/>
     </StackPanel>
    </DockPanel>
    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="False">
@@ -109,11 +109,11 @@
     <Grid.ColumnDefinitions><ColumnDefinition Width="184"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
     <StackPanel Background="#191E28">
      <Border Height="36" BorderBrush="#303744" BorderThickness="0,0,1,1" Padding="12,0"><TextBlock Text="ДОРОЖКИ" FontSize="10" Foreground="{DynamicResource Tx3Brush}" VerticalAlignment="Center"/></Border>
-     <Border Height="94" BorderBrush="#303744" BorderThickness="0,0,1,1" Padding="12,10"><StackPanel><TextBlock Text="V1   Видео" FontWeight="SemiBold"/><TextBlock Text="Края — подрезать" FontSize="10" Foreground="{DynamicResource Tx3Brush}" Margin="0,8,0,0"/></StackPanel></Border>
+     <Border Height="94" BorderBrush="#303744" BorderThickness="0,0,1,1" Padding="12,10"><StackPanel><TextBlock Text="V1   Видео" FontWeight="SemiBold"/><TextBlock Text="Тяните клип или края" FontSize="10" Foreground="{DynamicResource Tx3Brush}" Margin="0,8,0,0"/></StackPanel></Border>
      <StackPanel x:Name="AudioTrackHeaders"/>
     </StackPanel>
-    <ScrollViewer x:Name="TimelineScroll" Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" CanContentScroll="False" ScrollChanged="TimelineScroll_Changed" PreviewMouseWheel="TimelineScroll_Wheel">
-     <c:AssemblyTimeline x:Name="Timeline" AllowDrop="True" DragOver="Timeline_DragOver" Drop="Timeline_Drop">
+    <ScrollViewer x:Name="TimelineScroll" Grid.Column="1" HorizontalScrollBarVisibility="Visible" VerticalScrollBarVisibility="Disabled" CanContentScroll="False" ScrollChanged="TimelineScroll_Changed" PreviewMouseWheel="TimelineScroll_Wheel">
+     <c:AssemblyTimeline x:Name="Timeline" AllowDrop="True" DragOver="Timeline_DragOver" Drop="Timeline_Drop" ContextMenuOpening="Timeline_ContextMenuOpening">
       <c:AssemblyTimeline.ContextMenu><ContextMenu Style="{DynamicResource TrayMenu}">
         <ContextMenu.Resources>
          <Style TargetType="MenuItem" BasedOn="{StaticResource TrayMenuItem}"/>
@@ -121,8 +121,8 @@
         </ContextMenu.Resources>
        <MenuItem Header="Обрезать выбранный фрагмент…" Click="Edit_Click"/>
        <MenuItem Header="Разрезать в позиции просмотра" InputGestureText="S" Click="SplitAssembly_Click"/>
-       <MenuItem Header="Переместить выше" Click="Up_Click"/>
-       <MenuItem Header="Переместить ниже" Click="Down_Click"/>
+       <MenuItem x:Name="MoveLeftMenuItem" Header="Переместить клип влево" Click="Up_Click"/>
+       <MenuItem x:Name="MoveRightMenuItem" Header="Переместить клип вправо" Click="Down_Click"/>
        <MenuItem Header="Удалить выбранное" InputGestureText="Delete" Click="Remove_Click"/>
        <Separator/>
        <MenuItem Header="Заглушить / включить звуковой фрагмент" Click="MuteAudioEvent_Click"/>
@@ -134,15 +134,12 @@
     </ScrollViewer>
    </Grid>
    </ScrollViewer>
-   <TextBlock x:Name="TimelineHint" Grid.Row="2" Text="Колесо над звуком — громкость · Z / X — mute / solo · U — отделить звук · после U тяните видео — сдвинуть, звук останется" Foreground="{DynamicResource Tx3Brush}" FontSize="12" Height="22" VerticalAlignment="Center" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+   <TextBlock x:Name="TimelineHint" Grid.Row="2" Text="Тяните видео и звук по шкале (Shift — без магнита) · U — отделить звук · Z / X — mute / solo · колесо над звуком — громкость" Foreground="{DynamicResource Tx3Brush}" FontSize="12" Height="22" VerticalAlignment="Center" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
   </Grid>
   <Grid Grid.Row="4" Margin="0,10,0,0">
    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-   <StackPanel>
-    <WrapPanel x:Name="ExportOptions">
-     <Button Content="Форматы…" Click="ChooseFfmpeg_Click" ToolTip="Подключить FFmpeg для дополнительных форматов видео"/>
-    </WrapPanel>
-    <TextBlock x:Name="Status" Text="Исходные файлы сохраняются." TextWrapping="Wrap" FontSize="12" MinHeight="22" Foreground="{DynamicResource Tx3Brush}" Margin="0,6,12,0"/>
+   <StackPanel VerticalAlignment="Center">
+    <TextBlock x:Name="Status" Text="Исходные файлы сохраняются." TextWrapping="Wrap" FontSize="12" MinHeight="22" Foreground="{DynamicResource Tx3Brush}" Margin="0,0,12,0"/>
     <ProgressBar x:Name="Progress" Height="5" Minimum="0" Maximum="1" Margin="0,6,12,0" Visibility="Collapsed"/>
    </StackPanel>
    <StackPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="Save" Content="Сохранить ролик…" Style="{StaticResource BtnPri}" Click="Save_Click" ToolTip="Целый MP4 по возможности сохраняется в исходном формате без потери качества."/><Button x:Name="CancelExport" Content="Отменить сохранение" Click="Cancel_Click" Visibility="Collapsed" Margin="0,6,0,0"/></StackPanel>

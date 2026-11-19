@@ -39,6 +39,10 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+        <Style x:Key="SideNavButton" TargetType="RadioButton" BasedOn="{StaticResource NavButton}">
+            <Setter Property="ToolTipService.IsEnabled"
+                    Value="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}}"/>
+        </Style>
     </Window.Resources>
 
     <!-- Корень масштабируется целиком: «Размер интерфейса» в настройках -->
@@ -180,13 +184,13 @@
 
                         <StackPanel>
                             <StackPanel x:Name="Nav1">
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="overview" IsChecked="True" Click="Nav_Click" ToolTip="Повтор">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="overview" IsChecked="True" Click="Nav_Click" ToolTip="Повтор">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Target}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Повтор"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="clips" Click="Nav_Click" ToolTip="Клипы">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="clips" Click="Nav_Click" ToolTip="Клипы">
                                     <Grid>
                                         <StackPanel Orientation="Horizontal">
                                             <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Clips}"/>
@@ -202,37 +206,37 @@
                                     Visibility="{Binding IsCompact, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource Show}}"/>
 
                             <StackPanel x:Name="Nav2">
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="capture" Click="Nav_Click" ToolTip="Видео">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="capture" Click="Nav_Click" ToolTip="Видео">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Video}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Видео"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="audio" Click="Nav_Click" ToolTip="Звук">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="audio" Click="Nav_Click" ToolTip="Звук">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Wave}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Звук"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="keys" Click="Nav_Click" ToolTip="Клавиши">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="keys" Click="Nav_Click" ToolTip="Клавиши">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Keys}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Клавиши"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="files" Click="Nav_Click" ToolTip="Файлы">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="files" Click="Nav_Click" ToolTip="Файлы">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Folder}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Файлы"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="app" Click="Nav_Click" ToolTip="Приложение">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="app" Click="Nav_Click" ToolTip="Приложение">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Window}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Приложение"/>
                                     </StackPanel>
                                 </RadioButton>
-                                <RadioButton Style="{StaticResource NavButton}" GroupName="Nav" Tag="system" Click="Nav_Click" ToolTip="Система">
+                                <RadioButton Style="{StaticResource SideNavButton}" GroupName="Nav" Tag="system" Click="Nav_Click" ToolTip="Система">
                                     <StackPanel Orientation="Horizontal">
                                         <c:Icon Style="{StaticResource NavIcon}" Data="{DynamicResource Ico.Chip}"/>
                                         <TextBlock Style="{StaticResource NavLabel}" Text="Система"/>
@@ -266,9 +270,9 @@
 
             <!-- Панель несохранённых изменений: висит над содержимым, а не в конце
                  страницы — прокручивать до неё не нужно. -->
-            <Border x:Name="ApplyBar" Height="48" CornerRadius="24"
+            <Border x:Name="ApplyBar" Height="48" CornerRadius="14"
                     HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,18"
-                    Padding="18,0,6,0" Background="{DynamicResource PressBrush}"
+                    Padding="16,0,6,0" Background="{DynamicResource PressBrush}"
                     BorderBrush="{DynamicResource HairBrush}" BorderThickness="1"
                     Effect="{DynamicResource ToastShadow}" Opacity="0" Visibility="Collapsed">
                 <Border.RenderTransform><TranslateTransform x:Name="ApplyShift" Y="90"/></Border.RenderTransform>

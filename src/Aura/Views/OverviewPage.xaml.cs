@@ -71,7 +71,6 @@ public partial class OverviewPage : PageBase
 
     public override void OnShown()
     {
-        TipText.Text = Tips.Next("overview");
         Refresh();
         BuildStrip();
         _tick.Start();
