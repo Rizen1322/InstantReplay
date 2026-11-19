@@ -318,6 +318,7 @@ public partial class AppSettingsPage : PageBase
     private async void Check_Click(object sender, RoutedEventArgs e)
     {
         CheckButton.IsEnabled = false;
+        UpdateStatus.ClearValue(TextBlock.ForegroundProperty);
         UpdateStatus.Text = "Проверяю…";
         try
         {

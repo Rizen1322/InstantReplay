@@ -1,9 +1,7 @@
 using System.Net.Http;
 using System.Diagnostics;
-using System.Net.Http.Json;
 using System.Security.AccessControl;
 using System.Security.Principal;
-using System.Text.Json.Serialization;
 using Aura.Core.Interop;
 using Aura.Core.Logging;
 
@@ -89,10 +87,25 @@ public sealed class VerifiedInstaller : IDisposable
 /// </summary>
 public sealed class UpdateService
 {
-    private static readonly HttpClient Http = new()
+    private static readonly HttpClient Http = CreateHttpClient(allowAutoRedirect: true);
+    private static readonly HttpClient NoRedirectHttp = CreateHttpClient(
+        allowAutoRedirect: false,
+        timeout: TimeSpan.FromSeconds(15));
+
+    private static HttpClient CreateHttpClient(bool allowAutoRedirect, TimeSpan? timeout = null)
     {
-        DefaultRequestHeaders = { { "User-Agent", "InstantReplay-Updater" } }
-    };
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = allowAutoRedirect,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2)
+        };
+        var client = new HttpClient(handler);
+        if (timeout is { } t) client.Timeout = t;
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("InstantReplay-Updater");
+        return client;
+    }
+
+    private readonly UpdateReleaseResolver _resolver = new(NoRedirectHttp, Http);
 
     /// <summary>
     /// Официальный репозиторий проекта — единственный источник обновлений.
@@ -115,24 +128,16 @@ public sealed class UpdateService
         if (repo != Repo) throw new ArgumentException("Источник обновлений должен быть официальным репозиторием.", nameof(repo));
         try
         {
-            var release = await Http.GetFromJsonAsync<GithubRelease>(
-                $"https://api.github.com/repos/{repo}/releases/latest");
-            if (release?.TagName is null) throw new InvalidDataException("GitHub не вернул версию релиза.");
+            ResolvedRelease? release = await _resolver.ResolveLatestAsync(repo, CurrentVersion).ConfigureAwait(false);
+            if (release is null) { Available = null; return null; }
 
-            var remote = ParseVersion(release.TagName);
-            var local = typeof(UpdateService).Assembly.GetName().Version ?? new Version(1, 0, 0);
-            if (remote is null) throw new InvalidDataException("Не удалось разобрать версию релиза.");
-            if (remote <= local) { Available = null; return null; }
-
-            const string installerName = "InstantReplaySetup.exe";
-            string? asset = AssetUrl(release, n => n.Equals(installerName, StringComparison.OrdinalIgnoreCase));
-            if (asset is null) throw new InvalidDataException("В релизе нет установщика InstantReplaySetup.exe.");
-            string? digest = AssetUrl(release, n => n.Equals(installerName + ".sha256", StringComparison.OrdinalIgnoreCase));
-            string? signature = AssetUrl(release, n => n.Equals(installerName + ".sig", StringComparison.OrdinalIgnoreCase));
-            string? versionSignature = AssetUrl(release, n => n.Equals(installerName + ".sig2", StringComparison.OrdinalIgnoreCase));
-
-            Available = new UpdateInfo(remote.ToString(), asset ?? release.HtmlUrl ?? "", release.HtmlUrl ?? "",
-                                       digest, signature, versionSignature);
+            Available = new UpdateInfo(
+                release.Version.ToString(),
+                release.DownloadUrl,
+                release.ReleaseUrl,
+                release.DigestUrl,
+                release.SignatureUrl,
+                release.VersionSignatureUrl);
             return Available;
         }
         catch (Exception ex)
@@ -140,23 +145,6 @@ public sealed class UpdateService
             Log.Warn("Update", $"Проверка обновлений не удалась: {ex.Message}");
             throw;
         }
-    }
-
-    /// <summary>
-    /// Ссылка на файл релиза, подходящий под <paramref name="match"/>.
-    ///
-    /// Ссылка приходит из ответа GitHub, но это просто строка в JSON — качать по ней
-    /// что угодно нельзя. Чужой хост отбрасываем ещё на этапе проверки, чтобы до
-    /// закачки дело вообще не дошло.
-    /// </summary>
-    private static string? AssetUrl(GithubRelease release, Func<string, bool> match)
-    {
-        string? url = release.Assets?.FirstOrDefault(a => a.Name is not null && match(a.Name))?.BrowserDownloadUrl;
-        if (url is null) return null;
-        if (UpdateVerification.IsTrustedHost(url)) return url;
-
-        Log.Warn("Update", $"Файл релиза лежит на чужом хосте — игнорирую: {url}");
-        return null;
     }
 
     /// <summary>Версия текущей сборки — её же показываем в UI.</summary>
@@ -425,23 +413,5 @@ public sealed class UpdateService
 
             return null;
         }
-    }
-
-    private static Version? ParseVersion(string tag)
-    {
-        tag = tag.TrimStart('v', 'V');
-        return Version.TryParse(tag, out var v) ? v : null;
-    }
-
-    private sealed class GithubRelease
-    {
-        [JsonPropertyName("tag_name")] public string? TagName { get; set; }
-        [JsonPropertyName("html_url")] public string? HtmlUrl { get; set; }
-        [JsonPropertyName("assets")] public List<GithubAsset>? Assets { get; set; }
-    }
-    private sealed class GithubAsset
-    {
-        [JsonPropertyName("name")] public string? Name { get; set; }
-        [JsonPropertyName("browser_download_url")] public string? BrowserDownloadUrl { get; set; }
     }
 }
