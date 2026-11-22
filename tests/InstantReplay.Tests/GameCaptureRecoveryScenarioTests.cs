@@ -80,7 +80,7 @@ public sealed class GameCaptureRecoveryScenarioTests
     }
 
     [Fact]
-    public void Dda_storm_selects_same_verified_window_target()
+    public void Dda_storm_selects_verified_minecraft_hook()
     {
         var coordinator = CreateCoordinator();
         coordinator.ObserveTarget(Minecraft(revision: 4));
@@ -95,23 +95,7 @@ public sealed class GameCaptureRecoveryScenarioTests
     }
 
     [Fact]
-    public void Window_failure_enters_hold_and_retries_window()
-    {
-        var coordinator = CreateCoordinator();
-        coordinator.ObserveTarget(Minecraft(revision: 6));
-
-        Assert.True(coordinator.TryDecide(
-            CaptureBackend.WgcWindow,
-            CaptureFailureKind.BackendStalled,
-            out CaptureRecoveryDecision decision));
-
-        Assert.Equal(CaptureRecoveryAction.HoldForGameWindow, decision.Action);
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
-        Assert.True(decision.RetryDelay > TimeSpan.Zero);
-    }
-
-    [Fact]
-    public void Alt_tab_clears_episode_and_returns_window_capture_to_monitor()
+    public void Alt_tab_clears_episode_and_returns_minecraft_capture_to_monitor()
     {
         var coordinator = CreateCoordinator();
         coordinator.ObserveTarget(Minecraft(revision: 3));
@@ -122,7 +106,7 @@ public sealed class GameCaptureRecoveryScenarioTests
 
         coordinator.ObserveTarget(null);
         Assert.True(coordinator.TryDecide(
-            CaptureBackend.WgcWindow,
+            CaptureBackend.MinecraftOpenGl,
             CaptureFailureKind.CaptureTargetClosed,
             out CaptureRecoveryDecision decision));
 
@@ -173,7 +157,7 @@ public sealed class GameCaptureRecoveryScenarioTests
 
     /// <summary>
     /// Ушли с WGC ради OpenGL-игры: Alt-Tab рвёт дупликацию, и раньше восстановление
-    /// возвращало WGC (монитора без игры на экране, окна — с игрой), а с ним пропадал курсор.
+    /// возвращало WGC, и курсор в игре снова пропадал.
     /// </summary>
     [Fact]
     public void After_leaving_wgc_alt_tab_storms_never_bring_wgc_back()
@@ -204,28 +188,50 @@ public sealed class GameCaptureRecoveryScenarioTests
     }
 
     [Fact]
+    public void Tf2_stays_on_desktop_duplication_if_it_also_stalls_in_the_same_game()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.ObserveTarget(Minecraft(revision: 3) with
+        {
+            ExecutableName = "tf_win64",
+            GameName = "Team Fortress 2"
+        });
+
+        Assert.True(coordinator.TryDecide(CaptureBackend.Wgc,
+            CaptureFailureKind.BackendStalled, out var first));
+        Assert.Equal(CaptureBackend.DesktopDuplication, first.Backend);
+        Assert.Equal(0, first.TargetRevision);
+
+        Assert.True(coordinator.TryDecide(first.Backend,
+            CaptureFailureKind.BackendTransitionStorm, out var retry));
+        Assert.Equal(CaptureBackend.DesktopDuplication, retry.Backend);
+        Assert.Equal(0, retry.TargetRevision);
+        Assert.True(retry.RetryDelay > TimeSpan.Zero);
+    }
+
+    [Fact]
     public void Failed_hook_is_not_reselected_after_later_monitor_failure_in_same_game()
     {
         var coordinator = CreateCoordinator();
         coordinator.ObserveTarget(Minecraft(revision: 6));
         coordinator.TryDecide(CaptureBackend.MinecraftOpenGl,
             CaptureFailureKind.BackendUnavailable, out CaptureRecoveryDecision fallback);
-        Assert.Equal(CaptureBackend.WgcWindow, fallback.Backend);
+        Assert.Equal(CaptureBackend.DesktopDuplication, fallback.Backend);
 
-        var foreground = CaptureBackendPolicy.SelectForForeground(CaptureBackend.WgcWindow,
-            coordinator.Target, coordinator.Target, false, coordinator.Episode);
+        var foreground = CaptureBackendPolicy.SelectForForeground(CaptureBackend.DesktopDuplication,
+            null, coordinator.Target, false, coordinator.Episode);
         Assert.False(foreground.RestartRequired);
-        Assert.Equal(CaptureBackend.WgcWindow, foreground.Backend);
+        Assert.Equal(CaptureBackend.DesktopDuplication, foreground.Backend);
 
         coordinator.TryDecide(CaptureBackend.Wgc,
             CaptureFailureKind.BackendStalled, out CaptureRecoveryDecision retry);
-        Assert.Equal(CaptureBackend.WgcWindow, retry.Backend);
+        Assert.Equal(CaptureBackend.DesktopDuplication, retry.Backend);
 
-        coordinator.TryDecide(CaptureBackend.WgcWindow,
-            CaptureFailureKind.BackendStalled, out CaptureRecoveryDecision hold);
-        Assert.Equal(CaptureBackend.WgcWindow, hold.Backend);
-        Assert.Equal(CaptureRecoveryAction.HoldForGameWindow, hold.Action);
-        Assert.True(hold.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
+        coordinator.TryDecide(CaptureBackend.DesktopDuplication,
+            CaptureFailureKind.BackendStalled, out CaptureRecoveryDecision retryDda);
+        Assert.Equal(CaptureBackend.DesktopDuplication, retryDda.Backend);
+        Assert.True(retryDda.RetryDelay > TimeSpan.Zero);
+        Assert.True(retryDda.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
     }
 
     [Fact]
@@ -237,7 +243,7 @@ public sealed class GameCaptureRecoveryScenarioTests
         coordinator.TryDecide(CaptureBackend.MinecraftOpenGl,
             CaptureFailureKind.BackendUnavailable, out _);
         coordinator.ObserveTarget(null);
-        coordinator.TryDecide(CaptureBackend.WgcWindow,
+        coordinator.TryDecide(CaptureBackend.MinecraftOpenGl,
             CaptureFailureKind.CaptureTargetClosed, out var desktop);
         Assert.Equal(CaptureBackend.Wgc, desktop.Backend);
 
@@ -245,8 +251,8 @@ public sealed class GameCaptureRecoveryScenarioTests
         coordinator.ObserveTarget(game);
         var selection = CaptureBackendPolicy.SelectForForeground(CaptureBackend.Wgc,
             null, game, false, coordinator.Episode);
-        Assert.True(selection.RestartRequired);
-        Assert.Equal(CaptureBackend.WgcWindow, selection.Backend);
+        Assert.False(selection.RestartRequired);
+        Assert.Equal(CaptureBackend.Wgc, selection.Backend);
         Assert.True(coordinator.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
 
         var replacement = game with { ProcessStartTicks = 88_000 };

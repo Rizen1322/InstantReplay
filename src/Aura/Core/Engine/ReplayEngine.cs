@@ -81,8 +81,6 @@ public sealed partial class ReplayEngine : IDisposable
     private GameCaptureTarget? _lastVerifiedCaptureTarget;
     private GameCaptureTarget? _activeCaptureTarget;
     private long _ddaStormCount;
-    private long _windowRetryCount;
-    private long _windowHoldStartedTimestamp;
 
     private readonly ReplayVideoBuffer _videoBuffer = new();
     private readonly ReplayAudioBuffer _audioBuffer = new();
@@ -414,8 +412,6 @@ public sealed partial class ReplayEngine : IDisposable
         {
             _gameCaptureRecovery.Resume();
             Interlocked.Exchange(ref _ddaStormCount, 0);
-            Interlocked.Exchange(ref _windowRetryCount, 0);
-            Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
             // Новая попытка человека: терминальные пометки сбрасываются, но
             // реестр удерживаемых выходов — нет, его снимает только освобождение
             // дупликации или выход из процесса.
@@ -450,7 +446,7 @@ public sealed partial class ReplayEngine : IDisposable
             StartLocked(
                 preserveBuffers,
                 candidate,
-                candidate is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
+                candidate == CaptureBackend.MinecraftOpenGl
                     ? desiredTarget
                     : null);
         }
@@ -578,7 +574,7 @@ public sealed partial class ReplayEngine : IDisposable
             if (BackendUsesHeldDdaOutput(backend, monitorIndex, out HeldCaptureOutput heldOutput))
                 throw new CaptureOutputHeldException(heldOutput);
             GameCaptureTarget? sourceTarget = null;
-            if (backend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
+            if (backend == CaptureBackend.MinecraftOpenGl)
             {
                 GameCaptureTarget target = requestedTarget ?? _gameCaptureRecovery.Target ??
                     throw new InvalidOperationException("Для игрового capture нет проверенного окна");
@@ -723,11 +719,9 @@ public sealed partial class ReplayEngine : IDisposable
                 canvasHeight,
                 separateCursor: _captureBackend is
                     CaptureBackend.DesktopDuplication or
-                    CaptureBackend.WgcWindow or
                     CaptureBackend.MinecraftOpenGl,
                 generation,
                 targetRevision: sourceTarget?.Revision ?? 0,
-                windowEpisode: _captureBackend == CaptureBackend.WgcWindow,
                 hybridEpisode: _captureBackend == CaptureBackend.MinecraftOpenGl);
 
             if (preserveBuffers)
@@ -1589,7 +1583,6 @@ public sealed partial class ReplayEngine : IDisposable
             CancelDesktopWaitLocked();
             CancelCaptureRecovery();
             _gameCaptureRecovery.Stop();
-            Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
         }
         if (intent == PipelineStopIntent.UserStop)
         {

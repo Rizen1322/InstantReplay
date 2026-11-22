@@ -5,13 +5,6 @@ namespace InstantReplay.Tests;
 
 public sealed class CaptureSourceRequestTests
 {
-    [Fact]
-    public void Window_request_requires_verified_target()
-    {
-        Assert.Throws<ArgumentException>(() =>
-            CaptureSourceRequest.Create(CaptureBackend.WgcWindow, monitorIndex: 0, target: null));
-    }
-
     [Theory]
     [InlineData(CaptureBackend.Wgc)]
     [InlineData(CaptureBackend.DesktopDuplication)]
@@ -22,26 +15,13 @@ public sealed class CaptureSourceRequestTests
     }
 
     [Fact]
-    public void Window_request_rejects_target_from_another_monitor()
+    public void Minecraft_request_rejects_target_from_another_monitor()
     {
         Assert.Throws<ArgumentException>(() =>
             CaptureSourceRequest.Create(
-                CaptureBackend.WgcWindow,
+                CaptureBackend.MinecraftOpenGl,
                 monitorIndex: 1,
                 target: Target()));
-    }
-
-    [Fact]
-    public void Valid_window_request_preserves_target_revision()
-    {
-        CaptureSourceRequest request = CaptureSourceRequest.Create(
-            CaptureBackend.WgcWindow,
-            monitorIndex: 0,
-            target: Target());
-
-        Assert.Equal(CaptureBackend.WgcWindow, request.Backend);
-        Assert.Equal(0, request.MonitorIndex);
-        Assert.Equal(12, request.TargetRevision);
     }
 
     [Fact]

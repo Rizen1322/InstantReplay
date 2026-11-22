@@ -11,7 +11,6 @@ internal enum CaptureFrameAdmission
     Admit,
     StaleGeneration,
     StaleTarget,
-    MonitorBlocked,
     UnexpectedWindow,
     StaleRoute
 }
@@ -19,7 +18,6 @@ internal enum CaptureFrameAdmission
 internal enum CaptureFrameAdmissionMode
 {
     Monitor,
-    Window,
     Hybrid
 }
 
@@ -30,17 +28,6 @@ internal sealed class CaptureFrameAdmissionGate
     private readonly long _targetRevision;
     private readonly CaptureFrameAdmissionMode _mode;
     private long _latestRouteEpoch;
-
-    public CaptureFrameAdmissionGate(
-        long generation,
-        long targetRevision,
-        bool windowEpisode)
-        : this(
-            generation,
-            targetRevision,
-            windowEpisode ? CaptureFrameAdmissionMode.Window : CaptureFrameAdmissionMode.Monitor)
-    {
-    }
 
     public CaptureFrameAdmissionGate(
         long generation,
@@ -80,15 +67,6 @@ internal sealed class CaptureFrameAdmissionGate
             return targetRevision == 0
                 ? CaptureFrameAdmission.Admit
                 : CaptureFrameAdmission.StaleTarget;
-        }
-
-        if (_mode == CaptureFrameAdmissionMode.Window)
-        {
-            if (scope == CaptureSurfaceScope.Monitor)
-                return CaptureFrameAdmission.MonitorBlocked;
-            if (targetRevision != _targetRevision)
-                return CaptureFrameAdmission.StaleTarget;
-            return CaptureFrameAdmission.Admit;
         }
 
         return scope == CaptureSurfaceScope.GameWindow

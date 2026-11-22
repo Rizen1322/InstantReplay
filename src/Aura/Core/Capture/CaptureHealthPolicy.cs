@@ -77,7 +77,7 @@ internal sealed class CaptureHealthPolicy
     {
         lock (_sync)
         {
-            bool starvedWgc = sample.Backend is CaptureBackend.Wgc or CaptureBackend.WgcWindow &&
+            bool starvedWgc = sample.Backend == CaptureBackend.Wgc &&
                               sample.Uptime >= Warmup &&
                               sample.GameForeground &&
                               sample.TargetFps > 0 &&

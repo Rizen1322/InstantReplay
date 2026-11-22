@@ -13,7 +13,7 @@ namespace Aura.Core.Engine;
 
 /// <summary>
 /// Часть <see cref="ReplayEngine"/>. Какая игра была на экране, пока копился буфер: по ней называется клип,
-/// и по ней же конвейер заранее переключается на захват игрового окна.
+/// и по ней же конвейер выбирает подходящий способ захвата для OpenGL-игр.
 ///
 /// Движок разнесён по файлам по смыслу, без изменения поведения: те же поля, те же
 /// замки, те же методы. Раньше это был один файл на 2200 строк, где сохранение,
@@ -100,7 +100,7 @@ public sealed partial class ReplayEngine
                 {
                     _gameCaptureRecovery.AvoidWgc = false;
                     RequestCaptureRestart(
-                        new CaptureRecoveryDecision(CaptureRecoveryAction.Restart, CaptureBackend.Wgc,
+                        new CaptureRecoveryDecision(CaptureBackend.Wgc,
                                                     0, TimeSpan.Zero, CaptureEpisode.Empty),
                         "OpenGL-игра закрыта: возвращаю захват через WGC",
                         CaptureFailureKind.BackendUnavailable,
@@ -114,7 +114,6 @@ public sealed partial class ReplayEngine
                         foregroundTarget,
                         _captureBackendForced,
                         _gameCaptureRecovery.Episode,
-                        ScreenCaptureFactory.WgcAllowed && !_gameCaptureRecovery.AvoidWgc,
                         moveOffWgc);
                 if (targetSelection.RestartRequired)
                     RequestProactiveCaptureTransition(targetSelection);
@@ -130,21 +129,6 @@ public sealed partial class ReplayEngine
                         return;
                     }
                     FinishCaptureRecovery();
-                }
-
-                if (_captureBackend == CaptureBackend.WgcWindow &&
-                    ActiveCaptureTarget() is GameCaptureTarget activeTarget &&
-                    (foregroundTarget is not GameCaptureTarget currentTarget ||
-                     !currentTarget.HasSameIdentity(activeTarget) ||
-                     currentTarget.Revision != activeTarget.Revision))
-                {
-                    long generation = Interlocked.Read(ref _captureGeneration);
-                    OnCaptureFailed(new CaptureFailure(
-                        CaptureFailureKind.CaptureTargetClosed,
-                        new InvalidOperationException("Foreground game target changed"),
-                        "WGC window: игра вышла из fullscreen или сменила окно",
-                        generation,
-                        activeTarget.Revision), generation);
                 }
 
                 string game = GameDetector.DetectForegroundGame();
@@ -180,7 +164,6 @@ public sealed partial class ReplayEngine
 
         long generation = Interlocked.Read(ref _captureGeneration);
         var decision = new CaptureRecoveryDecision(
-            CaptureRecoveryAction.Restart,
             selection.Backend,
             target.Revision,
             TimeSpan.Zero,

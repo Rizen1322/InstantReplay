@@ -21,7 +21,7 @@ internal sealed class GameCaptureRecoveryCoordinator
     {
         _allowWgc = allowWgc;
         _health = health ?? new CaptureHealthPolicy();
-        if (preferredMonitorBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl)
+        if (preferredMonitorBackend == CaptureBackend.MinecraftOpenGl)
             throw new ArgumentException("Предпочтительный backend должен захватывать монитор", nameof(preferredMonitorBackend));
         _preferredMonitorBackend = preferredMonitorBackend;
         _forcedBackend = forcedBackend;
@@ -40,7 +40,7 @@ internal sealed class GameCaptureRecoveryCoordinator
     /// <summary>
     /// До следующего включения повтора WGC не выбирать ни в каком виде, как на
     /// Windows 10. Ставится, когда запись ушла с WGC ради OpenGL-игры: иначе
-    /// первая же потеря дупликации на Alt-Tab возвращала WGC (монитора или окна),
+    /// первая же потеря дупликации на Alt-Tab возвращала WGC,
     /// и курсор в игре пропадал снова.
     /// </summary>
     public bool AvoidWgc
@@ -116,7 +116,7 @@ internal sealed class GameCaptureRecoveryCoordinator
             }
             // A successful start followed by an immediate failure is a new recovery,
             // so its local attempt counter alone cannot limit repeated rebuilds.
-            if (decision.Action == CaptureRecoveryAction.Restart && decision.Backend == activeBackend &&
+            if (decision.Backend == activeBackend &&
                 failureKind is not (CaptureFailureKind.DeviceLost or CaptureFailureKind.CaptureFormatChanged))
                 decision = decision with { RetryDelay = TimeSpan.FromSeconds(3) };
             _episode = decision.Episode;
@@ -136,7 +136,7 @@ internal sealed class GameCaptureRecoveryCoordinator
                 active is not (CaptureBackend.Wgc or CaptureBackend.DesktopDuplication) ||
                 (!_allowWgc && _preferredMonitorBackend == CaptureBackend.Wgc) ||
                 !_health.CanUse(_preferredMonitorBackend, now) || !_health.TryRecordSwitch(now)) return false;
-            decision = new(CaptureRecoveryAction.Restart, _preferredMonitorBackend, 0,
+            decision = new(_preferredMonitorBackend, 0,
                 TimeSpan.Zero, CaptureEpisode.Empty);
             return true;
         }

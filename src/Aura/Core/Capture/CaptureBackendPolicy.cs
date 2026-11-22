@@ -3,8 +3,7 @@ namespace Aura.Core.Capture;
 public enum CaptureBackend
 {
     Wgc,
-    WgcWindow,
-    DesktopDuplication,
+    DesktopDuplication = 2,
     MinecraftOpenGl
 }
 
@@ -37,7 +36,7 @@ internal static class CaptureBackendPolicy
         CaptureBackend.Wgc => CaptureBackend.DesktopDuplication,
         CaptureBackend.DesktopDuplication => CaptureBackend.Wgc,
         _ => throw new ArgumentException(
-            "Оконный WGC не участвует в попарном выборе мониторных источников",
+            "Для смены источника нужен мониторный захват",
             nameof(backend))
     };
 
@@ -52,24 +51,15 @@ internal static class CaptureBackendPolicy
         GameCaptureTarget? foregroundTarget,
         bool forcedBackend,
         CaptureEpisode episode = default,
-        bool allowWgc = true,
         bool foregroundUsesOpenGl = false)
     {
         if (forcedBackend)
             return new(activeBackend, activeTarget, RestartRequired: false);
 
-        if (foregroundTarget is GameCaptureTarget quarantined && episode.Matches(quarantined) &&
-            episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
-        {
-            if (!allowWgc || activeBackend == CaptureBackend.WgcWindow)
-                return new(activeBackend, activeTarget, RestartRequired: false);
-            return new(CaptureBackend.WgcWindow, quarantined, RestartRequired: true);
-        }
-
         if (activeBackend == CaptureBackend.MinecraftOpenGl)
         {
             if (foregroundTarget is GameCaptureTarget replacement &&
-                IsMinecraftOpenGlTarget(replacement) &&
+                IsMinecraftOpenGlTarget(replacement) && !HookQuarantined(replacement, episode) &&
                 (activeTarget is not GameCaptureTarget current ||
                  !current.HasSameIdentity(replacement)))
             {
@@ -79,7 +69,8 @@ internal static class CaptureBackendPolicy
             return new(CaptureBackend.MinecraftOpenGl, activeTarget, RestartRequired: false);
         }
 
-        if (foregroundTarget is GameCaptureTarget minecraft && IsMinecraftOpenGlTarget(minecraft))
+        if (foregroundTarget is GameCaptureTarget minecraft && IsMinecraftOpenGlTarget(minecraft) &&
+            !HookQuarantined(minecraft, episode))
             return new(CaptureBackend.MinecraftOpenGl, minecraft, RestartRequired: true);
 
         // WGC на время записи переводит систему на программный курсор, а OpenGL-игра
@@ -93,6 +84,9 @@ internal static class CaptureBackendPolicy
 
         return new(activeBackend, activeTarget, RestartRequired: false);
     }
+
+    private static bool HookQuarantined(in GameCaptureTarget target, in CaptureEpisode episode) =>
+        episode.Matches(target) && episode.IsQuarantined(CaptureBackend.MinecraftOpenGl);
 
     /// <summary>
     /// Пора ли вернуться на WGC после записи OpenGL-игры через Desktop Duplication:

@@ -31,7 +31,6 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         bool separateCursor,
         long generation,
         long targetRevision = 0,
-        bool windowEpisode = false,
         bool hybridEpisode = false)
     {
         ArgumentNullException.ThrowIfNull(device);
@@ -45,19 +44,13 @@ internal sealed class GpuCaptureFrameBroker : IDisposable
         _height = height;
         _separateCursor = separateCursor;
         _cursorOverlay = separateCursor ? new CursorOverlay(device, context) : null;
-        if (windowEpisode && hybridEpisode)
-            throw new ArgumentException("Episode не может быть одновременно window и hybrid");
-        _windowNormalizer = windowEpisode || hybridEpisode
+        _windowNormalizer = hybridEpisode
             ? new WindowFrameNormalizer(device, context, width, height)
             : null;
         _admissionGate = new CaptureFrameAdmissionGate(
             generation,
             targetRevision,
-            hybridEpisode
-                ? CaptureFrameAdmissionMode.Hybrid
-                : windowEpisode
-                    ? CaptureFrameAdmissionMode.Window
-                    : CaptureFrameAdmissionMode.Monitor);
+            hybridEpisode ? CaptureFrameAdmissionMode.Hybrid : CaptureFrameAdmissionMode.Monitor);
         _broker = new CaptureFrameBroker<GpuCaptureFrameSlot>(
             () => new GpuCaptureFrameSlot(device, width, height, separateCursor),
             slot => slot.Dispose());

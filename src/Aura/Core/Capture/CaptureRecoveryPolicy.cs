@@ -1,18 +1,11 @@
 ﻿namespace Aura.Core.Capture;
 
-internal enum CaptureRecoveryAction
-{
-    Restart,
-    HoldForGameWindow
-}
-
 [Flags]
 internal enum CaptureProviderQuarantine
 {
     None = 0,
     WgcMonitor = 1,
     DesktopDuplication = 2,
-    WgcWindow = 4,
     MinecraftOpenGl = 8
 }
 
@@ -52,7 +45,6 @@ internal readonly record struct CaptureEpisode(
     {
         CaptureBackend.Wgc => CaptureProviderQuarantine.WgcMonitor,
         CaptureBackend.DesktopDuplication => CaptureProviderQuarantine.DesktopDuplication,
-        CaptureBackend.WgcWindow => CaptureProviderQuarantine.WgcWindow,
         CaptureBackend.MinecraftOpenGl => CaptureProviderQuarantine.MinecraftOpenGl,
         _ => throw new ArgumentOutOfRangeException(nameof(backend))
     };
@@ -60,7 +52,7 @@ internal readonly record struct CaptureEpisode(
 
 /// <param name="AllowWgc">
 /// Можно ли вообще переходить на WGC. На Windows 10 нельзя: право на захват без
-/// жёлтой рамки там не выдаётся, и любой уход на WGC — мониторный или оконный —
+/// жёлтой рамки там не выдаётся, и уход на WGC
 /// оборачивался рамкой вокруг экрана в самой записи. Там работает только Desktop
 /// Duplication и хук Minecraft.
 /// </param>
@@ -74,7 +66,6 @@ internal readonly record struct CaptureRecoveryContext(
     bool AllowWgc = true);
 
 internal readonly record struct CaptureRecoveryDecision(
-    CaptureRecoveryAction Action,
     CaptureBackend Backend,
     long TargetRevision,
     TimeSpan RetryDelay,
@@ -83,15 +74,8 @@ internal readonly record struct CaptureRecoveryDecision(
 /// <summary>Чистая маршрутизация восстановления без WGC/DDA и таймеров.</summary>
 internal static class CaptureRecoveryPolicy
 {
-    private static readonly TimeSpan WindowRetryDelay = TimeSpan.FromMilliseconds(250);
-
     public static CaptureRecoveryDecision Decide(in CaptureRecoveryContext context)
     {
-        CaptureBackend preferred = context.PreferredMonitorBackend is
-            CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
-            ? CaptureBackend.Wgc
-            : context.PreferredMonitorBackend;
-
         if (context.ForcedBackend)
             return Restart(context.ActiveBackend, targetRevision: 0, CaptureEpisode.Empty);
 
@@ -102,19 +86,17 @@ internal static class CaptureRecoveryPolicy
         {
             CaptureBackend backend = context.ActiveBackend switch
             {
-                CaptureBackend.WgcWindow => preferred,
-                CaptureBackend.MinecraftOpenGl => preferred,
+                CaptureBackend.MinecraftOpenGl => context.PreferredMonitorBackend,
                 CaptureBackend.Wgc => CaptureBackend.DesktopDuplication,
                 CaptureBackend.DesktopDuplication => CaptureBackend.Wgc,
-                _ => preferred
+                _ => context.PreferredMonitorBackend
             };
 
             if (context.FailureKind is CaptureFailureKind.DeviceLost or
                 CaptureFailureKind.CaptureFormatChanged)
             {
-                backend = context.ActiveBackend is
-                    CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
-                    ? preferred
+                backend = context.ActiveBackend == CaptureBackend.MinecraftOpenGl
+                    ? context.PreferredMonitorBackend
                     : context.ActiveBackend;
             }
 
@@ -128,7 +110,7 @@ internal static class CaptureRecoveryPolicy
         {
             return Restart(
                 context.ActiveBackend,
-                context.ActiveBackend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
+                context.ActiveBackend == CaptureBackend.MinecraftOpenGl
                     ? target.Revision
                     : 0,
                 episode);
@@ -136,23 +118,15 @@ internal static class CaptureRecoveryPolicy
 
         episode = episode.Quarantine(context.ActiveBackend);
         if (context.ActiveBackend == CaptureBackend.MinecraftOpenGl)
-            return Restart(CaptureBackend.WgcWindow, target.Revision, episode);
+            return Restart(CaptureBackend.DesktopDuplication, 0, episode);
 
-        if (context.ActiveBackend == CaptureBackend.WgcWindow)
-        {
-            return new CaptureRecoveryDecision(
-                CaptureRecoveryAction.HoldForGameWindow,
-                context.ActiveBackend,
-                target.Revision,
-                WindowRetryDelay,
-                episode);
-        }
+        if (CaptureBackendPolicy.IsMinecraftOpenGlTarget(target) &&
+            !episode.IsQuarantined(CaptureBackend.MinecraftOpenGl))
+            return Restart(CaptureBackend.MinecraftOpenGl, target.Revision, episode);
 
-        CaptureBackend targetBackend = CaptureBackendPolicy.IsMinecraftOpenGlTarget(target) &&
-            !episode.IsQuarantined(CaptureBackend.MinecraftOpenGl)
-            ? CaptureBackend.MinecraftOpenGl
-            : CaptureBackend.WgcWindow;
-        return Restart(targetBackend, target.Revision, episode);
+        CaptureBackend alternative = CaptureBackendPolicy.Alternative(context.ActiveBackend);
+        CaptureBackend monitor = episode.IsQuarantined(alternative) ? context.ActiveBackend : alternative;
+        return Restart(monitor, 0, episode);
     }
 
     /// <summary>
@@ -172,7 +146,6 @@ internal static class CaptureRecoveryPolicy
             if (context.FailureKind is CaptureFailureKind.DeviceLost or CaptureFailureKind.CaptureFormatChanged)
                 return Restart(CaptureBackend.MinecraftOpenGl, target.Revision, episode);
 
-            // Хук не справился — на экран, а не на WGC окна.
             episode = episode.Quarantine(CaptureBackend.MinecraftOpenGl);
             return Restart(CaptureBackend.DesktopDuplication, 0, episode);
         }
@@ -188,7 +161,6 @@ internal static class CaptureRecoveryPolicy
         CaptureBackend backend,
         long targetRevision,
         CaptureEpisode episode) => new(
-            CaptureRecoveryAction.Restart,
             backend,
             targetRevision,
             TimeSpan.Zero,

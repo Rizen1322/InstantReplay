@@ -367,6 +367,7 @@ using (var releaseOldEncoder = new ManualResetEventSlim())
     SetRecoveryField("_writerTasks", new HashSet<Task>());
     SetRecoveryField("_captureTargetSync", new object());
     SetRecoveryField("_stateSync", new object());
+    SetRecoveryField("_statsSync", new object());
     using var recoveryFrameGate = new ReaderWriterLockSlim();
     SetRecoveryField("_frameGate", recoveryFrameGate);
     SetRecoveryField("_videoBuffer", new Aura.Core.Buffering.ReplayVideoBuffer());

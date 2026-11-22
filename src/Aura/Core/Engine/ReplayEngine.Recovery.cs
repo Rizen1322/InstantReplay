@@ -80,13 +80,6 @@ public sealed partial class ReplayEngine
     {
         CaptureBackend next = initialDecision.Backend;
         CaptureBackend previous = _captureBackend;
-        if (initialDecision.Action == CaptureRecoveryAction.HoldForGameWindow)
-        {
-            Interlocked.CompareExchange(
-                ref _windowHoldStartedTimestamp,
-                System.Diagnostics.Stopwatch.GetTimestamp(),
-                0);
-        }
         var cancellation = new CancellationTokenSource();
         lock (_recoverySync)
         {
@@ -99,27 +92,13 @@ public sealed partial class ReplayEngine
         {
             try
             {
-                string recoveryMode = initialDecision.Action == CaptureRecoveryAction.HoldForGameWindow
-                    ? "; держу последний игровой кадр"
-                    : "";
                 Log.Warn("Engine", $"Захват generation {observedGeneration}: {previous} → {next}; " +
-                                   $"target r{initialDecision.TargetRevision}; {reason}{recoveryMode}");
+                                   $"target r{initialDecision.TargetRevision}; {reason}");
                 // Уведомление о начале восстановления не шлём вовсе. Человеку не
                 // нужно знать, что захват переподключается: он узнает об этом только
                 // если восстановиться не вышло. На альт-табе из полноэкранной игры
                 // Desktop Duplication теряет дупликацию несколько раз подряд, и каждый
                 // эпизод давал по два уведомления — отсюда спам.
-
-                // При деградации оконного WGC не рвём конвейер сразу: пейсер
-                // продолжает кодировать последний принятый игровой кадр на время
-                // короткой выдержки. Мониторный кадр в этот эпизод admission-gate
-                // всё равно не пропустит.
-                bool delayConsumedWhileHolding =
-                    initialDecision.Action == CaptureRecoveryAction.HoldForGameWindow &&
-                    initialDecision.RetryDelay > TimeSpan.Zero;
-                if (delayConsumedWhileHolding &&
-                    cancellation.Token.WaitHandle.WaitOne(initialDecision.RetryDelay))
-                    return;
 
                 try
                 {
@@ -143,9 +122,7 @@ public sealed partial class ReplayEngine
                 CaptureRecoveryDecision decision = initialDecision;
                 for (int attempt = 1; ; attempt = attempt == int.MaxValue ? attempt : attempt + 1)
                 {
-                    int delay = attempt == 1 && delayConsumedWhileHolding
-                        ? 0
-                        : attempt == 1 && decision.RetryDelay > TimeSpan.Zero
+                    int delay = attempt == 1 && decision.RetryDelay > TimeSpan.Zero
                         ? Math.Max(1, (int)decision.RetryDelay.TotalMilliseconds)
                         : CaptureRecoveryBackoff.DelayMilliseconds(
                             attempt, failureKind == CaptureFailureKind.DeviceLost);
@@ -179,12 +156,9 @@ public sealed partial class ReplayEngine
                             if (wait.Aborted) return;
                         }
 
-                        GameCaptureTarget? candidateTarget = candidate is
-                            CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl
+                        GameCaptureTarget? candidateTarget = candidate == CaptureBackend.MinecraftOpenGl
                             ? _gameCaptureRecovery.Target
                             : null;
-                        if (candidate == CaptureBackend.WgcWindow)
-                            Interlocked.Increment(ref _windowRetryCount);
                         lock (_lifecycle)
                         {
                             if (_stopRequested ||
@@ -204,12 +178,7 @@ public sealed partial class ReplayEngine
                                 return;
                             }
                         }
-                        long holdStarted = Interlocked.Exchange(ref _windowHoldStartedTimestamp, 0);
-                        string held = holdStarted == 0
-                            ? ""
-                            : $", удержание {ElapsedMilliseconds(holdStarted)} мс";
-                        Log.Info("Engine", $"Конвейер восстановлен на {candidate} " +
-                                           $"(попытка {attempt}{held})");
+                        Log.Info("Engine", $"Конвейер восстановлен на {candidate} (попытка {attempt})");
                         // О восстановлении говорим, только если оно было заметным: не с
                         // первой попытки. Обычная смена режима при альт-табе чинится с
                         // первой, и сообщать о ней значило бы сообщать о каждом альт-табе.
@@ -257,14 +226,6 @@ public sealed partial class ReplayEngine
                 FinishCaptureRecovery(cancellation);
             }
         });
-    }
-
-    private static long ElapsedMilliseconds(long startedTimestamp)
-    {
-        long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - startedTimestamp;
-        return elapsed <= 0
-            ? 0
-            : (long)(elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
     }
 
     /// <summary>

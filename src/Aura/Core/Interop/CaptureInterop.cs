@@ -14,6 +14,7 @@ namespace Aura.Core.Interop;
 [ComImport, Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IGraphicsCaptureItemInterop
 {
+    // Метод предшествует CreateForMonitor в COM vtable.
     IntPtr CreateForWindow(IntPtr window, ref Guid iid);
     IntPtr CreateForMonitor(IntPtr monitor, ref Guid iid);
 }
@@ -52,17 +53,6 @@ internal static class CaptureInterop
         IntPtr abi = interop.CreateForMonitor(hMonitor, ref iid);
         // CreateFor* возвращает принадлежащую вызывающему COM-ссылку. FromAbi
         // создаёт свою managed-ссылку, поэтому исходную освобождаем ровно один раз.
-        try { return GraphicsCaptureItem.FromAbi(abi); }
-        finally { Marshal.Release(abi); }
-    }
-
-    /// <summary>Создаёт GraphicsCaptureItem для проверенного top-level HWND.</summary>
-    public static GraphicsCaptureItem CreateItemForWindow(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero) throw new ArgumentException("HWND не задан", nameof(hwnd));
-        var interop = GetActivationFactory<IGraphicsCaptureItemInterop>("Windows.Graphics.Capture.GraphicsCaptureItem");
-        var iid = GraphicsCaptureItemIid;
-        IntPtr abi = interop.CreateForWindow(hwnd, ref iid);
         try { return GraphicsCaptureItem.FromAbi(abi); }
         finally { Marshal.Release(abi); }
     }

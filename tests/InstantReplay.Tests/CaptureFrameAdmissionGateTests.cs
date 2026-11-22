@@ -6,25 +6,9 @@ namespace InstantReplay.Tests;
 public sealed class CaptureFrameAdmissionGateTests
 {
     [Fact]
-    public void Monitor_frame_is_rejected_during_window_episode()
-    {
-        var gate = new CaptureFrameAdmissionGate(
-            generation: 12,
-            targetRevision: 4,
-            windowEpisode: true);
-
-        Assert.Equal(
-            CaptureFrameAdmission.MonitorBlocked,
-            gate.Evaluate(12, 0, CaptureSurfaceScope.Monitor));
-        Assert.Equal(
-            CaptureFrameAdmission.Admit,
-            gate.Evaluate(12, 4, CaptureSurfaceScope.GameWindow));
-    }
-
-    [Fact]
     public void Stale_generation_is_rejected_before_scope_checks()
     {
-        var gate = new CaptureFrameAdmissionGate(12, 4, windowEpisode: true);
+        var gate = new CaptureFrameAdmissionGate(12, 4, CaptureFrameAdmissionMode.Hybrid);
 
         Assert.Equal(
             CaptureFrameAdmission.StaleGeneration,
@@ -34,17 +18,17 @@ public sealed class CaptureFrameAdmissionGateTests
     [Fact]
     public void Stale_target_revision_is_rejected()
     {
-        var gate = new CaptureFrameAdmissionGate(12, 4, windowEpisode: true);
+        var gate = new CaptureFrameAdmissionGate(12, 4, CaptureFrameAdmissionMode.Hybrid);
 
         Assert.Equal(
             CaptureFrameAdmission.StaleTarget,
-            gate.Evaluate(12, 3, CaptureSurfaceScope.GameWindow));
+            gate.Evaluate(12, 3, CaptureSurfaceScope.GameWindow, routeEpoch: 1));
     }
 
     [Fact]
-    public void Window_frame_is_rejected_outside_window_episode()
+    public void Window_frame_is_rejected_in_monitor_mode()
     {
-        var gate = new CaptureFrameAdmissionGate(12, 0, windowEpisode: false);
+        var gate = new CaptureFrameAdmissionGate(12, 0, CaptureFrameAdmissionMode.Monitor);
 
         Assert.Equal(
             CaptureFrameAdmission.UnexpectedWindow,

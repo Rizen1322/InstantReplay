@@ -16,7 +16,6 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.Empty,
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
         Assert.Equal(7, decision.TargetRevision);
         Assert.True(decision.Episode.IsQuarantined(CaptureBackend.Wgc));
@@ -33,35 +32,28 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.Empty,
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.MinecraftOpenGl, decision.Backend);
         Assert.True(decision.Episode.IsQuarantined(CaptureBackend.DesktopDuplication));
     }
 
     [Fact]
-    public void Window_failure_holds_same_target_instead_of_showing_monitor()
+    public void Monitor_wgc_stall_in_tf2_switches_to_desktop_duplication()
     {
-        GameCaptureTarget target = Minecraft(revision: 9);
-        CaptureEpisode episode = CaptureEpisode.ForTarget(target)
-            .Quarantine(CaptureBackend.Wgc)
-            .Quarantine(CaptureBackend.DesktopDuplication);
-
         var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
-            CaptureBackend.WgcWindow,
-            CaptureFailureKind.BackendUnavailable,
+            CaptureBackend.Wgc,
+            CaptureFailureKind.BackendStalled,
             ForcedBackend: false,
-            Target: target,
-            Episode: episode,
+            Target: Game(revision: 3) with { ExecutableName = "tf_win64", GameName = "Team Fortress 2" },
+            Episode: CaptureEpisode.Empty,
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.HoldForGameWindow, decision.Action);
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
-        Assert.Equal(9, decision.TargetRevision);
-        Assert.True(decision.RetryDelay > TimeSpan.Zero);
+        Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
+        Assert.Equal(0, decision.TargetRevision);
+        Assert.True(decision.Episode.IsQuarantined(CaptureBackend.Wgc));
     }
 
     [Fact]
-    public void Minecraft_hook_failure_uses_window_capture_instead_of_reinjecting_failed_hook()
+    public void Minecraft_hook_failure_uses_desktop_duplication()
     {
         GameCaptureTarget target = Minecraft(revision: 11);
 
@@ -73,9 +65,8 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.ForTarget(target),
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
-        Assert.Equal(CaptureBackend.WgcWindow, decision.Backend);
-        Assert.Equal(11, decision.TargetRevision);
+        Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
+        Assert.Equal(0, decision.TargetRevision);
         Assert.True(decision.Episode.IsQuarantined(CaptureBackend.MinecraftOpenGl));
     }
 
@@ -90,7 +81,6 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.Empty,
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.Wgc, decision.Backend);
         Assert.Equal(0, decision.TargetRevision);
     }
@@ -133,7 +123,6 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.Empty,
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.Wgc, decision.Backend);
         Assert.Equal(0, decision.TargetRevision);
     }
@@ -149,24 +138,8 @@ public sealed class CaptureRecoveryPolicyTests
             Episode: CaptureEpisode.Empty,
             PreferredMonitorBackend: CaptureBackend.Wgc));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
         Assert.Equal(CaptureEpisode.Empty, decision.Episode);
-    }
-
-    [Fact]
-    public void Lost_window_target_returns_to_preferred_monitor_provider()
-    {
-        var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
-            CaptureBackend.WgcWindow,
-            CaptureFailureKind.CaptureTargetClosed,
-            ForcedBackend: false,
-            Target: null,
-            Episode: CaptureEpisode.Empty,
-            PreferredMonitorBackend: CaptureBackend.Wgc));
-
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
-        Assert.Equal(CaptureBackend.Wgc, decision.Backend);
     }
 
     // ---------- Windows 10: WGC запрещён, иначе в записи жёлтая рамка ----------
@@ -183,15 +156,12 @@ public sealed class CaptureRecoveryPolicyTests
             PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
             AllowWgc: false));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
     }
 
     [Fact]
-    public void Without_wgc_game_storm_stays_on_desktop_duplication_instead_of_window_capture()
+    public void Without_wgc_game_storm_stays_on_desktop_duplication()
     {
-        // Ровно сценарий из лога: альт-таб в полноэкранной игре, шторм смены режима
-        // у DDA. Раньше политика уходила на WGC окна, и на Windows 10 это давало рамку.
         var decision = CaptureRecoveryPolicy.Decide(new CaptureRecoveryContext(
             CaptureBackend.DesktopDuplication,
             CaptureFailureKind.BackendTransitionStorm,
@@ -201,9 +171,7 @@ public sealed class CaptureRecoveryPolicyTests
             PreferredMonitorBackend: CaptureBackend.DesktopDuplication,
             AllowWgc: false));
 
-        Assert.Equal(CaptureRecoveryAction.Restart, decision.Action);
         Assert.Equal(CaptureBackend.DesktopDuplication, decision.Backend);
-        Assert.NotEqual(CaptureBackend.WgcWindow, decision.Backend);
     }
 
     [Fact]
@@ -259,7 +227,6 @@ public sealed class CaptureRecoveryPolicyTests
                 AllowWgc: false));
 
             Assert.NotEqual(CaptureBackend.Wgc, decision.Backend);
-            Assert.NotEqual(CaptureBackend.WgcWindow, decision.Backend);
         }
     }
 

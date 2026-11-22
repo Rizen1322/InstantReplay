@@ -540,7 +540,6 @@ public sealed partial class ReplayEngine
             string captureLabel = backend switch
             {
                 CaptureBackend.Wgc => "WGC-monitor",
-                CaptureBackend.WgcWindow => "WGC-window",
                 CaptureBackend.DesktopDuplication => "DDA",
                 CaptureBackend.MinecraftOpenGl => "OpenGL-game",
                 _ => backend.ToString()
@@ -562,8 +561,6 @@ public sealed partial class ReplayEngine
                   $"pid {current.ProcessId}/r{current.Revision}"
                 : "нет";
             CaptureEpisode episode = _gameCaptureRecovery.Episode;
-            long holdStarted = Interlocked.Read(ref _windowHoldStartedTimestamp);
-            long holdMilliseconds = holdStarted == 0 ? 0 : ElapsedMilliseconds(holdStarted);
 
             // Строку pull-режима печатаем только когда он включён: в обычном режиме
             // эти счётчики нулевые и в логе только мешают.
@@ -579,8 +576,7 @@ public sealed partial class ReplayEngine
                               $"broker {broker.FramesPublished}/drop {broker.FramesDroppedNoSlot}/" +
                               $"reject {broker.FramesRejected}/" +
                               $"age {frameAgeMilliseconds} мс | cursor rev {broker.CursorRevision}/" +
-                              $"invalid {broker.InvalidCursorShapes} | DDA storms {_ddaStormCount}/" +
-                              $"window retries {_windowRetryCount}/hold {holdMilliseconds} мс | " +
+                              $"invalid {broker.InvalidCursorShapes} | DDA storms {_ddaStormCount} | " +
                               $"очередь {enc.QueueDepth}/{enc.MaxQueue} " +
                               $"(пул {enc.PoolSlots}) | VRAM {vram}{pullDetails}");
         }

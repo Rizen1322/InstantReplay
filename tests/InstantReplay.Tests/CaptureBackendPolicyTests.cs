@@ -131,12 +131,12 @@ public sealed class CaptureBackendPolicyTests
     }
 
     [Fact]
-    public void Failed_minecraft_hook_does_not_proactively_enable_wgc_where_it_is_disallowed()
+    public void Failed_minecraft_hook_leaves_desktop_duplication_active()
     {
         var target = Target("javaw", "Minecraft", revision: 4);
         var episode = CaptureEpisode.ForTarget(target).Quarantine(CaptureBackend.MinecraftOpenGl);
         var selection = CaptureBackendPolicy.SelectForForeground(CaptureBackend.DesktopDuplication,
-            null, target, false, episode, allowWgc: false);
+            null, target, false, episode);
         Assert.False(selection.RestartRequired);
         Assert.Equal(CaptureBackend.DesktopDuplication, selection.Backend);
     }
@@ -178,13 +178,6 @@ public sealed class CaptureBackendPolicyTests
         Assert.Equal(
             new CaptureBackendSelection(CaptureBackend.Wgc, Forced: false),
             CaptureBackendPolicy.SelectInitial(22621, "broken"));
-    }
-
-    [Fact]
-    public void Window_capture_is_never_an_initial_default()
-    {
-        Assert.NotEqual(CaptureBackend.WgcWindow, CaptureBackendPolicy.SelectInitial(19045, null).Backend);
-        Assert.NotEqual(CaptureBackend.WgcWindow, CaptureBackendPolicy.SelectInitial(22621, null).Backend);
     }
 
     [Theory]

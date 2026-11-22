@@ -115,15 +115,6 @@ public static class ScreenCaptureFactory
             return new ScreenCaptureSource(request.MonitorIndex, request.MonitorIdentity);
         }
 
-        if (request.Backend == CaptureBackend.WgcWindow)
-        {
-            GameCaptureTarget target = request.Target ??
-                throw new ArgumentException("Оконному WGC требуется target", nameof(request));
-            Logging.Log.Info("Capture", $"Захват игрового окна через WGC: " +
-                                        $"{target.ExecutableName}, revision {target.Revision}");
-            return new WindowGraphicsCaptureSource(target);
-        }
-
         if (request.Backend == CaptureBackend.MinecraftOpenGl)
         {
             GameCaptureTarget target = request.Target ??

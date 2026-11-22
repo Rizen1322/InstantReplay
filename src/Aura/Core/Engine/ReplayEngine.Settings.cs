@@ -255,7 +255,7 @@ public sealed partial class ReplayEngine
         try
         {
             StartLocked(preserveBuffers: true, backend,
-                        backend is CaptureBackend.WgcWindow or CaptureBackend.MinecraftOpenGl ? target : null);
+                        backend == CaptureBackend.MinecraftOpenGl ? target : null);
             if (_continuousRecordingRequested) ResumeRecordingLocked();
         }
         catch (Exception ex)
