@@ -82,6 +82,7 @@ public static class VideoEditor
                 input, tempPath, start.TotalSeconds, end.TotalSeconds, audioTrackIndex,
                 p => progress?.Report(p), ct, mixAudio ? Audio.AudioMixdown.Mix : null), ct);
             if (File.Exists(output)) output = CreateOutputPath(input);
+            ct.ThrowIfCancellationRequested();
             File.Move(tempPath, output);
             progress?.Report(1);
             return output;
@@ -99,7 +100,8 @@ public static class VideoEditor
         TimeSpan end,
         int audioTrackIndex = -1,
         IProgress<double>? progress = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? ffmpeg = null)
     {
         ValidateRange(start, end);
         var info = await VideoAssembly.ReadInfoAsync(input, ct);
@@ -109,7 +111,7 @@ public static class VideoEditor
             Math.Clamp(audioTrackIndex, 0, info.AudioTracks - 1);
         Log.Info("Editor", $"Точный экспорт {Path.GetFileName(input)}: {start} — {end}");
         return await VideoAssembly.RenderAsync([new VideoSegment(input, start, end, track)],
-            CreateOutputPath(input), progress: progress, ct: ct);
+            CreateOutputPath(input), ffmpeg, progress: progress, ct: ct);
     }
 
     internal static void ValidateRange(TimeSpan start, TimeSpan end)

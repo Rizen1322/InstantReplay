@@ -79,6 +79,33 @@ internal static class AssemblyExportCheck
         }
         Console.WriteLine("PASS: leading video gap keeps audio at zero, exports black filler then video in all three renderers");
 
+        var sameSource = new VideoSegment(twoTracks, TimeSpan.FromSeconds(.5), TimeSpan.FromSeconds(1), AudioTrack: 0)
+        {
+            AudioEvents = [new AudioEvent(1, TimeSpan.Zero, TimeSpan.FromSeconds(.4)) { SourcePath = twoTracks, Position = TimeSpan.FromSeconds(.05) }]
+        };
+        string sameSourceOutput = await VideoAssembly.RenderAsync([sameSource], Path.Combine(folder, "placed-same-source.mp4"), ffmpeg);
+        var placedTrack = Mp4Trim.ReadAudio(sameSourceOutput).Single();
+        var placedPcm = new List<float>();
+        using (var decoder = new AacDecoder(placedTrack.SampleRate, placedTrack.Channels, placedTrack.Config))
+            for (int i = 0; i < placedTrack.Frames.Count; i++) decoder.Decode(placedTrack.Frames[i], (long)i * 1024 * 10000000 / placedTrack.SampleRate, placedPcm);
+        double tone = Enumerable.Range(7200, 4800).Average(i => placedPcm[i * placedTrack.Channels] * Math.Sin(2 * Math.PI * 880 * i / 48000));
+        double quadrature = Enumerable.Range(7200, 4800).Average(i => placedPcm[i * placedTrack.Channels] * Math.Cos(2 * Math.PI * 880 * i / 48000));
+        Require(Math.Sqrt(tone * tone + quadrature * quadrature) > .025, "Placed audio from the same source was lost");
+
+        var shortGap = new VideoSegment(red, TimeSpan.Zero, TimeSpan.FromSeconds(1)) { Gap = TimeSpan.FromMilliseconds(50) };
+        string repeated = await VideoAssembly.RenderAsync(Enumerable.Repeat(shortGap, 12).ToArray(), Path.Combine(folder, "short-gaps.mp4"), ffmpeg);
+        Require(Math.Abs((await VideoAssembly.ReadInfoAsync(repeated)).Duration.TotalSeconds - 12.6) < .04, "Sub-frame gap rounding accumulated across the montage");
+
+        string anamorphic = Path.Combine(folder, "anamorphic.mp4");
+        await Command("-v", "error", "-i", red, "-vf", "setsar=2", "-c:v", "mpeg4", "-an", anamorphic);
+        var wide = shortGap with { Path = anamorphic, Gap = TimeSpan.FromSeconds(.1) };
+        string wideOutput = await VideoAssembly.RenderAsync([wide], Path.Combine(folder, "anamorphic-export.mp4"), ffmpeg);
+        string edge = Path.Combine(folder, "anamorphic-edge.rgb");
+        await Command("-v", "error", "-ss", "0.5", "-i", wideOutput, "-frames:v", "1", "-vf", "crop=2:2:0:0,scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", edge);
+        Require((await VideoAssembly.ReadInfoAsync(wideOutput)).Width == 640 && File.ReadAllBytes(edge)[0] > 200,
+            "Anamorphic input was squeezed and padded instead of filling its display width");
+        Console.WriteLine("PASS: positioned sound from the same source, sub-frame gaps, anamorphic display width");
+
         async Task<(System.Drawing.Color First, System.Drawing.Color AtGap)> FrameColors(string path)
         {
             string first = Path.Combine(folder, "gap-first.rgb"), at = Path.Combine(folder, "gap-video.rgb");

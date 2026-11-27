@@ -83,6 +83,16 @@ using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
 try { await VideoAssembly.RenderAsync(parts, Path.Combine(root, "cancelled.mp4"), ct: cancelled.Token); throw new Exception("Cancellation ignored"); }
 catch (OperationCanceledException) { }
 Require(!File.Exists(Path.Combine(root, "cancelled.mp4")) && !Directory.GetFiles(root, "*.part.mp4").Any(), "Cancelled output leaked");
+using var cancelAtFinish = new CancellationTokenSource();
+string cancelledTrim = VideoEditor.CreateOutputPath(red);
+try
+{
+    await VideoEditor.TrimLosslessAsync(red, TimeSpan.Zero, TimeSpan.FromSeconds(1),
+        progress: new CancelOnProgress(cancelAtFinish, atEnd: true), ct: cancelAtFinish.Token);
+    throw new Exception("Lossless trim was published after cancellation on the last copy progress");
+}
+catch (OperationCanceledException) { }
+Require(!File.Exists(cancelledTrim) && !Directory.GetFiles(root, "*.part.mp4").Any(), "Cancelled trim leaked output");
 using var cancelNative = new CancellationTokenSource();
 try
 {
@@ -624,9 +634,9 @@ void Snapshot(System.Windows.Window window, string name, int width, int height)
     png.Save(file);
 }
 
-sealed class CancelOnProgress(CancellationTokenSource source) : IProgress<double>
+sealed class CancelOnProgress(CancellationTokenSource source, bool atEnd = false) : IProgress<double>
 {
-    public void Report(double value) { if (value > 0) source.Cancel(); }
+    public void Report(double value) { if (value > 0 && (!atEnd || value >= 1)) source.Cancel(); }
 }
 
 static class DropMessages

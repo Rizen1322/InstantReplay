@@ -196,6 +196,9 @@ public static class Ffmpeg
         int audioTrackIndex = -1, int audioTrackCount = 1, CancellationToken ct = default)
     {
         VideoEditor.ValidateRange(start, end);
+        byte[]? moov;
+        using (var source = File.OpenRead(input)) moov = Saving.Mp4.Mp4Keyframes.ReadTopLevel(source, "moov");
+        if (moov is not null) Saving.Mp4.Mp4Keyframes.RequireSimpleEdits(moov);
         string output = VideoEditor.CreateOutputPath(input);
         string partPath = Path.Combine(
             Path.GetDirectoryName(output)!,
@@ -221,7 +224,7 @@ public static class Ffmpeg
         // на сам ключевой кадр (чуть после него, чтобы поиск попал именно в него),
         // и звук идёт с того же места.
         TimeSpan from = start;
-        if (Saving.Mp4.Mp4Keyframes.StartFor(Saving.Mp4.Mp4Keyframes.Read(input),
+        if (moov is not null && Saving.Mp4.Mp4Keyframes.StartFor(Saving.Mp4.Mp4Keyframes.FromMoov(moov),
                 start.TotalSeconds, end.TotalSeconds) is double key)
             from = TimeSpan.FromSeconds(key) + TimeSpan.FromMilliseconds(1);
         psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(Seconds(from));
@@ -283,6 +286,7 @@ public static class Ffmpeg
                 throw new InvalidOperationException("ffmpeg создал пустой файл");
 
             if (File.Exists(output)) output = VideoEditor.CreateOutputPath(input);
+            ct.ThrowIfCancellationRequested();
             File.Move(partPath, output);
             return output;
         }

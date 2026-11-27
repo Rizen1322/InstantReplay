@@ -161,6 +161,10 @@ public class Mp4TrimTests : IDisposable
         Assert.Single(tracks, t => t.Audio);
         Assert.True(video.Sizes.Length > 0);
         Assert.Contains("elst", System.Text.Encoding.ASCII.GetString(moov));
+
+        string recut = Path.Combine(_dir, "recut.mp4");
+        Assert.Throws<NotSupportedException>(() => Mp4Trim.Cut(output, recut, 0.75, 1.25, 0));
+        Assert.False(File.Exists(recut));
     }
 
     [Theory]

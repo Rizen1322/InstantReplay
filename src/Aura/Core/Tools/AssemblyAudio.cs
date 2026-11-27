@@ -141,5 +141,5 @@ public static class AssemblyAudio
 
     public static double GainAt(VideoSegment part, int track, double sourceSeconds) =>
         sourceSeconds < part.Start.TotalSeconds || sourceSeconds >= part.End.TotalSeconds || part.AudioTrack >= 0 && part.AudioTrack != track ? 0 :
-        part.AudioEvents.FirstOrDefault(e => e.Track == track && sourceSeconds >= e.Start.TotalSeconds && sourceSeconds < e.End.TotalSeconds)?.Gain ?? 1;
+        part.AudioEvents.FirstOrDefault(e => e.Position is null && e.Track == track && sourceSeconds >= e.Start.TotalSeconds && sourceSeconds < e.End.TotalSeconds)?.Gain ?? 1;
 }

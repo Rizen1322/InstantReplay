@@ -124,6 +124,7 @@ public static class Mp4Trim
         using var source = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
                                           1, FileOptions.RandomAccess);
         byte[] moov = Mp4Keyframes.ReadTopLevel(source, "moov") ?? throw new NotSupportedException("в файле нет moov");
+        Mp4Keyframes.RequireSimpleEdits(moov);
         byte[]? ftyp = Mp4Keyframes.ReadTopLevel(source, "ftyp");
         bool fragmented = Mp4Keyframes.Find(moov, 8, moov.Length, "mvex") is not null;
         var tracks = fragmented
@@ -689,7 +690,7 @@ public static class Mp4Trim
             int nameStart = hdlr.Body + 24;
             int nameEnd = nameStart < hdlr.End ? Array.IndexOf(moov, (byte)0, nameStart, hdlr.End - nameStart) : -1;
             t.Name = nameStart < hdlr.End ? TextEncoding.UTF8.GetString(moov, nameStart, (nameEnd < 0 ? hdlr.End : nameEnd) - nameStart) : "";
-            var (emptyMovie, mediaStart) = Mp4Keyframes.EditList(moov, trak, movieTimescale);
+            var (emptyMovie, mediaStart) = Mp4Keyframes.EditList(moov, trak);
             t.EmptySeconds = (double)emptyMovie / movieTimescale;
             t.MediaStart = mediaStart;
 

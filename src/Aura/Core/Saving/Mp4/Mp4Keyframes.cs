@@ -71,7 +71,7 @@ public static class Mp4Keyframes
                 : BinaryPrimitives.ReadUInt32BigEndian(moov.AsSpan(md.Body + 4 + 8));
             if (timescale <= 0 || movieTimescale <= 0) return [];
 
-            var (emptyMovie, mediaStart) = EditList(moov, trak, movieTimescale);
+            var (emptyMovie, mediaStart) = EditList(moov, trak);
             var stbl = FindPath(moov, m, "minf", "stbl");
             if (stbl is not { } st) return [];
 
@@ -113,13 +113,22 @@ public static class Mp4Keyframes
     }
 
     /// <summary>Пустой отрезок перед медиа (в единицах фильма) и начало медиа (в единицах дорожки).</summary>
-    internal static (long EmptyMovie, long MediaStart) EditList(byte[] moov, BoxRef trak, long movieTimescale)
+    internal static void RequireSimpleEdits(byte[] moov)
+    {
+        foreach (var track in Children(moov, 8, moov.Length).Where(b => b.Type == "trak"))
+            EditList(moov, track, requireSimple: true);
+    }
+
+    internal static (long EmptyMovie, long MediaStart) EditList(byte[] moov, BoxRef trak, bool requireSimple = false)
     {
         var edts = Find(moov, trak.Body, trak.End, "edts");
         if (edts is not { } e || Find(moov, e.Body, e.End, "elst") is not { } elst) return (0, 0);
+        if (elst.End - elst.Body < 8) throw new InvalidDataException("Неполный список правок MP4.");
         int version = moov[elst.Body];
         int count = (int)BinaryPrimitives.ReadUInt32BigEndian(moov.AsSpan(elst.Body + 4));
         int pos = elst.Body + 8;
+        if (version > 1 || count < 0 || count > (elst.End - pos) / (version == 1 ? 20 : 12))
+            throw new InvalidDataException("Повреждённый список правок MP4.");
         long empty = 0;
         for (int i = 0; i < count; i++)
         {
@@ -137,6 +146,9 @@ public static class Mp4Keyframes
                 pos += 12;
             }
             if (mediaTime == -1) { empty += duration; continue; }
+            // shortcut: stream copy handles only one media interval, decode complex edits before cutting.
+            if (requireSimple && i + 1 < count)
+                throw new NotSupportedException("Сложный список правок MP4 требует перекодирования.");
             return (empty, mediaTime);
         }
         return (empty, 0);

@@ -41,6 +41,17 @@ public sealed class AssemblyAudioTests
     }
 
     [Fact]
+    public void Muted_placed_audio_does_not_mute_the_linked_track()
+    {
+        var part = Part with
+        {
+            AudioEvents = [new AudioEvent(0, Part.Start, Part.End, Muted: true) { Position = TimeSpan.FromSeconds(1) }]
+        };
+        Assert.Equal(1, AssemblyAudio.GainAt(part, 0, 3));
+        Assert.Equal(0, AssemblyAudio.Sounds([part], _ => 1).Single(s => s.Detached).Gain);
+    }
+
+    [Fact]
     public void Editing_a_trimmed_part_preserves_edits_outside_the_current_trim()
     {
         var full = Part with { Start = TimeSpan.Zero, End = TimeSpan.FromSeconds(10) };

@@ -1203,8 +1203,8 @@ public partial class ClipEditorWindow : Window
         if (_ffmpeg is { } ffmpeg)
             attempts.Add(("ffmpeg", () => Ffmpeg.TrimLosslessAsync(
                 ffmpeg, _item.FullPath, start, end, _audioSelection, Math.Max(1, _audioTrackIds.Length), ct)));
-        attempts.Add(("Windows Media", () => VideoEditor.TrimPreciseAsync(
-            _item.FullPath, start, end, _audioSelection, progress, ct)));
+        attempts.Add(("точный экспорт", () => VideoEditor.TrimPreciseAsync(
+            _item.FullPath, start, end, _audioSelection, progress, ct, _ffmpeg)));
         if (MixAudio)
             attempts.Add(("своя вырезка без сведения", () => VideoEditor.TrimLosslessAsync(
                 _item.FullPath, start, end, _audioSelection, progress, ct)));

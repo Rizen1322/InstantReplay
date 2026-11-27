@@ -239,7 +239,7 @@ public static partial class VideoAssembly
         var sounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks).Where(s => !s.Removed).ToArray();
         if (sounds.Any(s => s.Finish > part.Duration + TimeSpan.FromMilliseconds(10))) return false;
         var audible = sounds.Where(s => s.Gain > 0).ToArray();
-        if (audible.Any(s => s.Path != part.Path)) return false;
+        if (audible.Any(s => s.Detached)) return false;
         var tracks = audible.Select(s => s.Track).Distinct().OrderBy(t => t).ToArray();
         int audioTrack = tracks.Length switch { 0 => -2, 1 => tracks[0], _ => -1 };
         bool directCopy = tracks.Length == 0 ||
@@ -291,7 +291,7 @@ public static partial class VideoAssembly
             var sounds = AssemblyAudio.Sounds([part], _ => info.AudioTracks).Where(s => !s.Removed).ToArray();
             if (sounds.Any(s => s.Finish > part.Duration + TimeSpan.FromMilliseconds(10))) return false;
             var audible = sounds.Where(s => s.Gain > 0).ToArray();
-            if (audible.Any(s => s.Path != part.Path)) return false;
+            if (audible.Any(s => s.Detached)) return false;
             var audibleTracks = audible.Select(s => s.Track).Distinct().ToArray();
             bool segmentNeedsMix = audibleTracks.Length > 1 ||
                 audible.Any(s => Math.Abs(s.Gain - 1) >= 1e-4 || s.Start != part.Start || s.End != part.End);
@@ -460,6 +460,8 @@ public static partial class VideoAssembly
         uint? bitrate = targetMegabytes is int requestedLimit ? TargetBitrate(requestedLimit, duration, bitrateScale) : null;
         var (width, height) = OutputSize(first.Width, first.Height, bitrate);
         string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+        double fps = Math.Max(first.Fps, Math.Ceiling(1 / segments.Min(s => s.Duration.TotalSeconds)));
+        string rate = Number(fps);
         ffmpeg = ExecutableTrust.RequireProtected(ffmpeg);
         if (!legacyScript && LegacyFilterScriptCache.GetValueOrDefault(ffmpeg)) legacyScript = true;
         string encoder = softwareEncoder ? Ffmpeg.SelectSoftwareEncoder(ffmpeg) : Ffmpeg.SelectVideoEncoder(ffmpeg);
@@ -510,6 +512,24 @@ public static partial class VideoAssembly
                 audioSources[i] = $"[{extraIdx}:a:{sound.Track}]atrim=duration={Number(sound.Duration.TotalSeconds)},asetpts=PTS-STARTPTS";
             }
         }
+        int pieces = 0;
+        long frame = 0;
+        double finish = 0;
+        var videoParts = new StringBuilder();
+        string black = $"color=c=black:s={width}x{height}:r={rate},format=yuv420p,setsar=1";
+        void AppendPicture(string filter, double end)
+        {
+            // Round the timeline boundary once, so sub-frame cuts and gaps don't accumulate drift.
+            long endFrame = (long)Math.Round(end * fps, MidpointRounding.AwayFromZero);
+            if (endFrame <= frame) return;
+            long samples = (long)Math.Round(endFrame * 48000 / fps) - (long)Math.Round(frame * 48000 / fps);
+            graph.Append($"{filter},trim=end_frame={endFrame - frame}[v{pieces}];");
+            // concat needs a duration even if the picture contains only one frame.
+            graph.Append($"anullsrc=r=48000:cl=stereo,atrim=end_sample={samples}[clock{pieces}];");
+            videoParts.Append($"[v{pieces}][clock{pieces}]");
+            frame = endFrame;
+            pieces++;
+        }
         for (int i = 0; i < segments.Count; i++)
         {
             var segment = segments[i];
@@ -517,35 +537,27 @@ public static partial class VideoAssembly
             int tracks = source.AudioTracks;
             if (segment.AudioEvents.Any(e => e.Track >= infos[e.SourcePath ?? segment.Path].AudioTracks)) throw new InvalidDataException("Звуковой фрагмент ссылается на отсутствующую дорожку.");
             if (segment.AudioTrack >= tracks && segment.AudioTrack >= 0) throw new InvalidDataException("Выбранная звуковая дорожка отсутствует.");
-            bool samePicture = !source.Anamorphic && source.Width == width && source.Height == height && Math.Abs(source.Fps - first.Fps) < .01;
-            string prepare = samePicture
-                ? "setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
-                : $"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={Number(first.Fps)},format=yuv420p,setpts=PTS-STARTPTS";
-            graph.Append($"[{i}:v:0]{prepare}[v{i}];");
-        }
-        int pieces = 0;
-        var videoParts = new StringBuilder();
-        for (int i = 0; i < segments.Count; i++)
-        {
-            if (segments[i].Gap > TimeSpan.Zero)
+            if (segment.Gap > TimeSpan.Zero)
             {
-                graph.Append($"color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(segments[i].Gap.TotalSeconds)},format=yuv420p,setsar=1[g{i}];");
-                videoParts.Append($"[g{i}]");
-                pieces++;
+                finish += segment.Gap.TotalSeconds;
+                AppendPicture(black, finish);
             }
-            videoParts.Append($"[v{i}]");
-            pieces++;
+            string resize = !source.Anamorphic && source.Width == width && source.Height == height ? "" :
+                $"scale='max(2,2*trunc(min({width},{height}*dar)/2))':'max(2,2*trunc(min({height},{width}/dar)/2))',pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,";
+            finish += segment.Duration.TotalSeconds;
+            AppendPicture($"[{i}:v:0]{resize}setsar=1,format=yuv420p,setpts=PTS-STARTPTS,fps={rate}:start_time=0", finish);
         }
-        if (duration > videoDuration + .001)
-            graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[vbase];color=c=black:s={width}x{height}:r={Number(first.Fps)}:d={Number(duration - videoDuration)},format=yuv420p,setsar=1[tail];[vbase][tail]concat=n=2:v=1:a=0[v];");
-        else graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=0[v];");
+        AppendPicture(black, duration);
+        graph.Append(videoParts).Append($"concat=n={pieces}:v=1:a=1[vbase][silence];[vbase]fps={rate}:start_time=0,trim=end_frame={frame}[v];");
         for (int i = 0; i < audible.Length; i++)
         {
             var sound = audible[i];
             graph.Append($"{audioSources[i]},volume={Number(sound.Gain)},aresample=48000,aformat=channel_layouts=stereo,adelay={Number(sound.Position.TotalMilliseconds)}:all=1[a{i}];");
         }
+        graph.Append("[silence]");
         for (int i = 0; i < audible.Length; i++) graph.Append($"[a{i}]");
-        graph.Append(audible.Length == 0 ? "anullsrc=r=48000:cl=stereo," : audible.Length == 1 ? "anull," : $"amix=inputs={audible.Length}:duration=longest:normalize=0,alimiter=limit=0.97:level=disabled,");
+        if (audible.Length > 0) graph.Append($"amix=inputs={audible.Length + 1}:duration=longest:normalize=0,");
+        if (audible.Length > 1) graph.Append("alimiter=limit=0.97:level=disabled,");
         graph.Append($"apad,atrim=duration={Number(duration)},asetpts=PTS-STARTPTS[a]");
         string script = temp + ".filters.txt";
         using var scriptLock = new FileStream(script, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
