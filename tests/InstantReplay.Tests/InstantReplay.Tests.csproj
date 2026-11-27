@@ -48,6 +48,7 @@
     <Compile Include="..\..\src\Aura\Core\Saving\BackgroundIoScope.cs" Link="App\BackgroundIoScope.cs" />
     <Compile Include="..\..\src\Aura\Core\Saving\ReplaySaver.cs" Link="App\ReplaySaver.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioTimeline.cs" Link="App\AudioTimeline.cs" />
+    <Compile Include="..\..\src\Aura\Core\Audio\AudioCaptureHealth.cs" Link="App\AudioCaptureHealth.cs" />
     <Compile Include="..\..\src\Aura\Core\Audio\AudioDsp.cs" Link="App\AudioDsp.cs" />
     <Compile Include="..\..\src\Aura\Core\Storage\DiskSpace.cs" Link="App\DiskSpace.cs" />
     <Compile Include="..\..\src\Aura\Core\Encoding\PoolSlotLedger.cs" Link="App\PoolSlotLedger.cs" />

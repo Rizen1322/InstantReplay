@@ -32,12 +32,30 @@ public sealed class WasapiSource : IDisposable
     private readonly float[] _matrix;   // [выходной канал * входных каналов + входной]
     private readonly int _inChannels;
     private float[] _converted = new float[4096];
-    private long _lastSyntheticQpc;
+    private readonly WasapiTimestampGuard _timestampGuard = new();
+    private readonly LoopbackSilenceWatchdog _silenceWatchdog = new();
+    private bool _meterUnavailable;
+    private long _lastHealthCheckMs = Environment.TickCount64;
+    private float _healthWindowPeak;
+
+    private readonly object _statsSync = new();
+    private long _minutePackets;
+    private long _minuteSilentPackets;
+    private int _minuteRebases;
+    private long _lastSkewMs;
+    private long _lastOffsetMs;
+    private float _minutePeak;
 
     /// <summary>Процесс, чей звук пишется; null — весь звук устройства.</summary>
     public int? ProcessId { get; }
 
+    /// <summary>Идентификатор конечного устройства WASAPI; null — захват процесса.</summary>
+    public string? DeviceId { get; }
+
     public event Action<Exception>? Failed;
+
+    /// <summary>Устройство воспроизводит звук, но loopback отдаёт тишину.</summary>
+    public event Action<float>? SilentLoopbackDetected;
 
     public WasapiSource(bool loopback, string? deviceId, AudioTimeline timeline)
     {
@@ -50,6 +68,7 @@ public sealed class WasapiSource : IDisposable
             // Keep an explicit selection unavailable until that device returns.
             _device = deviceId is not null ? enumerator.GetDevice(deviceId) :
                 enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
+            DeviceId = _device.ID;
             _name = $"{(loopback ? "loopback" : "mic")} {_device.FriendlyName}";
 
             _client = _device.AudioClient;
@@ -178,6 +197,7 @@ public sealed class WasapiSource : IDisposable
                 _packetReady.WaitOne(10); // и опрос раз в 10 мс: на части драйверов событие loopback приходит не всегда
                 if (!_running) break;
                 Drain();
+                CheckLoopbackHealth();
             }
         }
         catch (Exception ex)
@@ -201,31 +221,26 @@ public sealed class WasapiSource : IDisposable
                 bool discontinuity = (flags & AudioClientBufferFlags.DataDiscontinuity) != 0;
                 bool badTime = (flags & AudioClientBufferFlags.TimestampError) != 0;
                 long durationTicks = frames * 10_000_000L / Math.Max(1, _format.SampleRate);
-                // У loopback процесса метка времени бывает нулевой: при вычитке пачки
-                // пакетов подряд продвигаем расчётное время на длительность пакета,
-                // чтобы все пакеты пачки не получили одну и ту же метку и не вызвали Resync.
-                if (badTime || qpc <= 0)
+                long now = NowTicks();
+                var resolved = _timestampGuard.Resolve(qpc, badTime, discontinuity, durationTicks, now);
+                if (resolved.Rebased)
+                    Log.Warn("Audio", $"Источник {_name}: метка времени QPC сдвинулась на {resolved.DeltaMs:+0;-0;0} мс — выровнял по системным часам");
+
+                float packetPeak = Convert(data, frames, silent);
+                if (packetPeak > _healthWindowPeak) _healthWindowPeak = packetPeak;
+
+                lock (_statsSync)
                 {
-                    long now = NowTicks();
-                    if (!discontinuity && _lastSyntheticQpc > 0 &&
-                        Math.Abs(now - _lastSyntheticQpc) < 500_000)
-                    {
-                        qpc = _lastSyntheticQpc;
-                        _lastSyntheticQpc += durationTicks;
-                    }
-                    else
-                    {
-                        qpc = now;
-                        _lastSyntheticQpc = now + durationTicks;
-                    }
-                }
-                else
-                {
-                    _lastSyntheticQpc = qpc + durationTicks;
+                    _minutePackets++;
+                    if (silent || packetPeak < LoopbackSilenceWatchdog.CapturedSilentThreshold)
+                        _minuteSilentPackets++;
+                    if (resolved.Rebased) _minuteRebases++;
+                    _lastSkewMs = _timestampGuard.LastSkewTicks / 10_000;
+                    _lastOffsetMs = _timestampGuard.OffsetTicks / 10_000;
+                    if (packetPeak > _minutePeak) _minutePeak = packetPeak;
                 }
 
-                Convert(data, frames, silent);
-                _timeline.Push(_converted, frames, _format.SampleRate, qpc, discontinuity);
+                _timeline.Push(_converted, frames, _format.SampleRate, resolved.QpcTicks, resolved.Discontinuity);
             }
             finally
             {
@@ -234,16 +249,62 @@ public sealed class WasapiSource : IDisposable
         }
     }
 
+    private void CheckLoopbackHealth()
+    {
+        if (!_loopback || ProcessId is not null || _device is null || _meterUnavailable) return;
+        long nowMs = Environment.TickCount64;
+        if (nowMs - _lastHealthCheckMs < 1000) return;
+
+        float capturedPeak = _healthWindowPeak;
+        _healthWindowPeak = 0;
+        _lastHealthCheckMs = nowMs;
+
+        float endpointPeak;
+        bool muted;
+        try
+        {
+            endpointPeak = _device.AudioMeterInformation.MasterPeakValue;
+            muted = _device.AudioEndpointVolume.Mute;
+        }
+        catch
+        {
+            _meterUnavailable = true;
+            return;
+        }
+
+        if (_silenceWatchdog.ObserveSecond(capturedPeak, endpointPeak, muted))
+            SilentLoopbackDetected?.Invoke(endpointPeak);
+    }
+
+    internal AudioCaptureMinuteStats TakeMinuteStats()
+    {
+        lock (_statsSync)
+        {
+            var stats = new AudioCaptureMinuteStats(
+                _minutePackets,
+                _minuteSilentPackets,
+                _minuteRebases,
+                _lastSkewMs,
+                _lastOffsetMs,
+                _minutePeak);
+            _minutePackets = 0;
+            _minuteSilentPackets = 0;
+            _minuteRebases = 0;
+            _minutePeak = 0;
+            return stats;
+        }
+    }
+
     private static long NowTicks() =>
         (long)(System.Diagnostics.Stopwatch.GetTimestamp() * (10_000_000.0 / System.Diagnostics.Stopwatch.Frequency));
 
-    /// <summary>Байты устройства → float в каналах шкалы.</summary>
-    private unsafe void Convert(IntPtr data, int frames, bool silent)
+    /// <summary>Байты устройства → float в каналах шкалы. Возвращает пик пакета.</summary>
+    private unsafe float Convert(IntPtr data, int frames, bool silent)
     {
         int outChannels = _timeline.Channels;
         if (_converted.Length < frames * outChannels) _converted = new float[frames * outChannels * 2];
         var dest = _converted.AsSpan(0, frames * outChannels);
-        if (silent) { dest.Clear(); return; }
+        if (silent) { dest.Clear(); return 0f; }
 
         int bits = _format.BitsPerSample;
         bool isFloat = IsFloat(_format);
@@ -251,6 +312,7 @@ public sealed class WasapiSource : IDisposable
         int bytesPerSample = blockAlign / _inChannels;
         byte* src = (byte*)data;
         Span<float> frame = stackalloc float[Math.Max(1, _inChannels)];
+        float peak = 0f;
 
         for (int f = 0; f < frames; f++)
         {
@@ -270,8 +332,11 @@ public sealed class WasapiSource : IDisposable
                 int row = o * _inChannels;
                 for (int c = 0; c < _inChannels; c++) sum += frame[c] * _matrix[row + c];
                 dest[f * outChannels + o] = sum;
+                float a = MathF.Abs(sum);
+                if (a > peak) peak = a;
             }
         }
+        return peak;
     }
 
     private static bool IsFloat(WaveFormat format)

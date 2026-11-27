@@ -173,4 +173,239 @@ public class AudioTimelineTests
         Assert.True(gate.IsOpenAt(s + s / 2));
         Assert.False(gate.IsOpenAt(3 * s));
     }
+
+    [Fact]
+    public void Timestamp_guard_keeps_normal_qpc_untouched()
+    {
+        var guard = new WasapiTimestampGuard();
+        long now = 100 * Second;
+        const long packetTicks = 100_000; // 10 мс
+
+        for (int i = 0; i < 10; i++)
+        {
+            long rawQpc = now - packetTicks;
+            var resolved = guard.Resolve(rawQpc, badTime: false, discontinuity: false, packetTicks, now);
+            Assert.Equal(rawQpc, resolved.QpcTicks);
+            Assert.False(resolved.Rebased);
+            Assert.False(resolved.Discontinuity);
+            Assert.Equal(0, guard.OffsetTicks);
+            now += packetTicks;
+        }
+        Assert.Equal(0, guard.Rebases);
+    }
+
+    [Fact]
+    public void Timestamp_guard_ignores_single_outlier_without_rebasing_or_corrupting_timeline()
+    {
+        var guard = new WasapiTimestampGuard();
+        var line = new AudioTimeline(0, 2);
+        const int packetFrames = 480;
+        const long packetTicks = 100_000;
+        var samples = new float[packetFrames * 2];
+        Array.Fill(samples, 0.25f);
+
+        long now = 10 * Second;
+        for (int i = 0; i < 20; i++)
+        {
+            var r = guard.Resolve(now - packetTicks, badTime: false, discontinuity: false, packetTicks, now);
+            line.Push(samples, packetFrames, 48000, r.QpcTicks, r.Discontinuity);
+            now += packetTicks;
+        }
+
+        // Одиночный выброс на -60 секунд не должен сдвигать шкалу или ломать чтение
+        var outlier = guard.Resolve(now - 60 * Second, badTime: false, discontinuity: false, packetTicks, now);
+        Assert.False(outlier.Rebased);
+        Assert.Equal(0, guard.OffsetTicks);
+        Assert.InRange(outlier.QpcTicks, now - 5 * packetTicks, now + packetTicks);
+        line.Push(samples, packetFrames, 48000, outlier.QpcTicks, outlier.Discontinuity);
+
+        now += packetTicks;
+        var back = guard.Resolve(now - packetTicks, badTime: false, discontinuity: false, packetTicks, now);
+        Assert.False(back.Rebased);
+        Assert.Equal(0, guard.OffsetTicks);
+        line.Push(samples, packetFrames, 48000, back.QpcTicks, back.Discontinuity);
+
+        long readPos = ((now - 2_000_000L) * 48000) / Second;
+        var outBlock = new float[packetFrames * 2];
+        line.Read(readPos, outBlock, packetFrames);
+        Assert.Contains(outBlock, v => MathF.Abs(v) > 0.2f);
+        Assert.Equal((0, 0), line.TakeReadMisses());
+    }
+
+    [Theory]
+    [InlineData(-500_0000L)]     // -500 мс (меньше окна микшера 200 мс)
+    [InlineData(-60 * Second)]  // -60 с
+    [InlineData(10 * Second)]   // +10 с в будущее (может вытеснить кольцо без защиты)
+    public void Timestamp_guard_rebases_persistent_qpc_shift_and_keeps_audio_readable(long shiftTicks)
+    {
+        var guard = new WasapiTimestampGuard();
+        var line = new AudioTimeline(0, 2);
+        const int packetFrames = 480;
+        const long packetTicks = 100_000;
+        var samples = new float[packetFrames * 2];
+        Array.Fill(samples, 0.3f);
+
+        long now = 70 * Second;
+        for (int i = 0; i < 15; i++)
+        {
+            var r = guard.Resolve(now - packetTicks, badTime: false, discontinuity: false, packetTicks, now);
+            line.Push(samples, packetFrames, 48000, r.QpcTicks, r.Discontinuity);
+            now += packetTicks;
+        }
+
+        bool sawRebase = false;
+        // После сбоя драйвер начинает отдавать QPC со сдвигом shiftTicks и дрейфом -22 ppm
+        for (int i = 0; i < 40; i++)
+        {
+            long rawQpc = now - packetTicks + shiftTicks - (long)(i * packetTicks * 22e-6);
+            var r = guard.Resolve(rawQpc, badTime: false, discontinuity: false, packetTicks, now);
+            if (r.Rebased)
+            {
+                sawRebase = true;
+                Assert.True(r.Discontinuity);
+            }
+            line.Push(samples, packetFrames, 48000, r.QpcTicks, r.Discontinuity);
+            now += packetTicks;
+        }
+
+        Assert.True(sawRebase);
+        Assert.Equal(1, guard.Rebases);
+
+        long readPos = ((now - packetTicks - 2_000_000L) * 48000) / Second;
+        var outBlock = new float[packetFrames * 2];
+        line.Read(readPos, outBlock, packetFrames);
+        Assert.All(outBlock, v => Assert.InRange(v, 0.25f, 0.35f));
+        Assert.Equal((0, 0), line.TakeReadMisses());
+    }
+
+    [Fact]
+    public void Timestamp_guard_returns_offset_to_zero_when_raw_qpc_recovers()
+    {
+        var guard = new WasapiTimestampGuard();
+        const long packetTicks = 100_000;
+        long now = 20 * Second;
+
+        for (int i = 0; i < WasapiTimestampGuard.RebaseStreak; i++)
+        {
+            guard.Resolve(now - packetTicks - 2 * Second, badTime: false, discontinuity: false, packetTicks, now);
+            now += packetTicks;
+        }
+        Assert.NotEqual(0, guard.OffsetTicks);
+        Assert.Equal(1, guard.Rebases);
+
+        bool returned = false;
+        for (int i = 0; i < WasapiTimestampGuard.RebaseStreak; i++)
+        {
+            var r = guard.Resolve(now - packetTicks, badTime: false, discontinuity: false, packetTicks, now);
+            if (r.Rebased) returned = true;
+            now += packetTicks;
+        }
+        Assert.True(returned);
+        Assert.Equal(0, guard.OffsetTicks);
+        Assert.Equal(2, guard.Rebases);
+    }
+
+    [Fact]
+    public void Timestamp_guard_synthesizes_smooth_qpc_when_bad_or_zero()
+    {
+        var guard = new WasapiTimestampGuard();
+        const long packetTicks = 100_000;
+        long now = 10 * Second;
+
+        var first = guard.Resolve(0, badTime: true, discontinuity: false, packetTicks, now);
+        var second = guard.Resolve(0, badTime: false, discontinuity: false, packetTicks, now + 30_000);
+        Assert.Equal(first.QpcTicks + packetTicks, second.QpcTicks);
+        Assert.False(first.Rebased);
+        Assert.False(second.Rebased);
+    }
+
+    [Fact]
+    public void Loopback_silence_watchdog_triggers_only_after_five_audible_silent_seconds()
+    {
+        var watchdog = new LoopbackSilenceWatchdog();
+
+        for (int i = 0; i < LoopbackSilenceWatchdog.TriggerSeconds - 1; i++)
+            Assert.False(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.3f, endpointMuted: false));
+
+        // Сбрасывается при появлении захваченного звука
+        Assert.False(watchdog.ObserveSecond(capturedPeak: 0.05f, endpointPeak: 0.3f, endpointMuted: false));
+
+        // Сбрасывается при тихом или замьюченном устройстве
+        for (int i = 0; i < 4; i++)
+            Assert.False(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.3f, endpointMuted: false));
+        Assert.False(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.001f, endpointMuted: false));
+
+        for (int i = 0; i < 4; i++)
+            Assert.False(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.3f, endpointMuted: false));
+        Assert.False(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.3f, endpointMuted: true));
+
+        // 5 секунд подряд: звук играет, не замьючен, захват пустой -> срабатывает
+        for (int i = 0; i < LoopbackSilenceWatchdog.TriggerSeconds - 1; i++)
+            Assert.False(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.3f, endpointMuted: false));
+        Assert.True(watchdog.ObserveSecond(capturedPeak: 0f, endpointPeak: 0.3f, endpointMuted: false));
+    }
+
+    [Fact]
+    public void Silent_loopback_recovery_policy_throttles_and_resets_when_audible()
+    {
+        var policy = new SilentLoopbackRecoveryPolicy();
+        long t = 100_000;
+
+        Assert.True(policy.TryBeginRestart(t, out bool exhausted));
+        Assert.False(exhausted);
+
+        // Внутри паузы 15 с повтор не разрешён
+        Assert.False(policy.TryBeginRestart(t + 5_000, out exhausted));
+        Assert.False(exhausted);
+
+        Assert.True(policy.TryBeginRestart(t + 15_000, out exhausted));
+        Assert.False(exhausted);
+
+        Assert.True(policy.TryBeginRestart(t + 15_000 + 60_000, out exhausted));
+        Assert.False(exhausted);
+
+        // После 3 попыток с перерывом 300 с бюджет исчерпан
+        Assert.False(policy.TryBeginRestart(t + 15_000 + 60_000 + 300_000, out exhausted));
+        Assert.True(exhausted);
+
+        // Появился реальный звук — счётчик сбрасывается
+        policy.NoteAudible();
+        Assert.True(policy.TryBeginRestart(t + 500_000, out exhausted));
+        Assert.False(exhausted);
+    }
+
+    [Fact]
+    public void Format_property_filter_matches_only_device_format_and_speakers()
+    {
+        var deviceFormat = new Guid("f19f064d-082c-4e27-bc73-6882a1bb8e4c");
+        var physicalSpeakers = new Guid("1da5d803-d492-4edd-8c23-e0c0ffee7f0e");
+
+        Assert.True(AudioCaptureHealth.IsFormatProperty(deviceFormat, 0));
+        Assert.False(AudioCaptureHealth.IsFormatProperty(deviceFormat, 1));
+        Assert.True(AudioCaptureHealth.IsFormatProperty(physicalSpeakers, 3));
+        Assert.False(AudioCaptureHealth.IsFormatProperty(physicalSpeakers, 0));
+        Assert.False(AudioCaptureHealth.IsFormatProperty(Guid.NewGuid(), 0));
+    }
+
+    [Fact]
+    public void Audio_timeline_tracks_late_and_evicted_read_misses()
+    {
+        var line = new AudioTimeline(0, 2);
+        const int frames = 480;
+        var samples = new float[frames * 2];
+        Array.Fill(samples, 0.2f);
+
+        line.Push(samples, frames, 48000, 10 * Second, discontinuity: false);
+        var buf = new float[frames * 2];
+
+        // Читаем позже _writePos (позднее чтение)
+        line.Read(11 * 48000, buf, frames);
+        // Читаем раньше CapacityFrames (вытесненное чтение)
+        line.Read(1 * 48000, buf, frames);
+        // Нормальное чтение в окне
+        line.Read(10 * 48000, buf, frames);
+
+        Assert.Equal((1, 1), line.TakeReadMisses());
+        Assert.Equal((0, 0), line.TakeReadMisses());
+    }
 }

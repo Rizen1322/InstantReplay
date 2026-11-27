@@ -142,6 +142,9 @@ public sealed class AudioMixerEngine : IDisposable
     /// </summary>
     private readonly object _gameSwitch = new();
     private readonly object _deviceWakeSync = new();
+    private readonly SilentLoopbackRecoveryPolicy _silentLoopbackPolicy = new();
+    private bool _silentLoopbackExhaustedLogged;
+    private volatile bool _silentRecoveryActive;
     private int _restartingRender;
     private int _restartingCapture;
     private MMDeviceEnumerator? _deviceWatchEnumerator;
@@ -185,6 +188,13 @@ public sealed class AudioMixerEngine : IDisposable
                       string? gameProcess = null)
     {
         Stop();
+
+        lock (_sync)
+        {
+            _silentLoopbackPolicy.Reset();
+            _silentLoopbackExhaustedLogged = false;
+            _silentRecoveryActive = false;
+        }
 
         _wantGame = captureGame; _wantMic = captureMic;
         _renderDeviceId = renderDeviceId; _captureDeviceId = captureDeviceId;
@@ -265,6 +275,7 @@ public sealed class AudioMixerEngine : IDisposable
         {
             var source = new WasapiSource(loopback, loopback ? _renderDeviceId : _captureDeviceId, line);
             source.Failed += _ => RestartSource(loopback ? DataFlow.Render : DataFlow.Capture);
+            if (loopback) source.SilentLoopbackDetected += peak => HandleSilentLoopback(source, peak);
             return source;
         }
         catch (Exception ex)
@@ -396,10 +407,63 @@ public sealed class AudioMixerEngine : IDisposable
             },
             // Появилось или включилось устройство: если источник ждёт своё
             // устройство, пробуем сразу, а не через минуту
-            PulseDeviceArrived);
+            PulseDeviceArrived,
+            deviceId =>
+            {
+                bool restartRender, restartCapture;
+                lock (_sync)
+                {
+                    restartRender = !ProcessMode && _wantGame &&
+                                    string.Equals(_game?.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase);
+                    restartCapture = _wantMic &&
+                                     string.Equals(_mic?.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase);
+                }
+                if (restartRender)
+                {
+                    Log.Info("Audio", "Изменился формат устройства вывода — пересоздаю источник звука игры");
+                    RestartSource(DataFlow.Render);
+                }
+                if (restartCapture)
+                {
+                    Log.Info("Audio", "Изменился формат устройства ввода — пересоздаю микрофон");
+                    RestartSource(DataFlow.Capture);
+                }
+            });
             _deviceWatchEnumerator.RegisterEndpointNotificationCallback(_deviceWatcher);
         }
         catch (Exception ex) { Log.Warn("Audio", $"Слежение за устройствами недоступно: {ex.Message}"); }
+    }
+
+    private void HandleSilentLoopback(WasapiSource source, float endpointPeak)
+    {
+        bool restart = false;
+        bool logExhausted = false;
+        lock (_sync)
+        {
+            if (!_running || _game != source || ProcessMode) return;
+            if (_silentLoopbackPolicy.TryBeginRestart(Environment.TickCount64, out bool exhausted))
+            {
+                _silentRecoveryActive = true;
+                restart = true;
+            }
+            else if (exhausted && !_silentLoopbackExhaustedLogged)
+            {
+                _silentLoopbackExhaustedLogged = true;
+                _silentRecoveryActive = true;
+                logExhausted = true;
+            }
+        }
+        if (restart)
+        {
+            Log.Warn("Audio", $"Звук игры: устройство воспроизводит звук (пик {endpointPeak:F2}), " +
+                              $"но loopback отдаёт тишину {LoopbackSilenceWatchdog.TriggerSeconds} с — пересоздаю источник");
+            RestartSource(DataFlow.Render);
+        }
+        else if (logExhausted)
+        {
+            Log.Warn("Audio", "Звук игры: loopback продолжает отдавать тишину после повторных пересозданий — " +
+                              "временно прекращаю автоперезапуск до появления сигнала");
+        }
     }
 
     private void PulseDeviceArrived()
@@ -499,7 +563,10 @@ public sealed class AudioMixerEngine : IDisposable
         while (true) yield return 60_000;
     }
 
-    private sealed class DefaultDeviceWatcher(Action<DataFlow> onDefaultChanged, Action onDeviceArrived) : IMMNotificationClient
+    private sealed class DefaultDeviceWatcher(
+        Action<DataFlow> onDefaultChanged,
+        Action onDeviceArrived,
+        Action<string> onFormatChanged) : IMMNotificationClient
     {
         public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
         {
@@ -512,7 +579,11 @@ public sealed class AudioMixerEngine : IDisposable
         }
         public void OnDeviceAdded(string pwstrDeviceId) => onDeviceArrived();
         public void OnDeviceRemoved(string deviceId) { }
-        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key)
+        {
+            if (AudioCaptureHealth.IsFormatProperty(key.formatId, key.propertyId))
+                onFormatChanged(pwstrDeviceId);
+        }
     }
 
     private static long NowTicks() => (long)(System.Diagnostics.Stopwatch.GetTimestamp()
@@ -633,6 +704,15 @@ public sealed class AudioMixerEngine : IDisposable
 
             GamePeak = haveGame ? Peak(game) : 0;
             MicPeak = micLine is null ? 0 : Peak(mic);
+            if (GamePeak >= LoopbackSilenceWatchdog.CapturedSilentThreshold && _silentRecoveryActive)
+            {
+                lock (_sync)
+                {
+                    _silentLoopbackPolicy.NoteAudible();
+                    _silentLoopbackExhaustedLogged = false;
+                    _silentRecoveryActive = false;
+                }
+            }
 
             // Время блока — начало отрезка на шкале; лимитер сдвигает звук на
             // свои 2 мс одинаково для всех дорожек.
@@ -645,17 +725,46 @@ public sealed class AudioMixerEngine : IDisposable
             if (++report >= 6000) // раз в минуту
             {
                 report = 0;
-                string gameText = slots.Length == 0 ? Describe(gameLine)
-                    : string.Join(", ", slots.Select(slot => $"{slot.Name} {Describe(slot.Line)}"));
-                Log.Info("Audio", $"Шкала звука: игра {gameText}, микрофон {Describe(micLine)}; " +
+                WasapiSource? gameSource, micSource;
+                (WasapiSource? Source, AudioTimeline Line, string Name)[] slotSnapshot;
+                lock (_sync)
+                {
+                    gameSource = _game;
+                    micSource = _mic;
+                    slotSnapshot = slots.Select(s => (s.Source, s.Line, s.Name)).ToArray();
+                }
+                string gameText = slotSnapshot.Length == 0 ? Describe(gameLine, gameSource)
+                    : string.Join(", ", slotSnapshot.Select(slot => $"{slot.Name} {Describe(slot.Line, slot.Source)}"));
+                Log.Info("Audio", $"Шкала звука: игра {gameText}, микрофон {Describe(micLine, micSource)}; " +
                                   $"лимитер: игра {Db(gameLimiter)}, микрофон {Db(micLimiter)}, смесь {Db(mixLimiter)}");
             }
             block++;
         }
     }
 
-    private static string Describe(AudioTimeline? line) => line is null ? "нет"
-        : $"поправка темпа {line.Correction * 1e6:+0;-0;0} ppm, разрывов {line.Resyncs}";
+    private static string Describe(AudioTimeline? line, WasapiSource? source)
+    {
+        if (line is null) return "нет";
+        var (late, evicted) = line.TakeReadMisses();
+        string text = $"поправка темпа {line.Correction * 1e6:+0;-0;0} ppm, разрывов {line.Resyncs}";
+        if (source is not null)
+        {
+            var stats = source.TakeMinuteStats();
+            string peakText = stats.Peak < 1e-4f ? "пик тихо" : $"пик {20 * MathF.Log10(stats.Peak):F1} дБ";
+            text += $", {peakText}, QPC {stats.LastQpcSkewMs:+0;-0;0} мс";
+            if (stats.QpcOffsetMs != 0) text += $", сдвиг {stats.QpcOffsetMs:+0;-0;0} мс";
+            if (stats.QpcRebases > 0) text += $", поправок QPC {stats.QpcRebases}";
+            text += $", пакетов {stats.Packets}";
+            if (stats.SilentPackets > 0) text += $", тихих {stats.SilentPackets}";
+            if (evicted > 0 || (late > 0 && stats.Packets > 0))
+                text += $", мимо окна {late}/{evicted}";
+        }
+        else if (evicted > 0)
+        {
+            text += $", мимо окна {late}/{evicted}";
+        }
+        return text;
+    }
 
     private static string Db(Limiter limiter)
     {
@@ -709,6 +818,9 @@ public sealed class AudioMixerEngine : IDisposable
             }
             _gameEncoder = null; _micEncoder = null; _mixEncoder = null;
             _gameLine = null; _micLine = null;
+            _silentLoopbackPolicy.Reset();
+            _silentLoopbackExhaustedLogged = false;
+            _silentRecoveryActive = false;
         }
         GamePeak = MicPeak = 0;
     }

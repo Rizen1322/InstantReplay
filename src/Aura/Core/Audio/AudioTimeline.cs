@@ -202,6 +202,8 @@ public sealed class AudioTimeline
     private float[] _scratch = new float[8192];
     private bool _synced;
     private double _smoothedError;
+    private long _lateReadBlocks;
+    private long _evictedReadBlocks;
 
     /// <summary>Сколько раз звук пришлось класть заново (разрыв). Для диагностики.</summary>
     public long Resyncs { get; private set; }
@@ -298,6 +300,11 @@ public sealed class AudioTimeline
         lock (_sync)
         {
             long validFrom = _writePos - CapacityFrames;
+            if (_synced)
+            {
+                if (position >= _writePos) _lateReadBlocks++;
+                else if (position + frames <= validFrom) _evictedReadBlocks++;
+            }
             for (int i = 0; i < frames; i++)
             {
                 long p = position + i;
@@ -305,6 +312,18 @@ public sealed class AudioTimeline
                 if (!_synced || p >= _writePos || p < validFrom) target.Clear();
                 else _ring.AsSpan((int)Mod(p) * Channels, Channels).CopyTo(target);
             }
+        }
+    }
+
+    /// <summary>Снять счётчики промахов чтения (поздно или вытеснено из кольца) за период.</summary>
+    public (long LateBlocks, long EvictedBlocks) TakeReadMisses()
+    {
+        lock (_sync)
+        {
+            var misses = (_lateReadBlocks, _evictedReadBlocks);
+            _lateReadBlocks = 0;
+            _evictedReadBlocks = 0;
+            return misses;
         }
     }
 
